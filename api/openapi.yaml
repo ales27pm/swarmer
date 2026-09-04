@@ -1,0 +1,186 @@
+openapi: 3.1.0
+info:
+  title: monGARS Control Plane API
+  version: 0.1.0
+servers:
+  - url: http://ubuntu.local:8710
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /pairing/start:
+    post:
+      summary: Start device pairing
+      responses:
+        '200':
+          description: Pairing code created
+  /pairing/confirm:
+    post:
+      summary: Confirm device pairing
+      responses:
+        '200':
+          description: Device token issued
+  /sync/bootstrap:
+    get:
+      summary: Bootstrap local replica
+      responses:
+        '200':
+          description: Bootstrap payload
+  /sync/pull:
+    get:
+      summary: Pull sync events since cursor
+      parameters:
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sync events
+  /sync/push:
+    post:
+      summary: Push local client operations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Push accepted
+  /tasks:
+    post:
+      summary: Create task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input, mode, source]
+              properties:
+                input:
+                  type: string
+                mode:
+                  type: string
+                source:
+                  type: string
+                conversation_id:
+                  type: string
+      responses:
+        '201':
+          description: Task created
+    get:
+      summary: List tasks
+      responses:
+        '200':
+          description: Tasks
+  /tasks/{task_id}:
+    get:
+      summary: Get task
+      parameters:
+        - in: path
+          name: task_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task
+  /tasks/{task_id}/cancel:
+    post:
+      summary: Cancel task
+      parameters:
+        - in: path
+          name: task_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cancelled
+  /approvals:
+    get:
+      summary: List approvals
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Approvals
+  /approvals/{approval_id}/decision:
+    post:
+      summary: Submit approval decision
+      parameters:
+        - in: path
+          name: approval_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  enum: [allow_once, deny, allow_rule]
+                user_note:
+                  type: string
+                scope_override:
+                  type: object
+      responses:
+        '200':
+          description: Decision accepted
+  /memory/search:
+    post:
+      summary: Semantic memory search
+      responses:
+        '200':
+          description: Search results
+  /memory/remember:
+    post:
+      summary: Store memory candidate
+      responses:
+        '201':
+          description: Memory stored
+  /agents:
+    get:
+      summary: List agents
+      responses:
+        '200':
+          description: Agents
+  /agents/register:
+    post:
+      summary: Register an agent
+      responses:
+        '201':
+          description: Registered
+  /agents/{agent_id}/heartbeat:
+    post:
+      summary: Agent heartbeat
+      parameters:
+        - in: path
+          name: agent_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Heartbeat accepted
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
