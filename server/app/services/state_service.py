@@ -85,6 +85,12 @@ class StateService:
             await db.commit()
         return task
 
+    async def get_task(self, task_id: str) -> TaskRecord | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM tasks WHERE id=?", (task_id,))).fetchone()
+        return TaskRecord.model_validate(dict(row)) if row else None
+
     async def list_tasks(self, limit: int = 100) -> list[TaskRecord]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -118,6 +124,7 @@ class StateService:
             calls = [dict(r) for r in await (await db.execute("SELECT * FROM tool_calls ORDER BY created_at DESC LIMIT 500")).fetchall()]
             for call in calls:
                 call["arguments"] = json.loads(call.pop("arguments_json"))
-                call["result"] = json.loads(call.pop("result_json")) if call.get("result_json") else None
+                raw_result = call.pop("result_json")
+                call["result"] = json.loads(raw_result) if raw_result else None
             cursor_row = await (await db.execute("SELECT COALESCE(MAX(id), 0) FROM audit_events")).fetchone()
         return {"tasks": tasks, "approvals": approvals, "tool_calls": calls, "cursor": str(cursor_row[0])}
