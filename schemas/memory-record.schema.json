@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://27pm.org/schemas/memory-record.schema.json",
+  "title": "monGARS Memory Record",
+  "type": "object",
+  "required": ["id", "scope", "kind", "content", "sensitivity", "confidence"],
+  "properties": {
+    "id": {"type": "string"},
+    "scope": {"type": "string"},
+    "kind": {"enum": ["preference", "project_fact", "decision", "correction", "summary", "artifact_note"]},
+    "content": {"type": "string"},
+    "summary": {"type": "string"},
+    "source_event_id": {"type": "string"},
+    "sensitivity": {"enum": ["public", "normal", "personal", "sensitive", "secret"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "metadata": {"type": "object"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

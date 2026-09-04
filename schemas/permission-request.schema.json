@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://27pm.org/schemas/permission-request.schema.json",
+  "title": "monGARS Permission Request",
+  "type": "object",
+  "required": ["id", "task_id", "action", "risk", "reason", "requested_by"],
+  "properties": {
+    "id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "requested_by": {"type": "string"},
+    "action": {"type": "string"},
+    "target": {"type": "string"},
+    "arguments": {"type": "object"},
+    "risk": {"enum": ["low", "medium", "high", "critical", "unknown"]},
+    "reason": {"type": "string"},
+    "diff": {"type": "string"},
+    "ttl_seconds": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

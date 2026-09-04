@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://27pm.org/schemas/event-envelope.schema.json",
+  "title": "monGARS Event Envelope",
+  "type": "object",
+  "required": ["id", "type", "trace_id", "timestamp", "payload", "schema_version"],
+  "properties": {
+    "id": {"type": "string"},
+    "type": {"type": "string"},
+    "trace_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "agent_id": {"type": "string"},
+    "producer": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "schema_version": {"type": "string"},
+    "payload": {"type": "object"}
+  },
+  "additionalProperties": false
+}

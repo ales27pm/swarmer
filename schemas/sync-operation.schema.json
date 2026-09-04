@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://27pm.org/schemas/sync-operation.schema.json",
+  "title": "monGARS Sync Operation",
+  "type": "object",
+  "required": ["id", "device_id", "op_type", "payload", "client_created_at"],
+  "properties": {
+    "id": {"type": "string"},
+    "device_id": {"type": "string"},
+    "op_type": {"type": "string"},
+    "payload": {"type": "object"},
+    "client_created_at": {"type": "string", "format": "date-time"},
+    "base_server_seq": {"type": "integer"}
+  },
+  "additionalProperties": false
+}

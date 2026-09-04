@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://27pm.org/schemas/agent-card.schema.json",
+  "title": "monGARS Agent Card",
+  "type": "object",
+  "required": ["id", "name", "version", "endpoint", "skills", "status"],
+  "properties": {
+    "id": {"type": "string"},
+    "name": {"type": "string"},
+    "description": {"type": "string"},
+    "version": {"type": "string"},
+    "endpoint": {"type": "string", "format": "uri"},
+    "model_id": {"type": "string"},
+    "status": {"enum": ["online", "offline", "degraded", "disabled"]},
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "risk"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "risk": {"enum": ["none", "low", "medium", "high", "critical"]},
+          "input_schema": {"type": "string"},
+          "output_schema": {"type": "string"}
+        }
+      }
+    },
+    "permissions_max": {"type": "array", "items": {"type": "string"}},
+    "heartbeat_interval_seconds": {"type": "integer", "minimum": 5}
+  }
+}

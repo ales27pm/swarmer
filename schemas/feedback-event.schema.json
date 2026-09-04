@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://27pm.org/schemas/feedback-event.schema.json",
+  "title": "monGARS Feedback Event",
+  "type": "object",
+  "required": ["id", "type", "created_at"],
+  "properties": {
+    "id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "agent_id": {"type": "string"},
+    "type": {"enum": ["explicit_rating", "correction", "task_outcome", "test_result", "permission_outcome", "model_output_quality"]},
+    "label": {"type": "string"},
+    "score": {"type": "number", "minimum": -1, "maximum": 1},
+    "notes": {"type": "string"},
+    "payload": {"type": "object"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}
