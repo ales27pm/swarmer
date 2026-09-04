@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant App as iPhone App
+  participant Local as SQLite Local
+  participant API as Ubuntu API
+  participant State as State Service
+
+  App->>API: /sync/bootstrap
+  API->>State: read snapshot
+  State->>API: snapshot + cursor
+  API->>App: bootstrap payload
+  App->>Local: upsert replica
+
+  App->>Local: user creates message pending
+  App->>API: /sync/push ops
+  API->>State: apply ops
+  State->>API: server seq
+  API->>App: ack
+  App->>Local: mark synced
+
+  API-->>App: websocket task.status
+  App->>Local: update replica

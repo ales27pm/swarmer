@@ -1,0 +1,19 @@
+flowchart TD
+  U[Utilisateur] --> APP[App iPhone Expo]
+  APP --> SQLITE[(SQLite local replica)]
+  APP --> BRIDGE[Native Capability Bridge]
+  APP --> API[Ubuntu API Gateway]
+  API --> ORCH[Orchestrator LLM]
+  ORCH --> STATE[State Service]
+  ORCH --> MEMORY[Memory Service]
+  ORCH --> GATE[Permission Gateway]
+  ORCH --> BUS[Message Board]
+  BUS --> WORKERS[Remote/Local Workers]
+  WORKERS --> GATE
+  GATE --> EXEC[Sandbox Executors]
+  STATE --> DB[(SQLite/Postgres)]
+  MEMORY --> VEC[(FAISS/Qdrant)]
+  GATE --> AUDIT[Audit Ledger]
+  WORKERS --> FEEDBACK[Feedback Service]
+  BRIDGE <--> PHONEBROKER[Phone Capability Broker]
+  PHONEBROKER <--> BUS

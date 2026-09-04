@@ -1,0 +1,25 @@
+sequenceDiagram
+  participant User
+  participant App as iPhone App
+  participant Orch as Orchestrator
+  participant Gate as Permission Gateway
+  participant Exec as Executor
+  participant Audit as Audit Ledger
+
+  User->>App: demande action
+  App->>Orch: create task
+  Orch->>Gate: evaluate tool_call
+  Gate->>App: approval.requested
+  App->>User: show approval card
+  User->>App: allow_once / deny
+  App->>Gate: decision
+  Gate->>Audit: record decision
+  alt allowed
+    Gate->>Exec: execute scoped action
+    Exec->>Gate: result
+    Gate->>Audit: record result
+    Gate->>Orch: result
+  else denied
+    Gate->>Orch: blocked/replan
+  end
+  Orch->>App: task update

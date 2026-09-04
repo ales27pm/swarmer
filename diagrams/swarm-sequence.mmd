@@ -1,0 +1,19 @@
+sequenceDiagram
+  participant Orch as Orchestrator
+  participant Reg as Agent Registry
+  participant Bus as Message Board
+  participant Agent as Code Worker
+  participant Gate as Permission Gateway
+
+  Agent->>Reg: register agent-card
+  Agent->>Reg: heartbeat
+  Orch->>Reg: list agents with code.inspect
+  Reg->>Orch: code-worker-01
+  Orch->>Bus: task.assigned
+  Agent->>Bus: consume task
+  Agent->>Bus: task.progress
+  Agent->>Gate: request file.write permission
+  Gate->>Bus: permission.requested
+  Bus->>Agent: permission.decided allow_once
+  Agent->>Bus: task.completed
+  Orch->>Bus: consume result

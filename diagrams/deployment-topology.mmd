@@ -1,0 +1,28 @@
+flowchart LR
+  subgraph Phone[iPhone]
+    App[Expo App]
+    Local[(SQLite Replica)]
+  end
+
+  subgraph Ubuntu[Ubuntu Main Machine]
+    API[FastAPI Gateway]
+    LLM[llama.cpp/Ollama]
+    Redis[(Redis Streams)]
+    DB[(SQLite/Postgres)]
+    Vec[(FAISS/Qdrant)]
+    Workers[Local Workers]
+  end
+
+  subgraph Other[Optional Remote Machines]
+    W1[Worker A]
+    W2[Worker B]
+  end
+
+  App <--> API
+  API <--> LLM
+  API <--> Redis
+  API <--> DB
+  API <--> Vec
+  Workers <--> Redis
+  W1 <--> Redis
+  W2 <--> Redis
