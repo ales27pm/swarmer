@@ -8,6 +8,7 @@ from app.models import HealthResponse, TaskCreate, TaskRecord
 from app.services.approval_gateway import ApprovalGateway
 from app.services.auth_service import AuthService
 from app.services.execution_engine import ExecutionEngine, ExecutionError
+from app.services.orchestrator_service import OrchestratorError, OrchestratorService
 from app.services.state_service import StateService
 from app.settings import get_settings
 
@@ -16,6 +17,7 @@ state = StateService(settings.db_path)
 auth = AuthService(settings.db_path)
 gateway = ApprovalGateway(settings.db_path)
 executor = ExecutionEngine(settings.db_path, settings.workspace_root)
+orchestrator = OrchestratorService(settings.llm_base_url, settings.orchestrator_model)
 websockets: set[WebSocket] = set()
 
 
@@ -49,7 +51,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="monGARS Control Plane", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="monGARS Control Plane", version="0.4.0", lifespan=lifespan)
 
 
 async def require_device(authorization: str | None = Header(default=None)) -> None:
@@ -96,40 +98,9 @@ async def run_tool_call(tool_call_id: str, task_id: str) -> dict:
     return result
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    return HealthResponse(status="ok", service="mongars-control-plane", version="0.3.0")
-
-
-@app.post("/pairing/code")
-async def pairing_code() -> dict:
-    return {"code": await auth.create_pairing_code(), "expires_in_seconds": 600}
-
-
-@app.post("/pairing/complete")
-async def pairing_complete(request: PairComplete) -> dict:
-    token = await auth.complete_pairing(request.code, request.device_id, request.name)
-    if not token:
-        raise HTTPException(status_code=400, detail="invalid or expired pairing code")
-    return {"token": token}
-
-
-@app.post("/tasks", response_model=TaskRecord, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_device)])
-async def create_task(request: TaskCreate) -> TaskRecord:
-    task = await state.create_task(TaskRecord.new(request))
-    await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
-    return task
-
-
-@app.get("/tasks", response_model=list[TaskRecord], dependencies=[Depends(require_device)])
-async def list_tasks(limit: int = 100) -> list[TaskRecord]:
-    if limit < 1 or limit > 500:
-        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
-    return await state.list_tasks(limit)
-
-
-@app.post("/tasks/{task_id}/tool-calls", dependencies=[Depends(require_device)])
-async def propose_tool_call(task_id: str, request: ToolProposal) -> dict:
+async def handle_tool_proposal(task_id: str, request: ToolProposal) -> dict:
+    if not await state.get_task(task_id):
+        raise HTTPException(status_code=404, detail="task not found")
     try:
         record = await executor.create_tool_call(
             task_id=task_id,
@@ -160,6 +131,82 @@ async def propose_tool_call(task_id: str, request: ToolProposal) -> dict:
         return record
 
     return await run_tool_call(record["id"], task_id)
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health() -> HealthResponse:
+    return HealthResponse(status="ok", service="mongars-control-plane", version="0.4.0")
+
+
+@app.post("/pairing/code")
+async def pairing_code() -> dict:
+    return {"code": await auth.create_pairing_code(), "expires_in_seconds": 600}
+
+
+@app.post("/pairing/complete")
+async def pairing_complete(request: PairComplete) -> dict:
+    token = await auth.complete_pairing(request.code, request.device_id, request.name)
+    if not token:
+        raise HTTPException(status_code=400, detail="invalid or expired pairing code")
+    return {"token": token}
+
+
+@app.post("/tasks", response_model=TaskRecord, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_device)])
+async def create_task(request: TaskCreate) -> TaskRecord:
+    task = await state.create_task(TaskRecord.new(request))
+    await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+    return task
+
+
+@app.get("/tasks", response_model=list[TaskRecord], dependencies=[Depends(require_device)])
+async def list_tasks(limit: int = 100) -> list[TaskRecord]:
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+    return await state.list_tasks(limit)
+
+
+@app.post("/tasks/{task_id}/plan", dependencies=[Depends(require_device)])
+async def plan_task(task_id: str) -> dict:
+    task = await state.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    await state.update_task_status(task_id, "planned")
+    await state.append_audit(
+        "orchestrator.requested", {"task_id": task_id, "model": settings.orchestrator_model}
+    )
+    try:
+        proposal = await orchestrator.plan(task.input, task.mode)
+    except OrchestratorError as exc:
+        await state.update_task_status(task_id, "failed")
+        await state.append_audit("orchestrator.failed", {"task_id": task_id, "error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    await state.append_audit(
+        "orchestrator.proposed",
+        {"task_id": task_id, "tool_name": proposal["tool_name"], "model": settings.orchestrator_model},
+    )
+    await broadcast({"type": "orchestrator.proposed", "payload": {"task_id": task_id, **proposal}})
+
+    if proposal["tool_name"] == "none":
+        updated = await state.update_task_status(task_id, "completed")
+        payload = {"task_id": task_id, "proposal": proposal, "task": updated.model_dump(mode="json") if updated else None}
+        await broadcast({"type": "task.updated", "payload": payload["task"]})
+        return payload
+
+    summary = proposal["summary"].strip() or f"Run {proposal['tool_name']}"
+    return await handle_tool_proposal(
+        task_id,
+        ToolProposal(
+            tool_name=proposal["tool_name"],
+            arguments=proposal["arguments"],
+            summary=summary,
+        ),
+    )
+
+
+@app.post("/tasks/{task_id}/tool-calls", dependencies=[Depends(require_device)])
+async def propose_tool_call(task_id: str, request: ToolProposal) -> dict:
+    return await handle_tool_proposal(task_id, request)
 
 
 @app.get("/tasks/{task_id}/tool-calls", dependencies=[Depends(require_device)])
@@ -218,7 +265,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     websockets.add(ws)
     try:
-        await ws.send_json({"type": "connected", "payload": {"version": "0.3.0"}})
+        await ws.send_json({"type": "connected", "payload": {"version": "0.4.0"}})
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
