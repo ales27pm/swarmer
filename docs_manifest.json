@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-09-04T14:17:52.743683+00:00",
+  "generated_at": "2026-09-04T19:05:00+00:00",
   "files": [
-    {"path":"ALL_DOCS_COMBINED.md","bytes":123342},
+    {"path":"ALL_DOCS_COMBINED.md","bytes":5142},
     {"path":"MASTER_SPEC.md","bytes":6432},
     {"path":"README.md","bytes":3384},
     {"path":"adrs/ADR-0001-local-first-ubuntu-source-truth.md","bytes":450},
