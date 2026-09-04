@@ -7,6 +7,18 @@ const TOKEN_KEY = "mongars.device_token";
 
 export type Task = { id: string; status: string; input: string };
 export type Approval = { id: string; task_id: string; action: string; summary: string; risk: string; status: string; created_at: string; decided_at?: string | null };
+export type ToolCall = {
+  id: string;
+  task_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  summary: string;
+  risk: string;
+  status: string;
+  approval_id?: string | null;
+  result?: unknown;
+  error?: string | null;
+};
 
 export async function getServerUrl() {
   return (await SecureStore.getItemAsync(SERVER_URL_KEY)) ?? "http://127.0.0.1:8710";
@@ -43,8 +55,12 @@ export function createTask(input: string) {
   return request<Task>("/tasks", { method: "POST", body: JSON.stringify({ input, mode: "normal", source: "iphone" }) });
 }
 
+export function planTask(taskId: string) {
+  return request<ToolCall | { task_id: string; proposal: unknown; task: Task | null }>(`/tasks/${taskId}/plan`, { method: "POST" });
+}
+
 export async function bootstrapSync() {
-  const data = await request<{ tasks: any[]; approvals: any[]; cursor: string }>("/sync/bootstrap");
+  const data = await request<{ tasks: any[]; approvals: any[]; tool_calls?: any[]; cursor: string }>("/sync/bootstrap");
   await applyBootstrap(data);
   return data;
 }
@@ -54,8 +70,9 @@ export function listApprovals() {
 }
 
 export async function decideApproval(id: string, decision: "approve" | "deny") {
-  const result = await request<Approval>(`/approvals/${id}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
-  await upsertEvent("approval.decided", result);
+  const result = await request<Approval | { approval: Approval; tool_call: ToolCall }>(`/approvals/${id}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+  const approval = "approval" in result ? result.approval : result;
+  await upsertEvent("approval.decided", approval);
   return result;
 }
 
