@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8710
     db_path: Path = Path("./data/mongars.db")
+    workspace_root: Path = Path("./workspace")
     redis_url: str = "redis://127.0.0.1:6379/0"
     llm_base_url: str = "http://127.0.0.1:8711/v1"
 
