@@ -1,0 +1,72 @@
+version: 1
+capabilities:
+  - id: location.current
+    module: expo-location
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+    ttl_seconds: 300
+
+  - id: contacts.search
+    module: expo-contacts
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+    fields_allowed: [name, phoneNumbers, emails]
+
+  - id: calendar.events.read
+    module: expo-calendar
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+    max_window_days: 31
+
+  - id: calendar.event.create
+    module: expo-calendar
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+
+  - id: photos.pick
+    module: expo-image-picker
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+    prefer_picker: true
+
+  - id: camera.capture
+    module: expo-camera
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+
+  - id: audio.record
+    module: expo-audio
+    risk: personal
+    requires_ios_permission: true
+    requires_user_approval: true
+
+  - id: notification.schedule
+    module: expo-notifications
+    risk: low
+    requires_ios_permission: true
+    requires_user_approval: false
+
+  - id: phone.call.prepare
+    module: linking_or_custom_native
+    risk: external_action
+    requires_ios_permission: false
+    requires_user_approval: true
+    notes: "Prepare only; user initiates call."
+
+  - id: message.sms.compose
+    module: custom_native_messageui
+    risk: external_action
+    requires_ios_permission: false
+    requires_user_approval: true
+    notes: "Compose only; user taps send in iOS UI."
+
+  - id: email.compose
+    module: mailto_or_custom_composer
+    risk: external_action
+    requires_user_approval: true

@@ -1,0 +1,31 @@
+version: 1
+backend: redis_streams
+redis_url: redis://127.0.0.1:6379/0
+
+streams:
+  tasks_inbox: tasks.inbox
+  tasks_status: tasks.status
+  permission_requests: permission.requests
+  permission_decisions: permission.decisions
+  agents_heartbeat: agents.heartbeat
+  memory_events: memory.events
+  iphone_requests: iphone.requests
+  iphone_results: iphone.results
+  feedback_events: feedback.events
+  audit_events: audit.events
+  errors_deadletter: errors.deadletter
+
+consumer_groups:
+  orchestrator: cg.orchestrator
+  workers: cg.workers
+  mobile_push: cg.mobile_push
+  feedback: cg.feedback
+  audit: cg.audit
+
+retention:
+  max_len_approx: 100000
+  deadletter_max_len: 10000
+
+future:
+  backend: nats_jetstream
+  reason: "Better distributed durability and multi-machine swarm scaling."

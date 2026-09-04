@@ -1,0 +1,21 @@
+version: 1
+mobile:
+  commands:
+    - npm run typecheck
+    - npm run lint
+    - npm test -- --runInBand
+    - npx expo-doctor
+backend:
+  commands:
+    - ruff format --check .
+    - ruff check .
+    - mypy services
+    - pytest -q
+    - bandit -r services
+schemas:
+  commands:
+    - python scripts/validate_schemas.py
+    - python scripts/validate_openapi.py
+release:
+  require_all_pass: true
+  github_actions_required: false

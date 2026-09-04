@@ -1,0 +1,43 @@
+version: 1
+feedback_service:
+  enabled: true
+  collect_explicit: true
+  collect_implicit: true
+
+signals:
+  explicit:
+    - thumbs_up
+    - thumbs_down
+    - correction
+    - user_note
+    - approval_decision
+  implicit:
+    - task_completed
+    - task_failed
+    - tests_passed
+    - tests_failed
+    - invalid_json
+    - refusal_normalized
+    - retry_count
+    - latency_ms
+    - patch_reverted
+
+dataset_exports:
+  eval_jsonl:
+    enabled: true
+    path: ./data/datasets/eval
+  preference_jsonl:
+    enabled: true
+    path: ./data/datasets/preferences
+  tool_call_jsonl:
+    enabled: true
+    path: ./data/datasets/tool-calls
+
+training_policy:
+  auto_train: false
+  require_manual_review: true
+  require_pii_redaction: true
+  min_examples_lora_experiment: 500
+  recommended_examples_lora_stable: 2000
+  require_eval_before_after: true
+  require_rollback_model: true

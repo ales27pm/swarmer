@@ -1,0 +1,38 @@
+version: 1
+service: memory-service
+
+embedding_model: multilingual_e5_small
+embedding_prefixes:
+  query: "query: "
+  passage: "passage: "
+
+vector_store:
+  mvp: faiss
+  path: ./data/vector/faiss.index
+  metadata_db_table: memory_items
+  future: qdrant
+
+chunking:
+  default_chunk_tokens: 450
+  overlap_tokens: 80
+  max_context_pack_tokens: 3500
+
+scopes:
+  - user:ales27pm
+  - project:27pm
+  - project:mongars
+  - project:27pm-crm
+  - project:maisonsturner
+  - system:permissions
+
+write_policy:
+  auto_store_project_facts: true
+  ask_for_personal_sensitive: true
+  reject_below_confidence: 0.65
+  dedupe_similarity_threshold: 0.92
+
+retrieval:
+  top_k: 8
+  min_score: 0.55
+  rerank: false
+  include_sources: true

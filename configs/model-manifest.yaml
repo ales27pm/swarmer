@@ -1,0 +1,65 @@
+version: 1
+profiles:
+  ubuntu-vram-8gb:
+    max_active_llm_models: 2
+    default_context_tokens: 8192
+    notes: "Keep orchestrator active; load workers on demand."
+
+models:
+  - id: hermes3_3b_abliterated_orchestrator
+    hf: mradermacher/Hermes-3-Llama-3.2-3B-abliterated-GGUF
+    quant: Q4_K_M
+    role: orchestrator
+    abliterated: true
+    runtime: llama_cpp
+    endpoint: http://127.0.0.1:8711/v1
+    context_tokens: 8192
+    active_by_default: true
+    allowed_outputs:
+      - final_answer
+      - plan
+      - tool_call
+      - permission_request
+      - memory_write_candidate
+      - error_report
+
+  - id: g9v3_3b_heretic_abliterated_worker
+    hf: mradermacher/G9v3-3B-Heretic-Abliterated-GGUF
+    quant: Q4_K_M
+    role: fast_worker
+    abliterated: true
+    runtime: llama_cpp
+    endpoint: http://127.0.0.1:8712/v1
+    context_tokens: 8192
+    active_by_default: false
+
+  - id: dolphin3_llama32_3b_fallback
+    hf: bartowski/Dolphin3.0-Llama3.2-3B-GGUF
+    quant: Q4_K_M
+    role: chat_fallback
+    abliterated: false
+    runtime: llama_cpp
+    endpoint: http://127.0.0.1:8713/v1
+    context_tokens: 8192
+    active_by_default: false
+
+  - id: plano_orchestrator_4b_reference
+    hf: katanemo/Plano-Orchestrator-4B
+    quant: none
+    role: orchestration_benchmark
+    abliterated: false
+    runtime: transformers_or_gguf
+    active_by_default: false
+    notes: "Reference model for routing quality; not part of full-abliterated mode."
+
+embeddings:
+  default:
+    id: multilingual_e5_small
+    hf: intfloat/multilingual-e5-small
+    dims: 384
+    runtime: sentence_transformers
+  quality:
+    id: bge_m3
+    hf: BAAI/bge-m3
+    runtime: FlagEmbedding_or_sentence_transformers
+    notes: "Better multilingual and long document retrieval; heavier than e5-small."

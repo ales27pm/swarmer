@@ -1,0 +1,91 @@
+version: 1
+mode: strict_actions
+principle: "models_propose_gateway_decides_executors_act"
+
+default_decision: ask
+
+action_classes:
+  read_safe:
+    default: allow
+  write_project:
+    default: ask
+  execute_safe:
+    default: ask
+  network_read:
+    default: ask
+  network_write:
+    default: ask
+  device_sensitive:
+    default: ask
+  destructive:
+    default: deny
+  credential:
+    default: deny
+
+protected_paths:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/*secret*"
+  - "**/*token*"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/id_rsa"
+  - "**/id_ed25519"
+
+allowed_project_roots:
+  - /home/ales27pm/projects
+  - /home/ales27pm/27pm
+  - /home/ales27pm/mongars
+
+rules:
+  - id: allow-read-project-files
+    description: Allow reading files under approved project roots unless protected.
+    match:
+      action: file.read
+      path_prefix_any: ${allowed_project_roots}
+    decision: allow
+
+  - id: deny-protected-paths
+    description: Never expose secrets to model/tool output.
+    match:
+      path_glob_any: ${protected_paths}
+    decision: deny
+
+  - id: ask-write-project-files
+    description: Writing project files requires approval.
+    match:
+      action_any: [file.write, file.patch, file.delete]
+      path_prefix_any: ${allowed_project_roots}
+    decision: ask
+    approval:
+      ttl_seconds: 300
+      require_diff: true
+
+  - id: ask-run-tests
+    description: Running tests can be preapproved later per project.
+    match:
+      action: shell.run
+      command_regex: "^(npm test|npm run check|pytest|ruff check|mypy|npx expo-doctor)"
+    decision: ask
+
+  - id: deny-dangerous-shell
+    description: Block destructive shell commands by default.
+    match:
+      action: shell.run
+      command_regex: "(rm -rf /|mkfs|dd if=|shutdown|reboot|chmod -R 777|chown -R)"
+    decision: deny
+
+  - id: ask-network-write
+    match:
+      action_any: [email.send, github.push, http.post_external]
+    decision: ask
+
+  - id: ask-iphone-sensitive
+    match:
+      action_prefix: iphone.
+    decision: ask
+
+refusal_normalizer:
+  enabled: true
+  output_type: permission_request
+  never_execute_without_gateway: true

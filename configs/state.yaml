@@ -1,0 +1,41 @@
+version: 1
+source_of_truth: ubuntu
+
+server_db:
+  driver: sqlite
+  url: sqlite+aiosqlite:///./data/mongars.db
+  wal: true
+  migrate_to_postgres_when:
+    - more_than_one_writer_service
+    - more_than_100k_events
+    - remote_workers_need_low_latency_state
+
+iphone_replica:
+  driver: sqlite
+  tables:
+    - conversations
+    - messages
+    - tasks
+    - approvals
+    - sync_outbox
+    - settings
+    - capability_cache
+
+sync:
+  bootstrap_endpoint: /sync/bootstrap
+  pull_endpoint: /sync/pull
+  push_endpoint: /sync/push
+  websocket: /ws
+  conflict_policy:
+    server_wins:
+      - task.status
+      - approval.status
+      - audit_events
+      - agent.status
+    client_wins:
+      - ui.preferences
+      - draft.messages
+    merge:
+      - messages
+      - feedback_events
+      - memory_corrections
