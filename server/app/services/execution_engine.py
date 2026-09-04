@@ -19,6 +19,13 @@ class ExecutionEngine:
     this service validates paths/arguments and performs the approved operation.
     """
 
+    SUPPORTED_TOOLS = {
+        "workspace.list_dir",
+        "workspace.read_text",
+        "workspace.write_text",
+        "process.run",
+    }
+
     def __init__(self, db_path: Path, workspace_root: Path) -> None:
         self.db_path = db_path
         self.workspace_root = workspace_root.resolve()
@@ -29,16 +36,22 @@ class ExecutionEngine:
             raise ExecutionError("path escapes configured workspace")
         return candidate
 
+    def validate_tool(self, tool_name: str) -> None:
+        if tool_name not in self.SUPPORTED_TOOLS:
+            raise ExecutionError(f"unknown tool: {tool_name}")
+
     def requires_approval(self, tool_name: str) -> bool:
+        self.validate_tool(tool_name)
         return tool_name in {"workspace.write_text", "process.run"}
 
     def default_risk(self, tool_name: str) -> str:
+        self.validate_tool(tool_name)
         return {
             "workspace.list_dir": "low",
             "workspace.read_text": "low",
             "workspace.write_text": "medium",
             "process.run": "high",
-        }.get(tool_name, "high")
+        }[tool_name]
 
     async def create_tool_call(
         self,
@@ -51,6 +64,7 @@ class ExecutionEngine:
         from datetime import UTC, datetime
         from uuid import uuid4
 
+        self.validate_tool(tool_name)
         now = datetime.now(UTC).isoformat()
         record = {
             "id": f"call_{uuid4().hex}",
@@ -89,6 +103,10 @@ class ExecutionEngine:
                 (approval_id, tool_call_id),
             )
             await db.commit()
+
+    async def mark_denied(self, tool_call_id: str) -> dict[str, Any] | None:
+        await self._set_status(tool_call_id, "denied")
+        return await self.get(tool_call_id)
 
     async def get_by_approval(self, approval_id: str) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -141,6 +159,8 @@ class ExecutionEngine:
         return updated
 
     async def _dispatch(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.validate_tool(tool_name)
+
         if tool_name == "workspace.list_dir":
             path = self._resolve_workspace_path(str(arguments.get("path", ".")))
             if not path.is_dir():
@@ -148,6 +168,8 @@ class ExecutionEngine:
             return {"entries": sorted(p.name for p in path.iterdir())[:1000]}
 
         if tool_name == "workspace.read_text":
+            if "path" not in arguments:
+                raise ExecutionError("path is required")
             path = self._resolve_workspace_path(str(arguments["path"]))
             if not path.is_file():
                 raise ExecutionError("file not found")
@@ -155,41 +177,43 @@ class ExecutionEngine:
             return {"text": text[:131072], "truncated": len(text) > 131072}
 
         if tool_name == "workspace.write_text":
+            if "path" not in arguments:
+                raise ExecutionError("path is required")
             path = self._resolve_workspace_path(str(arguments["path"]))
             path.parent.mkdir(parents=True, exist_ok=True)
             content = str(arguments.get("content", ""))
             if len(content.encode("utf-8")) > 1_000_000:
                 raise ExecutionError("write exceeds 1 MB limit")
             path.write_text(content, encoding="utf-8")
-            return {"path": str(path.relative_to(self.workspace_root)), "bytes": len(content.encode("utf-8"))}
-
-        if tool_name == "process.run":
-            argv = arguments.get("argv")
-            if not isinstance(argv, list) or not argv or not all(isinstance(v, str) for v in argv):
-                raise ExecutionError("argv must be a non-empty string array")
-            if len(argv) > 64:
-                raise ExecutionError("argv too long")
-            cwd = self._resolve_workspace_path(str(arguments.get("cwd", ".")))
-            timeout = min(max(float(arguments.get("timeout_seconds", 15)), 0.1), 30.0)
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            except TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                raise ExecutionError("process timed out")
             return {
-                "returncode": proc.returncode,
-                "stdout": stdout.decode("utf-8", errors="replace")[:65536],
-                "stderr": stderr.decode("utf-8", errors="replace")[:65536],
+                "path": str(path.relative_to(self.workspace_root)),
+                "bytes": len(content.encode("utf-8")),
             }
 
-        raise ExecutionError(f"unknown tool: {tool_name}")
+        argv = arguments.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(v, str) for v in argv):
+            raise ExecutionError("argv must be a non-empty string array")
+        if len(argv) > 64:
+            raise ExecutionError("argv too long")
+        cwd = self._resolve_workspace_path(str(arguments.get("cwd", ".")))
+        timeout = min(max(float(arguments.get("timeout_seconds", 15)), 0.1), 30.0)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            raise ExecutionError("process timed out")
+        return {
+            "returncode": proc.returncode,
+            "stdout": stdout.decode("utf-8", errors="replace")[:65536],
+            "stderr": stderr.decode("utf-8", errors="replace")[:65536],
+        }
 
     async def _set_status(self, tool_call_id: str, status: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
