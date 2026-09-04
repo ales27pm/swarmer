@@ -1,0 +1,39 @@
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# JS / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+mobile/.env*
+mobile/ios/
+mobile/android/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+server/.env*
+
+# Runtime state / secrets
+data/
+server/data/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+
+# Models
+models/**/*.gguf
+models/**/*.safetensors
+models/**/*.bin
+models/**/*.onnx
+models/**/*.mlmodelc

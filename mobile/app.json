@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "monGARS Swarm",
+    "slug": "mongars-swarm",
+    "scheme": "mongars",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-sqlite"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "org.27pm.mongars"
+    },
+    "android": {
+      "package": "org.27pm.mongars"
+    },
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
