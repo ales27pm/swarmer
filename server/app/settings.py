@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     workspace_root: Path = Path("./workspace")
     redis_url: str = "redis://127.0.0.1:6379/0"
     llm_base_url: str = "http://127.0.0.1:8711/v1"
+    orchestrator_model: str = "Hermes-3-Llama-3.2-3B-abliterated"
 
 
 @lru_cache
