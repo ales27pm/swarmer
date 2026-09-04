@@ -28,6 +28,22 @@ CREATE TABLE IF NOT EXISTS approvals (
     created_at TEXT NOT NULL,
     decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    status TEXT NOT NULL,
+    approval_id TEXT,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_task_id ON tool_calls(task_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_approval_id ON tool_calls(approval_id);
 CREATE TABLE IF NOT EXISTS pairing_codes (
     code TEXT PRIMARY KEY,
     expires_at TEXT NOT NULL
@@ -75,10 +91,33 @@ class StateService:
             rows = await (await db.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,))).fetchall()
         return [TaskRecord.model_validate(dict(row)) for row in rows]
 
+    async def update_task_status(self, task_id: str, status: str) -> TaskRecord | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (status, task_id),
+            )
+            await db.commit()
+            row = await (await db.execute("SELECT * FROM tasks WHERE id=?", (task_id,))).fetchone()
+        return TaskRecord.model_validate(dict(row)) if row else None
+
+    async def append_audit(self, event_type: str, payload: dict) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO audit_events (event_type, payload_json) VALUES (?, ?)",
+                (event_type, json.dumps(payload)),
+            )
+            await db.commit()
+
     async def bootstrap(self) -> dict:
         tasks = [t.model_dump(mode="json") for t in await self.list_tasks(500)]
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             approvals = [dict(r) for r in await (await db.execute("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 500")).fetchall()]
+            calls = [dict(r) for r in await (await db.execute("SELECT * FROM tool_calls ORDER BY created_at DESC LIMIT 500")).fetchall()]
+            for call in calls:
+                call["arguments"] = json.loads(call.pop("arguments_json"))
+                call["result"] = json.loads(call.pop("result_json")) if call.get("result_json") else None
             cursor_row = await (await db.execute("SELECT COALESCE(MAX(id), 0) FROM audit_events")).fetchone()
-        return {"tasks": tasks, "approvals": approvals, "cursor": str(cursor_row[0])}
+        return {"tasks": tasks, "approvals": approvals, "tool_calls": calls, "cursor": str(cursor_row[0])}
