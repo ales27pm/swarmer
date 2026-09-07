@@ -2,9 +2,11 @@
   "expo": {
     "name": "monGARS Swarm",
     "slug": "mongars-swarm",
+    "owner": "27pm",
     "scheme": "mongars",
     "version": "0.1.0",
-    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "orientation": "default",
     "userInterfaceStyle": "automatic",
     "plugins": [
       "expo-router",
@@ -13,13 +15,28 @@
     ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "org.27pm.mongars"
+      "bundleIdentifier": "org.27pm.mongars",
+      "buildNumber": "20260907202655",
+      "infoPlist": {
+        "CFBundleDevelopmentRegion": "fr",
+        "CFBundleLocalizations": [
+          "fr"
+        ],
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocalNetworkUsageDescription": "monGARS Swarm se connecte à votre serveur d’agents autorisé sur le réseau local."
+      }
     },
     "android": {
-      "package": "org.27pm.mongars"
+      "package": "org.twentysevenpm.mongars"
     },
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "09308b10-5d9d-4a55-a6ba-7973f634741a"
+      }
     }
   }
 }

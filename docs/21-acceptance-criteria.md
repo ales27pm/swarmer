@@ -1,93 +1,100 @@
 # 21 — Acceptance Criteria
 
-## MVP acceptance
+## Lecture des statuts
 
-### AC-001 — Pairing
+- **Couvert localement**: preuve automatisée sur le checkout actuel.
+- **Partiel**: contrat ou composants présents, mais frontière réelle non exercée.
+- **Roadmap**: non livré; aucune réussite ne doit être annoncée.
 
-Given Ubuntu API is running  
-When the iPhone app enters a valid pairing code  
-Then the device token is saved securely  
-And bootstrap sync succeeds.
+## Slice sécurisé `0.7`
 
-### AC-002 — Chat task
+### AC-001 — Appairage — Couvert localement, device partiel
 
-Given the device is paired  
-When the user sends a command  
-Then a task is created on Ubuntu  
-And the app receives task status updates live.
+Un code ne peut être émis que sur loopback avec le secret opérateur. Il est
+unique, expirant, limité en tentatives et consommé une fois. Le jeton candidat est
+lié à l'origine, au `device_id` et au `pairing_id`, stocké seulement sous forme de
+digest côté serveur et limité au bootstrap/finalize avant bascule. L'ancien jeton
+reste valide jusqu'au stockage durable du candidat et à sa première requête de
+ressource; une reprise SecureStore couvre réponse perdue, écriture active échouée
+et expiration du candidat. Le client refuse le HTTP distant et ne migre jamais une
+ancienne paire URL/jeton séparée. Le parcours sur iPhone physique reste à exercer.
 
-### AC-003 — State source of truth
+### AC-002 — Tâche Chat — Couvert localement, modèle live partiel
 
-Given a task status changes on Ubuntu  
-When the iPhone reconnects  
-Then the iPhone replica updates to Ubuntu's status.
+Un appareil authentifié peut créer une conversation et une tâche. Une réponse
+modèle sans outil reste `planned` et `proposal_only`; elle ne devient pas
+`completed`. Le modèle local réel reste à qualifier.
 
-### AC-004 — Offline outbox
+### AC-003 — Source de vérité — Partiel
 
-Given the iPhone is offline  
-When the user sends a message  
-Then the message is stored in outbox  
-And is pushed when connection returns.
+Ubuntu contrôle les statuts. Le bootstrap REST écrit tâches, approbations et
+curseur dans le cache SQLite, dont le wrapper possède une lecture locale des
+approbations testée avec la frontière SQLite simulée. Les écrans restent alimentés
+par REST et offrent un rafraîchissement explicite. La base native sur device, la
+lecture UI offline et la reconnexion WebSocket mobile ne sont pas exercées.
 
-### AC-005 — Orchestrator JSON
+### AC-004 — Outbox offline — Roadmap
 
-Given an input task  
-When the orchestrator responds  
-Then response validates against schema  
-Or is retried/blocked without execution.
+L'envoi offline et son replay ne sont pas implémentés dans ce slice.
 
-### AC-006 — Permission request
+### AC-005 — Proposition orchestrateur — Couvert localement
 
-Given an agent proposes a file write  
-When Gateway evaluates it  
-Then an approval is created  
-And the iPhone shows the approval card.
+Le parseur exige un objet JSON avec `tool_name`, `arguments` et `summary`; un outil
+inconnu ou des arguments invalides sont refusés avant persistance/exécution.
 
-### AC-007 — Approval allow once
+### AC-006 — Permission sensible — Couvert localement
 
-Given an approval is pending  
-When the user allows once  
-Then exactly that action executes  
-And audit log records the decision.
+Un write ou `process.run` crée atomiquement appel, approbation et transition de
+tâche. L'approbation est liée à l'identifiant, l'outil et les arguments exacts;
+l'interface montre une cible/commande expurgée et refuse une liaison invalide. Il
+n'existe aucune route publique pour créer une approbation orpheline.
 
-### AC-008 — Approval deny
+### AC-007 — Autoriser une fois — Couvert localement
 
-Given an approval is pending  
-When the user denies  
-Then no executor action happens  
-And the task status becomes blocked or replanned.
+La décision compare atomiquement approbation, appel et tâche. Une seule décision
+gagne; tout replay reçoit `409` et ne répète pas l'exécution.
 
-### AC-009 — Memory search
+Une exécution abandonnée après revendication est réconciliée après redémarrage en
+échec à résultat incertain. Un appel approuvé mais pas encore revendiqué est
+réconcilié comme non démarré. Aucun des deux n'est rejoué automatiquement.
 
-Given memory contains project facts  
-When a related task starts  
-Then Memory Service returns relevant context  
-And the task log records memory ids used.
+### AC-008 — Refus et annulation — Couvert localement
 
-### AC-010 — iPhone capability request
+Un refus bloque l'appel. Une annulation invalide les appels et approbations en
+attente; une tâche terminale ne peut pas être ressuscitée par une proposition.
 
-Given an agent requests current location  
-When the user approves on iPhone  
-Then the iPhone returns a minimal location result  
-And the result TTL is enforced.
+### AC-009 — Mémoire — Couvert localement pour CRUD lexical
 
-### AC-011 — Feedback event
+Création, lecture, recherche lexicale, épinglage et suppression sont disponibles.
+Injection automatique de contexte vectoriel et traçage d'embeddings restent
+roadmap.
 
-Given a task completes  
-When the user rates it  
-Then a feedback event is stored  
-And can be exported to eval JSONL.
+### AC-010 — Capacité iPhone — Roadmap
 
-### AC-012 — Local checks
+Location, contacts, caméra et autres brokers natifs ne sont pas inclus et aucune
+collecte de capteur n'est revendiquée.
 
-Given a release candidate  
-When local check script runs  
-Then mobile/backend/schema tests pass.
+### AC-011 — Feedback — Couvert localement, export roadmap
 
-## Done means
+Un appareil peut enregistrer un feedback relié à une tâche ou un agent existant.
+L'export de dataset n'est pas livré.
 
-- No direct model execution bypass.
-- No DB writes outside State Service.
-- No iPhone data access outside Capability Broker.
-- Every sensitive action has approval/audit.
-- Every core flow has at least one automated test.
+### AC-012 — Checks locaux — Couvert localement
+
+`./scripts/check.sh` vérifie les prérequis puis exécute typage, lint, tests,
+Expo Doctor, Ruff, mypy et Bandit. Cela ne remplace pas l'exécution Bubblewrap
+Ubuntu, le modèle live ou le build/install/launch iPhone.
+
+## Définition de terminé
+
+Le slice source peut être déclaré validé lorsque les checks locaux et le contrat
+OpenAPI passent. Une release opérationnelle exige encore:
+
+- exécution de confinement Bubblewrap réelle sur l'hôte Ubuntu cible;
+- endpoint modèle live et résultats d'exécuteur observés;
+- terminaison TLS privée vérifiée;
+- build, signature, installation, lancement et parcours sur iPhone physique;
+- tests de reconnexion, restauration et persistance.
+
+Tant que ces couches ne sont pas prouvées, le statut reste localement validé et
+non « production ready ».

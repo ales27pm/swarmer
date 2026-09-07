@@ -1,54 +1,129 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button, RefreshControl, ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { useRouter } from "expo-router";
+
 import { ScreenShell } from "@/components/screen-shell";
-import { Approval, bootstrapSync, decideApproval, listApprovals } from "@/lib/api/client";
+import {
+  ActionButton,
+  ApprovalDecisionCard,
+  COLORS,
+  EmptyState,
+  ErrorBanner,
+  useAccessibilityAnnouncement,
+  useApprovalDecisionLocks,
+} from "@/components/swarm-ui";
+import { listApprovals, type Approval } from "@/lib/api/client";
+import {
+  approvalDecisionError,
+  submitApprovalDecision,
+} from "@/lib/approval-decision";
 
 export default function ApprovalsScreen() {
+  const router = useRouter();
   const [items, setItems] = useState<Approval[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [deciding, setDeciding] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [decidedTaskId, setDecidedTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { lockedApprovalIds, lockApproval, reconcileApprovals } =
+    useApprovalDecisionLocks();
+  useAccessibilityAnnouncement(notice);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (clearError = true) => {
     setRefreshing(true);
-    setError(null);
+    if (clearError) setError(null);
     try {
-      await bootstrapSync();
-      setItems(await listApprovals());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const approvals = await listApprovals();
+      setItems(approvals);
+      reconcileApprovals(approvals);
+      return null;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(message);
+      return message;
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [reconcileApprovals]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void (async () => {
+      await refresh(false);
+    })();
+  }, [refresh]);
 
-  const decide = async (id: string, decision: "approve" | "deny") => {
-    try {
-      await decideApproval(id, decision);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
+  async function decide(id: string, decision: "approve" | "deny") {
+    if (deciding) return;
+    setDeciding(`${id}:${decision}`);
+    setError(null);
+    setNotice(null);
+    setDecidedTaskId(null);
+    const outcome = await submitApprovalDecision(id, decision, lockApproval);
+    setNotice(outcome.notice);
+    setDecidedTaskId(outcome.taskId);
+    const refreshError = await refresh(false);
+    setError(
+      approvalDecisionError(outcome, refreshError, {
+        refreshFailure: "Impossible d’actualiser l’état authentifié",
+        refreshed: "La liste a été actualisée.",
+      }),
+    );
+    setDeciding(null);
+  }
 
   return (
-    <ScreenShell title="Approvals">
-      <ScrollView contentInsetAdjustmentBehavior="automatic" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />} contentContainerStyle={{ gap: 14 }}>
-        {error ? <Text selectable>{error}</Text> : null}
-        {!items.length && !refreshing ? <Text selectable>Aucune permission en attente.</Text> : null}
+    <ScreenShell
+      title="Accords"
+      subtitle="Chaque accord est à usage unique. Une seconde décision est refusée par le serveur."
+      onRefresh={() => void refresh()}
+      refreshing={refreshing}
+      testID="approvals-screen"
+    >
+      <ErrorBanner message={error} />
+      <ActionButton
+        busy={refreshing}
+        label="Actualiser les accords"
+        onPress={() => void refresh()}
+        testID="refresh-approvals-button"
+      />
+      {notice ? (
+        <Text accessibilityLiveRegion="polite" selectable style={{ color: COLORS.accent }}>
+          {notice}
+        </Text>
+      ) : null}
+      {decidedTaskId ? (
+        <ActionButton
+          label="Voir le résultat et les preuves"
+          onPress={() =>
+            router.push({ pathname: "/task/[id]", params: { id: decidedTaskId } })
+          }
+          testID="decided-task-button"
+        />
+      ) : null}
+      {!items.length && !refreshing && !error ? (
+        <EmptyState
+          title="Aucun accord en attente"
+          subtitle="Les écritures et processus sensibles apparaîtront ici avec l’action et son risque exacts."
+        />
+      ) : null}
+      <View style={{ gap: 12 }} testID="approvals-list">
         {items.map((item) => (
-          <View key={item.id} style={{ gap: 8, padding: 14, borderWidth: 1, borderRadius: 14, borderCurve: "continuous" }}>
-            <Text selectable style={{ fontWeight: "700" }}>{item.action}</Text>
-            <Text selectable>{item.summary}</Text>
-            <Text selectable>Risque: {item.risk}</Text>
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Button title="Autoriser" onPress={() => void decide(item.id, "approve")} />
-              <Button title="Refuser" onPress={() => void decide(item.id, "deny")} />
-            </View>
-          </View>
+          <ApprovalDecisionCard
+            key={item.id}
+            allowTestID={`allow-button-${item.id}`}
+            approval={item}
+            busy={deciding}
+            cardTestID={`approval-card-${item.id}`}
+            decisionLocked={lockedApprovalIds.has(item.id)}
+            denyTestID={`deny-button-${item.id}`}
+            onDecision={(decision) => void decide(item.id, decision)}
+            onOpenTask={() =>
+              router.push({ pathname: "/task/[id]", params: { id: item.task_id } })
+            }
+          />
         ))}
-      </ScrollView>
+      </View>
     </ScreenShell>
   );
 }

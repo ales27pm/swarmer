@@ -1,16 +1,49 @@
 import type { PropsWithChildren } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { RefreshControl, ScrollView, Text, View } from "react-native";
 
-export function ScreenShell({ title, children }: PropsWithChildren<{ title: string }>) {
+import { COLORS } from "@/components/swarm-ui";
+
+export function ScreenShell({
+  title,
+  subtitle,
+  children,
+  onRefresh,
+  refreshing = false,
+  testID,
+}: PropsWithChildren<{
+  title: string;
+  subtitle?: string;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  testID?: string;
+}>) {
   return (
     <ScrollView
+      accessibilityLanguage="fr-FR"
+      style={{ backgroundColor: COLORS.background }}
+      testID={testID}
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ padding: 20, gap: 16 }}
+      contentContainerStyle={{ gap: 16, padding: 16, paddingBottom: 40 }}
+      keyboardShouldPersistTaps="handled"
+      refreshControl={
+        onRefresh ? (
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={COLORS.accent}
+          />
+        ) : undefined
+      }
     >
       <View style={{ gap: 6 }}>
-        <Text selectable style={{ fontSize: 28, fontWeight: "700" }}>
+        <Text accessibilityRole="header" selectable style={{ color: COLORS.text, fontSize: 28, fontWeight: "800" }}>
           {title}
         </Text>
+        {subtitle ? (
+          <Text selectable style={{ color: COLORS.muted, fontSize: 14, lineHeight: 20 }}>
+            {subtitle}
+          </Text>
+        ) : null}
       </View>
       {children}
     </ScrollView>

@@ -1,5 +1,10 @@
 # 20 — Roadmap and Backlog
 
+> **Statut:** checklist cible historique, pas inventaire des capacités livrées.
+> Pour le slice courant, utiliser `docs/21-acceptance-criteria.md`, l'OpenAPI et
+> les tests. Une case non cochée ici ne retire pas une capacité prouvée; une case
+> listée ne constitue jamais une preuve de runtime.
+
 ## Milestone 0 — Docs and repo scaffold
 
 - [ ] Create repo structure.

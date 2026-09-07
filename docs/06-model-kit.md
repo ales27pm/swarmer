@@ -1,5 +1,9 @@
 # 06 — Model Kit
 
+> **Statut:** le slice `0.6` appelle un endpoint local compatible OpenAI pour
+> produire une proposition validée. Le routeur multi-modèles, les workers
+> spécialisés et l'injection de mémoire sémantique restent roadmap.
+
 ## Objectif
 
 Choisir des modèles qui tournent localement, ne mangent pas toute la VRAM et se spécialisent par rôle.

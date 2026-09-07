@@ -1,5 +1,6 @@
 {
   "generated_at": "2026-09-04T19:05:00+00:00",
+  "status": "Historical source-pack inventory; byte counts are not a current integrity manifest.",
   "files": [
     {"path":"ALL_DOCS_COMBINED.md","bytes":5142},
     {"path":"MASTER_SPEC.md","bytes":6432},

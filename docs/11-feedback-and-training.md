@@ -1,5 +1,9 @@
 # 11 — Feedback and Training Pipeline
 
+> **Statut:** le slice `0.6` stocke le feedback explicite relié aux tâches ou
+> agents. Scoring automatique, export de dataset, eval pipeline et entraînement
+> restent roadmap.
+
 ## Objectif
 
 Accumuler de l'information utile assez vite pour améliorer le système, créer des evals, puis préparer un dataset d'entraînement/fine-tuning.

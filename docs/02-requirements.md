@@ -1,5 +1,9 @@
 # 02 — Requirements
 
+> **Statut:** exigences produit cibles. Elles ne prouvent pas leur livraison;
+> `docs/21-acceptance-criteria.md` distingue le slice `0.6` couvert, partiel et
+> roadmap.
+
 ## Functional Requirements
 
 ### FR-001 — Chat / command interface

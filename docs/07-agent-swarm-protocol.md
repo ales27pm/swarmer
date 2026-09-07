@@ -1,5 +1,9 @@
 # 07 — Agent Swarm Protocol
 
+> **Statut:** le slice `0.6` livre le registre et les heartbeats authentifiés.
+> Routage distant, message board durable, consumer groups et progression publiée
+> par les agents restent roadmap.
+
 ## Objectif
 
 Permettre à un orchestrateur de gérer des agents autonomes à distance via registry, message board et task lifecycle.

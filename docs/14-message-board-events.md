@@ -4,9 +4,32 @@
 
 Standardiser les messages entre orchestrateur, agents, gateway, state, memory, iPhone broker et feedback service.
 
-## Event envelope
+## État du runtime `0.6`
 
-Tous les événements suivent:
+Le serveur expose aujourd'hui un WebSocket authentifié par ticket à usage unique.
+L'app mobile ne s'y abonne pas encore: ses écrans utilisent REST et un
+rafraîchissement explicite. Le bus durable, Redis Streams, les consumer groups,
+le dead-letter stream et l'enveloppe riche ci-dessous restent roadmap.
+
+## Enveloppe WebSocket actuelle
+
+Le contrat exécutable `schemas/event-envelope.schema.json` contient seulement:
+
+```json
+{
+  "type": "task.updated",
+  "payload": {}
+}
+```
+
+Les types publiés par le serveur sont `connected`, `task.updated`,
+`tool.proposed`, `tool.updated`, `tool.completed`, `tool.failed`,
+`tool.execution_rejected`, `tool.outcome_uncertain`, `tool.denied`,
+`approval.requested`, `approval.decided` et `orchestrator.proposed`.
+
+## Enveloppe durable cible (roadmap)
+
+Le futur message board durable devra suivre:
 
 ```json
 {
@@ -22,7 +45,7 @@ Tous les événements suivent:
 }
 ```
 
-## Core event types
+## Types d'événements cibles (roadmap)
 
 ### Task
 
@@ -36,12 +59,16 @@ Tous les événements suivent:
 - `task.failed`
 - `task.cancelled`
 
-### Permission
+### Approval et exécution
 
-- `permission.requested`
-- `permission.decided`
-- `permission.expired`
-- `permission.denied`
+- `approval.requested`
+- `approval.decided`
+- `approval.expired`
+- `tool.denied`
+- `tool.completed`
+- `tool.failed`
+- `execution.not_started`
+- `execution.interrupted`
 
 ### Agent
 
@@ -75,7 +102,7 @@ Tous les événements suivent:
 
 - `audit.recorded`
 
-## Redis stream keys
+## Clés Redis cibles (roadmap)
 
 ```yaml
 streams:
@@ -91,7 +118,7 @@ streams:
   audit_events: audit.events
 ```
 
-## Consumer groups
+## Consumer groups cibles (roadmap)
 
 ```yaml
 consumer_groups:
@@ -102,17 +129,17 @@ consumer_groups:
   audit: cg.audit
 ```
 
-## Idempotency
+## Idempotency cible (roadmap)
 
 Chaque consumer doit stocker les event ids traités. Un event répété ne doit pas causer une double action.
 
-## Ordering
+## Ordering cible (roadmap)
 
 - `task_id` conserve l'ordre logique via `created_at` + `seq`.
 - Ne pas dépendre de l'ordre global de tous les streams.
 - Les décisions permission doivent inclure approval id et action hash.
 
-## Dead letter
+## Dead letter cible (roadmap)
 
 Events invalides vont dans:
 

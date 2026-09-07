@@ -1,5 +1,11 @@
 # 09 — Permission Gateway
 
+> **Statut:** la politique ci-dessous décrit la cible. Le slice `0.6` impose
+> actuellement une approbation ponctuelle à `workspace.write_text` et
+> `process.run`, autorise les outils de lecture validés, et ne livre ni
+> `Allow rule` ni édition de scope. Le comportement exécutable est défini dans
+> `server/app/services/execution_engine.py` et `configs/permissions.yaml`.
+
 ## Objectif
 
 Empêcher les dégâts sans transformer les modèles en policiers moralisateurs.
@@ -74,23 +80,46 @@ Important: le normalizer ne contourne pas la gateway. Il transforme le refus en 
 
 L'utilisateur doit voir:
 
-- agent;
-- action;
-- cible;
-- diff/commande;
+- le demandeur authentifié qui a initié la proposition;
+- le motif et l'identifiant de la règle `ask` réellement évaluée;
+- un résumé expurgé des données potentiellement touchées;
+- l'identifiant monotone de l'événement `approval.requested`;
+- action dérivée de l'appel, et non du résumé libre du modèle;
+- cible exacte ou commande expurgée;
+- identifiant d'appel et empreinte SHA-256 des arguments canoniques;
 - risque;
-- pourquoi;
-- données touchées;
-- durée;
+- expiration;
 - boutons.
+
+Le contenu d'un fichier à écrire et les arguments arbitraires potentiellement
+sensibles ne sont rendus ni dans la carte, ni dans les objets publics d'appel
+d'outil, ni dans les événements WebSocket. Leur longueur ou leur nombre peut
+être affiché, mais leurs valeurs exactes restent internes à la liaison et à
+l'exécuteur. L'empreinte lie quand même l'accord à ces valeurs exactes. Une
+liaison invalide désactive l'autorisation et est refusée à nouveau par le
+serveur.
+Le demandeur, la décision de politique et le résumé des données touchées sont
+figés avec la demande. Leur événement d'audit est inséré dans la même
+transaction SQLite que l'approbation, l'appel et la transition de tâche. Le
+texte libre du modèle est remplacé, pour tout appel d'outil, par un libellé
+serveur fixe affiché dans un bloc séparé; il ne peut donc ni recopier les
+arguments sensibles ni faire partie des preuves de consentement.
+
+L'app dérive également l'expiration de `expires_at`, réévalue l'échéance quand
+elle redevient active et désactive localement les décisions expirées. Le serveur
+reste l'autorité et conserve son refus `409` pour une décision expirée, rejouée
+ou dont le contexte de consentement ne correspond plus à l'audit. La transition
+d'expiration et son événement `approval.expired` sont commis dans la même
+transaction; une panne d'audit laisse l'approbation en attente pour une nouvelle
+matérialisation sûre.
 
 Actions:
 
 - Allow once;
 - Deny;
-- Allow rule;
-- Edit scope;
 - View details.
+
+`Allow rule` et l'édition de scope restent roadmap.
 
 ## Permission rules
 
@@ -130,6 +159,21 @@ Executors doivent limiter:
 - max output;
 - process tree kill.
 
+Dans le slice actuel, Bubblewrap monte tout le workspace configuré en
+lecture-écriture, sauf les chemins protégés masqués par des montages privés.
+`cwd` est uniquement le répertoire de départ du processus et ne constitue pas
+une limite de portée. La carte l'énonce explicitement avant consentement.
+
+Les symlinks et les alias par lien physique d'un chemin protégé doivent échouer
+fermés avant lecture, écriture ou lancement d'un processus.
+
+Les arguments de processus sont intégralement expurgés des objets `ToolCall`
+publics. Les sorties `stdout` et `stderr` sont conservées en interne comme preuve
+d'exécution, mais les réponses HTTP, le bootstrap et les événements WebSocket
+n'en exposent que la taille. Une erreur de persistance après dispatch est
+annoncée comme `tool.outcome_uncertain` avec `409`; elle ne devient jamais une
+fausse réussite ni une invitation à rejouer l'accord consommé.
+
 ## Audit
 
 Chaque demande et décision:
@@ -147,6 +191,14 @@ Chaque demande et décision:
   "hash": "..."
 }
 ```
+
+Dans le slice `0.6`, `audit_id` exposé sur l'approbation désigne directement
+l'identifiant entier de son événement durable `approval.requested`; il ne s'agit
+ni d'un texte du modèle ni d'un identifiant synthétique de l'interface.
+L'événement de décision est écrit dans la même transaction que la consommation
+de l'approbation; un refus y ajoute aussi `tool.denied`. Les événements terminaux
+`tool.completed` et `tool.failed` sont écrits dans la même transaction que
+l'état terminal durable correspondant.
 
 ## Anti-bullshit rules
 

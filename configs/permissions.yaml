@@ -22,6 +22,32 @@ action_classes:
   credential:
     default: deny
 
+# Authoritative executable decisions for the currently supported tool surface.
+# The broader action rules below document matching policy for future adapters.
+tool_rules:
+  workspace.list_dir:
+    id: allow-workspace-list
+    description: Listing a validated non-protected workspace directory is read-only.
+    decision: allow
+    risk: low
+  workspace.read_text:
+    id: allow-workspace-read
+    description: Reading a validated non-protected workspace file is read-only.
+    decision: allow
+    risk: low
+  workspace.write_text:
+    id: ask-workspace-write
+    description: Writing workspace file content requires explicit one-use approval.
+    decision: ask
+    risk: medium
+    approval_ttl_seconds: 300
+  process.run:
+    id: ask-sandboxed-process
+    description: Running a sandboxed process can modify workspace files and requires explicit one-use approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 300
+
 protected_paths:
   - "**/.env"
   - "**/.env.*"
@@ -31,6 +57,30 @@ protected_paths:
   - "**/*.key"
   - "**/id_rsa"
   - "**/id_ed25519"
+  - "**/.git/config"
+  - "**/.git-credentials"
+  - "**/.npmrc"
+  - "**/.pypirc"
+
+execution:
+  backend: bubblewrap
+  binary: /usr/bin/bwrap
+  network: deny
+  max_timeout_seconds: 30
+  max_output_bytes: 65536
+  max_memory_bytes: 1073741824
+  max_processes: 64
+  max_file_bytes: 16777216
+  max_open_files: 256
+  allowed_commands:
+    - git
+    - mypy
+    - node
+    - npm
+    - npx
+    - python3
+    - pytest
+    - ruff
 
 allowed_project_roots:
   - /home/ales27pm/projects
@@ -51,8 +101,8 @@ rules:
       path_glob_any: ${protected_paths}
     decision: deny
 
-  - id: ask-write-project-files
-    description: Writing project files requires approval.
+  - id: ask-workspace-write
+    description: Writing workspace file content requires explicit one-use approval.
     match:
       action_any: [file.write, file.patch, file.delete]
       path_prefix_any: ${allowed_project_roots}
@@ -61,19 +111,18 @@ rules:
       ttl_seconds: 300
       require_diff: true
 
-  - id: ask-run-tests
-    description: Running tests can be preapproved later per project.
-    match:
-      action: shell.run
-      command_regex: "^(npm test|npm run check|pytest|ruff check|mypy|npx expo-doctor)"
-    decision: ask
-
   - id: deny-dangerous-shell
     description: Block destructive shell commands by default.
     match:
       action: shell.run
       command_regex: "(rm -rf /|mkfs|dd if=|shutdown|reboot|chmod -R 777|chown -R)"
     decision: deny
+
+  - id: ask-sandboxed-process
+    description: Running a sandboxed process can modify workspace files and requires explicit one-use approval.
+    match:
+      action: shell.run
+    decision: ask
 
   - id: ask-network-write
     match:

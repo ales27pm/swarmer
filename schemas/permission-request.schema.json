@@ -1,21 +1,188 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://27pm.org/schemas/permission-request.schema.json",
-  "title": "monGARS Permission Request",
+  "title": "monGARS Approval",
+  "description": "Current one-shot approval resource bound to one exact tool call, an authenticated requester, a snapshotted policy decision, and a durable audit event.",
   "type": "object",
-  "required": ["id", "task_id", "action", "risk", "reason", "requested_by"],
+  "required": ["id", "task_id", "tool_call_id", "action_digest", "action", "action_preview", "binding_valid", "requester", "policy", "affected_data_summary", "audit_id", "consent_context_valid", "summary", "risk", "status", "created_at", "expires_at", "decided_at", "decision"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"consent_context_valid": {"const": true}},
+        "required": ["consent_context_valid"]
+      },
+      "then": {
+        "properties": {
+          "requester": {"type": "object"},
+          "policy": {"type": "object"},
+          "affected_data_summary": {"type": "string", "minLength": 1},
+          "audit_id": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "action": {"const": "workspace.list_dir"},
+            "summary": {"const": "List a workspace directory"},
+            "action_preview": {
+              "required": ["target"],
+              "not": {
+                "anyOf": [
+                  {"required": ["working_directory"]},
+                  {"required": ["command"]}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {"const": "workspace.read_text"},
+            "summary": {"const": "Read a workspace file"},
+            "action_preview": {
+              "required": ["target"],
+              "not": {
+                "anyOf": [
+                  {"required": ["working_directory"]},
+                  {"required": ["command"]}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {"const": "workspace.write_text"},
+            "summary": {"const": "Write text to a workspace file"},
+            "action_preview": {
+              "required": ["target"],
+              "properties": {"arguments_redacted": {"const": true}},
+              "not": {
+                "anyOf": [
+                  {"required": ["working_directory"]},
+                  {"required": ["command"]}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {"const": "process.run"},
+            "summary": {"const": "Run a sandboxed process"},
+            "action_preview": {"required": ["target", "working_directory", "command"]}
+          }
+        }
+      ]
+    }
+  ],
   "properties": {
     "id": {"type": "string"},
     "task_id": {"type": "string"},
-    "requested_by": {"type": "string"},
-    "action": {"type": "string"},
-    "target": {"type": "string"},
-    "arguments": {"type": "object"},
-    "risk": {"enum": ["low", "medium", "high", "critical", "unknown"]},
-    "reason": {"type": "string"},
-    "diff": {"type": "string"},
-    "ttl_seconds": {"type": "integer", "minimum": 1},
-    "created_at": {"type": "string", "format": "date-time"}
+    "tool_call_id": {"type": "string", "minLength": 1},
+    "action_digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "action": {
+      "type": "string",
+      "enum": ["workspace.list_dir", "workspace.read_text", "workspace.write_text", "process.run"]
+    },
+    "action_preview": {
+      "type": "object",
+      "required": ["operation", "details", "arguments_redacted"],
+      "properties": {
+        "operation": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "working_directory": {"type": "string", "minLength": 1},
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "details": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "arguments_redacted": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "binding_valid": {"type": "boolean"},
+    "requester": {
+      "description": "Authenticated device that initiated this proposal; null only for unverifiable historical records.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "id", "name"],
+          "properties": {
+            "type": {"type": "string", "const": "device"},
+            "id": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    },
+    "policy": {
+      "description": "Immutable snapshot of the executable rule that required consent; null only for unverifiable historical records.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["rule_id", "decision", "reason"],
+          "properties": {
+            "rule_id": {"type": "string", "minLength": 1},
+            "decision": {"const": "ask"},
+            "reason": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    },
+    "affected_data_summary": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Server-derived, redacted description of data the bound action may affect."
+    },
+    "audit_id": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Monotonic identifier of the durable approval.requested audit event."
+    },
+    "consent_context_valid": {
+      "type": "boolean",
+      "description": "True only when requester, policy, affected-data snapshot, and audit linkage agree."
+    },
+    "summary": {"type": "string", "description": "Fixed server-derived public tool label; model-authored tool details are omitted."},
+    "risk": {"enum": ["low", "medium", "high"]},
+    "status": {"enum": ["pending", "approved", "denied", "expired", "cancelled"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "decided_at": {"type": ["string", "null"], "format": "date-time"},
+    "decision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["decision", "actor_id", "user_note"],
+          "properties": {
+            "decision": {"enum": ["approve", "deny"]},
+            "actor_id": {"type": "string", "minLength": 1},
+            "user_note": {"type": ["string", "null"]}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    }
   },
   "additionalProperties": false
 }

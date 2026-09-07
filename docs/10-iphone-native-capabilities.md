@@ -1,5 +1,8 @@
 # 10 — iPhone Native Capabilities
 
+> **Statut:** architecture roadmap. Le slice `0.6` ne branche aucun capteur,
+> capability broker, collecte native ou action téléphone.
+
 ## Objectif
 
 Définir ce que les agents peuvent demander au iPhone via l'orchestrateur.

@@ -2,6 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://27pm.org/schemas/sync-operation.schema.json",
   "title": "monGARS Sync Operation",
+  "$comment": "Roadmap-only. The current release exposes authenticated bootstrap snapshots and WebSocket events, not bidirectional sync operations.",
+  "description": "Reserved schema for a future conflict-aware bidirectional sync protocol; not accepted or returned by the current API.",
   "type": "object",
   "required": ["id", "device_id", "op_type", "payload", "client_created_at"],
   "properties": {

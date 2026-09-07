@@ -1,5 +1,9 @@
 # 03 — System Architecture
 
+> **Statut:** architecture cible. Le runtime `0.6` n'implémente pas encore le
+> bus durable, la souscription WebSocket mobile, l'outbox, le bridge natif ou la
+> mémoire vectorielle; voir `docs/21-acceptance-criteria.md` pour le slice prouvé.
+
 ## Vue d'ensemble
 
 Le système est séparé en cinq plans:

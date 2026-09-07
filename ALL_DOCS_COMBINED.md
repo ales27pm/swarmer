@@ -6,7 +6,7 @@ This file is the single-entry reading surface for the repository. The canonical,
 
 - [README.md](README.md) — build kit overview, stack and reading order.
 - [MASTER_SPEC.md](MASTER_SPEC.md) — consolidated system specification.
-- [docs_manifest.json](docs_manifest.json) — generated documentation inventory.
+- [docs_manifest.json](docs_manifest.json) — historical source-pack inventory; byte counts are not current integrity evidence.
 
 ## Architecture decisions
 
@@ -101,4 +101,4 @@ This file is the single-entry reading surface for the repository. The canonical,
 
 ## Build invariant
 
-**Models propose → Permission Gateway decides → sandboxed executors act.** Ubuntu remains authoritative for shared state and long-term memory, while the iPhone behaves local-first through its SQLite replica and synchronized outbox.
+**Models propose → Permission Gateway decides → sandboxed executors act.** Ubuntu remains authoritative for shared state and long-term memory. In the current slice, authenticated REST responses feed the UI and bootstrap hydrates an SQLite cache; mobile live subscription, offline outbox and replay remain roadmap.

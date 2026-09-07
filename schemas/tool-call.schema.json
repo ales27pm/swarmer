@@ -2,17 +2,134 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://27pm.org/schemas/tool-call.schema.json",
   "title": "monGARS Tool Call",
+  "description": "Current public validated tool-call resource. It records proposals and verified execution outcomes separately while redacting sensitive execution arguments and process-controlled output.",
   "type": "object",
-  "required": ["id", "task_id", "agent_id", "tool", "arguments"],
+  "$defs": {
+    "readArguments": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "writeArguments": {
+      "type": "object",
+      "required": ["path", "content", "arguments_redacted"],
+      "properties": {
+        "path": {"type": "string"},
+        "content": {
+          "type": "string",
+          "pattern": "^<redacted: (?:[0-9]+|unknown) UTF-8 bytes>$"
+        },
+        "arguments_redacted": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "processArguments": {
+      "type": "object",
+      "required": ["argv", "argument_count", "arguments_redacted"],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 1,
+          "prefixItems": [{"const": "<redacted>"}]
+        },
+        "argument_count": {"type": "integer", "minimum": 0},
+        "arguments_redacted": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "processResult": {
+      "type": "object",
+      "required": ["output_redacted"],
+      "properties": {
+        "output_redacted": {"const": true},
+        "returncode": {"type": "integer"},
+        "stdout": {"type": "string", "pattern": "^<redacted: [0-9]+ UTF-8 bytes>$"},
+        "stderr": {"type": "string", "pattern": "^<redacted: [0-9]+ UTF-8 bytes>$"},
+        "stdout_truncated": {"type": "boolean"},
+        "stderr_truncated": {"type": "boolean"},
+        "sandbox": {"const": "bubblewrap"},
+        "network": {"const": "denied"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "completed"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {"result": {"type": "object"}}
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "tool_name": {"const": "workspace.list_dir"},
+        "summary": {"const": "List a workspace directory"},
+        "arguments": {"$ref": "#/$defs/readArguments"}
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {"const": "workspace.read_text"},
+        "summary": {"const": "Read a workspace file"},
+        "arguments": {"$ref": "#/$defs/readArguments"}
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {"const": "workspace.write_text"},
+        "summary": {"const": "Write text to a workspace file"},
+        "arguments": {"$ref": "#/$defs/writeArguments"}
+      }
+    },
+    {
+      "properties": {
+        "tool_name": {"const": "process.run"},
+        "summary": {"const": "Run a sandboxed process"},
+        "arguments": {"$ref": "#/$defs/processArguments"},
+        "result": {
+          "oneOf": [
+            {"$ref": "#/$defs/processResult"},
+            {"type": "null"}
+          ]
+        },
+        "error": {
+          "enum": [null, "sandboxed process failed; detailed error retained locally"]
+        }
+      }
+    }
+  ],
+  "required": ["id", "task_id", "tool_name", "arguments", "summary", "risk", "status", "approval_id", "result", "error", "created_at", "updated_at"],
   "properties": {
     "id": {"type": "string"},
     "task_id": {"type": "string"},
-    "agent_id": {"type": "string"},
-    "tool": {"type": "string"},
-    "arguments": {"type": "object"},
-    "reason": {"type": "string"},
-    "expected_risk": {"enum": ["none", "low", "medium", "high", "critical", "unknown"]},
-    "requires_permission": {"type": "boolean"}
+    "tool_name": {"enum": ["workspace.list_dir", "workspace.read_text", "workspace.write_text", "process.run"]},
+    "arguments": {
+      "type": "object",
+      "description": "Public server projection; write content and arbitrary process arguments are replaced by redaction metadata."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Fixed server-derived public tool label. Model-authored tool details are omitted so they cannot echo sensitive arguments."
+    },
+    "risk": {"enum": ["low", "medium", "high"]},
+    "status": {"enum": ["waiting_permission", "queued", "running", "completed", "failed", "denied", "cancelled"]},
+    "approval_id": {"type": ["string", "null"]},
+    "result": {
+      "type": ["object", "null"],
+      "description": "Verified executor evidence, required and non-null when status is completed. Process stdout and stderr are represented only by redacted byte-count markers."
+    },
+    "error": {"type": ["string", "null"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
   },
   "additionalProperties": false
 }

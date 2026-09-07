@@ -1,60 +1,429 @@
-import { useState } from "react";
+import { type Dispatch, useEffect, useReducer } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
+import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
-import { createTask, planTask } from "@/lib/api/client";
+import {
+  ActionButton,
+  COLORS,
+  EmptyState,
+  ErrorBanner,
+  SectionTitle,
+  timeAgo,
+  useAccessibilityAnnouncement,
+} from "@/components/swarm-ui";
+import {
+  bootstrapSync,
+  listMessages,
+  planTask,
+  sendChat,
+  type Bootstrap,
+  type Message,
+  type Task,
+  type ToolCall,
+} from "@/lib/api/client";
 
-export default function ChatScreen() {
-  const [input, setInput] = useState("");
-  const [status, setStatus] = useState("Prêt");
-  const [busy, setBusy] = useState(false);
+const SUGGESTIONS = [
+  "Liste les fichiers du projet et résume sa structure.",
+  "Vérifie les tests actuels sans modifier le code.",
+];
 
-  async function submit() {
-    const value = input.trim();
-    if (!value || busy) return;
+type PlanningResult = ToolCall | { task_id: string; proposal: unknown; task: Task | null };
 
-    setBusy(true);
-    setStatus("Création de la tâche…");
-    try {
-      const task = await createTask(value);
-      setInput("");
-      setStatus(`Orchestration de ${task.id}…`);
-      const result = await planTask(task.id);
+type ChatState = {
+  input: string;
+  conversationId: string | undefined;
+  messages: Message[];
+  lastTask: Task | null;
+  bootstrap: Bootstrap | null;
+  notice: string;
+  error: string | null;
+  busy: boolean;
+  refreshing: boolean;
+};
 
-      if ("status" in result && result.status === "waiting_permission") {
-        setStatus(`Permission requise: ${result.summary}`);
-      } else if ("status" in result && result.status === "completed") {
-        setStatus(`Terminé: ${result.summary}`);
-      } else {
-        setStatus(`Tâche ${task.id} traitée par l'orchestrateur`);
-      }
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Erreur réseau");
-    } finally {
-      setBusy(false);
+type ChatStatePatch = Partial<ChatState>;
+type ChatDispatch = Dispatch<ChatStatePatch>;
+
+const INITIAL_CHAT_STATE: ChatState = {
+  input: "",
+  conversationId: undefined,
+  messages: [],
+  lastTask: null,
+  bootstrap: null,
+  notice: "Prêt à confier une intention au modèle local.",
+  error: null,
+  busy: false,
+  refreshing: false,
+};
+
+function mergeChatState(state: ChatState, patch: ChatStatePatch): ChatState {
+  return { ...state, ...patch };
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function planningStatus(result: PlanningResult): string {
+  if ("tool_name" in result) {
+    if (result.status === "waiting_permission") {
+      return "Une autorisation unique est requise avant l’exécution.";
     }
+    if (result.status === "completed") {
+      const publicResult: unknown = result.result;
+      if (
+        publicResult === null ||
+        typeof publicResult !== "object" ||
+        Array.isArray(publicResult)
+      ) {
+        return "L’appel signale une fin sans résultat d’exécution vérifié; aucune réussite n’est confirmée.";
+      }
+      return "L’exécuteur local a terminé et enregistré un résultat vérifié.";
+    }
+    if (result.status === "failed") return "L’exécution a échoué. Consulte la tâche.";
+    return `Appel ${result.tool_name}: ${result.status}.`;
   }
+  return "Le modèle a produit une proposition, sans prétendre l’avoir exécutée.";
+}
 
+function taskAfterPlanning(result: PlanningResult, fallback: Task): Task {
+  if ("task" in result && result.task) return result.task;
+  return fallback;
+}
+
+function failedAttemptNotice(createdTask: Task | null): string {
+  return createdTask
+    ? "La tâche a été créée, mais aucune planification ou exécution réussie n’a été confirmée."
+    : "Aucune création de tâche n’a été confirmée pour cette tentative.";
+}
+
+async function refreshBootstrap(dispatch: ChatDispatch, updateError = true) {
+  dispatch({ refreshing: true });
+  try {
+    const bootstrap = await bootstrapSync();
+    dispatch(updateError ? { bootstrap, error: null } : { bootstrap });
+  } catch (cause) {
+    dispatch(
+      updateError
+        ? { bootstrap: null, error: errorMessage(cause) }
+        : { bootstrap: null },
+    );
+  } finally {
+    dispatch({ refreshing: false });
+  }
+}
+
+async function refreshConversation(conversationId: string | undefined, dispatch: ChatDispatch) {
+  if (!conversationId) return;
+  try {
+    dispatch({ messages: await listMessages(conversationId) });
+  } catch {
+    // Keep the rendered conversation while preserving the primary error.
+  }
+}
+
+async function submitChatIntent(state: ChatState, dispatch: ChatDispatch) {
+  const content = state.input.trim();
+  if (!content || state.busy) return;
+
+  dispatch({
+    busy: true,
+    error: null,
+    notice: "Création de la tâche authentifiée…",
+  });
+  let activeConversation = state.conversationId;
+  let createdTask: Task | null = null;
+  try {
+    const chat = await sendChat(content, state.conversationId);
+    createdTask = chat.task;
+    activeConversation = chat.conversation_id;
+    dispatch({
+      conversationId: chat.conversation_id,
+      lastTask: chat.task,
+      input: "",
+    });
+    dispatch({ messages: await listMessages(chat.conversation_id) });
+    dispatch({ notice: "Le modèle local prépare un plan…" });
+    const result = await planTask(chat.task.id);
+    dispatch({ notice: planningStatus(result) });
+    dispatch({ lastTask: taskAfterPlanning(result, chat.task) });
+  } catch (cause) {
+    dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
+  } finally {
+    await refreshConversation(activeConversation, dispatch);
+    await refreshBootstrap(dispatch, false);
+    dispatch({ busy: false });
+  }
+}
+
+function useChatController() {
+  const [state, dispatch] = useReducer(mergeChatState, INITIAL_CHAT_STATE);
+  useAccessibilityAnnouncement(state.notice);
+
+  useEffect(() => {
+    void refreshBootstrap(dispatch, false);
+  }, [dispatch]);
+
+  return {
+    ...state,
+    refreshStatus: (updateError = true) => refreshBootstrap(dispatch, updateError),
+    setInput: (input: string) => dispatch({ input }),
+    submit: () => submitChatIntent(state, dispatch),
+  };
+}
+
+function pendingAgreementLabel(pending: number): string {
+  return `${pending} accord${pending > 1 ? "s" : ""} en attente`;
+}
+
+type ConnectionPanelProps = {
+  bootstrap: Bootstrap | null;
+  pending: number;
+  onOpenSettings: () => void;
+  onOpenApprovals: () => void;
+};
+
+function ConnectionPanel({
+  bootstrap,
+  pending,
+  onOpenSettings,
+  onOpenApprovals,
+}: ConnectionPanelProps) {
   return (
-    <ScreenShell title="monGARS">
-      <Text selectable>{status}</Text>
-      <TextInput
-        multiline
-        value={input}
-        onChangeText={setInput}
-        placeholder="Qu'est-ce qu'on fait?"
-        editable={!busy}
-        style={{ minHeight: 120, borderWidth: 1, borderRadius: 16, padding: 14, textAlignVertical: "top" }}
-      />
-      <View style={{ alignItems: "flex-start" }}>
+    <>
+      <View style={{ alignItems: "center", flexDirection: "row", gap: 8 }}>
+        <View
+          style={{
+            backgroundColor: bootstrap ? COLORS.accent : COLORS.danger,
+            borderRadius: 999,
+            height: 8,
+            width: 8,
+          }}
+        />
+        <Text style={{ color: COLORS.muted, flex: 1, fontSize: 12 }}>
+          {bootstrap ? "Control plane authentifié" : "Control plane injoignable ou non jumelé"}
+          {pending ? ` · ${pendingAgreementLabel(pending)}` : ""}
+        </Text>
         <Pressable
-          disabled={busy}
-          onPress={submit}
-          style={{ borderWidth: 1, borderRadius: 999, paddingHorizontal: 18, paddingVertical: 12, opacity: busy ? 0.5 : 1 }}
+          accessibilityRole="button"
+          accessibilityLabel="Ouvrir les réglages"
+          hitSlop={12}
+          onPress={onOpenSettings}
+          testID="open-settings-button"
         >
-          <Text selectable>{busy ? "Orchestration…" : "Envoyer"}</Text>
+          <Text style={{ color: COLORS.accent, fontSize: 13, fontWeight: "700" }}>Réglages</Text>
         </Pressable>
       </View>
+
+      {pending ? (
+        <ActionButton
+          label={`Voir ${pendingAgreementLabel(pending)}`}
+          onPress={onOpenApprovals}
+          testID="open-pending-approvals"
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ChatMessage({ message }: { message: Message }) {
+  const isUser = message.role === "user";
+  const isProposalOnly = message.metadata?.verified_status === "proposal_only";
+  return (
+    <View style={{ alignItems: isUser ? "flex-end" : "flex-start", gap: 4 }}>
+      <View
+        style={{
+          backgroundColor: isUser ? COLORS.accent : COLORS.panel,
+          borderColor: isUser ? COLORS.accent : COLORS.border,
+          borderRadius: 16,
+          borderWidth: 1,
+          maxWidth: "88%",
+          paddingHorizontal: 14,
+          paddingVertical: 11,
+        }}
+      >
+        {isProposalOnly ? (
+          <Text
+            style={{
+              color: COLORS.warning,
+              fontSize: 11,
+              fontWeight: "800",
+              marginBottom: 6,
+              textTransform: "uppercase",
+            }}
+          >
+            Proposition du modèle — non vérifiée
+          </Text>
+        ) : null}
+        <Text
+          selectable
+          style={{ color: isUser ? COLORS.accentText : COLORS.text, lineHeight: 20 }}
+        >
+          {message.content}
+        </Text>
+      </View>
+      <Text style={{ color: COLORS.subtle, fontSize: 10 }}>
+        {message.agent_id ?? message.role} · {timeAgo(message.created_at)}
+      </Text>
+    </View>
+  );
+}
+
+function MessageList({ messages }: { messages: Message[] }) {
+  return (
+    <View style={{ gap: 10 }} testID="chat-messages">
+      {messages.map((message) => (
+        <ChatMessage key={message.id} message={message} />
+      ))}
+    </View>
+  );
+}
+
+function Suggestions({ onSelect }: { onSelect: (suggestion: string) => void }) {
+  return (
+    <View style={{ gap: 8 }}>
+      {SUGGESTIONS.map((suggestion) => (
+        <Pressable
+          accessibilityRole="button"
+          key={suggestion}
+          onPress={() => onSelect(suggestion)}
+          style={({ pressed }) => ({
+            backgroundColor: COLORS.panel,
+            borderColor: COLORS.border,
+            borderRadius: 12,
+            borderWidth: 1,
+            minHeight: 46,
+            opacity: pressed ? 0.75 : 1,
+            padding: 13,
+          })}
+        >
+          <Text style={{ color: COLORS.muted, lineHeight: 19 }}>{suggestion}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function Conversation({
+  messages,
+  onSelectSuggestion,
+}: {
+  messages: Message[];
+  onSelectSuggestion: (suggestion: string) => void;
+}) {
+  if (messages.length) return <MessageList messages={messages} />;
+  return (
+    <>
+      <EmptyState
+        title="Console du swarm"
+        subtitle="Décris une intention. Le modèle propose; l’exécuteur prouve; les actions sensibles attendent ton accord."
+      />
+      <Suggestions onSelect={onSelectSuggestion} />
+    </>
+  );
+}
+
+type IntentComposerProps = {
+  input: string;
+  busy: boolean;
+  authenticated: boolean;
+  notice: string;
+  onChangeInput: (input: string) => void;
+  onSubmit: () => void;
+};
+
+function IntentComposer({
+  input,
+  busy,
+  authenticated,
+  notice,
+  onChangeInput,
+  onSubmit,
+}: IntentComposerProps) {
+  return (
+    <>
+      <SectionTitle title="Nouvelle intention" />
+      <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
+        Intention pour le swarm
+      </Text>
+      <TextInput
+        accessibilityLabel="Intention pour le swarm"
+        editable={!busy}
+        multiline
+        onChangeText={onChangeInput}
+        placeholder="Qu’est-ce qu’on fait?"
+        placeholderTextColor={COLORS.subtle}
+        style={{
+          backgroundColor: COLORS.panel,
+          borderColor: COLORS.border,
+          borderRadius: 16,
+          borderWidth: 1,
+          color: COLORS.text,
+          minHeight: 104,
+          padding: 14,
+          textAlignVertical: "top",
+        }}
+        testID="chat-input"
+        value={input}
+      />
+      <ActionButton
+        busy={busy}
+        disabled={!input.trim() || !authenticated}
+        label="Envoyer"
+        onPress={onSubmit}
+        testID="send-button"
+        variant="accent"
+      />
+      <Text
+        accessibilityLiveRegion="polite"
+        selectable
+        style={{ color: COLORS.muted, lineHeight: 19 }}
+      >
+        {notice}
+      </Text>
+    </>
+  );
+}
+
+function LastTaskLink({ lastTask, onOpen }: { lastTask: Task | null; onOpen: (id: string) => void }) {
+  if (!lastTask) return null;
+  return <ActionButton label="Voir la tâche et ses preuves" onPress={() => onOpen(lastTask.id)} />;
+}
+
+export default function ChatScreen() {
+  const router = useRouter();
+  const chat = useChatController();
+  const pending = chat.bootstrap?.counts.approvals_pending ?? 0;
+
+  return (
+    <ScreenShell
+      title="monGARS"
+      subtitle="Console locale du swarm"
+      testID="chat-screen"
+      onRefresh={() => void chat.refreshStatus()}
+      refreshing={chat.refreshing}
+    >
+      <ConnectionPanel
+        bootstrap={chat.bootstrap}
+        pending={pending}
+        onOpenSettings={() => router.push("/settings")}
+        onOpenApprovals={() => router.push("/approvals")}
+      />
+      <ErrorBanner message={chat.error} />
+      <Conversation messages={chat.messages} onSelectSuggestion={chat.setInput} />
+      <IntentComposer
+        authenticated={Boolean(chat.bootstrap)}
+        busy={chat.busy}
+        input={chat.input}
+        notice={chat.notice}
+        onChangeInput={chat.setInput}
+        onSubmit={() => void chat.submit()}
+      />
+      <LastTaskLink
+        lastTask={chat.lastTask}
+        onOpen={(id) => router.push({ pathname: "/task/[id]", params: { id } })}
+      />
     </ScreenShell>
   );
 }

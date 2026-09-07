@@ -1,0 +1,30 @@
+{
+  "cli": {
+    "version": ">= 21.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "production": {
+      "distribution": "store",
+      "credentialsSource": "local",
+      "node": "22.23.2",
+      "ios": {
+        "resourceClass": "m-medium"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "appName": "monGARS Swarm",
+        "ascAppId": "$EXPO_ASC_APP_ID",
+        "ascApiKeyPath": "$EXPO_ASC_API_KEY_PATH",
+        "ascApiKeyId": "$EXPO_ASC_KEY_ID",
+        "ascApiKeyIssuerId": "$EXPO_ASC_ISSUER_ID",
+        "bundleIdentifier": "org.27pm.mongars",
+        "language": "fr-CA",
+        "sku": "mongars-swarm-20260907"
+      }
+    }
+  }
+}

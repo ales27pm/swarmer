@@ -1,5 +1,10 @@
 # 05 — Ubuntu Control Plane
 
+> **Statut:** architecture cible. Le slice `0.6` regroupe actuellement ces
+> responsabilités dans le service FastAPI/SQLite local. Redis, Qdrant, workers
+> distribués, broker iPhone et dataset builder ne sont pas branchés. Voir
+> [`18-dev-setup.md`](18-dev-setup.md) et l'OpenAPI pour la surface livrée.
+
 ## Objectif
 
 Ubuntu héberge le cerveau durable:

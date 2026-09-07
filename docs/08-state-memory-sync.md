@@ -1,5 +1,10 @@
 # 08 — State, Memory and Sync
 
+> **Statut:** architecture cible. Le slice `0.6` livre SQLite WAL côté serveur,
+> un bootstrap de réplica et une recherche lexicale. Embeddings, index vectoriel,
+> outbox, pull/push incrémental et résolution de conflits restent roadmap et ne
+> doivent pas être présentés comme des capacités observées.
+
 ## Objectif
 
 Donner à toutes les composantes le même état et une mémoire long terme sans que les agents écrivent n'importe où.
@@ -136,6 +141,10 @@ Append-only:
 - permission;
 - résultat;
 - hash précédent.
+
+L'API projette ce journal avant lecture et expurge notamment les anciens textes
+d'erreur de processus. La chaîne de hash couvre toujours le payload interne brut
+immuable, pas sa projection publique éventuellement expurgée.
 
 ## Memory write policy
 

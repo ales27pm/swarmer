@@ -2,19 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://27pm.org/schemas/memory-record.schema.json",
   "title": "monGARS Memory Record",
+  "description": "Current memory resource; score and search_kind appear only in lexical search results.",
   "type": "object",
-  "required": ["id", "scope", "kind", "content", "sensitivity", "confidence"],
+  "required": ["id", "scope", "kind", "content", "summary", "sensitivity", "confidence", "pinned", "metadata", "created_at", "updated_at"],
   "properties": {
     "id": {"type": "string"},
     "scope": {"type": "string"},
-    "kind": {"enum": ["preference", "project_fact", "decision", "correction", "summary", "artifact_note"]},
+    "kind": {"type": "string", "minLength": 1, "maxLength": 100},
     "content": {"type": "string"},
-    "summary": {"type": "string"},
-    "source_event_id": {"type": "string"},
-    "sensitivity": {"enum": ["public", "normal", "personal", "sensitive", "secret"]},
+    "summary": {"type": ["string", "null"]},
+    "sensitivity": {"type": "string", "minLength": 1, "maxLength": 50},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-    "metadata": {"type": "object"},
-    "created_at": {"type": "string", "format": "date-time"}
+    "pinned": {"type": "boolean"},
+    "metadata": {"type": ["object", "null"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "score": {"type": "number", "minimum": 0, "maximum": 1},
+    "search_kind": {"const": "lexical"}
   },
   "additionalProperties": false
 }

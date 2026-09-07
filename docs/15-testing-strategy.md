@@ -19,6 +19,12 @@ Tester les couches déterministes fortement:
 
 Tester les modèles par fixtures et evals, pas seulement en live.
 
+Le slice `0.6` possède des tests déterministes pour l'authentification,
+lifecycle tâche/appel/approbation, migrations, ressources API, sandbox et
+plusieurs composants mobiles. Les scénarios WebSocket reconnect, outbox,
+capteurs et device build ci-dessous restent des objectifs; ils ne sont pas des
+preuves acquises.
+
 ## Mobile test stack
 
 - TypeScript strict.
@@ -92,16 +98,19 @@ Expected:
 1. Start Ubuntu API.
 2. Open iPhone app.
 3. Scan/enter pairing code.
-4. Token saved in SecureStore.
-5. `/sync/bootstrap` succeeds.
+4. Candidate bootstrap and exact finalization succeed without revoking the active token.
+5. Pending origin/token is saved in SecureStore before the activation bootstrap.
+6. Activation promotes the candidate; lost-response recovery and expired-candidate fallback work.
+7. `/sync/bootstrap` succeeds.
 
 ### Flow 2 — Simple task
 
 1. User sends “résume l'état du swarm”.
 2. Backend creates task.
 3. Orchestrator responds.
-4. Task completed.
-5. App updates live.
+4. A `none` proposal remains `planned` and `proposal_only`.
+5. Only a supported executor result may mark the task `completed`.
+6. Live mobile updates remain to be qualified; manual refresh is available.
 
 ### Flow 3 — Permission required
 
@@ -113,7 +122,7 @@ Expected:
 6. Executor writes patch.
 7. Audit event recorded.
 
-### Flow 4 — iPhone capability
+### Flow 4 — iPhone capability (roadmap)
 
 1. Agent needs current location.
 2. Broker sends `iphone.capability.requested`.
@@ -122,7 +131,7 @@ Expected:
 5. Result returns to task.
 6. Data TTL applied.
 
-### Flow 5 — Offline sync
+### Flow 5 — Offline sync (roadmap)
 
 1. iPhone offline.
 2. User creates message.
@@ -153,35 +162,36 @@ Mobile:
 npm run typecheck
 npm run lint
 npm test
-npx expo-doctor
+npx --no-install expo-doctor
 npx expo start
 ```
 
 Backend:
 
 ```bash
-ruff check .
-mypy .
-pytest
-bandit -r services
+.venv/bin/ruff format --check app tests
+.venv/bin/ruff check app tests
+.venv/bin/mypy --strict app
+.venv/bin/pytest -q
+.venv/bin/bandit -r app
 ```
 
-Contracts:
-
-```bash
-python scripts/validate_schemas.py
-python scripts/validate_openapi.py
-```
+Le point d'entrée reproductible est `./scripts/check.sh`; il refuse de démarrer
+si la version de Node, le lockfile, les dépendances ou les outils backend requis
+manquent.
 
 ## Release gate
 
-Une release locale passe seulement si:
+Les checks source locaux passent seulement si:
 
 - typecheck mobile OK;
 - lint mobile OK;
 - tests mobile OK;
 - backend tests OK;
-- schema tests OK;
-- permission fixtures OK;
-- sync e2e OK;
-- audit integrity OK.
+- métaschéma OpenAPI valide, routes, statuts de succès, corps, paramètres et
+  sécurité cohérents avec FastAPI, puis payloads réels conformes aux schémas;
+- JSON Schemas courants valides et exercés contre les réponses API;
+- permission fixtures et audit integrity OK.
+
+Une qualification de release exige en plus une exécution Bubblewrap réelle sur
+Ubuntu, le modèle live attendu, puis build/install/launch et parcours sur iPhone.

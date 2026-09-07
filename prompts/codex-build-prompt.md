@@ -21,21 +21,25 @@ Implement the first vertical slice only:
 - repo skeleton;
 - shared schemas;
 - FastAPI health/pairing/state/sync;
-- Expo Router shell with Chat/Tasks/Approvals/Settings;
+- Expo Router shell with Chat/Tasks/Approvals/Memory/Agents/Settings and task detail;
 - SQLite local replica;
 - SecureStore token storage;
-- WebSocket status updates;
+- explicit REST bootstrap and refresh;
 - create task flow;
-- mock orchestrator plan;
+- configured local OpenAI-compatible orchestrator proposal;
 - gateway approval flow;
 - harmless executor writing test artifact after approval;
 - audit event;
 - feedback event.
 
+Tests may replace external boundaries with deterministic fixtures, but runtime
+code must not fabricate model replies, executor evidence, or completion. Mobile
+WebSocket subscription/reconnect and offline outbox remain roadmap.
+
 Constraints:
 
 - no direct LLM execution path;
-- no direct DB writes outside State Service;
+- no direct DB writes by models or agents; control-plane services own transactional mutations;
 - no direct iPhone data access outside Capability Broker;
 - all model/tool outputs must validate against schema;
 - all tests local; no GitHub Actions required.

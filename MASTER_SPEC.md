@@ -3,6 +3,12 @@
 Date: 2026-09-04  
 Statut: Draft build-ready
 
+> **Portée:** architecture cible. Le slice `0.6` livré est décrit par l'OpenAPI
+> et `docs/21-acceptance-criteria.md`: REST authentifié, cache SQLite hydraté au
+> bootstrap, rafraîchissement manuel, propositions modèle réelles et résultats
+> d'exécuteur vérifiés. Outbox, souscription WebSocket mobile, bus durable,
+> capacités natives et mémoire vectorielle restent roadmap.
+
 ## 1. Résumé
 
 monGARS Swarm App est une application iPhone local-first qui pilote un control plane Ubuntu hébergeant un orchestrateur LLM, une passerelle de permissions, une mémoire longue durée et un swarm d'agents autonomes. L'app iPhone sert de console, d'interface vocale, de source de données natives autorisées et de panneau d'approbation. Ubuntu garde la vérité officielle: state, mémoire, audit log, registry d'agents et bus de messages.

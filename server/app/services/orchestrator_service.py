@@ -25,6 +25,8 @@ Choose one tool from:
 - process.run: {argv, cwd?, timeout_seconds?}
 If no tool is appropriate, use tool_name 'none'.
 Schema: {"tool_name": string, "arguments": object, "summary": string}.
+For a real tool, summary is proposal-only context and the server replaces it with a fixed label.
+For tool_name 'none', summary is the proposal-only response shown to the user.
 Do not claim an action already happened. You only propose the next action.
 """
 
@@ -76,9 +78,18 @@ Do not claim an action already happened. You only propose the next action.
 
         if not isinstance(proposal, dict):
             raise OrchestratorError("orchestrator proposal must be an object")
-        tool_name = proposal.get("tool_name")
-        arguments = proposal.get("arguments", {})
-        summary = proposal.get("summary", "")
-        if not isinstance(tool_name, str) or not isinstance(arguments, dict) or not isinstance(summary, str):
+        required_fields = {"tool_name", "arguments", "summary"}
+        if set(proposal) != required_fields:
+            raise OrchestratorError(
+                "orchestrator proposal must contain exactly tool_name, arguments, and summary"
+            )
+        tool_name = proposal["tool_name"]
+        arguments = proposal["arguments"]
+        summary = proposal["summary"]
+        if (
+            not isinstance(tool_name, str)
+            or not isinstance(arguments, dict)
+            or not isinstance(summary, str)
+        ):
             raise OrchestratorError("orchestrator proposal has invalid fields")
         return {"tool_name": tool_name, "arguments": arguments, "summary": summary}

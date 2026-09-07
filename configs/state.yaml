@@ -12,20 +12,27 @@ server_db:
 
 iphone_replica:
   driver: sqlite
+  status: bootstrap_write_through_cache
   tables:
-    - conversations
-    - messages
     - tasks
     - approvals
-    - sync_outbox
-    - settings
-    - capability_cache
+    - sync_meta
+  ui_source: authenticated_rest_responses
+  local_read_helpers:
+    - approvals
+  offline_outbox: false
 
 sync:
   bootstrap_endpoint: /sync/bootstrap
+  refresh: explicit_rest
+  server_websocket_endpoint: /ws
+  mobile_websocket_subscription: false
+
+roadmap_sync:
   pull_endpoint: /sync/pull
   push_endpoint: /sync/push
-  websocket: /ws
+  offline_outbox: true
+  mobile_websocket_subscription: true
   conflict_policy:
     server_wins:
       - task.status

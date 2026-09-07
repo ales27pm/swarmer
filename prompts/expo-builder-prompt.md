@@ -8,7 +8,7 @@ Stack:
 - Expo Router
 - expo-sqlite
 - expo-secure-store
-- WebSocket + fetch API client
+- authenticated fetch API client
 - React Native Testing Library
 
 Routes:
@@ -23,19 +23,18 @@ app/(main)/memory.tsx
 app/(main)/agents.tsx
 app/(main)/settings.tsx
 app/task/[id].tsx
-app/approval/[id].tsx
 ```
 
 Features for first slice:
 
 - Settings screen lets user set server URL and pairing code.
-- Chat screen sends message to `/tasks`.
-- Tasks screen shows local replica status.
-- Approvals screen shows pending approvals from sync/WebSocket.
-- SQLite stores messages/tasks/approvals/sync_outbox.
-- SecureStore stores device token.
-- Offline messages enter outbox.
-- WebSocket reconnect updates local replica.
+- Chat screen sends messages to `/chat` and requests real proposals through the task plan route.
+- Tasks and approvals screens load canonical REST resources and expose manual refresh.
+- `/sync/bootstrap` writes tasks, approvals and the audit cursor to SQLite as a cache.
+- SecureStore binds origin and token, with a separate durable pending record for
+  staged pairing cutover and lost-response recovery.
+- Proposal-only model text must never appear as verified executor completion.
+- Do not add offline replay, outbox, or mobile WebSocket claims in this slice.
 
 Testing:
 
@@ -43,4 +42,4 @@ Testing:
 - send message calls API client;
 - pending approval card renders action/risk/target;
 - allow once posts decision;
-- offline message stored in outbox.
+- bootstrap cache writes and local approval reads are covered at the SQLite boundary.

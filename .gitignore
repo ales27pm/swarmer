@@ -11,6 +11,8 @@ web-build/
 mobile/.env*
 mobile/ios/
 mobile/android/
+mobile/credentials.json
+mobile/build/
 
 # Python
 __pycache__/

@@ -1,186 +1,1345 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.1.0
+  version: 0.7.0
+  description: |
+    Authenticated local control-plane API. Pairing-code issuance requires both an
+    actual loopback socket peer and the configured operator bootstrap token. A
+    pairing completion first returns a short-lived, bootstrap-only candidate.
+    Finalization makes that candidate cutover-ready without replacing an existing
+    device token; the first authenticated request after durable client storage
+    atomically activates the candidate. Device tokens are stored only as SHA-256
+    digests. Remote plaintext HTTP is rejected by default; use HTTPS unless the
+    socket peer is loopback.
+
+    Chat and planning responses are proposals, not simulated completion claims.
+    A task becomes `completed` only after a supported tool returns a verified
+    executor result. Writes and process execution require a one-use approval.
+    `process.run` is constrained by the Bubblewrap policy and fails closed when
+    `/usr/bin/bwrap` is unavailable.
 servers:
-  - url: http://ubuntu.local:8710
+  - url: https://ubuntu.example
+    description: TLS-protected private-network control plane
 security:
   - bearerAuth: []
+tags:
+  - name: System
+  - name: Pairing
+  - name: Tasks
+  - name: Chat
+  - name: Approvals
+  - name: Memory
+  - name: Agents
+  - name: Audit
+  - name: Feedback
+  - name: Events
 paths:
   /health:
     get:
-      summary: Health check
+      tags: [System]
+      summary: Check control-plane health
+      security: []
       responses:
         '200':
-          description: OK
-  /pairing/start:
+          description: Service is available
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HealthResponse'}
+
+  /pairing/code:
     post:
-      summary: Start device pairing
+      tags: [Pairing]
+      summary: Issue a single active pairing code
+      description: |
+        Requires the `X-Mongars-Operator-Token` header and a loopback socket
+        peer. Proxy headers cannot make a remote peer local. Issuing a code
+        invalidates the older code; the six-digit code expires and has a bounded
+        attempt budget.
+      security:
+        - operatorToken: []
       responses:
         '200':
-          description: Pairing code created
-  /pairing/confirm:
+          description: Pairing code issued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PairingCode'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {description: Pairing bootstrap token is not configured}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /pairing/complete:
     post:
-      summary: Confirm device pairing
+      tags: [Pairing]
+      summary: Exchange a pairing code for a staged device-token candidate
+      description: |
+        The pairing code is consumed atomically and cannot be reused. The returned
+        candidate is short-lived, bound to the requested device and pairing id, and
+        can authenticate only bootstrap verification and pairing finalization until
+        explicitly finalized. Existing device credentials are not changed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PairComplete'}
       responses:
         '200':
-          description: Device token issued
+          description: Short-lived opaque pairing candidate issued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PairingCandidateResponse'}
+        '400': {description: 'Pairing code is invalid, expired, or already consumed'}
+        '429': {description: Pairing attempt budget exhausted}
+        '426': {description: HTTPS is required outside loopback}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /pairing/finalize:
+    post:
+      tags: [Pairing]
+      summary: Finalize a verified pairing candidate for safe client cutover
+      description: |
+        Requires the exact candidate bearer, pairing id, and device id. The first
+        successful call moves the candidate to `ready`; exact retries are
+        idempotent. An existing device token remains active until the ready bearer
+        makes its first authenticated request after durable client storage. That
+        request atomically activates the new token, removes the candidate, replaces
+        the old token, and invalidates unused WebSocket tickets for the device.
+      security:
+        - bearerAuth: []
+        - pairingCandidateBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PairFinalize'}
+      responses:
+        '200':
+          description: Candidate is ready for cutover, or is already active
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PairFinalizeResponse'}
+        '401': {description: 'Pairing candidate is missing, invalid, or expired'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks
+      parameters:
+        - $ref: '#/components/parameters/TaskStatusFilter'
+        - $ref: '#/components/parameters/TaskLimit'
+      responses:
+        '200':
+          description: Tasks ordered by most recent update
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/TaskRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      description: Creates durable task state only; it does not report execution completion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskCreate'}
+      responses:
+        '201':
+          description: Task created in `created` state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /tasks/{task_id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      summary: Get task details and execution evidence
+      responses:
+        '200':
+          description: Task with related messages, approvals, and tool calls
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /tasks/{task_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Tasks]
+      summary: Cancel a non-running task
+      description: |
+        Cancellation atomically invalidates pending approvals and proposed,
+        waiting, or queued tool calls. Running and terminal tasks cannot be
+        cancelled through this endpoint.
+      responses:
+        '200':
+          description: Cancelled task
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /tasks/{task_id}/plan:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Tasks]
+      summary: Ask the configured local model to plan a task
+      description: |
+        Planning is allowed from `created` or `planned`. A `none` tool proposal
+        leaves the task planned and records model text as `proposal_only`. A
+        supported read tool may execute immediately; writes and processes remain
+        gated by a one-use approval.
+      responses:
+        '200':
+          description: Model proposal or resulting tool call
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PlanOnlyResult'
+                  - $ref: '#/components/schemas/ToolCall'
+        '400': {description: Model tool proposal failed executor validation}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '502': {description: Local orchestrator returned no valid proposal}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /tasks/{task_id}/tool-calls:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      summary: List tool calls for a task
+      responses:
+        '200':
+          description: Tool calls in creation order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ToolCall'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      tags: [Tasks]
+      summary: Submit a structured tool proposal
+      description: |
+        Supported tools are `workspace.list_dir`, `workspace.read_text`,
+        `workspace.write_text`, and `process.run`. The gateway validates the
+        tool and arguments before persistence. Writes and processes wait for
+        approval; process execution also requires Bubblewrap.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ToolProposal'}
+      responses:
+        '200':
+          description: Executed read call or persisted approval-gated call
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolCall'}
+        '400': {description: 'Unsupported tool, invalid arguments, protected path, or unavailable sandbox'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /chat:
+    post:
+      tags: [Chat]
+      summary: Create or continue a conversation and task
+      description: |
+        Persists a user message and new task. It does not run a fake workflow or
+        mark the task completed; call `/tasks/{task_id}/plan` for a real proposal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChatCreate'}
+      responses:
+        '201':
+          description: Conversation and task created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChatResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /conversations:
+    get:
+      tags: [Chat]
+      summary: List conversations
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Conversations ordered by most recent update
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Conversation'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /conversations/{conversation_id}/messages:
+    get:
+      tags: [Chat]
+      summary: List messages in a conversation
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 500, default: 500}
+      responses:
+        '200':
+          description: Messages in chronological order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Message'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /sync/bootstrap:
     get:
-      summary: Bootstrap local replica
+      tags: [System]
+      summary: Bootstrap the authenticated device replica
+      description: |
+        Accepts an active device bearer or a staged candidate bearer for pre-cutover
+        verification. If the candidate has already been finalized to `ready`, this
+        request is the authenticated cutover that atomically activates it.
+      security:
+        - bearerAuth: []
+        - pairingCandidateBearer: []
       responses:
         '200':
-          description: Bootstrap payload
-  /sync/pull:
-    get:
-      summary: Pull sync events since cursor
-      parameters:
-        - in: query
-          name: cursor
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Sync events
-  /sync/push:
-    post:
-      summary: Push local client operations
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: Push accepted
-  /tasks:
-    post:
-      summary: Create task
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [input, mode, source]
-              properties:
-                input:
-                  type: string
-                mode:
-                  type: string
-                source:
-                  type: string
-                conversation_id:
-                  type: string
-      responses:
-        '201':
-          description: Task created
-    get:
-      summary: List tasks
-      responses:
-        '200':
-          description: Tasks
-  /tasks/{task_id}:
-    get:
-      summary: Get task
-      parameters:
-        - in: path
-          name: task_id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Task
-  /tasks/{task_id}/cancel:
-    post:
-      summary: Cancel task
-      parameters:
-        - in: path
-          name: task_id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Cancelled
+          description: Bounded current-state snapshot and audit cursor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bootstrap'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /approvals:
     get:
-      summary: List approvals
+      tags: [Approvals]
+      summary: List approvals by status
       parameters:
-        - in: query
-          name: status
+        - name: status
+          in: query
           schema:
-            type: string
+            $ref: '#/components/schemas/ApprovalStatus'
+            default: pending
       responses:
         '200':
-          description: Approvals
+          description: Matching approvals; stale pending entries are expired first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Approval'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /approvals/{approval_id}/decision:
     post:
-      summary: Submit approval decision
+      tags: [Approvals]
+      summary: Decide a pending approval once
+      description: |
+        `approve` and `allow_once` have identical one-use behavior. There is no
+        persistent `allow_rule` decision. Replays, concurrent second decisions,
+        and expired approvals return `409` and cannot execute the linked call.
       parameters:
-        - in: path
-          name: approval_id
+        - name: approval_id
+          in: path
           required: true
-          schema:
-            type: string
+          schema: {type: string}
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [decision]
-              properties:
-                decision:
-                  enum: [allow_once, deny, allow_rule]
-                user_note:
-                  type: string
-                scope_override:
-                  type: object
+            schema: {$ref: '#/components/schemas/ApprovalDecision'}
       responses:
         '200':
-          description: Decision accepted
+          description: Decision recorded, with linked tool result when applicable
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Approval'
+                  - $ref: '#/components/schemas/ApprovalToolResult'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /memory:
+    get:
+      tags: [Memory]
+      summary: List memory items
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 500, default: 200}
+      responses:
+        '200':
+          description: Pinned-first memory list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/MemoryItem'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      tags: [Memory]
+      summary: Store a memory item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MemoryCreate'}
+      responses:
+        '201':
+          description: Memory item stored and audited
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemoryItem'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /memory/search:
     post:
-      summary: Semantic memory search
+      tags: [Memory]
+      summary: Search memory lexically
+      description: "Results are labelled `search_kind: lexical`; this is not a vector-search API."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MemorySearch'}
       responses:
         '200':
-          description: Search results
-  /memory/remember:
-    post:
-      summary: Store memory candidate
+          description: Up to 50 ranked lexical matches
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/MemorySearchResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /memory/{memory_id}:
+    parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema: {type: string}
+    patch:
+      tags: [Memory]
+      summary: Update memory content, summary, or pin state
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MemoryUpdate'}
       responses:
-        '201':
-          description: Memory stored
+        '200':
+          description: Updated and audited memory item
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemoryItem'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      tags: [Memory]
+      summary: Delete a memory item
+      responses:
+        '204': {description: Memory item deleted and audit event appended}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /agents:
     get:
-      summary: List agents
+      tags: [Agents]
+      summary: List registered agents
       responses:
         '200':
-          description: Agents
+          description: Agent registry
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Agent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /agents/{agent_id}:
+    get:
+      tags: [Agents]
+      summary: Get one registered agent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent record
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Agent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /agents/register:
     post:
+      tags: [Agents]
       summary: Register an agent
+      description: |
+        The endpoint must be a syntactically valid `http` or `https` URL. The
+        new agent starts `unverified`; its heartbeat credential is returned once
+        and is never included in later reads.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentCreate'}
       responses:
         '201':
-          description: Registered
+          description: Agent registered and audited
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentRegistration'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /agents/{agent_id}/heartbeat:
     post:
-      summary: Agent heartbeat
+      tags: [Agents]
+      summary: Authenticate an agent heartbeat
+      security:
+        - agentBearer: []
       parameters:
-        - in: path
-          name: agent_id
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentHeartbeat'}
       responses:
         '200':
-          description: Heartbeat accepted
+          description: Updated agent record
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Agent'}
+        '401': {description: Missing or invalid agent-specific credential}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /audit:
+    get:
+      tags: [Audit]
+      summary: Read hash-chained audit events
+      description: |
+        Returns the authenticated public projection of the append-only audit log.
+        Legacy process failure text is redacted at read time. The `prev_hash` and
+        `hash` values attest the immutable internal row, so a projected payload
+        containing a redaction cannot be re-hashed directly by an API client.
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: after_id
+          in: query
+          description: Later events ascending; omission returns newest first.
+          schema: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Audit events including previous and current hashes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AuditEvent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /feedback:
+    post:
+      tags: [Feedback]
+      summary: Store task or agent feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FeedbackCreate'}
+      responses:
+        '201':
+          description: Feedback event stored and audited
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedbackRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Referenced task or agent does not exist}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /ws/ticket:
+    post:
+      tags: [Events]
+      summary: Mint a one-use WebSocket ticket
+      description: |
+        Returns a 30-second ticket bound to the authenticated device. Pass only
+        that one-use ticket to `wss://<host>/ws?ticket=<ticket>`; the long-lived
+        bearer token is never put in a WebSocket URL.
+      responses:
+        '200':
+          description: One-use WebSocket ticket
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WebSocketTicket'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+x-websocket-endpoints:
+  /ws:
+    authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
+    events:
+      - connected
+      - task.updated
+      - tool.proposed
+      - tool.updated
+      - tool.completed
+      - tool.failed
+      - tool.execution_rejected
+      - tool.outcome_uncertain
+      - tool.denied
+      - approval.requested
+      - approval.decided
+      - orchestrator.proposed
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: opaque-device-token
+      description: Opaque active device token; keep it in secure storage.
+    pairingCandidateBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-pairing-candidate
+      description: Short-lived candidate returned by `/pairing/complete` before activation.
+    operatorToken:
+      type: apiKey
+      in: header
+      name: X-Mongars-Operator-Token
+      description: Operator bootstrap secret; accepted only from an actual loopback peer.
+    agentBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-agent-credential
+      description: One-time credential returned when an authenticated device registers an agent.
+
+  parameters:
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: {type: string}
+    AgentId:
+      name: agent_id
+      in: path
+      required: true
+      schema: {type: string}
+    TaskLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+    TaskStatusFilter:
+      name: status
+      in: query
+      schema: {$ref: '#/components/schemas/TaskStatus'}
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid device bearer token
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Forbidden:
+      description: Caller is not a loopback operator or supplied the wrong operator token
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: Atomic state transition rejected, including replay or stale state
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    SecureTransportRequired:
+      description: HTTPS is required when the socket peer is not loopback
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/HTTPValidationError'}
+
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: {}
+    HTTPValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            required: [loc, msg, type]
+            properties:
+              loc: {type: array, items: {}}
+              msg: {type: string}
+              type: {type: string}
+    HealthResponse:
+      type: object
+      required: [status, service, version]
+      properties:
+        status: {const: ok}
+        service: {const: mongars-control-plane}
+        version: {type: string}
+    PairingCode:
+      type: object
+      required: [code, expires_in_seconds]
+      properties:
+        code: {type: string, pattern: '^\d{6}$'}
+        expires_in_seconds: {type: integer, minimum: 60, maximum: 900}
+    PairComplete:
+      type: object
+      additionalProperties: false
+      required: [code, device_id]
+      properties:
+        code: {type: string, pattern: '^\d{6}$'}
+        device_id: {type: string, minLength: 3, maxLength: 200, pattern: '^[A-Za-z0-9._:-]+$'}
+        name: {type: string, minLength: 1, maxLength: 200, default: iPhone}
+    PairingCandidateResponse:
+      type: object
+      required: [pairing_id, candidate_token, device_id, expires_in_seconds]
+      properties:
+        pairing_id: {type: string, pattern: '^pair_[0-9a-f]{32}$'}
+        candidate_token: {type: string, minLength: 32, readOnly: true}
+        device_id: {type: string}
+        expires_in_seconds: {type: integer, minimum: 30, maximum: 300}
+    PairFinalize:
+      type: object
+      additionalProperties: false
+      required: [pairing_id, device_id]
+      properties:
+        pairing_id: {type: string, pattern: '^pair_[0-9a-f]{32}$'}
+        device_id: {type: string, minLength: 3, maxLength: 200, pattern: '^[A-Za-z0-9._:-]+$'}
+    PairFinalizeResponse:
+      type: object
+      required: [status, device_id, pairing_id, already_finalized]
+      properties:
+        status: {type: string, enum: [ready, active]}
+        device_id: {type: string}
+        pairing_id: {type: string}
+        already_finalized: {type: boolean}
+
+    TaskMode:
+      type: string
+      enum: [normal, commandant, review, autonome]
+    TaskStatus:
+      type: string
+      enum: [created, planned, waiting_permission, queued, running, blocked, completed, failed, cancelled]
+    TaskCreate:
+      type: object
+      additionalProperties: false
+      required: [input]
+      properties:
+        input: {type: string, minLength: 1, maxLength: 32000}
+        mode: {$ref: '#/components/schemas/TaskMode', default: normal}
+        conversation_id: {type: [string, 'null']}
+        priority: {type: integer, minimum: -100, maximum: 100, default: 0}
+    TaskRecord:
+      type: object
+      required: [id, title, input, mode, source, conversation_id, status, created_at, updated_at]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        input: {type: string}
+        mode: {$ref: '#/components/schemas/TaskMode'}
+        source: {type: string}
+        conversation_id: {type: [string, 'null']}
+        status: {$ref: '#/components/schemas/TaskStatus'}
+        priority: {type: integer, default: 0}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        error_json:
+          oneOf:
+            - {type: object, additionalProperties: true}
+            - {type: 'null'}
+    TaskDetail:
+      type: object
+      required: [task, messages, approvals, tool_calls]
+      properties:
+        task: {$ref: '#/components/schemas/TaskRecord'}
+        messages: {type: array, items: {$ref: '#/components/schemas/Message'}}
+        approvals: {type: array, items: {$ref: '#/components/schemas/Approval'}}
+        tool_calls: {type: array, items: {$ref: '#/components/schemas/ToolCall'}}
+
+    ChatCreate:
+      type: object
+      required: [content]
+      properties:
+        content: {type: string, minLength: 1, maxLength: 32000}
+        conversation_id: {type: [string, 'null']}
+        mode: {$ref: '#/components/schemas/TaskMode', default: normal}
+    ChatResult:
+      type: object
+      required: [conversation_id, task]
+      properties:
+        conversation_id: {type: string}
+        task: {$ref: '#/components/schemas/TaskRecord'}
+    Conversation:
+      type: object
+      required: [id, title, created_at, updated_at]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        last_message: {type: [string, 'null']}
+    Message:
+      type: object
+      required: [id, conversation_id, role, content, created_at]
+      properties:
+        id: {type: string}
+        conversation_id: {type: string}
+        task_id: {type: [string, 'null']}
+        role: {type: string, enum: [user, agent, system]}
+        agent_id: {type: [string, 'null']}
+        content: {type: string}
+        metadata:
+          oneOf:
+            - {type: object, additionalProperties: true}
+            - {type: 'null'}
+        created_at: {type: string, format: date-time}
+
+    ToolProposal:
+      type: object
+      additionalProperties: false
+      required: [tool_name, arguments, summary]
+      properties:
+        tool_name:
+          type: string
+          enum: [workspace.list_dir, workspace.read_text, workspace.write_text, process.run]
+        arguments:
+          type: object
+          additionalProperties: true
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Untrusted caller context accepted for compatibility and replaced by a fixed server label before any tool call is persisted or exposed.
+    PublicReadToolArguments:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string}
+    PublicWriteToolArguments:
+      type: object
+      additionalProperties: false
+      required: [path, content, arguments_redacted]
+      properties:
+        path: {type: string}
+        content:
+          type: string
+          pattern: '^<redacted: (?:[0-9]+|unknown) UTF-8 bytes>$'
+        arguments_redacted: {const: true}
+    PublicProcessToolArguments:
+      type: object
+      additionalProperties: false
+      required: [argv, argument_count, arguments_redacted]
+      properties:
+        argv:
+          type: array
+          minItems: 0
+          maxItems: 1
+          prefixItems: [{const: '<redacted>'}]
+        argument_count: {type: integer, minimum: 0}
+        arguments_redacted: {const: true}
+    PublicProcessToolResult:
+      type: object
+      additionalProperties: false
+      required: [output_redacted]
+      properties:
+        output_redacted: {const: true}
+        returncode: {type: integer}
+        stdout: {type: string, pattern: '^<redacted: [0-9]+ UTF-8 bytes>$'}
+        stderr: {type: string, pattern: '^<redacted: [0-9]+ UTF-8 bytes>$'}
+        stdout_truncated: {type: boolean}
+        stderr_truncated: {type: boolean}
+        sandbox: {const: bubblewrap}
+        network: {const: denied}
+    ToolCall:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, tool_name, arguments, summary, risk, status, approval_id, result, error, created_at, updated_at]
+      allOf:
+        - if:
+            properties:
+              status: {const: completed}
+            required: [status]
+          then:
+            properties:
+              result: {type: object}
+      oneOf:
+        - properties:
+            tool_name: {const: workspace.list_dir}
+            summary: {const: 'List a workspace directory'}
+            arguments: {$ref: '#/components/schemas/PublicReadToolArguments'}
+        - properties:
+            tool_name: {const: workspace.read_text}
+            summary: {const: 'Read a workspace file'}
+            arguments: {$ref: '#/components/schemas/PublicReadToolArguments'}
+        - properties:
+            tool_name: {const: workspace.write_text}
+            summary: {const: 'Write text to a workspace file'}
+            arguments: {$ref: '#/components/schemas/PublicWriteToolArguments'}
+        - properties:
+            tool_name: {const: process.run}
+            summary: {const: 'Run a sandboxed process'}
+            arguments: {$ref: '#/components/schemas/PublicProcessToolArguments'}
+            result:
+              oneOf:
+                - {$ref: '#/components/schemas/PublicProcessToolResult'}
+                - {type: 'null'}
+            error:
+              enum: [null, 'sandboxed process failed; detailed error retained locally']
+      properties:
+        id: {type: string}
+        task_id: {type: string}
+        tool_name:
+          type: string
+          enum: [workspace.list_dir, workspace.read_text, workspace.write_text, process.run]
+        arguments:
+          type: object
+          additionalProperties: true
+          description: Public server projection. Sensitive write content and arbitrary process arguments are replaced by redaction metadata; exact values remain internal to binding and execution.
+        summary:
+          type: string
+          description: Fixed server-derived public tool label. Model-authored tool details are omitted so they cannot echo sensitive arguments.
+        risk: {type: string, enum: [low, medium, high]}
+        status: {type: string, enum: [waiting_permission, queued, running, completed, failed, denied, cancelled]}
+        approval_id: {type: [string, 'null']}
+        result:
+          description: Verified executor evidence, required and non-null when status is completed. Process stdout and stderr are represented only by redacted byte-count markers.
+          oneOf:
+            - {type: object, additionalProperties: true}
+            - {type: 'null'}
+        error: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ModelProposal:
+      type: object
+      required: [tool_name, arguments, summary]
+      properties:
+        tool_name: {type: string}
+        arguments: {type: object, additionalProperties: true}
+        summary:
+          type: string
+          description: Shown as proposal-only text only when tool_name is none; otherwise replaced by a fixed server label before publication.
+    PlanOnlyResult:
+      type: object
+      required: [task_id, proposal, task]
+      properties:
+        task_id: {type: string}
+        proposal: {$ref: '#/components/schemas/ModelProposal'}
+        task: {$ref: '#/components/schemas/TaskRecord'}
+
+    ApprovalStatus:
+      type: string
+      enum: [pending, approved, denied, expired, cancelled]
+    ApprovalDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: {type: string, enum: [approve, allow_once, deny]}
+        user_note: {type: [string, 'null'], maxLength: 2000}
+    Approval:
+      type: object
+      additionalProperties: false
+      description: One-shot consent bound to an exact call, authenticated requester, executable policy snapshot, and durable audit event.
+      required: [id, task_id, tool_call_id, action_digest, action, action_preview, binding_valid, requester, policy, affected_data_summary, audit_id, consent_context_valid, summary, risk, status, created_at, expires_at, decided_at, decision]
+      allOf:
+        - if:
+            properties:
+              consent_context_valid: {const: true}
+            required: [consent_context_valid]
+          then:
+            properties:
+              requester: {type: object}
+              policy: {type: object}
+              affected_data_summary: {type: string, minLength: 1}
+              audit_id: {type: integer, minimum: 1}
+        - oneOf:
+            - properties:
+                action: {const: workspace.list_dir}
+                summary: {const: 'List a workspace directory'}
+                action_preview:
+                  required: [target]
+                  not:
+                    anyOf:
+                      - required: [working_directory]
+                      - required: [command]
+            - properties:
+                action: {const: workspace.read_text}
+                summary: {const: 'Read a workspace file'}
+                action_preview:
+                  required: [target]
+                  not:
+                    anyOf:
+                      - required: [working_directory]
+                      - required: [command]
+            - properties:
+                action: {const: workspace.write_text}
+                summary: {const: 'Write text to a workspace file'}
+                action_preview:
+                  required: [target]
+                  properties:
+                    arguments_redacted: {const: true}
+                  not:
+                    anyOf:
+                      - required: [working_directory]
+                      - required: [command]
+            - properties:
+                action: {const: process.run}
+                summary: {const: 'Run a sandboxed process'}
+                action_preview:
+                  required: [target, working_directory, command]
+      properties:
+        id: {type: string}
+        task_id: {type: string}
+        tool_call_id: {type: string, minLength: 1}
+        action_digest:
+          type: string
+          minLength: 71
+          maxLength: 71
+          pattern: '^sha256:[0-9a-f]{64}$'
+        action:
+          type: string
+          enum: [workspace.list_dir, workspace.read_text, workspace.write_text, process.run]
+        action_preview:
+          type: object
+          additionalProperties: false
+          required: [operation, details, arguments_redacted]
+          properties:
+            operation: {type: string, minLength: 1}
+            target: {type: string, minLength: 1}
+            working_directory: {type: string, minLength: 1}
+            command:
+              type: array
+              minItems: 1
+              maxItems: 256
+              items: {type: string, minLength: 1}
+            details:
+              type: array
+              minItems: 1
+              maxItems: 256
+              items: {type: string, minLength: 1}
+            arguments_redacted: {type: boolean}
+        binding_valid: {type: boolean}
+        requester:
+          description: Authenticated device that initiated the proposal; null only for unverifiable historical records.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [type, id, name]
+              properties:
+                type: {type: string, const: device}
+                id: {type: string, minLength: 1}
+                name: {type: string, minLength: 1}
+            - {type: 'null'}
+        policy:
+          description: Immutable snapshot of the executable rule that required consent; null only for unverifiable historical records.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [rule_id, decision, reason]
+              properties:
+                rule_id: {type: string, minLength: 1}
+                decision: {const: ask}
+                reason: {type: string, minLength: 1}
+            - {type: 'null'}
+        affected_data_summary:
+          type: [string, 'null']
+          minLength: 1
+          description: Server-derived, redacted description of data the bound action may affect.
+        audit_id:
+          type: [integer, 'null']
+          minimum: 1
+          description: Monotonic identifier of the durable approval.requested audit event.
+        consent_context_valid:
+          type: boolean
+          description: True only when requester, policy, affected-data snapshot, and audit linkage agree.
+        summary:
+          type: string
+          description: Fixed server-derived public tool label; model-authored tool details are omitted.
+        risk: {type: string, enum: [low, medium, high]}
+        status: {$ref: '#/components/schemas/ApprovalStatus'}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        decided_at: {type: [string, 'null'], format: date-time}
+        decision:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [decision, actor_id, user_note]
+              properties:
+                decision: {type: string, enum: [approve, deny]}
+                actor_id: {type: string, minLength: 1}
+                user_note: {type: [string, 'null']}
+            - {type: 'null'}
+    ApprovalToolResult:
+      type: object
+      required: [approval, tool_call]
+      properties:
+        approval: {$ref: '#/components/schemas/Approval'}
+        tool_call: {$ref: '#/components/schemas/ToolCall'}
+
+    MemoryCreate:
+      type: object
+      required: [content]
+      properties:
+        content: {type: string, minLength: 1, maxLength: 32000}
+        summary: {type: [string, 'null'], maxLength: 2000}
+        scope: {type: string, minLength: 1, maxLength: 100, default: general}
+        kind: {type: string, minLength: 1, maxLength: 100, default: fact}
+        sensitivity: {type: string, minLength: 1, maxLength: 50, default: normal}
+        confidence: {type: number, minimum: 0, maximum: 1, default: 1}
+        pinned: {type: boolean, default: false}
+    MemoryUpdate:
+      type: object
+      properties:
+        content: {type: [string, 'null'], minLength: 1, maxLength: 32000}
+        summary: {type: [string, 'null'], maxLength: 2000}
+        pinned: {type: [boolean, 'null']}
+    MemorySearch:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string, minLength: 1, maxLength: 2000}
+        scope: {type: [string, 'null'], maxLength: 100}
+        kind: {type: [string, 'null'], maxLength: 100}
+    MemoryItem:
+      type: object
+      required: [id, scope, kind, content, summary, sensitivity, confidence, pinned, metadata, created_at, updated_at]
+      properties:
+        id: {type: string}
+        scope: {type: string}
+        kind: {type: string}
+        content: {type: string}
+        summary: {type: [string, 'null']}
+        sensitivity: {type: string}
+        confidence: {type: number}
+        pinned: {type: boolean}
+        metadata:
+          oneOf:
+            - {type: object, additionalProperties: true}
+            - {type: 'null'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    MemorySearchResult:
+      allOf:
+        - $ref: '#/components/schemas/MemoryItem'
+        - type: object
+          required: [score, search_kind]
+          properties:
+            score: {type: number, minimum: 0, maximum: 1}
+            search_kind: {const: lexical}
+
+    AgentCreate:
+      type: object
+      required: [name, endpoint]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        version: {type: string, minLength: 1, maxLength: 100, default: 0.1.0}
+        endpoint:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2083
+          pattern: '^[Hh][Tt][Tt][Pp][Ss]?://'
+        model_id: {type: [string, 'null'], maxLength: 500}
+        skills: {type: array, maxItems: 200, items: {type: string}, default: []}
+    AgentHeartbeat:
+      type: object
+      properties:
+        status: {type: string, enum: [online, offline, busy], default: online}
+    Agent:
+      type: object
+      required: [id, name, version, endpoint, model_id, status, skills, last_heartbeat_at, created_at, updated_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        version: {type: string}
+        endpoint: {type: string}
+        model_id: {type: [string, 'null']}
+        status: {type: string, enum: [online, offline, busy, unverified]}
+        skills: {type: array, items: {type: string}}
+        last_heartbeat_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AgentRegistration:
+      allOf:
+        - $ref: '#/components/schemas/Agent'
+        - type: object
+          required: [credential]
+          properties:
+            credential: {type: string, readOnly: true}
+
+    AuditEvent:
+      type: object
+      description: |
+        Public audit projection. Hashes cover the immutable internal serialized
+        payload; legacy process-error redaction can therefore make the returned
+        payload differ from the material covered by `hash`.
+      required: [id, trace_id, event_type, actor_type, actor_id, payload, hash, created_at]
+      properties:
+        id: {type: integer}
+        trace_id:
+          type: [string, 'null']
+          description: Null only on read-compatible audit rows created before trace metadata existed.
+        event_type: {type: string}
+        actor_type:
+          type: [string, 'null']
+          description: Null only on read-compatible audit rows created before actor metadata existed.
+        actor_id:
+          type: [string, 'null']
+          description: Null only on read-compatible audit rows created before actor metadata existed.
+        task_id: {type: [string, 'null']}
+        payload:
+          type: object
+          additionalProperties: true
+          description: Public payload; legacy process failure text may be redacted.
+        prev_hash: {type: [string, 'null']}
+        hash:
+          type: [string, 'null']
+          description: SHA-256 hash of immutable internal event material before public projection; null only for legacy unchained rows.
+        created_at: {type: string, format: date-time}
+    FeedbackCreate:
+      type: object
+      properties:
+        task_id: {type: [string, 'null']}
+        agent_id: {type: [string, 'null']}
+        type: {type: string, minLength: 1, maxLength: 100, default: rating}
+        label: {type: [string, 'null'], maxLength: 200}
+        score: {type: [number, 'null'], minimum: 0, maximum: 5}
+        notes: {type: [string, 'null'], maxLength: 4000}
+    FeedbackRecord:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, agent_id, type, label, score, notes, payload, created_at]
+      properties:
+        id: {type: string}
+        task_id: {type: [string, 'null']}
+        agent_id: {type: [string, 'null']}
+        type: {type: string, minLength: 1, maxLength: 100}
+        label: {type: [string, 'null'], maxLength: 200}
+        score: {type: [number, 'null'], minimum: 0, maximum: 5}
+        notes: {type: [string, 'null'], maxLength: 4000}
+        payload: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+
+    Bootstrap:
+      type: object
+      required: [server_time, tasks, approvals, tool_calls, conversations, agents, pinned_memory, counts, cursor]
+      properties:
+        server_time: {type: string, format: date-time}
+        tasks: {type: array, items: {$ref: '#/components/schemas/TaskRecord'}}
+        approvals: {type: array, items: {$ref: '#/components/schemas/Approval'}}
+        tool_calls: {type: array, items: {$ref: '#/components/schemas/ToolCall'}}
+        conversations: {type: array, items: {$ref: '#/components/schemas/Conversation'}}
+        agents: {type: array, items: {$ref: '#/components/schemas/Agent'}}
+        pinned_memory: {type: array, items: {$ref: '#/components/schemas/MemoryItem'}}
+        counts:
+          type: object
+          required: [tasks, messages, agents, memory_items, audit_events, approvals_pending]
+          properties:
+            tasks: {type: integer}
+            messages: {type: integer}
+            agents: {type: integer}
+            memory_items: {type: integer}
+            audit_events: {type: integer}
+            approvals_pending: {type: integer}
+        cursor: {type: string}
+    WebSocketTicket:
+      type: object
+      required: [ticket, expires_in_seconds]
+      properties:
+        ticket: {type: string, writeOnly: true}
+        expires_in_seconds: {const: 30}
