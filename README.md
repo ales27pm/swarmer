@@ -63,7 +63,8 @@ modèle et d'exécution:
   incertain. Un appel approuvé mais encore antérieur à la revendication devient
   `failed` comme non démarré. Aucun des deux n'est rejoué automatiquement.
   Les alias par lien physique d'un chemin protégé sont aussi refusés. Si
-  `/usr/bin/bwrap` manque, l'exécution est refusée sans fallback direct.
+  `/usr/bin/bwrap` ou le limiteur `/usr/bin/prlimit` manque, l'exécution est
+  refusée sans fallback direct.
 
 Le contrat complet est dans [`api/openapi.yaml`](api/openapi.yaml) et la procédure
 locale dans [`docs/18-dev-setup.md`](docs/18-dev-setup.md).

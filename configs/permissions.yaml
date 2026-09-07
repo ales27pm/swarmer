@@ -65,6 +65,7 @@ protected_paths:
 execution:
   backend: bubblewrap
   binary: /usr/bin/bwrap
+  limiter_binary: /usr/bin/prlimit
   network: deny
   max_timeout_seconds: 30
   max_output_bytes: 65536

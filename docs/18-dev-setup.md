@@ -9,6 +9,7 @@ prototype Vibecode.
 - Ubuntu pour l'exécution de processus isolés;
 - Python 3.12 ou plus récent;
 - Bubblewrap disponible exactement à `/usr/bin/bwrap`;
+- `prlimit` (util-linux) disponible exactement à `/usr/bin/prlimit`;
 - Node.js conforme au champ `engines` de `mobile/package.json` (actuellement
   Node 22.13+ ou 24+);
 - un endpoint local compatible OpenAI pour la planification, par défaut
@@ -18,9 +19,10 @@ Sur Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install bubblewrap python3 python3-venv
+sudo apt install bubblewrap python3 python3-venv util-linux
 python3 --version
 /usr/bin/bwrap --version
+/usr/bin/prlimit --version
 ```
 
 Bubblewrap est obligatoire uniquement pour `process.run`, mais son absence ne
@@ -216,17 +218,21 @@ créer un appel de processus, le serveur vérifie notamment:
 - le nom de commande dans `execution.allowed_commands`;
 - les sous-commandes npm/npx et les options d'évaluation inline interdites;
 - un `cwd` existant à l'intérieur de `MONGARS_WORKSPACE_ROOT`;
-- la présence exécutable du binaire configuré, par défaut `/usr/bin/bwrap`.
+- la présence exécutable de Bubblewrap et de `prlimit`, configurés par défaut à
+  `/usr/bin/bwrap` et `/usr/bin/prlimit`.
 
 Après l'approbation ponctuelle, Bubblewrap démarre avec des namespaces isolés,
 sans réseau, sans capacités, sans environnement hôte, avec des `/tmp` et `/run`
 privés. Des limites POSIX bornent aussi CPU, mémoire, nombre de processus, taille
-de fichier et descripteurs ouverts. Les répertoires système utiles sont en lecture
-seule, seul le workspace est monté en écriture, et les chemins protégés (`.env`,
-clés, tokens, `.git/config`, `.npmrc`, etc.) sont masqués. Le temps et les sorties
-sont bornés par la politique. Les lectures et écritures directes traversent le
-workspace par des descripteurs sans suivre les symlinks; les lectures sont bornées
-avant allocation et les écritures sont installées par remplacement atomique.
+de fichier et descripteurs ouverts. La limite dure de processus est appliquée par
+`prlimit` après la création du namespace utilisateur, afin de borner le sandbox
+sans compter les autres threads du compte Ubuntu. Les répertoires système utiles
+sont en lecture seule, seul le workspace est monté en écriture, et les chemins
+protégés (`.env`, clés, tokens, `.git/config`, `.npmrc`, etc.) sont masqués. Le
+temps et les sorties sont bornés par la politique. Les lectures et écritures
+directes traversent le workspace par des descripteurs sans suivre les symlinks;
+les lectures sont bornées avant allocation et les écritures sont installées par
+remplacement atomique.
 Une lecture/écriture directe compare aussi l'inode cible aux fichiers protégés.
 Un processus est refusé avant Bubblewrap si un fichier protégé possède plusieurs
 liens physiques, ce qui ferme les alias comme `notes.txt -> .env`.

@@ -18,6 +18,7 @@ class PermissionPolicyError(RuntimeError):
 class ProcessPolicy:
     backend: str
     binary: Path
+    limiter_binary: Path
     network: str
     allowed_commands: frozenset[str]
     max_timeout_seconds: float
@@ -153,6 +154,7 @@ class PermissionPolicy:
     def _parse_process_policy(raw: dict[str, Any]) -> ProcessPolicy:
         backend = raw.get("backend")
         binary = raw.get("binary")
+        limiter_binary = raw.get("limiter_binary")
         network = raw.get("network")
         commands = raw.get("allowed_commands")
         timeout = raw.get("max_timeout_seconds")
@@ -166,6 +168,12 @@ class PermissionPolicy:
             raise PermissionPolicyError("execution.backend must be bubblewrap")
         if not isinstance(binary, str) or not Path(binary).is_absolute():
             raise PermissionPolicyError("execution.binary must be an absolute path")
+        if (
+            not isinstance(limiter_binary, str)
+            or not Path(limiter_binary).is_absolute()
+            or Path(limiter_binary).name != "prlimit"
+        ):
+            raise PermissionPolicyError("execution.limiter_binary must be an absolute prlimit path")
         if network != "deny":
             raise PermissionPolicyError("process network access must be denied")
         if not isinstance(commands, list) or not commands:
@@ -194,6 +202,7 @@ class PermissionPolicy:
         return ProcessPolicy(
             backend=backend,
             binary=Path(binary),
+            limiter_binary=Path(limiter_binary),
             network=network,
             allowed_commands=frozenset(commands),
             max_timeout_seconds=float(timeout),

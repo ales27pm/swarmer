@@ -27,6 +27,7 @@ def policy() -> PermissionPolicy:
         process=ProcessPolicy(
             backend="bubblewrap",
             binary=Path("/definitely/missing/bwrap"),
+            limiter_binary=Path("/definitely/missing/prlimit"),
             network="deny",
             allowed_commands=frozenset({"pytest"}),
             max_timeout_seconds=30,

@@ -39,6 +39,7 @@ def permission_policy(binary: Path = Path("/definitely/missing/bwrap")) -> Permi
         process=ProcessPolicy(
             backend="bubblewrap",
             binary=binary,
+            limiter_binary=binary.with_name("prlimit"),
             network="deny",
             allowed_commands=frozenset({"git", "pytest", "python3"}),
             max_timeout_seconds=30,
@@ -410,6 +411,7 @@ async def test_non_idempotent_process_call_cannot_be_replayed(
     workspace.mkdir()
     binary = tmp_path / "bwrap"
     binary.touch(mode=0o700)
+    binary.with_name("prlimit").touch(mode=0o700)
     state = StateService(db_path)
     await state.initialize()
     task = await state.create_task(TaskRecord.new(TaskCreate(input="run once"), source="pytest"))

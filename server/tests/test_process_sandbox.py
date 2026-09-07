@@ -8,11 +8,13 @@ from app.services.permission_policy import PermissionPolicy, ProcessPolicy, Tool
 from app.services.process_sandbox import ProcessSandbox, ProcessSandboxError
 
 
-def sandbox(tmp_path: Path) -> tuple[ProcessSandbox, Path]:
+def sandbox(tmp_path: Path, *, max_processes: int = 64) -> tuple[ProcessSandbox, Path]:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     binary = tmp_path / "bwrap"
     binary.touch(mode=0o700)
+    process_limiter = tmp_path / "prlimit"
+    process_limiter.touch(mode=0o700)
     policy = PermissionPolicy(
         protected_paths=("**/.env", "**/.env.*", "**/*.key", "**/*token*"),
         tool_rules={
@@ -28,12 +30,13 @@ def sandbox(tmp_path: Path) -> tuple[ProcessSandbox, Path]:
         process=ProcessPolicy(
             backend="bubblewrap",
             binary=binary,
+            limiter_binary=process_limiter,
             network="deny",
             allowed_commands=frozenset({"git", "node", "npm", "npx", "python3", "pytest"}),
             max_timeout_seconds=30,
             max_output_bytes=4096,
             max_memory_bytes=1_073_741_824,
-            max_processes=64,
+            max_processes=max_processes,
             max_file_bytes=16_777_216,
             max_open_files=256,
         ),
@@ -58,7 +61,13 @@ def test_command_contains_isolation_and_masks_protected_files(tmp_path: Path) ->
         )
         + 3
     ]
-    assert command[-3:] == ["--", "pytest", "-q"]
+    assert command[-5:] == [
+        str(process_sandbox.policy.process.limiter_binary),
+        "--nproc=64:64",
+        "--",
+        "pytest",
+        "-q",
+    ]
 
 
 def test_process_rejects_protected_file_hardlink_alias(tmp_path: Path) -> None:
@@ -104,7 +113,13 @@ def test_process_allows_safe_file_hardlinks(tmp_path: Path) -> None:
 
     command = process_sandbox.build_command(["pytest", "-q"], workspace)
 
-    assert command[-3:] == ["--", "pytest", "-q"]
+    assert command[-5:] == [
+        str(process_sandbox.policy.process.limiter_binary),
+        "--nproc=64:64",
+        "--",
+        "pytest",
+        "-q",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -161,10 +176,33 @@ def test_posix_resource_limits_are_applied(tmp_path: Path, monkeypatch: pytest.M
 
     assert applied[resource.RLIMIT_CPU] == (4, 4)
     assert applied[resource.RLIMIT_AS] == (1_073_741_824, 1_073_741_824)
-    assert applied[resource.RLIMIT_NPROC] == (64, 64)
+    assert resource.RLIMIT_NPROC not in applied
     assert applied[resource.RLIMIT_FSIZE] == (16_777_216, 16_777_216)
     assert applied[resource.RLIMIT_NOFILE] == (256, 256)
     assert applied[resource.RLIMIT_CORE] == (0, 0)
+
+
+def test_process_fails_closed_without_process_limiter(tmp_path: Path) -> None:
+    process_sandbox, workspace = sandbox(tmp_path)
+    process_sandbox.policy.process.limiter_binary.unlink()
+
+    with pytest.raises(ProcessSandboxError, match="process limiter is unavailable"):
+        process_sandbox.build_command(["pytest", "-q"], workspace)
+
+
+@pytest.mark.parametrize("max_processes", [1, 256])
+def test_process_limit_policy_boundaries_are_encoded_exactly(
+    tmp_path: Path, max_processes: int
+) -> None:
+    process_sandbox, workspace = sandbox(tmp_path, max_processes=max_processes)
+
+    command = process_sandbox.build_command(["pytest"], workspace)
+
+    assert command[-3:] == [
+        f"--nproc={max_processes}:{max_processes}",
+        "--",
+        "pytest",
+    ]
 
 
 @pytest.mark.asyncio

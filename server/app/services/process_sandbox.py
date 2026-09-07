@@ -100,6 +100,9 @@ class ProcessSandbox:
         binary = self.policy.process.binary
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise ProcessSandboxError(f"required sandbox backend is unavailable: {binary}")
+        limiter_binary = self.policy.process.limiter_binary
+        if not limiter_binary.is_file() or not os.access(limiter_binary, os.X_OK):
+            raise ProcessSandboxError(f"required process limiter is unavailable: {limiter_binary}")
 
     @staticmethod
     def _is_inline_evaluation_argument(command: str, value: str) -> bool:
@@ -217,6 +220,9 @@ class ProcessSandbox:
                 "--setenv",
                 "GIT_CONFIG_VALUE_1",
                 "/dev/null",
+                "--",
+                str(self.policy.process.limiter_binary),
+                f"--nproc={self.policy.process.max_processes}:{self.policy.process.max_processes}",
                 "--",
                 *argv,
             )
@@ -398,7 +404,6 @@ class ProcessSandbox:
         limits = (
             (resource.RLIMIT_CPU, cpu_seconds),
             (resource.RLIMIT_AS, self.policy.process.max_memory_bytes),
-            (resource.RLIMIT_NPROC, self.policy.process.max_processes),
             (resource.RLIMIT_FSIZE, self.policy.process.max_file_bytes),
             (resource.RLIMIT_NOFILE, self.policy.process.max_open_files),
             (resource.RLIMIT_CORE, 0),
