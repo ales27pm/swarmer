@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -29,6 +29,47 @@ For a real tool, summary is proposal-only context and the server replaces it wit
 For tool_name 'none', summary is the proposal-only response shown to the user.
 Do not claim an action already happened. You only propose the next action.
 """
+    TOOL_NAMES: ClassVar[tuple[str, ...]] = (
+        "none",
+        "workspace.list_dir",
+        "workspace.read_text",
+        "workspace.write_text",
+        "process.run",
+    )
+    RESPONSE_FORMAT: ClassVar[dict[str, Any]] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "orchestrator_proposal",
+            # Tool-specific required fields are validated by ExecutionEngine. Keeping
+            # this schema non-strict lets one envelope cover each supported tool. The
+            # provider receives the JSON contract; downstream validation remains the
+            # authoritative boundary when a provider only partially honors it.
+            "strict": False,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "enum": list(TOOL_NAMES),
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                            "argv": {"type": "array", "items": {"type": "string"}},
+                            "cwd": {"type": "string"},
+                            "timeout_seconds": {"type": "number"},
+                        },
+                    },
+                    "summary": {"type": "string", "minLength": 1},
+                },
+                "required": ["tool_name", "arguments", "summary"],
+            },
+        },
+    }
 
     def __init__(self, base_url: str, model: str) -> None:
         self.base_url = base_url.rstrip("/")
@@ -45,6 +86,8 @@ Do not claim an action already happened. You only propose the next action.
                 },
             ],
             "temperature": 0.1,
+            "stream": False,
+            "response_format": self.RESPONSE_FORMAT,
         }
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -92,4 +135,13 @@ Do not claim an action already happened. You only propose the next action.
             or not isinstance(summary, str)
         ):
             raise OrchestratorError("orchestrator proposal has invalid fields")
+        if tool_name not in self.TOOL_NAMES:
+            raise OrchestratorError("orchestrator proposal uses an unsupported tool")
+        if not summary.strip() or len(summary) > 2_000:
+            raise OrchestratorError("orchestrator proposal summary is invalid")
+        if tool_name == "none":
+            # A no-tool proposal cannot act on arguments. Discarding any generated
+            # values keeps this path inert even when a provider only partially
+            # implements the requested response schema.
+            arguments = {}
         return {"tool_name": tool_name, "arguments": arguments, "summary": summary}

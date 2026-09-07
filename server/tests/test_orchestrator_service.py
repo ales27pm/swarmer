@@ -51,3 +51,62 @@ async def test_plan_accepts_exact_typed_proposal() -> None:
     post = AsyncMock(return_value=response_for(json.dumps(proposal)))
     with patch("httpx.AsyncClient.post", post):
         assert await service.plan("inspect") == proposal
+
+    await_args = post.await_args
+    assert await_args is not None
+    payload = await_args.kwargs["json"]
+    assert payload["stream"] is False
+    assert payload["response_format"] == OrchestratorService.RESPONSE_FORMAT
+    assert payload["response_format"]["json_schema"]["strict"] is False
+    schema = payload["response_format"]["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["tool_name", "arguments", "summary"]
+    assert schema["properties"]["tool_name"]["enum"] == [
+        "none",
+        "workspace.list_dir",
+        "workspace.read_text",
+        "workspace.write_text",
+        "process.run",
+    ]
+    arguments = schema["properties"]["arguments"]
+    assert arguments["additionalProperties"] is False
+    assert set(arguments["properties"]) == {
+        "path",
+        "content",
+        "argv",
+        "cwd",
+        "timeout_seconds",
+    }
+
+
+@pytest.mark.asyncio
+async def test_plan_discards_inert_arguments_for_none_proposal() -> None:
+    proposal = {
+        "tool_name": "none",
+        "arguments": {"path": "."},
+        "summary": "No tool needed",
+    }
+    service = OrchestratorService("http://127.0.0.1:11434/v1", "local-model")
+    post = AsyncMock(return_value=response_for(json.dumps(proposal)))
+    with patch("httpx.AsyncClient.post", post):
+        result = await service.plan("explain")
+    assert result == {**proposal, "arguments": {}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "summary", "message"),
+    [
+        ("unknown.tool", "Unknown tool", "unsupported tool"),
+        ("none", "   ", "summary is invalid"),
+        ("none", "x" * 2_001, "summary is invalid"),
+    ],
+)
+async def test_plan_rejects_values_outside_the_response_contract(
+    tool_name: str, summary: str, message: str
+) -> None:
+    proposal = {"tool_name": tool_name, "arguments": {}, "summary": summary}
+    service = OrchestratorService("http://127.0.0.1:11434/v1", "local-model")
+    post = AsyncMock(return_value=response_for(json.dumps(proposal)))
+    with patch("httpx.AsyncClient.post", post), pytest.raises(OrchestratorError, match=message):
+        await service.plan("explain")
