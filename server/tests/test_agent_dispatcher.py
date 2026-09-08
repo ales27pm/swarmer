@@ -19,6 +19,8 @@ async def test_only_one_agent_can_claim_one_job(tmp_path: Path) -> None:
     second = await state.register_agent(
         AgentCreate(name="second", endpoint="http://127.0.0.1:2", skills=["read"]), "device"
     )
+    assert await state.heartbeat_agent(first["id"], "online", first["credential"])
+    assert await state.heartbeat_agent(second["id"], "online", second["credential"])
     dispatcher = AgentDispatcher(state.db_path, MessageBoardService(state.db_path))
     await dispatcher.queue_job(task.id, "read", {"path": "."})
 

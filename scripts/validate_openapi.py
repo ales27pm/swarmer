@@ -164,6 +164,8 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
             "/agents/{agent_id}/jobs",
             "/agents/{agent_id}/jobs/{job_id}/heartbeat",
             "/agents/{agent_id}/jobs/{job_id}/result",
+            "/agents/{agent_id}/jobs/{job_id}/capability-requests",
+            "/agents/{agent_id}/jobs/{job_id}/capability-requests/{request_id}/poll",
         }:
             expected_security = [{"agentBearer": []}]
         else:

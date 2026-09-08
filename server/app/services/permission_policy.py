@@ -60,6 +60,16 @@ class PermissionPolicy:
             "process.run",
         }
     )
+    SUPPORTED_IPHONE_CAPABILITIES = frozenset(
+        {
+            "iphone.location.current",
+            "iphone.contacts.lookup",
+            "iphone.calendar.events",
+            "iphone.photos.pick",
+            "iphone.mail.compose",
+            "iphone.sms.compose",
+        }
+    )
 
     def __init__(
         self,
@@ -67,6 +77,7 @@ class PermissionPolicy:
         protected_paths: tuple[str, ...],
         process: ProcessPolicy,
         tool_rules: Mapping[str, ToolPermissionRule],
+        capability_rules: Mapping[str, ToolPermissionRule] | None = None,
     ) -> None:
         missing = self.SUPPORTED_TOOLS - set(tool_rules)
         extra = set(tool_rules) - self.SUPPORTED_TOOLS
@@ -75,9 +86,26 @@ class PermissionPolicy:
                 f"tool_rules must define exactly the supported tools; missing={sorted(missing)}, "
                 f"extra={sorted(extra)}"
             )
+        effective_capability_rules = capability_rules or {
+            name: ToolPermissionRule(
+                id=f"deny-unconfigured-{name.replace('.', '-')}",
+                description="Native capability policy was not explicitly configured.",
+                decision="deny",
+                risk="high",
+            )
+            for name in self.SUPPORTED_IPHONE_CAPABILITIES
+        }
+        missing_capabilities = self.SUPPORTED_IPHONE_CAPABILITIES - set(effective_capability_rules)
+        extra_capabilities = set(effective_capability_rules) - self.SUPPORTED_IPHONE_CAPABILITIES
+        if missing_capabilities or extra_capabilities:
+            raise PermissionPolicyError(
+                "capability_rules must define exactly the supported iPhone capabilities; "
+                f"missing={sorted(missing_capabilities)}, extra={sorted(extra_capabilities)}"
+            )
         self.protected_paths = protected_paths
         self.process = process
         self.tool_rules = MappingProxyType(dict(tool_rules))
+        self.capability_rules = MappingProxyType(dict(effective_capability_rules))
 
     @classmethod
     def from_yaml(cls, path: Path) -> PermissionPolicy:
@@ -91,6 +119,7 @@ class PermissionPolicy:
         protected_paths = raw.get("protected_paths")
         execution = raw.get("execution")
         tool_rules = raw.get("tool_rules")
+        capability_rules = raw.get("capability_rules")
         if not isinstance(protected_paths, list) or not all(
             isinstance(pattern, str) and pattern for pattern in protected_paths
         ):
@@ -99,12 +128,15 @@ class PermissionPolicy:
             raise PermissionPolicyError("execution policy is required")
         if not isinstance(tool_rules, dict):
             raise PermissionPolicyError("tool_rules policy is required")
+        if not isinstance(capability_rules, dict):
+            raise PermissionPolicyError("capability_rules policy is required")
 
         process = cls._parse_process_policy(execution)
         return cls(
             protected_paths=tuple(protected_paths),
             process=process,
             tool_rules=cls._parse_tool_rules(tool_rules),
+            capability_rules=cls._parse_tool_rules(capability_rules),
         )
 
     @classmethod
@@ -149,6 +181,14 @@ class PermissionPolicy:
             return self.tool_rules[tool_name]
         except KeyError as exc:
             raise PermissionPolicyError(f"tool is not covered by policy: {tool_name}") from exc
+
+    def evaluate_capability(self, capability_name: str) -> ToolPermissionRule:
+        try:
+            return self.capability_rules[capability_name]
+        except KeyError as exc:
+            raise PermissionPolicyError(
+                f"iPhone capability is not covered by policy: {capability_name}"
+            ) from exc
 
     @staticmethod
     def _parse_process_policy(raw: dict[str, Any]) -> ProcessPolicy:

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -17,6 +17,13 @@ info:
     executor result. Writes and process execution require a one-use approval.
     `process.run` is constrained by the Bubblewrap policy and fails closed when
     `/usr/bin/bwrap` is unavailable.
+
+    Distributed jobs use a SQLite transactional outbox, one active remote job
+    per task, skill- and concurrency-aware claims and expiring hashed-token
+    leases fenced by id and generation. Automatic redispatch is limited to the
+    two read-only workspace skills. iPhone capabilities use a separate device approval and a
+    short, one-use grant consumed before native execution. Redis/NATS and an
+    external multi-host bus are not part of this runtime.
 servers:
   - url: https://ubuntu.example
     description: TLS-protected private-network control plane
@@ -30,6 +37,7 @@ tags:
   - name: Approvals
   - name: Memory
   - name: Agents
+  - name: iPhone Capabilities
   - name: Audit
   - name: Feedback
   - name: Events
@@ -45,6 +53,20 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/HealthResponse'}
+
+  /status:
+    get:
+      tags: [System]
+      summary: Read authenticated runtime queue, lease, outbox, and capability counters
+      responses:
+        '200':
+          description: Current local-runtime counters
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RuntimeStatus'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
 
   /pairing/code:
     post:
@@ -608,7 +630,13 @@ paths:
   /agents/{agent_id}/claim:
     post:
       tags: [Agents]
-      summary: Atomically claim the oldest compatible queued job
+      summary: Atomically claim the highest-priority compatible queued job
+      description: |
+        Only an `online` agent below `max_concurrency` can claim a compatible
+        job. Selection is deterministic by task priority, creation time and id.
+        A claim increments its attempt and lease generation and returns an
+        opaque token whose digest alone is stored. The current implementation
+        accepts `wait_seconds` but returns immediately rather than long-polling.
       security: [{agentBearer: []}]
       parameters: [{$ref: '#/components/parameters/AgentId'}]
       requestBody:
@@ -616,7 +644,7 @@ paths:
         content: {application/json: {schema: {$ref: '#/components/schemas/AgentJobClaim'}}}
       responses:
         '200':
-          description: Claimed job with claim token, or null when no matching skill exists
+          description: Claimed job with lease proof, or null when no eligible work exists
           content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/ClaimedAgentJob'}, {type: 'null'}]}}}
         '401': {description: Missing or invalid agent-specific credential}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -641,6 +669,7 @@ paths:
     post:
       tags: [Agents]
       summary: Record liveness for an actively claimed job
+      description: Renews an unexpired owned lease; a stale, expired or foreign proof is fenced with 409.
       security: [{agentBearer: []}]
       parameters:
         - $ref: '#/components/parameters/AgentId'
@@ -659,6 +688,9 @@ paths:
     post:
       tags: [Agents]
       summary: Submit an idempotent terminal worker result
+      description: |
+        Transitions the job and parent task atomically. An exact terminal replay
+        is acknowledged; a different result or stale lease is rejected with 409.
       security: [{agentBearer: []}]
       parameters:
         - $ref: '#/components/parameters/AgentId'
@@ -669,6 +701,195 @@ paths:
       responses:
         '200': {description: Terminal job, content: {application/json: {schema: {$ref: '#/components/schemas/AgentJobResultRecord'}}}}
         '401': {description: Missing or invalid agent-specific credential}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /agents/{agent_id}/jobs/{job_id}/capability-requests:
+    post:
+      tags: [iPhone Capabilities]
+      summary: Request a permission-gated iPhone capability for an active job
+      description: |
+        Requires the agent credential and the exact active lease proof. The
+        request is bound to the task, job, lease generation and target device.
+        Arguments and grant material are omitted from this worker-facing
+        response. Repeating or racing the same job, lease generation,
+        capability and canonical arguments returns the original non-terminal
+        request; different arguments create a distinct request.
+      security: [{agentBearer: []}]
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentCapabilityRequest'}
+      responses:
+        '201':
+          description: Capability request created, or its identical non-terminal predecessor returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPhoneCapabilityRequestPreview'}
+        '401': {description: Missing or invalid agent-specific credential}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /agents/{agent_id}/jobs/{job_id}/capability-requests/{request_id}/poll:
+    post:
+      tags: [iPhone Capabilities]
+      summary: Poll a capability result while retaining the active worker lease
+      description: |
+        The request must belong to the same agent, job and lease generation.
+        Workers continue their ordinary job heartbeat while polling. Terminal
+        native data appears only in `result`; denied, expired or cancelled
+        requests can terminate with a null result.
+      security: [{agentBearer: []}]
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/CapabilityRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentCapabilityPoll'}
+      responses:
+        '200':
+          description: Authoritative capability state for this lease
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentCapabilityPollResult'}
+        '401': {description: Missing or invalid agent-specific credential}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /iphone/capabilities/requests:
+    get:
+      tags: [iPhone Capabilities]
+      summary: List capability requests targeted to this paired iPhone
+      description: Returns only requests whose target device matches the authenticated bearer.
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 100}
+      responses:
+        '200':
+          description: Device-scoped capability request previews
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/IPhoneCapabilityRequestPreview'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /iphone/capabilities/requests/{request_id}:
+    get:
+      tags: [iPhone Capabilities]
+      summary: Read an authoritative capability request for this iPhone
+      description: |
+        Returns validated arguments and the canonical action digest. The opaque
+        grant is never recovered by GET; `grant` is null even after approval.
+      parameters:
+        - $ref: '#/components/parameters/CapabilityRequestId'
+      responses:
+        '200':
+          description: Device-scoped capability request detail
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPhoneCapabilityRequestDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /iphone/capabilities/requests/{request_id}/authorize:
+    post:
+      tags: [iPhone Capabilities]
+      summary: Approve or deny one request on its targeted iPhone
+      description: |
+        Approval returns the short one-use opaque grant only in this response,
+        nested in the request detail; GET always returns `grant: null`. Repeating
+        approval before consumption rotates the unconsumed grant and invalidates
+        the previous secret, allowing recovery from a lost response. A different
+        decision, consumed grant, terminal state, expiry, or lease orphan is
+        rejected. Denial returns the detail with `grant: null`.
+      parameters:
+        - $ref: '#/components/parameters/CapabilityRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IPhoneCapabilityDecision'}
+      responses:
+        '200':
+          description: Decided request, with a one-use grant only when approved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPhoneCapabilityRequestDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /iphone/capabilities/requests/{request_id}/execute:
+    post:
+      tags: [iPhone Capabilities]
+      summary: Consume a bound iPhone capability grant before native execution
+      description: |
+        Atomically consumes the opaque grant after checking device, request,
+        capability, approval, action digest, expiry and requesting worker lease.
+        A grant cannot be consumed twice.
+      parameters:
+        - $ref: '#/components/parameters/CapabilityRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IPhoneCapabilityExecute'}
+      responses:
+        '200':
+          description: One-use grant consumption receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPhoneCapabilityConsumeReceipt'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /iphone/capabilities/requests/{request_id}/result:
+    post:
+      tags: [iPhone Capabilities]
+      summary: Submit a strictly bound native capability result
+      description: |
+        Requires a previously consumed grant and a matching capability name.
+        The first valid result returns `accepted`; a replay with the same
+        validated terminal status and value returns `duplicate`; a different
+        terminal result is rejected.
+        The validated result is stored in the protected SQLite state for the
+        worker poll. Audit contains only correlation, status, and an explicit
+        redaction marker; the board contains only correlation and status; the
+        corresponding WebSocket update contains only `request_id`. None exposes
+        the native value.
+      parameters:
+        - $ref: '#/components/parameters/CapabilityRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IPhoneCapabilityResultSubmit'}
+      responses:
+        '200':
+          description: Accepted or duplicate result receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPhoneCapabilityResultReceipt'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         '409': {$ref: '#/components/responses/Conflict'}
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -789,6 +1010,34 @@ x-websocket-endpoints:
       - agent.job.claimed
       - agent.job.completed
       - agent.job.failed
+      - iphone.capability.requested
+      - iphone.capability.updated
+    iphoneCapabilityPayloads:
+      iphone.capability.requested:
+        type: object
+        additionalProperties: false
+        required: [request_id, capability_name, expires_at, preview]
+        properties:
+          request_id: {type: string}
+          capability_name: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+          expires_at: {type: string, format: date-time}
+          preview:
+            type: object
+            additionalProperties: false
+            required: [arguments_redacted]
+            properties:
+              arguments_redacted: {type: boolean, const: true}
+      iphone.capability.updated:
+        type: object
+        additionalProperties: false
+        required: [request_id]
+        properties:
+          request_id: {type: string}
+    privacy: >-
+      iPhone capability events are device-targeted. Requested events expose only
+      the request id, capability name, expiry, and an arguments-redacted marker;
+      updated events expose only the request id. Neither event carries arguments,
+      native results, bearer credentials, or grants.
 
 components:
   securitySchemes:
@@ -821,6 +1070,16 @@ components:
       schema: {type: string}
     AgentId:
       name: agent_id
+      in: path
+      required: true
+      schema: {type: string}
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema: {type: string}
+    CapabilityRequestId:
+      name: request_id
       in: path
       required: true
       schema: {type: string}
@@ -890,6 +1149,20 @@ components:
         status: {const: ok}
         service: {const: mongars-control-plane}
         version: {type: string}
+    RuntimeStatus:
+      type: object
+      additionalProperties: false
+      required: [status, queued_jobs, leased_jobs, dead_letter_jobs, expired_leases, retries, dead_letter_events, pending_outbox_events, pending_capability_requests]
+      properties:
+        status: {type: string, const: ok}
+        queued_jobs: {type: integer, minimum: 0}
+        leased_jobs: {type: integer, minimum: 0}
+        dead_letter_jobs: {type: integer, minimum: 0}
+        expired_leases: {type: integer, minimum: 0}
+        retries: {type: integer, minimum: 0}
+        dead_letter_events: {type: integer, minimum: 0}
+        pending_outbox_events: {type: integer, minimum: 0}
+        pending_capability_requests: {type: integer, minimum: 0}
     PairingCode:
       type: object
       required: [code, expires_in_seconds]
@@ -1379,25 +1652,35 @@ components:
           pattern: '^[Hh][Tt][Tt][Pp][Ss]?://'
         model_id: {type: [string, 'null'], maxLength: 500}
         skills: {type: array, maxItems: 200, items: {type: string}, default: []}
+        max_concurrency: {type: integer, minimum: 1, maximum: 32, default: 1}
+        capacity:
+          type: object
+          additionalProperties: {type: integer}
+          default: {}
     AgentHeartbeat:
       type: object
       additionalProperties: false
       properties:
-        status: {type: string, enum: [online, offline, busy], default: online}
+        status: {type: string, enum: [online, offline, busy, draining], default: online}
     Agent:
       type: object
-      required: [id, name, version, endpoint, model_id, status, skills, last_heartbeat_at, created_at, updated_at]
+      required: [id, name, version, endpoint, model_id, status, skills, last_heartbeat_at, last_seen_at, max_concurrency, capacity, created_at, updated_at, active_jobs, historical_score]
       properties:
         id: {type: string}
         name: {type: string}
         version: {type: string}
         endpoint: {type: string}
         model_id: {type: [string, 'null']}
-        status: {type: string, enum: [online, offline, busy, unverified]}
+        status: {type: string, enum: [online, offline, busy, draining, unverified]}
         skills: {type: array, items: {type: string}}
         last_heartbeat_at: {type: [string, 'null'], format: date-time}
+        last_seen_at: {type: [string, 'null'], format: date-time}
+        max_concurrency: {type: integer, minimum: 1, maximum: 32}
+        capacity: {type: object, additionalProperties: {type: integer}}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        active_jobs: {type: integer, minimum: 0}
+        historical_score: {type: number}
     AgentRegistration:
       allOf:
         - $ref: '#/components/schemas/Agent'
@@ -1410,7 +1693,12 @@ components:
       additionalProperties: false
       required: [required_skill, payload]
       properties:
-        required_skill: {type: string, enum: [workspace.list_dir, workspace.read_text]}
+        required_skill:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: '^[A-Za-z0-9._:-]+$'
+          enum: [workspace.list_dir, workspace.read_text]
         payload: {type: object, additionalProperties: true}
     AgentJobClaim:
       type: object
@@ -1420,22 +1708,26 @@ components:
     AgentJobHeartbeat:
       type: object
       additionalProperties: false
-      required: [claim_token]
+      required: [claim_token, lease_id, lease_generation]
       properties:
         claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
+        lease_id: {type: string, minLength: 10, maxLength: 200}
+        lease_generation: {type: integer, minimum: 1}
     AgentJobResult:
       type: object
       additionalProperties: false
-      required: [claim_token, status]
+      required: [claim_token, lease_id, lease_generation, status]
       properties:
         claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
+        lease_id: {type: string, minLength: 10, maxLength: 200}
+        lease_generation: {type: integer, minimum: 1}
         status: {type: string, enum: [completed, failed]}
         result: {type: [object, 'null'], additionalProperties: true}
         error: {type: [string, 'null'], maxLength: 4000}
     AgentJob:
       type: object
       additionalProperties: false
-      required: [id, task_id, required_skill, payload, status, claimed_by, result, error, created_at, updated_at, claimed_at, heartbeat_at, completed_at]
+      required: [id, task_id, required_skill, payload, status, claimed_by, result, error, created_at, updated_at, claimed_at, heartbeat_at, completed_at, lease_id, lease_expires_at, lease_generation, attempt_count, max_attempts, last_agent_id, last_failure_reason]
       properties:
         id: {type: string}
         task_id: {type: string}
@@ -1450,20 +1742,385 @@ components:
         claimed_at: {type: [string, 'null'], format: date-time}
         heartbeat_at: {type: [string, 'null'], format: date-time}
         completed_at: {type: [string, 'null'], format: date-time}
+        lease_id: {type: [string, 'null']}
+        lease_expires_at: {type: [string, 'null'], format: date-time}
+        lease_generation: {type: integer, minimum: 0}
+        attempt_count: {type: integer, minimum: 0}
+        max_attempts: {type: integer, minimum: 1}
+        last_agent_id: {type: [string, 'null']}
+        last_failure_reason: {type: [string, 'null']}
     ClaimedAgentJob:
-      allOf:
-        - $ref: '#/components/schemas/AgentJob'
-        - type: object
-          required: [claim_token]
-          properties:
-            claim_token: {type: string, minLength: 20, readOnly: true}
+      type: object
+      additionalProperties: false
+      required: [id, task_id, required_skill, payload, status, claimed_by, result, error, created_at, updated_at, claimed_at, heartbeat_at, completed_at, lease_id, lease_expires_at, lease_generation, attempt_count, max_attempts, last_agent_id, last_failure_reason, claim_token]
+      properties:
+        id: {type: string}
+        task_id: {type: string}
+        required_skill: {type: string}
+        payload: {type: object, additionalProperties: true}
+        status: {const: claimed}
+        claimed_by: {type: string}
+        result: {type: 'null'}
+        error: {type: 'null'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        claimed_at: {type: string, format: date-time}
+        heartbeat_at: {type: string, format: date-time}
+        completed_at: {type: 'null'}
+        lease_id: {type: string, minLength: 10, maxLength: 200}
+        lease_expires_at: {type: string, format: date-time}
+        lease_generation: {type: integer, minimum: 1}
+        attempt_count: {type: integer, minimum: 1}
+        max_attempts: {type: integer, minimum: 1}
+        last_agent_id: {type: string}
+        last_failure_reason: {type: 'null'}
+        claim_token: {type: string, minLength: 20, maxLength: 500, readOnly: true}
     AgentJobResultRecord:
-      allOf:
-        - $ref: '#/components/schemas/AgentJob'
-        - type: object
-          required: [idempotent_replay]
+      type: object
+      additionalProperties: false
+      required: [id, task_id, required_skill, payload, status, claimed_by, result, error, created_at, updated_at, claimed_at, heartbeat_at, completed_at, lease_id, lease_expires_at, lease_generation, attempt_count, max_attempts, last_agent_id, last_failure_reason, idempotent_replay]
+      properties:
+        id: {type: string}
+        task_id: {type: string}
+        required_skill: {type: string}
+        payload: {type: object, additionalProperties: true}
+        status: {type: string, enum: [completed, failed]}
+        claimed_by: {type: string}
+        result: {type: [object, 'null'], additionalProperties: true}
+        error: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        claimed_at: {type: string, format: date-time}
+        heartbeat_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+        lease_id: {type: string, minLength: 10, maxLength: 200}
+        lease_expires_at: {type: string, format: date-time}
+        lease_generation: {type: integer, minimum: 1}
+        attempt_count: {type: integer, minimum: 1}
+        max_attempts: {type: integer, minimum: 1}
+        last_agent_id: {type: string}
+        last_failure_reason: {type: 'null'}
+        idempotent_replay: {type: boolean}
+      oneOf:
+        - properties:
+            status: {const: completed}
+            error: {type: 'null'}
+        - properties:
+            status: {const: failed}
+            error: {const: remote worker reported failure}
+
+    IPhoneCapabilityName:
+      type: string
+      enum:
+        - iphone.location.current
+        - iphone.contacts.lookup
+        - iphone.calendar.events
+        - iphone.photos.pick
+        - iphone.mail.compose
+        - iphone.sms.compose
+    IPhoneCapabilityStatus:
+      type: string
+      enum: [waiting_approval, approved, consumed, completed, denied, failed, cancelled, expired]
+    AgentCapabilityRequest:
+      type: object
+      additionalProperties: false
+      required: [claim_token, lease_id, lease_generation, capability_name, arguments]
+      properties:
+        claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
+        lease_id: {type: string, minLength: 10, maxLength: 200}
+        lease_generation: {type: integer, minimum: 1}
+        capability_name: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+        arguments: {type: object}
+      oneOf:
+        - properties:
+            capability_name: {const: iphone.location.current}
+            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
+        - properties:
+            capability_name: {const: iphone.contacts.lookup}
+            arguments: {$ref: '#/components/schemas/IPhoneContactsLookupArguments'}
+        - properties:
+            capability_name: {const: iphone.calendar.events}
+            arguments: {$ref: '#/components/schemas/IPhoneCalendarEventsArguments'}
+        - properties:
+            capability_name: {const: iphone.photos.pick}
+            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
+        - properties:
+            capability_name: {const: iphone.mail.compose}
+            arguments: {$ref: '#/components/schemas/IPhoneMailComposeArguments'}
+        - properties:
+            capability_name: {const: iphone.sms.compose}
+            arguments: {$ref: '#/components/schemas/IPhoneSMSComposeArguments'}
+    AgentCapabilityPoll:
+      type: object
+      additionalProperties: false
+      required: [claim_token, lease_id, lease_generation]
+      properties:
+        claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
+        lease_id: {type: string, minLength: 10, maxLength: 200}
+        lease_generation: {type: integer, minimum: 1}
+    AgentCapabilityPollResult:
+      type: object
+      additionalProperties: false
+      required: [request_id, capability_name, status, result, created_at, expires_at, completed_at]
+      properties:
+        request_id: {type: string}
+        capability_name: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+        status: {$ref: '#/components/schemas/IPhoneCapabilityStatus'}
+        result:
+          oneOf:
+            - {$ref: '#/components/schemas/IPhoneCapabilityNativeResult'}
+            - {type: 'null'}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+    IPhoneCapabilityRequestPreview:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
+      properties:
+        schema_version: {const: '0.9', description: Capability-envelope schema identifier; the API release is 0.9.0.}
+        request_id: {type: string}
+        task_id: {type: string}
+        agent_id: {type: string}
+        target_device_id: {type: string}
+        capability: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+        status: {$ref: '#/components/schemas/IPhoneCapabilityStatus'}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+    IPhoneCapabilityRequestDetail:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
+      properties:
+        schema_version: {const: '0.9', description: Capability-envelope schema identifier; the API release is 0.9.0.}
+        request_id: {type: string}
+        task_id: {type: string}
+        agent_id: {type: string}
+        target_device_id: {type: string}
+        capability: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+        status: {$ref: '#/components/schemas/IPhoneCapabilityStatus'}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        arguments:
+          type: object
+          description: Validated arguments for the named capability; never included in WebSocket, audit, or board payloads.
+        action_digest: {$ref: '#/components/schemas/ActionDigest'}
+        grant:
+          oneOf:
+            - {$ref: '#/components/schemas/IPhoneCapabilityGrant'}
+            - {type: 'null'}
+      oneOf:
+        - properties:
+            capability: {const: iphone.location.current}
+            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
+        - properties:
+            capability: {const: iphone.contacts.lookup}
+            arguments: {$ref: '#/components/schemas/IPhoneContactsLookupArguments'}
+        - properties:
+            capability: {const: iphone.calendar.events}
+            arguments: {$ref: '#/components/schemas/IPhoneCalendarEventsArguments'}
+        - properties:
+            capability: {const: iphone.photos.pick}
+            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
+        - properties:
+            capability: {const: iphone.mail.compose}
+            arguments: {$ref: '#/components/schemas/IPhoneMailComposeArguments'}
+        - properties:
+            capability: {const: iphone.sms.compose}
+            arguments: {$ref: '#/components/schemas/IPhoneSMSComposeArguments'}
+    IPhoneCapabilityGrant:
+      type: object
+      additionalProperties: false
+      required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
+      properties:
+        schema_version: {const: '0.9', description: Capability-envelope schema identifier; the API release is 0.9.0.}
+        grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
+        request_id: {type: string}
+        task_id: {type: string}
+        agent_id: {type: string}
+        target_device_id: {type: string}
+        approval_id: {type: string}
+        audit_id: {type: integer, minimum: 1}
+        capability: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+        action_digest: {$ref: '#/components/schemas/ActionDigest'}
+        issued_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        use: {const: once}
+    ActionDigest:
+      type: string
+      pattern: '^sha256:[0-9a-f]{64}$'
+    IPhoneEmptyArguments:
+      type: object
+      additionalProperties: false
+    IPhoneContactsLookupArguments:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query: {type: string, minLength: 1, maxLength: 200}
+    IPhoneCalendarEventsArguments:
+      type: object
+      additionalProperties: false
+      required: [start, end]
+      properties:
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time, description: Must be later than `start`.}
+    IPhoneMailComposeArguments:
+      type: object
+      additionalProperties: false
+      properties:
+        recipients: {type: array, maxItems: 20, items: {type: string, maxLength: 1000}, default: []}
+        subject: {type: [string, 'null'], maxLength: 500}
+        body: {type: [string, 'null'], maxLength: 10000}
+    IPhoneSMSComposeArguments:
+      type: object
+      additionalProperties: false
+      properties:
+        recipients: {type: array, maxItems: 20, items: {type: string, maxLength: 1000}, default: []}
+        message: {type: [string, 'null'], maxLength: 2000}
+    IPhoneCapabilityDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: {type: string, enum: [approve, deny]}
+        user_note: {type: [string, 'null'], maxLength: 2000}
+    IPhoneCapabilityExecute:
+      type: object
+      additionalProperties: false
+      required: [grant_id, action_digest]
+      properties:
+        grant_id: {type: string, minLength: 32, maxLength: 500, writeOnly: true}
+        action_digest: {$ref: '#/components/schemas/ActionDigest'}
+    IPhoneCapabilityConsumeReceipt:
+      type: object
+      additionalProperties: false
+      required: [status, request_id, grant_id, action_digest, consumed_at]
+      properties:
+        status: {const: consumed}
+        request_id: {type: string}
+        grant_id: {type: string}
+        action_digest: {$ref: '#/components/schemas/ActionDigest'}
+        consumed_at: {type: string, format: date-time}
+    IPhoneCapabilityResultSubmit:
+      type: object
+      additionalProperties: false
+      required: [grant_id, action_digest, result]
+      properties:
+        grant_id: {type: string, minLength: 32, maxLength: 500, writeOnly: true}
+        action_digest: {$ref: '#/components/schemas/ActionDigest'}
+        result: {$ref: '#/components/schemas/IPhoneCapabilityNativeResult'}
+    IPhoneCapabilityResultReceipt:
+      type: object
+      additionalProperties: false
+      required: [status, request_id, grant_id]
+      properties:
+        status: {type: string, enum: [accepted, duplicate]}
+        request_id: {type: string}
+        grant_id: {type: string}
+    IPhoneCapabilityNativeResult:
+      type: object
+      additionalProperties: false
+      description: Strict native result stored server-side; its value is redacted from audit, board and WebSocket events.
+      required: [name, status]
+      properties:
+        name: {$ref: '#/components/schemas/IPhoneCapabilityName'}
+        status: {type: string, enum: [completed, cancelled, denied, failed]}
+        value: {}
+        reason: {type: string, enum: [permission_denied, unavailable, native_error]}
+      oneOf:
+        - required: [value]
+          not: {required: [reason]}
           properties:
-            idempotent_replay: {type: boolean}
+            name: {const: iphone.location.current}
+            status: {const: completed}
+            value: {$ref: '#/components/schemas/IPhoneLocationValue'}
+        - required: [value]
+          not: {required: [reason]}
+          properties:
+            name: {const: iphone.contacts.lookup}
+            status: {const: completed}
+            value:
+              type: array
+              maxItems: 25
+              items: {$ref: '#/components/schemas/IPhoneContactValue'}
+        - required: [value]
+          not: {required: [reason]}
+          properties:
+            name: {const: iphone.calendar.events}
+            status: {const: completed}
+            value:
+              type: array
+              maxItems: 100
+              items: {$ref: '#/components/schemas/IPhoneCalendarEventValue'}
+        - required: [value]
+          not: {required: [reason]}
+          properties:
+            name: {const: iphone.photos.pick}
+            status: {const: completed}
+            value: {$ref: '#/components/schemas/IPhonePhotoValue'}
+        - required: [value]
+          not: {required: [reason]}
+          properties:
+            name: {type: string, enum: [iphone.mail.compose, iphone.sms.compose]}
+            status: {const: completed}
+            value: {$ref: '#/components/schemas/IPhoneComposerValue'}
+        - required: [value]
+          not: {required: [reason]}
+          properties:
+            name: {type: string, enum: [iphone.photos.pick, iphone.mail.compose, iphone.sms.compose]}
+            status: {const: cancelled}
+            value: {type: 'null'}
+        - required: [value, reason]
+          properties:
+            status: {const: denied}
+            value: {type: 'null'}
+            reason: {type: string, enum: [permission_denied, unavailable]}
+        - required: [value, reason]
+          properties:
+            status: {const: failed}
+            value: {type: 'null'}
+            reason: {const: native_error}
+    IPhoneLocationValue:
+      type: object
+      additionalProperties: false
+      required: [latitude, longitude, accuracy]
+      properties:
+        latitude: {type: number, minimum: -90, maximum: 90}
+        longitude: {type: number, minimum: -180, maximum: 180}
+        accuracy: {type: [number, 'null']}
+    IPhoneContactValue:
+      type: object
+      additionalProperties: false
+      required: [id, name, phoneNumbers, emails]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 500, pattern: '^\S(?:[\s\S]*\S)?$'}
+        name: {type: string, maxLength: 1000}
+        phoneNumbers: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 1000, pattern: '^\S(?:[\s\S]*\S)?$'}}
+        emails: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 1000, pattern: '^\S(?:[\s\S]*\S)?$'}}
+    IPhoneCalendarEventValue:
+      type: object
+      additionalProperties: false
+      required: [id, title, start, end]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 500, pattern: '^\S(?:[\s\S]*\S)?$'}
+        title: {type: string, maxLength: 2000}
+        start: {type: string, format: date-time, maxLength: 64}
+        end: {type: string, format: date-time, maxLength: 64}
+    IPhonePhotoValue:
+      type: object
+      additionalProperties: false
+      required: [uri, width, height]
+      properties:
+        uri: {type: string, minLength: 1, maxLength: 8000, pattern: '^\S(?:[\s\S]*\S)?$'}
+        width: {type: number, exclusiveMinimum: 0}
+        height: {type: number, exclusiveMinimum: 0}
+    IPhoneComposerValue:
+      type: object
+      additionalProperties: false
+      required: [composed]
+      properties:
+        composed: {const: true}
 
     AuditEvent:
       type: object

@@ -260,6 +260,125 @@ async def test_restart_fails_unclaimed_read_without_dispatch_or_duplicate_audit(
 
 
 @pytest.mark.asyncio
+async def test_restart_resolves_queued_local_and_remote_job_overlap_in_one_pass(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "private" / "state.db"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state = StateService(database)
+    await state.initialize()
+    task = await state.create_task(
+        TaskRecord.new(TaskCreate(input="overlapping local and remote work"), source="pytest")
+    )
+    engine = ExecutionEngine(database, workspace, policy())
+    call = await engine.create_tool_call(
+        task_id=task.id,
+        tool_name="workspace.list_dir",
+        arguments={"path": "."},
+        summary="Local queued read",
+        requester=REQUESTER,
+    )
+    now = "2026-01-01T00:00:00+00:00"
+    job_id = "job_restart_overlap"
+    async with aiosqlite.connect(database) as db:
+        await db.execute(
+            """
+            INSERT INTO agent_jobs(
+                id,task_id,required_skill,payload_json,status,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (job_id, task.id, "workspace.list_dir", '{"path":"."}', "queued", now, now),
+        )
+        await db.commit()
+
+    await StateService(database).initialize()
+
+    recovered_call = await engine.get(call["id"])
+    recovered_task = await state.get_task(task.id)
+    assert recovered_call is not None and recovered_call["status"] == "failed"
+    assert recovered_task is not None and recovered_task.status.value == "failed"
+    async with aiosqlite.connect(database) as db:
+        job = await (
+            await db.execute("SELECT status,lease_generation FROM agent_jobs WHERE id=?", (job_id,))
+        ).fetchone()
+        active_jobs = int(
+            (
+                await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) FROM agent_jobs
+                        WHERE task_id=? AND status IN ('queued','claimed','running')
+                        """,
+                        (task.id,),
+                    )
+                ).fetchone()
+            )[0]
+        )
+        cancellation_audits = int(
+            (
+                await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) FROM audit_events
+                        WHERE event_type='agent.job.cancelled.migration' AND task_id=?
+                        """,
+                        (task.id,),
+                    )
+                ).fetchone()
+            )[0]
+        )
+        cancellation_outbox = int(
+            (
+                await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) FROM outbox_events
+                        WHERE aggregate_id=? AND event_type='cancelled'
+                        """,
+                        (job_id,),
+                    )
+                ).fetchone()
+            )[0]
+        )
+    assert job == ("cancelled", 1)
+    assert active_jobs == 0
+    assert cancellation_audits == 1
+    assert cancellation_outbox == 1
+
+    await StateService(database).initialize()
+    async with aiosqlite.connect(database) as db:
+        repeated_audits = int(
+            (
+                await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) FROM audit_events
+                        WHERE event_type='agent.job.cancelled.migration' AND task_id=?
+                        """,
+                        (task.id,),
+                    )
+                ).fetchone()
+            )[0]
+        )
+        repeated_outbox = int(
+            (
+                await (
+                    await db.execute(
+                        """
+                        SELECT COUNT(*) FROM outbox_events
+                        WHERE aggregate_id=? AND event_type='cancelled'
+                        """,
+                        (job_id,),
+                    )
+                ).fetchone()
+            )[0]
+        )
+    assert repeated_audits == 1
+    assert repeated_outbox == 1
+
+
+@pytest.mark.asyncio
 async def test_unclaimed_read_recovery_audit_failure_rolls_back_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

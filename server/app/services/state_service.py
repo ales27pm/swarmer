@@ -30,9 +30,19 @@ from app.services.approval_binding import (
     public_tool_call,
 )
 from app.services.audit_log import append_audit_event
+from app.services.distributed_state import (
+    AgentJobStateMachine,
+    DistributedStateConflict,
+    TaskStateMachine,
+)
 from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
+from app.services.iphone_capability_binding import (
+    CapabilityRequestBindingError,
+    canonical_capability_request_fingerprint,
+)
+from app.services.outbox import OutboxService
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 10
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -159,6 +169,9 @@ CREATE TABLE IF NOT EXISTS agents (
     skills_json TEXT NOT NULL,
     auth_token_hash TEXT,
     last_heartbeat_at TEXT,
+    last_seen_at TEXT,
+    max_concurrency INTEGER NOT NULL DEFAULT 1,
+    capacity_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -197,10 +210,29 @@ CREATE TABLE IF NOT EXISTS message_board_events (
     agent_id TEXT,
     task_id TEXT,
     payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    dedupe_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_message_board_topic
     ON message_board_events(topic, id);
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    task_id TEXT,
+    agent_id TEXT,
+    created_at TEXT NOT NULL,
+    published_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    dedupe_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_pending
+    ON outbox_events(published_at, id);
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -209,6 +241,10 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
     status TEXT NOT NULL,
     claimed_by TEXT,
     claim_token TEXT,
+    lease_id TEXT,
+    lease_token_hash TEXT,
+    lease_expires_at TEXT,
+    lease_generation INTEGER NOT NULL DEFAULT 0,
     result_json TEXT,
     error TEXT,
     created_at TEXT NOT NULL,
@@ -216,6 +252,10 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
     claimed_at TEXT,
     heartbeat_at TEXT,
     completed_at TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    last_agent_id TEXT,
+    last_failure_reason TEXT,
     FOREIGN KEY(task_id) REFERENCES tasks(id),
     FOREIGN KEY(claimed_by) REFERENCES agents(id)
 );
@@ -223,6 +263,54 @@ CREATE INDEX IF NOT EXISTS idx_agent_jobs_queue
     ON agent_jobs(status, required_skill, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_agent
     ON agent_jobs(claimed_by, updated_at);
+CREATE TABLE IF NOT EXISTS iphone_capability_requests (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    requesting_agent_id TEXT NOT NULL,
+    requesting_job_id TEXT NOT NULL,
+    lease_generation INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    capability_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    action_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    approval_id TEXT NOT NULL UNIQUE,
+    request_audit_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    delivered_at TEXT,
+    completed_at TEXT,
+    FOREIGN KEY(task_id) REFERENCES tasks(id),
+    FOREIGN KEY(requesting_agent_id) REFERENCES agents(id),
+    FOREIGN KEY(requesting_job_id) REFERENCES agent_jobs(id),
+    FOREIGN KEY(device_id) REFERENCES devices(id)
+);
+CREATE INDEX IF NOT EXISTS idx_iphone_capability_device
+    ON iphone_capability_requests(device_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_iphone_capability_job
+    ON iphone_capability_requests(requesting_job_id, lease_generation, created_at);
+CREATE TABLE IF NOT EXISTS iphone_capability_grants (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
+    capability_name TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    action_digest TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    FOREIGN KEY(request_id) REFERENCES iphone_capability_requests(id),
+    FOREIGN KEY(device_id) REFERENCES devices(id)
+);
+CREATE TABLE IF NOT EXISTS iphone_capability_results (
+    request_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(request_id) REFERENCES iphone_capability_requests(id)
+);
 CREATE TABLE IF NOT EXISTS memory_embeddings (
     memory_id TEXT NOT NULL,
     provider TEXT NOT NULL,
@@ -305,6 +393,14 @@ class StateService:
                 raise RuntimeError("SQLite did not return a schema version")
             version = int(version_row[0])
             await self._migrate_legacy_schema(db)
+            await self._reconcile_agent_jobs_locked(db)
+            await self._reconcile_capability_requests_locked(db)
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_message_board_dedupe
+                ON message_board_events(dedupe_key)
+                """
+            )
             await db.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_request_audit
@@ -318,6 +414,21 @@ class StateService:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_last_pairing
                 ON devices(last_pairing_id) WHERE last_pairing_id IS NOT NULL
+                """
+            )
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_jobs_one_active_task
+                ON agent_jobs(task_id)
+                WHERE status IN ('queued','claimed','running')
+                """
+            )
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_iphone_capability_one_nonterminal_fingerprint
+                ON iphone_capability_requests(request_fingerprint)
+                WHERE status NOT IN ('completed','denied','failed','cancelled','expired')
                 """
             )
             if version < SCHEMA_VERSION:
@@ -340,13 +451,14 @@ class StateService:
                     """,
                     (message, now),
                 )
-                await db.execute(
-                    """
-                    UPDATE tasks SET status='failed',updated_at=?,completed_at=?,error_json=?
-                    WHERE status='running'
-                    """,
-                    (now, now, json.dumps({"message": message})),
-                )
+                for task_id in {task_id for _, task_id, _ in interrupted}:
+                    await db.execute(
+                        """
+                        UPDATE tasks SET status='failed',updated_at=?,completed_at=?,error_json=?
+                        WHERE id=? AND status='running'
+                        """,
+                        (now, now, json.dumps({"message": message}), task_id),
+                    )
             queued_before_claim = [
                 (str(row[0]), str(row[1]), str(row[2]))
                 for row in await (
@@ -407,6 +519,10 @@ class StateService:
                     task_id=task_id,
                     trace_id=task_id,
                 )
+            # Local restart recovery can make a task terminal after the first
+            # agent-job pass. Reconcile again in the same transaction so no
+            # queued or leased remote job survives for that terminal parent.
+            await self._reconcile_agent_jobs_locked(db)
             await db.commit()
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
@@ -434,6 +550,21 @@ class StateService:
             },
             "devices": {"last_seen_at": "TEXT", "last_pairing_id": "TEXT"},
             "agents": {"auth_token_hash": "TEXT"},  # nosec B105 - SQLite column type
+            "message_board_events": {"dedupe_key": "TEXT"},
+            "agent_jobs": {
+                "lease_id": "TEXT",
+                "lease_token_hash": "TEXT",  # nosec B105 - SQLite column type
+                "lease_expires_at": "TEXT",
+                "lease_generation": "INTEGER NOT NULL DEFAULT 0",
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "max_attempts": "INTEGER NOT NULL DEFAULT 3",
+                "last_agent_id": "TEXT",
+                "last_failure_reason": "TEXT",
+            },
+            "iphone_capability_requests": {
+                "request_audit_id": "INTEGER",
+                "request_fingerprint": "TEXT",
+            },
             "audit_events": {
                 "trace_id": "TEXT",
                 "actor_type": "TEXT",
@@ -449,6 +580,19 @@ class StateService:
             for column, declaration in columns.items():
                 if column not in existing:
                     await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        agent_columns = {
+            str(row[1]) for row in await (await db.execute("PRAGMA table_info(agents)")).fetchall()
+        }
+        for column, declaration in {
+            "last_seen_at": "TEXT",
+            "max_concurrency": "INTEGER NOT NULL DEFAULT 1",
+            "capacity_json": "TEXT NOT NULL DEFAULT '{}'",
+        }.items():
+            if column not in agent_columns:
+                await db.execute(f"ALTER TABLE agents ADD COLUMN {column} {declaration}")
+        await db.execute(
+            "UPDATE agents SET last_seen_at=last_heartbeat_at WHERE last_seen_at IS NULL"
+        )
         await db.execute(
             "UPDATE tasks SET title=substr(input, 1, 80) WHERE title='' OR title IS NULL"
         )
@@ -553,6 +697,454 @@ class StateService:
                 await db.execute(
                     "UPDATE devices SET token=? WHERE id=?", (f"sha256:{digest}", device_id)
                 )
+
+    async def _reconcile_agent_jobs_locked(self, db: aiosqlite.Connection) -> None:
+        """Fence legacy leases and collapse pre-v0.9 duplicate active jobs safely."""
+
+        db.row_factory = aiosqlite.Row
+        rows = list(
+            await (
+                await db.execute(
+                    """
+                    SELECT j.*,t.status AS task_status
+                    FROM agent_jobs AS j JOIN tasks AS t ON t.id=j.task_id
+                    WHERE j.status IN ('queued','claimed','running')
+                    ORDER BY j.task_id ASC,
+                             CASE j.status WHEN 'running' THEN 0 WHEN 'claimed' THEN 1 ELSE 2 END,
+                             j.created_at ASC,j.id ASC
+                    """
+                )
+            ).fetchall()
+        )
+        grouped: dict[str, list[aiosqlite.Row]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["task_id"]), []).append(row)
+
+        now = datetime.now(UTC).isoformat()
+        terminal_tasks = {"completed", "failed", "cancelled"}
+        recoverable_tasks = {"created", "planned", "queued", "running"}
+        safe_retry_skills = {"workspace.list_dir", "workspace.read_text"}
+        for task_id, jobs in grouped.items():
+            task_status = str(jobs[0]["task_status"])
+            if task_status in terminal_tasks:
+                survivor = None
+            elif task_status == "queued":
+                survivor = next((job for job in jobs if str(job["status"]) == "queued"), jobs[0])
+            else:
+                survivor = jobs[0]
+            duplicates = (
+                [job for job in jobs if str(job["id"]) != str(survivor["id"])]
+                if survivor is not None
+                else jobs
+            )
+            for duplicate in duplicates:
+                await self._cancel_agent_job_for_migration_locked(
+                    db,
+                    duplicate,
+                    now=now,
+                    reason="duplicate active job fenced during v0.9 migration",
+                    dedupe_suffix="migration-fence",
+                )
+
+            if survivor is None:
+                continue
+            job_id = str(survivor["id"])
+            status = str(survivor["status"])
+            if status == "queued":
+                if task_status in {"created", "planned"}:
+                    await db.execute(
+                        "UPDATE tasks SET status='queued',updated_at=? WHERE id=? AND status=?",
+                        (now, task_id, task_status),
+                    )
+                elif task_status != "queued":
+                    await self._cancel_agent_job_for_migration_locked(
+                        db,
+                        survivor,
+                        now=now,
+                        reason=f"queued job is incompatible with task status {task_status}",
+                        dedupe_suffix="incompatible-task",
+                    )
+                continue
+
+            missing_lease = status in {"claimed", "running"} and (
+                survivor["claim_token"] is not None
+                or survivor["lease_id"] is None
+                or survivor["lease_token_hash"] is None
+                or survivor["lease_expires_at"] is None
+            )
+            if not missing_lease:
+                await db.execute("UPDATE agent_jobs SET claim_token=NULL WHERE id=?", (job_id,))
+                if task_status != "running":
+                    await self._cancel_agent_job_for_migration_locked(
+                        db,
+                        survivor,
+                        now=now,
+                        reason=f"leased job is incompatible with task status {task_status}",
+                        dedupe_suffix="incompatible-task",
+                    )
+                continue
+
+            if task_status not in recoverable_tasks:
+                await self._cancel_agent_job_for_migration_locked(
+                    db,
+                    survivor,
+                    now=now,
+                    reason=f"legacy lease is incompatible with task status {task_status}",
+                    dedupe_suffix="incompatible-task",
+                )
+                continue
+
+            local_execution = await (
+                await db.execute(
+                    "SELECT 1 FROM tool_calls WHERE task_id=? AND status='running' LIMIT 1",
+                    (task_id,),
+                )
+            ).fetchone()
+            can_requeue = (
+                str(survivor["required_skill"]) in safe_retry_skills and local_execution is None
+            )
+            target = "queued" if can_requeue else "failed"
+            reason = "legacy plaintext claim invalidated during v0.9 migration"
+            capabilities = list(
+                await (
+                    await db.execute(
+                        """
+                        SELECT * FROM iphone_capability_requests
+                        WHERE requesting_job_id=? AND lease_generation=?
+                          AND status NOT IN ('completed','denied','failed','cancelled','expired')
+                        """,
+                        (job_id, int(survivor["lease_generation"])),
+                    )
+                ).fetchall()
+            )
+            for capability in capabilities:
+                await self._cancel_capability_request_for_migration_locked(
+                    db,
+                    capability,
+                    now=now,
+                    reason=reason,
+                    dedupe_suffix="migration-legacy-lease",
+                )
+            await db.execute(
+                """
+                UPDATE agent_jobs
+                SET status=?,claimed_by=NULL,claim_token=NULL,lease_id=NULL,
+                    lease_token_hash=NULL,lease_expires_at=NULL,
+                    lease_generation=lease_generation+1,updated_at=?,completed_at=?,
+                    last_failure_reason=?,error=?
+                WHERE id=? AND status IN ('claimed','running')
+                """,
+                (
+                    target,
+                    now,
+                    None if can_requeue else now,
+                    reason,
+                    None if can_requeue else "legacy worker lease was invalidated",
+                    job_id,
+                ),
+            )
+            if can_requeue and task_status in {"created", "planned", "running"}:
+                await db.execute(
+                    """
+                    UPDATE tasks SET status='queued',updated_at=?,completed_at=NULL,error_json=NULL
+                    WHERE id=? AND status IN ('created','planned','running')
+                    """,
+                    (now, task_id),
+                )
+            elif (
+                not can_requeue and task_status in {"queued", "running"} and local_execution is None
+            ):
+                await db.execute(
+                    """
+                    UPDATE tasks SET status='failed',updated_at=?,completed_at=?,error_json=?
+                    WHERE id=? AND status IN ('queued','running')
+                    """,
+                    (
+                        now,
+                        now,
+                        json.dumps({"message": "legacy remote lease could not be recovered"}),
+                        task_id,
+                    ),
+                )
+            event_type = "requeued" if can_requeue else "dead_lettered"
+            await append_audit_event(
+                db,
+                f"agent.job.{event_type}",
+                {"job_id": job_id, "reason": "legacy lease invalidated"},
+                actor_type="control-plane",
+                actor_id="migration",
+                task_id=task_id,
+                trace_id=task_id,
+                created_at=now,
+            )
+            await OutboxService.enqueue_locked(
+                db,
+                aggregate_type="agent_job",
+                aggregate_id=job_id,
+                topic="tasks.inbox" if can_requeue else "tasks.status",
+                event_type="published" if can_requeue else "failed",
+                payload={"job_id": job_id, "reason": "legacy_lease_invalidated"},
+                task_id=task_id,
+                message_id=job_id,
+                dedupe_key=f"agent-job:{job_id}:migration-{event_type}",
+                created_at=now,
+            )
+
+        orphaned_tasks = list(
+            await (
+                await db.execute(
+                    """
+                    SELECT t.id,t.status FROM tasks AS t
+                    WHERE t.status IN ('queued','running')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM agent_jobs AS j
+                          WHERE j.task_id=t.id
+                            AND j.status IN ('queued','claimed','running')
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM tool_calls AS c
+                          WHERE c.task_id=t.id AND c.status IN ('queued','running')
+                      )
+                    ORDER BY t.id ASC
+                    """
+                )
+            ).fetchall()
+        )
+        for orphan in orphaned_tasks:
+            task_id = str(orphan["id"])
+            task_status = str(orphan["status"])
+            reason = "active task has no executable local or remote work after reconciliation"
+            await TaskStateMachine.transition_locked(
+                db,
+                task_id=task_id,
+                current=task_status,
+                target="failed",
+                now=now,
+                error=reason,
+            )
+            await append_audit_event(
+                db,
+                "task.failed.migration",
+                {"reason": reason},
+                actor_type="control-plane",
+                actor_id="migration",
+                task_id=task_id,
+                trace_id=task_id,
+                created_at=now,
+            )
+            await OutboxService.enqueue_locked(
+                db,
+                aggregate_type="task",
+                aggregate_id=task_id,
+                topic="tasks.status",
+                event_type="failed",
+                payload={"task_id": task_id, "status": "failed", "reason": "orphaned_work"},
+                task_id=task_id,
+                message_id=task_id,
+                dedupe_key=f"task:{task_id}:migration-orphaned",
+                created_at=now,
+            )
+
+    async def _reconcile_capability_requests_locked(self, db: aiosqlite.Connection) -> None:
+        """Backfill stable request fingerprints and cancel ambiguous active duplicates."""
+
+        db.row_factory = aiosqlite.Row
+        rows = list(
+            await (
+                await db.execute(
+                    "SELECT * FROM iphone_capability_requests ORDER BY created_at ASC,id ASC"
+                )
+            ).fetchall()
+        )
+        now = datetime.now(UTC).isoformat()
+        for row in rows:
+            request_id = str(row["id"])
+            try:
+                arguments = json.loads(str(row["arguments_json"]))
+                if not isinstance(arguments, dict):
+                    raise CapabilityRequestBindingError(
+                        "capability request arguments are not an object"
+                    )
+                fingerprint = canonical_capability_request_fingerprint(
+                    job_id=str(row["requesting_job_id"]),
+                    lease_generation=int(row["lease_generation"]),
+                    capability_name=str(row["capability_name"]),
+                    arguments=arguments,
+                )
+            except (
+                CapabilityRequestBindingError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ):
+                fingerprint = (
+                    "sha256:"
+                    + hashlib.sha256(
+                        f"invalid-capability-request:{request_id}".encode()
+                    ).hexdigest()
+                )
+                await db.execute(
+                    "UPDATE iphone_capability_requests SET request_fingerprint=? WHERE id=?",
+                    (fingerprint, request_id),
+                )
+                await self._cancel_capability_request_for_migration_locked(
+                    db,
+                    row,
+                    now=now,
+                    reason="capability request has invalid canonical arguments",
+                    dedupe_suffix="migration-invalid-binding",
+                )
+                continue
+            await db.execute(
+                "UPDATE iphone_capability_requests SET request_fingerprint=? WHERE id=?",
+                (fingerprint, request_id),
+            )
+
+        active_rows = list(
+            await (
+                await db.execute(
+                    """
+                    SELECT * FROM iphone_capability_requests
+                    WHERE status NOT IN ('completed','denied','failed','cancelled','expired')
+                    ORDER BY request_fingerprint ASC,
+                             CASE status
+                                 WHEN 'consumed' THEN 0
+                                 WHEN 'approved' THEN 1
+                                 WHEN 'waiting_approval' THEN 2
+                                 ELSE 3
+                             END,
+                             created_at ASC,id ASC
+                    """
+                )
+            ).fetchall()
+        )
+        grouped: dict[str, list[aiosqlite.Row]] = {}
+        for row in active_rows:
+            grouped.setdefault(str(row["request_fingerprint"]), []).append(row)
+        for duplicates in grouped.values():
+            for duplicate in duplicates[1:]:
+                await self._cancel_capability_request_for_migration_locked(
+                    db,
+                    duplicate,
+                    now=now,
+                    reason="duplicate nonterminal capability request reconciled",
+                    dedupe_suffix="migration-duplicate",
+                )
+
+    @classmethod
+    async def _cancel_agent_job_for_migration_locked(
+        cls,
+        db: aiosqlite.Connection,
+        row: aiosqlite.Row,
+        *,
+        now: str,
+        reason: str,
+        dedupe_suffix: str,
+    ) -> None:
+        job_id = str(row["id"])
+        task_id = str(row["task_id"])
+        capabilities = list(
+            await (
+                await db.execute(
+                    """
+                    SELECT * FROM iphone_capability_requests
+                    WHERE requesting_job_id=?
+                      AND status NOT IN ('completed','denied','failed','cancelled','expired')
+                    """,
+                    (job_id,),
+                )
+            ).fetchall()
+        )
+        for capability in capabilities:
+            await cls._cancel_capability_request_for_migration_locked(
+                db,
+                capability,
+                now=now,
+                reason=reason,
+                dedupe_suffix=f"{dedupe_suffix}-job",
+            )
+        cursor = await db.execute(
+            """
+            UPDATE agent_jobs
+            SET status='cancelled',claimed_by=NULL,claim_token=NULL,lease_id=NULL,
+                lease_token_hash=NULL,lease_expires_at=NULL,
+                lease_generation=lease_generation+1,updated_at=?,completed_at=?,
+                last_failure_reason=?
+            WHERE id=? AND status IN ('queued','claimed','running')
+            """,
+            (now, now, reason, job_id),
+        )
+        if cursor.rowcount != 1:
+            return
+        await append_audit_event(
+            db,
+            "agent.job.cancelled.migration",
+            {"job_id": job_id, "reason": reason},
+            actor_type="control-plane",
+            actor_id="migration",
+            task_id=task_id,
+            trace_id=task_id,
+            created_at=now,
+        )
+        await OutboxService.enqueue_locked(
+            db,
+            aggregate_type="agent_job",
+            aggregate_id=job_id,
+            topic="tasks.status",
+            event_type="cancelled",
+            payload={"job_id": job_id, "reason": "migration_fence"},
+            task_id=task_id,
+            message_id=job_id,
+            dedupe_key=f"agent-job:{job_id}:{dedupe_suffix}",
+            created_at=now,
+        )
+
+    @staticmethod
+    async def _cancel_capability_request_for_migration_locked(
+        db: aiosqlite.Connection,
+        row: aiosqlite.Row,
+        *,
+        now: str,
+        reason: str,
+        dedupe_suffix: str,
+    ) -> None:
+        request_id = str(row["id"])
+        cursor = await db.execute(
+            """
+            UPDATE iphone_capability_requests SET status='cancelled',completed_at=?
+            WHERE id=? AND status NOT IN ('completed','denied','failed','cancelled','expired')
+            """,
+            (now, request_id),
+        )
+        if cursor.rowcount != 1:
+            return
+        await db.execute(
+            "UPDATE iphone_capability_grants SET expires_at=? WHERE request_id=?",
+            (now, request_id),
+        )
+        await append_audit_event(
+            db,
+            "iphone.capability.cancelled",
+            {"request_id": request_id, "reason": reason},
+            actor_type="control-plane",
+            actor_id="migration",
+            task_id=str(row["task_id"]),
+            trace_id=str(row["task_id"]),
+            created_at=now,
+        )
+        await OutboxService.enqueue_locked(
+            db,
+            aggregate_type="iphone_capability_request",
+            aggregate_id=request_id,
+            topic="agent.job.capability.result",
+            event_type="capability_result",
+            payload={"request_id": request_id, "status": "cancelled"},
+            task_id=str(row["task_id"]),
+            agent_id=str(row["requesting_agent_id"]),
+            message_id=request_id,
+            dedupe_key=f"iphone-capability:{request_id}:{dedupe_suffix}",
+            created_at=now,
+        )
 
     async def create_task(self, task: TaskRecord) -> TaskRecord:
         async with aiosqlite.connect(self.db_path) as db:
@@ -659,8 +1251,9 @@ class StateService:
 
     async def cancel_task(self, task_id: str, *, actor_id: str) -> TaskRecord | None:
         now = datetime.now(UTC).isoformat()
-        cancellable = ("created", "planned", "waiting_permission", "queued", "blocked")
+        ordinarily_cancellable = {"created", "planned", "waiting_permission", "queued", "blocked"}
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
@@ -668,19 +1261,41 @@ class StateService:
             if not row:
                 await db.rollback()
                 return None
-            if row[0] not in cancellable:
-                await db.rollback()
-                raise StateConflict(f"task cannot be cancelled from status {row[0]}")
-            cursor = await db.execute(
-                """
-                UPDATE tasks SET status='cancelled', updated_at=?, completed_at=?
-                WHERE id=? AND status IN (?,?,?,?,?)
-                """,
-                (now, now, task_id, *cancellable),
+            current = str(row["status"])
+            remote_jobs = list(
+                await (
+                    await db.execute(
+                        """
+                        SELECT id,status,lease_generation FROM agent_jobs
+                        WHERE task_id=? AND status IN ('queued','claimed','running')
+                        """,
+                        (task_id,),
+                    )
+                ).fetchall()
             )
-            if cursor.rowcount != 1:
+            local_running = await (
+                await db.execute(
+                    "SELECT 1 FROM tool_calls WHERE task_id=? AND status='running' LIMIT 1",
+                    (task_id,),
+                )
+            ).fetchone()
+            remote_running_is_cancellable = (
+                current == "running" and bool(remote_jobs) and local_running is None
+            )
+            if current not in ordinarily_cancellable and not remote_running_is_cancellable:
                 await db.rollback()
-                raise StateConflict("task status changed while cancellation was requested")
+                raise StateConflict(f"task cannot be cancelled from status {current}")
+            try:
+                await TaskStateMachine.transition_locked(
+                    db,
+                    task_id=task_id,
+                    current=current,
+                    target="cancelled",
+                    now=now,
+                )
+            except DistributedStateConflict as exc:
+                await db.rollback()
+                raise StateConflict("task status changed while cancellation was requested") from exc
             await db.execute(
                 "UPDATE approvals SET status='cancelled', decided_at=? WHERE task_id=? AND status='pending'",
                 (now, task_id),
@@ -692,11 +1307,107 @@ class StateService:
                 """,
                 (now, task_id),
             )
-            await db.execute(
-                """UPDATE agent_jobs SET status='cancelled',updated_at=?,completed_at=?
-                WHERE task_id=? AND status='queued'""",
-                (now, now, task_id),
-            )
+            for job in remote_jobs:
+                job_id = str(job["id"])
+                job_status = str(job["status"])
+                generation = int(job["lease_generation"])
+                fenced_generation = generation + 1
+                capability_requests = list(
+                    await (
+                        await db.execute(
+                            """
+                            SELECT id FROM iphone_capability_requests
+                            WHERE requesting_job_id=? AND lease_generation=?
+                              AND status NOT IN ('completed','denied','failed','cancelled','expired')
+                            """,
+                            (job_id, generation),
+                        )
+                    ).fetchall()
+                )
+                for capability_request in capability_requests:
+                    request_id = str(capability_request["id"])
+                    await db.execute(
+                        """
+                        UPDATE iphone_capability_requests SET status='cancelled',completed_at=?
+                        WHERE id=?
+                        """,
+                        (now, request_id),
+                    )
+                    await db.execute(
+                        "UPDATE iphone_capability_grants SET expires_at=? WHERE request_id=?",
+                        (now, request_id),
+                    )
+                    await append_audit_event(
+                        db,
+                        "iphone.capability.cancelled",
+                        {"request_id": request_id, "reason": "parent task cancelled"},
+                        actor_type="device",
+                        actor_id=actor_id,
+                        task_id=task_id,
+                        trace_id=task_id,
+                        created_at=now,
+                    )
+                    await OutboxService.enqueue_locked(
+                        db,
+                        aggregate_type="iphone_capability_request",
+                        aggregate_id=request_id,
+                        topic="agent.job.capability.result",
+                        event_type="capability_result",
+                        payload={"request_id": request_id, "status": "cancelled"},
+                        task_id=task_id,
+                        message_id=request_id,
+                        dedupe_key=f"iphone-capability:{request_id}:task-cancelled",
+                        created_at=now,
+                    )
+                try:
+                    await AgentJobStateMachine.transition_locked(
+                        db,
+                        job_id=job_id,
+                        current=job_status,
+                        target="cancelled",
+                        now=now,
+                        updates={
+                            "claimed_by": None,
+                            "claim_token": None,  # nosec B105 - revoke cancelled lease proof
+                            "lease_id": None,
+                            "lease_token_hash": None,  # nosec B105 - revoke cancelled lease proof
+                            "lease_expires_at": None,
+                            "lease_generation": fenced_generation,
+                            "completed_at": now,
+                            "last_failure_reason": "parent task cancelled",
+                        },
+                        extra_where=" AND task_id=? AND lease_generation=?",
+                        where_values=(task_id, generation),
+                    )
+                except DistributedStateConflict as exc:
+                    await db.rollback()
+                    raise StateConflict("remote job changed while task was cancelled") from exc
+                await append_audit_event(
+                    db,
+                    "agent.job.cancelled",
+                    {"job_id": job_id, "lease_generation": fenced_generation},
+                    actor_type="device",
+                    actor_id=actor_id,
+                    task_id=task_id,
+                    trace_id=task_id,
+                    created_at=now,
+                )
+                await OutboxService.enqueue_locked(
+                    db,
+                    aggregate_type="agent_job",
+                    aggregate_id=job_id,
+                    topic="tasks.status",
+                    event_type="cancelled",
+                    payload={
+                        "job_id": job_id,
+                        "status": "cancelled",
+                        "lease_generation": fenced_generation,
+                    },
+                    task_id=task_id,
+                    message_id=job_id,
+                    dedupe_key=f"agent-job:{job_id}:cancelled:{fenced_generation}",
+                    created_at=now,
+                )
             await append_audit_event(
                 db,
                 "task.cancelled",
@@ -1154,7 +1865,17 @@ class StateService:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
-                await db.execute("SELECT * FROM agents ORDER BY created_at ASC")
+                await db.execute(
+                    """
+                    SELECT a.*,
+                           (SELECT COUNT(*) FROM agent_jobs j
+                            WHERE j.claimed_by=a.id
+                              AND j.status IN ('claimed','running')) AS active_jobs,
+                           COALESCE(s.score,0.0) AS historical_score
+                    FROM agents a LEFT JOIN agent_scores s ON s.agent_id=a.id
+                    ORDER BY a.created_at ASC
+                    """
+                )
             ).fetchall()
         return [self._agent_from_row(row) for row in rows]
 
@@ -1162,14 +1883,26 @@ class StateService:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             row = await (
-                await db.execute("SELECT * FROM agents WHERE id=?", (agent_id,))
+                await db.execute(
+                    """
+                    SELECT a.*,
+                           (SELECT COUNT(*) FROM agent_jobs j
+                            WHERE j.claimed_by=a.id
+                              AND j.status IN ('claimed','running')) AS active_jobs,
+                           COALESCE(s.score,0.0) AS historical_score
+                    FROM agents a LEFT JOIN agent_scores s ON s.agent_id=a.id
+                    WHERE a.id=?
+                    """,
+                    (agent_id,),
+                )
             ).fetchone()
         return self._agent_from_row(row) if row else None
 
     @staticmethod
     def _agent_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         value = dict(row)
-        value["skills"] = json.loads(value.pop("skills_json"))
+        value["skills"] = json.loads(str(value.pop("skills_json")))
+        value["capacity"] = json.loads(str(value.pop("capacity_json", "{}")))
         value.pop("auth_token_hash", None)
         return value
 
@@ -1184,8 +1917,9 @@ class StateService:
                 """
                 INSERT INTO agents(
                     id,name,version,endpoint,model_id,status,skills_json,
-                    auth_token_hash,last_heartbeat_at,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    auth_token_hash,last_heartbeat_at,last_seen_at,max_concurrency,
+                    capacity_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     agent_id,
@@ -1197,6 +1931,9 @@ class StateService:
                     json.dumps(request.skills),
                     credential_hash,
                     None,
+                    None,
+                    request.max_concurrency,
+                    json.dumps(request.capacity, separators=(",", ":"), sort_keys=True),
                     now,
                     now,
                 ),
@@ -1225,10 +1962,11 @@ class StateService:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
-                UPDATE agents SET status=?, last_heartbeat_at=?, updated_at=?
+                UPDATE agents
+                SET status=?,last_heartbeat_at=?,last_seen_at=?,updated_at=?
                 WHERE id=? AND auth_token_hash=?
                 """,
-                (status, now, now, agent_id, credential_hash),
+                (status, now, now, now, agent_id, credential_hash),
             )
             await db.commit()
         return await self.get_agent(agent_id) if cursor.rowcount == 1 else None

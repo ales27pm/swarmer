@@ -1,9 +1,10 @@
+import asyncio
 import ipaddress
 import logging
 import secrets
 import sqlite3
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -22,6 +23,8 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import (
+    AgentCapabilityPoll,
+    AgentCapabilityRequest,
     AgentCreate,
     AgentHeartbeat,
     AgentJobClaim,
@@ -32,6 +35,9 @@ from app.models import (
     FeedbackCorrection,
     FeedbackCreate,
     HealthResponse,
+    IPhoneCapabilityDecision,
+    IPhoneCapabilityExecute,
+    IPhoneCapabilityResultSubmit,
     MemoryCreate,
     MemorySearch,
     MemoryUpdate,
@@ -40,6 +46,7 @@ from app.models import (
     TaskStatus,
 )
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
+from app.services.agent_lease_reaper import AgentLeaseReaper
 from app.services.approval_binding import (
     public_tool_arguments,
     public_tool_error,
@@ -56,6 +63,10 @@ from app.services.execution_engine import (
     ExecutionOutcomeUncertain,
 )
 from app.services.feedback_dataset import FeedbackDatasetService
+from app.services.iphone_capability_service import (
+    IPhoneCapabilityConflict,
+    IPhoneCapabilityService,
+)
 from app.services.message_board import MessageBoardService
 from app.services.orchestrator_service import OrchestratorError, OrchestratorService
 from app.services.permission_policy import PermissionPolicy
@@ -63,7 +74,7 @@ from app.services.planner_provider import UbuntuLLMPlannerProvider
 from app.services.state_service import StateConflict, StateService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.8.0"
+API_VERSION = "0.9.0"
 logger = logging.getLogger(__name__)
 
 
@@ -176,15 +187,49 @@ def create_app(config: Settings | None = None) -> FastAPI:
     orchestrator_service = OrchestratorService(settings.llm_base_url, settings.orchestrator_model)
     planner_provider = UbuntuLLMPlannerProvider(orchestrator_service)
     message_board = MessageBoardService(settings.db_path)
-    agent_dispatcher = AgentDispatcher(settings.db_path, message_board)
+    agent_dispatcher = AgentDispatcher(
+        settings.db_path,
+        message_board,
+        lease_seconds=settings.agent_lease_seconds,
+        max_attempts=settings.agent_job_max_attempts,
+    )
+    agent_lease_reaper = AgentLeaseReaper(settings.db_path, message_board)
+    iphone_capability_service = IPhoneCapabilityService(
+        settings.db_path,
+        message_board,
+        permission_policy,
+        grant_ttl_seconds=settings.iphone_capability_grant_ttl_seconds,
+    )
     feedback_dataset = FeedbackDatasetService(settings.db_path)
-    websockets: set[WebSocket] = set()
+    websockets: dict[WebSocket, str] = {}
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await state_service.initialize()
         settings.workspace_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        yield
+        await agent_lease_reaper.reap_expired()
+        await iphone_capability_service.expire_requests()
+        await agent_dispatcher.outbox.drain()
+
+        async def maintain_distributed_runtime() -> None:
+            while True:
+                await asyncio.sleep(settings.agent_heartbeat_seconds)
+                try:
+                    await agent_lease_reaper.reap_expired()
+                    await iphone_capability_service.expire_requests()
+                    await agent_dispatcher.outbox.drain()
+                except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
+                    logger.exception("distributed runtime maintenance failed")
+
+        maintenance = asyncio.create_task(
+            maintain_distributed_runtime(), name="mongars-distributed-runtime-maintenance"
+        )
+        try:
+            yield
+        finally:
+            maintenance.cancel()
+            with suppress(asyncio.CancelledError):
+                await maintenance
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
     app.state.settings = settings
@@ -196,6 +241,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.planner_provider = planner_provider
     app.state.message_board = message_board
     app.state.agent_dispatcher = agent_dispatcher
+    app.state.agent_lease_reaper = agent_lease_reaper
+    app.state.iphone_capability_service = iphone_capability_service
 
     async def require_secure_transport(request: Request) -> None:
         if settings.allow_insecure_remote_http:
@@ -259,15 +306,17 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if not secrets.compare_digest(configured.get_secret_value(), supplied):
             raise HTTPException(status_code=403, detail="operator authentication required")
 
-    async def broadcast(event: dict[str, Any]) -> None:
+    async def broadcast(event: dict[str, Any], *, device_id: str | None = None) -> None:
         dead: list[WebSocket] = []
-        for websocket in websockets:
+        for websocket, connected_device_id in list(websockets.items()):
+            if device_id is not None and connected_device_id != device_id:
+                continue
             try:
                 await websocket.send_json(event)
             except (OSError, RuntimeError, WebSocketDisconnect):
                 dead.append(websocket)
         for websocket in dead:
-            websockets.discard(websocket)
+            websockets.pop(websocket, None)
 
     def public_job_event(job: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -283,6 +332,13 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 "claimed_at",
                 "heartbeat_at",
                 "completed_at",
+                "lease_id",
+                "lease_expires_at",
+                "lease_generation",
+                "attempt_count",
+                "max_attempts",
+                "last_agent_id",
+                "last_failure_reason",
             )
         }
 
@@ -591,6 +647,19 @@ def create_app(config: Settings | None = None) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", service="mongars-control-plane", version=API_VERSION)
+
+    @app.get("/status")
+    async def runtime_status(
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, int | str]:
+        del principal
+        metrics = await agent_lease_reaper.metrics()
+        return {
+            "status": "ok",
+            **metrics,
+            "pending_outbox_events": await agent_dispatcher.outbox.pending_count(),
+            "pending_capability_requests": await iphone_capability_service.pending_count(),
+        }
 
     @app.post("/pairing/code", dependencies=[Depends(require_pairing_operator)])
     async def pairing_code() -> dict[str, Any]:
@@ -955,7 +1024,13 @@ def create_app(config: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         del principal
         try:
-            return await agent_dispatcher.heartbeat(agent_id, job_id, request.claim_token)
+            return await agent_dispatcher.heartbeat(
+                agent_id,
+                job_id,
+                request.claim_token,
+                lease_id=request.lease_id,
+                lease_generation=request.lease_generation,
+            )
         except AgentDispatchConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -975,6 +1050,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 status=request.status,
                 result=request.result,
                 error=request.error,
+                lease_id=request.lease_id,
+                lease_generation=request.lease_generation,
             )
         except AgentDispatchConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -995,6 +1072,153 @@ def create_app(config: Settings | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         del principal
         return await agent_dispatcher.list_jobs(agent_id, limit=limit)
+
+    @app.post(
+        "/agents/{agent_id}/jobs/{job_id}/capability-requests",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_agent_capability_request(
+        agent_id: str,
+        job_id: str,
+        request: AgentCapabilityRequest,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            record = await iphone_capability_service.create_request(
+                agent_id=agent_id,
+                job_id=job_id,
+                claim_token=request.claim_token,
+                lease_id=request.lease_id,
+                lease_generation=request.lease_generation,
+                capability_name=request.capability_name,
+                arguments=request.arguments,
+            )
+        except IPhoneCapabilityConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        device_id = await iphone_capability_service.device_for_request(str(record["request_id"]))
+        if device_id is not None:
+            await broadcast(
+                {
+                    "type": "iphone.capability.requested",
+                    "payload": {
+                        "request_id": record["request_id"],
+                        "capability_name": record["capability"],
+                        "expires_at": record["expires_at"],
+                        "preview": {"arguments_redacted": True},
+                    },
+                },
+                device_id=device_id,
+            )
+        return record
+
+    @app.post("/agents/{agent_id}/jobs/{job_id}/capability-requests/{request_id}/poll")
+    async def poll_agent_capability_request(
+        agent_id: str,
+        job_id: str,
+        request_id: str,
+        request: AgentCapabilityPoll,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            return await iphone_capability_service.poll_for_worker(
+                request_id,
+                agent_id=agent_id,
+                job_id=job_id,
+                claim_token=request.claim_token,
+                lease_id=request.lease_id,
+                lease_generation=request.lease_generation,
+            )
+        except IPhoneCapabilityConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/iphone/capabilities/requests")
+    async def list_iphone_capability_requests(
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    ) -> list[dict[str, Any]]:
+        return await iphone_capability_service.list_for_device(str(principal["id"]), limit=limit)
+
+    @app.get("/iphone/capabilities/requests/{request_id}")
+    async def get_iphone_capability_request(
+        request_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        record = await iphone_capability_service.get_request_for_device(
+            request_id, str(principal["id"])
+        )
+        if record is None:
+            raise HTTPException(status_code=404, detail="capability request not found")
+        return record
+
+    @app.post("/iphone/capabilities/requests/{request_id}/authorize")
+    async def authorize_iphone_capability_request(
+        request_id: str,
+        request: IPhoneCapabilityDecision,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            record = await iphone_capability_service.authorize(
+                request_id,
+                str(principal["id"]),
+                decision=request.decision,
+                user_note=request.user_note,
+            )
+        except IPhoneCapabilityConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await broadcast(
+            {
+                "type": "iphone.capability.updated",
+                "payload": {"request_id": request_id},
+            },
+            device_id=str(principal["id"]),
+        )
+        return record
+
+    @app.post("/iphone/capabilities/requests/{request_id}/execute")
+    async def consume_iphone_capability_grant(
+        request_id: str,
+        request: IPhoneCapabilityExecute,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            return await iphone_capability_service.consume(
+                request_id,
+                str(principal["id"]),
+                grant_id=request.grant_id,
+                action_digest=request.action_digest,
+            )
+        except IPhoneCapabilityConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/iphone/capabilities/requests/{request_id}/result")
+    async def submit_iphone_capability_result(
+        request_id: str,
+        request: IPhoneCapabilityResultSubmit,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            receipt = await iphone_capability_service.submit_result(
+                request_id,
+                str(principal["id"]),
+                grant_id=request.grant_id,
+                action_digest=request.action_digest,
+                result=request.result.model_dump(
+                    mode="json",
+                    exclude={"reason"} if request.result.reason is None else set(),
+                ),
+            )
+        except IPhoneCapabilityConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await broadcast(
+            {
+                "type": "iphone.capability.updated",
+                "payload": {"request_id": request_id},
+            },
+            device_id=str(principal["id"]),
+        )
+        return receipt
 
     @app.get("/audit")
     @app.get("/sync/audit", include_in_schema=False)
@@ -1065,7 +1289,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             await websocket.close(code=4401)
             return
         await websocket.accept()
-        websockets.add(websocket)
+        websockets[websocket] = str(principal["device_id"])
         try:
             await websocket.send_json(
                 {
@@ -1076,7 +1300,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             while True:
                 await websocket.receive_text()
         except WebSocketDisconnect:
-            websockets.discard(websocket)
+            websockets.pop(websocket, None)
 
     return app
 

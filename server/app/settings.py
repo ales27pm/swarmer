@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_PERMISSIONS_PATH = Path(__file__).resolve().parents[2] / "configs" / "permissions.yaml"
@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     pairing_candidate_ttl_seconds: int = 120
     pairing_max_attempts: int = 10
     allow_insecure_remote_http: bool = False
+    agent_lease_seconds: int = Field(default=60, ge=15, le=900)
+    agent_heartbeat_seconds: int = Field(default=20, ge=5, le=300)
+    agent_job_max_attempts: int = Field(default=3, ge=1, le=20)
+    iphone_capability_grant_ttl_seconds: int = Field(default=90, ge=30, le=300)
 
     @field_validator("pairing_bootstrap_token")
     @classmethod
@@ -43,6 +47,12 @@ class Settings(BaseSettings):
                 "pairing bootstrap token must be a high-entropy secret of 32+ characters"
             )
         return value
+
+    @model_validator(mode="after")
+    def validate_agent_timing(self) -> "Settings":
+        if self.agent_heartbeat_seconds >= self.agent_lease_seconds:
+            raise ValueError("agent heartbeat interval must be shorter than the lease")
+        return self
 
 
 @lru_cache

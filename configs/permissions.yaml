@@ -48,6 +48,46 @@ tool_rules:
     risk: high
     approval_ttl_seconds: 300
 
+# Native capabilities are a separate policy surface. Every current capability
+# requires an explicit, short-lived, one-use grant from its paired iPhone.
+capability_rules:
+  iphone.location.current:
+    id: ask-iphone-location-current
+    description: Reading the iPhone's current location requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.contacts.lookup:
+    id: ask-iphone-contacts-lookup
+    description: Looking up iPhone contacts requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.calendar.events:
+    id: ask-iphone-calendar-events
+    description: Reading iPhone calendar events requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.photos.pick:
+    id: ask-iphone-photos-pick
+    description: Opening the iOS photo picker requires explicit device approval.
+    decision: ask
+    risk: medium
+    approval_ttl_seconds: 180
+  iphone.mail.compose:
+    id: ask-iphone-mail-compose
+    description: Opening a prefilled iOS mail composer requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.sms.compose:
+    id: ask-iphone-sms-compose
+    description: Opening a prefilled iOS SMS composer requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+
 protected_paths:
   - "**/.env"
   - "**/.env.*"
