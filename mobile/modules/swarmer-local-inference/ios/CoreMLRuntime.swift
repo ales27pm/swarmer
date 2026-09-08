@@ -4,6 +4,40 @@ import Tokenizers
 
 @available(iOS 18.0, *)
 actor CoreMLRuntime {
+  // MLModel and MLState are imported as non-Sendable by the iOS 26.5 SDK even though
+  // prediction is asynchronous. A generation context never escapes this runtime and
+  // generating prevents overlapping predictions; cancellation/unload only update actor
+  // flags while the in-flight context retains exclusive access and stable object identity.
+  // TODO: Remove these wrappers when Core ML exposes Sendable or nonsending prediction APIs.
+  private final class PredictionContext: @unchecked Sendable {
+    private let model: MLModel
+    private let state: MLState?
+
+    init(model: MLModel, stateful: Bool) {
+      self.model = model
+      state = stateful ? model.makeState() : nil
+    }
+
+    func predict(from inputs: [String: MLTensor]) async throws -> [String: MLTensor] {
+      if let state {
+        return try await model.prediction(from: inputs, using: state)
+      }
+      return try await model.prediction(from: inputs)
+    }
+  }
+
+  private final class LoadedModel: @unchecked Sendable {
+    private let value: MLModel
+
+    init(_ value: MLModel) {
+      self.value = value
+    }
+
+    func makePredictionContext(stateful: Bool) -> PredictionContext {
+      PredictionContext(model: value, stateful: stateful)
+    }
+  }
+
   private struct Contract: Sendable {
     enum SequenceShape: Sendable {
       case enumerated([Int])
@@ -50,7 +84,7 @@ actor CoreMLRuntime {
     let stateful: Bool
   }
 
-  private var model: MLModel?
+  private var model: LoadedModel?
   private var tokenizer: (any Tokenizer)?
   private var contract: Contract?
   private var cancelRequested = false
@@ -80,7 +114,7 @@ actor CoreMLRuntime {
     let loadedTokenizer = try await AutoTokenizer.from(modelFolder: tokenizerURL, strict: true)
     try checkCancellation()
 
-    model = loadedModel
+    model = LoadedModel(loadedModel)
     contract = loadedContract
     tokenizer = loadedTokenizer
     cancelRequested = false
@@ -111,7 +145,7 @@ actor CoreMLRuntime {
       }
     }
 
-    let state = contract.stateful ? model.makeState() : nil
+    let predictionContext = model.makePredictionContext(stateful: contract.stateful)
     var generatedTokens: [Int] = []
     generatedTokens.reserveCapacity(maxTokens)
 
@@ -144,12 +178,7 @@ actor CoreMLRuntime {
         inputs[attentionMaskName] = MLTensor(shape: [1, targetLength], scalars: mask)
       }
 
-      let outputs: [String: MLTensor]
-      if let state {
-        outputs = try await model.prediction(from: inputs, using: state)
-      } else {
-        outputs = try await model.prediction(from: inputs)
-      }
+      let outputs = try await predictionContext.predict(from: inputs)
       if cancelRequested || Task.isCancelled {
         return RuntimeGenerationResult(
           text: tokenizer.decode(tokens: generatedTokens, skipSpecialTokens: true),

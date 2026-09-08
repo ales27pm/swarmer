@@ -16,52 +16,56 @@ public final class SwarmerLocalInferenceModule: Module {
     }
 
     AsyncFunction("pickAndImportDirectory") { [weak self, coordinator] (runtime: String, promise: Promise) in
-      guard runtime == LocalRuntime.coreML.rawValue || runtime == LocalRuntime.mlx.rawValue else {
-        promise.reject("ERR_LOCAL_MODEL_RUNTIME", "Only Core ML and MLX use directory import.")
-        return
-      }
-      guard let self else {
-        promise.reject("ERR_LOCAL_MODEL_MODULE", "The local inference module is unavailable.")
-        return
-      }
-      guard self.directoryPicker?.isActive != true else {
-        promise.reject("ERR_LOCAL_MODEL_PICKER_BUSY", "A model directory picker is already open.")
-        return
-      }
-      guard let viewController = self.appContext?.utilities?.currentViewController() else {
-        promise.reject("ERR_LOCAL_MODEL_PICKER_UI", "No view controller can present the model directory picker.")
-        return
-      }
+      // Expo dispatches this function on the main queue below. Make that runtime
+      // guarantee visible to Swift's actor checker before touching UIKit state.
+      MainActor.assumeIsolated {
+        guard runtime == LocalRuntime.coreML.rawValue || runtime == LocalRuntime.mlx.rawValue else {
+          promise.reject("ERR_LOCAL_MODEL_RUNTIME", "Only Core ML and MLX use directory import.")
+          return
+        }
+        guard let self else {
+          promise.reject("ERR_LOCAL_MODEL_MODULE", "The local inference module is unavailable.")
+          return
+        }
+        guard self.directoryPicker?.isActive != true else {
+          promise.reject("ERR_LOCAL_MODEL_PICKER_BUSY", "A model directory picker is already open.")
+          return
+        }
+        guard let viewController = self.appContext?.utilities?.currentViewController() else {
+          promise.reject("ERR_LOCAL_MODEL_PICKER_UI", "No view controller can present the model directory picker.")
+          return
+        }
 
-      let picker = LocalModelDirectoryPicker { [coordinator] result in
-        switch result {
-        case .cancelled:
-          promise.reject("ERR_LOCAL_MODEL_PICK_CANCELLED", "Model folder selection was cancelled.")
-        case .selected(let url):
-          let scoped = url.startAccessingSecurityScopedResource()
-          guard scoped || FileManager.default.isReadableFile(atPath: url.path) else {
-            promise.reject("ERR_LOCAL_MODEL_PICK_ACCESS", "The selected model folder is not readable.")
-            return
-          }
-          Task.detached(priority: .utility) {
-            defer {
-              if scoped { url.stopAccessingSecurityScopedResource() }
+        let picker = LocalModelDirectoryPicker { [coordinator] result in
+          switch result {
+          case .cancelled:
+            promise.reject("ERR_LOCAL_MODEL_PICK_CANCELLED", "Model folder selection was cancelled.")
+          case .selected(let url):
+            let scoped = url.startAccessingSecurityScopedResource()
+            guard scoped || FileManager.default.isReadableFile(atPath: url.path) else {
+              promise.reject("ERR_LOCAL_MODEL_PICK_ACCESS", "The selected model folder is not readable.")
+              return
             }
-            do {
-              let record = try await coordinator.importModel(
-                runtimeValue: runtime,
-                uri: url.absoluteString,
-                displayName: url.lastPathComponent
-              )
-              promise.resolve(record)
-            } catch {
-              promise.reject(error)
+            Task.detached(priority: .utility) {
+              defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+              }
+              do {
+                let record = try await coordinator.importModel(
+                  runtimeValue: runtime,
+                  uri: url.absoluteString,
+                  displayName: url.lastPathComponent
+                )
+                promise.resolve(record)
+              } catch {
+                promise.reject(error)
+              }
             }
           }
         }
+        self.directoryPicker = picker
+        picker.present(from: viewController)
       }
-      self.directoryPicker = picker
-      picker.present(from: viewController)
     }.runOnQueue(.main)
 
     AsyncFunction("listModels") { [coordinator] () async throws -> [LocalModelRecord] in

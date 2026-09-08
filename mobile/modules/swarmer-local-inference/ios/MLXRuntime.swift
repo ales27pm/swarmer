@@ -7,7 +7,6 @@ import Tokenizers
 
 actor MLXRuntime {
   private var container: ModelContainer?
-  private var session: ChatSession?
   private var cancelRequested = false
   private var generating = false
   private var unloadRequested = false
@@ -25,7 +24,6 @@ actor MLXRuntime {
     )
     guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
     container = loaded
-    session = ChatSession(loaded)
     #endif
   }
 
@@ -45,18 +43,21 @@ actor MLXRuntime {
     )
     guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
     container = loaded
-    session = ChatSession(loaded)
     #endif
   }
 
   func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> RuntimeGenerationResult {
     guard !generating else { throw LocalInferenceError.generationInProgress }
-    guard let container, let session else { throw LocalInferenceError.modelNotLoaded }
+    guard let container else { throw LocalInferenceError.modelNotLoaded }
     generating = true
     cancelRequested = false
     defer {
       generating = false
       cancelRequested = false
+      if unloadRequested {
+        self.container = nil
+        unloadRequested = false
+      }
     }
 
     let promptTokenCount = await container.encode(prompt).count
@@ -64,25 +65,32 @@ actor MLXRuntime {
       throw LocalInferenceError.contextExceeded
     }
     if cancelRequested || Task.isCancelled {
-      await finishGeneration(session: session)
       return RuntimeGenerationResult(text: "", finishReason: "cancelled", tokenCount: 0)
     }
 
-    await session.clear()
-    session.generateParameters = GenerateParameters(
-      maxTokens: maxTokens,
-      maxKVSize: 4_096,
-      temperature: Float(temperature),
-      topP: 1,
-      topK: 0,
-      seed: 0
+    // ChatSession is explicitly single-task and non-Sendable. Keep it local to this
+    // generation so it cannot cross the runtime actor or race with unload().
+    let session = ChatSession(
+      container,
+      generateParameters: GenerateParameters(
+        maxTokens: maxTokens,
+        maxKVSize: 4_096,
+        temperature: Float(temperature),
+        topP: 1,
+        topK: 0,
+        seed: 0
+      )
     )
 
     var output = ""
     var completionCount: Int?
     var finishReason = "stop"
+    var generationError: (any Error)?
     do {
-      for try await event in session.streamDetails(to: prompt) {
+      // Keep the stream in a nested scope. On an early break its termination
+      // callback cancels the producer before synchronize() waits on the cache.
+      let events = session.streamDetails(to: prompt)
+      for try await event in events {
         if cancelRequested || Task.isCancelled {
           finishReason = "cancelled"
           break
@@ -104,11 +112,14 @@ actor MLXRuntime {
     } catch is CancellationError {
       finishReason = "cancelled"
     } catch {
-      await finishGeneration(session: session)
-      throw error
+      generationError = error
     }
 
-    await finishGeneration(session: session)
+    // This is the final use of the task-local, non-Sendable session. It preserves
+    // the cancellation/unload completion barrier without storing it on the actor.
+    await session.synchronize()
+    if let generationError { throw generationError }
+
     let tokenCount: Int
     if let completionCount {
       tokenCount = completionCount
@@ -122,27 +133,13 @@ actor MLXRuntime {
     cancelRequested = true
   }
 
-  func unload() async {
+  func unload() {
     cancelRequested = true
     guard !generating else {
       unloadRequested = true
       return
     }
-    if let session {
-      await session.synchronize()
-      await session.clear()
-    }
-    session = nil
     container = nil
-  }
-
-  private func finishGeneration(session: ChatSession) async {
-    await session.synchronize()
-    await session.clear()
-    if unloadRequested {
-      self.session = nil
-      container = nil
-      unloadRequested = false
-    }
+    unloadRequested = false
   }
 }
