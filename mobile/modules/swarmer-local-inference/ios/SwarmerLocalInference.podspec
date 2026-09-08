@@ -5,6 +5,7 @@ Pod::Spec.new do |s|
   s.description    = 'A private Expo module that owns bounded local language-model runtimes.'
   s.author         = '27PM'
   s.homepage       = 'https://github.com/ales27pm/swarmer'
+  s.license        = { :type => 'MIT', :file => '../LICENSE' }
   s.platforms      = { :ios => '18.0' }
   s.source         = { :git => 'https://github.com/ales27pm/swarmer.git', :tag => s.version.to_s }
   s.static_framework = true
