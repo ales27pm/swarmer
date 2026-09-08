@@ -113,6 +113,32 @@ export type ToolCall =
   | WriteToolCall
   | ProcessToolCall;
 
+export type ToolProposalInput =
+  | {
+      tool_name: "workspace.list_dir";
+      arguments: { path: string };
+      summary: string;
+    }
+  | {
+      tool_name: "workspace.read_text";
+      arguments: { path: string };
+      summary: string;
+    }
+  | {
+      tool_name: "workspace.write_text";
+      arguments: { path: string; content: string };
+      summary: string;
+    }
+  | {
+      tool_name: "process.run";
+      arguments: {
+        argv: string[];
+        cwd?: string;
+        timeout_seconds?: number;
+      };
+      summary: string;
+    };
+
 type ApprovalRequester = {
   type: "device";
   id: string;

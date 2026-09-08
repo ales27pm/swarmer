@@ -102,9 +102,18 @@ Usage:
 
 ### Profile `iphone-edge`
 
-- pas de modèle lourd requis au départ;
-- modèle local plus tard via MLX/Core ML;
-- cache, summarizer et classifier possible.
+- runtime local facultatif via Core ML, MLX ou llama.cpp/GGUF;
+- un seul modèle chargé et une seule génération active;
+- génération bornée à 512 nouveaux jetons par l'interface native;
+- les sorties restent des propositions locales non vérifiées;
+- aucune authentification et aucune exécution d'outil dans le module natif.
+
+Les dépendances natives sont épinglées: `swift-transformers` 1.3.0,
+`mlx-swift` 0.31.4, `mlx-swift-lm` 3.31.4,
+`swift-huggingface` 0.9.0 et le XCFramework llama.cpp `b10809` vérifié par
+SHA-256 puis embarqué et signé par CocoaPods. Un modèle MLX distant exige un SHA de commit complet; `main`, une
+branche ou une étiquette mobile ne sont jamais présentés comme une révision
+reproductible.
 
 ### Profile `ubuntu-vram-8gb`
 

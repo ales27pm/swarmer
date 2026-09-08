@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { Text, TextInput, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle, timeAgo, useAccessibilityAnnouncement } from "@/components/swarm-ui";
@@ -329,6 +330,7 @@ function usePairing({
 }
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const dashboard = useAuthenticatedDashboard(setUrl);
   const pairing = usePairing({
@@ -348,6 +350,17 @@ export default function SettingsScreen() {
       testID="settings-screen"
     >
       <ErrorBanner message={dashboard.error} />
+      <SectionTitle title="Inférence sur l’iPhone" />
+      <Card>
+        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
+          Importe ou charge un modèle Core ML, MLX ou GGUF. L’intention et la sortie restent sur l’iPhone pendant la génération; une proposition n’est envoyée au control plane qu’après une action explicite.
+        </Text>
+        <ActionButton
+          label="Ouvrir les modèles locaux"
+          onPress={() => router.push("/local-model")}
+          testID="open-local-model-button"
+        />
+      </Card>
       <ControlPlaneSection
         activeUrl={dashboard.activeUrl}
         onUrlChange={setUrl}

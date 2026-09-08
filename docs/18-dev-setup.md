@@ -12,6 +12,8 @@ prototype Vibecode.
 - `prlimit` (util-linux) disponible exactement à `/usr/bin/prlimit`;
 - Node.js conforme au champ `engines` de `mobile/package.json` (actuellement
   Node 22.13+ ou 24+);
+- Xcode 26.4 ou plus récent pour compiler Expo SDK 57;
+- iOS 18 ou plus récent pour le runtime Core ML local de ce projet;
 - un endpoint local compatible OpenAI pour la planification, par défaut
   `http://127.0.0.1:8711/v1`.
 
@@ -182,6 +184,44 @@ curl --fail-with-body \
   https://ubuntu.example/sync/bootstrap
 unset MONGARS_DEVICE_TOKEN
 ```
+
+## Development build iOS avec inférence locale
+
+Le module natif n'est pas disponible dans Expo Go. Depuis `mobile/`, utiliser
+explicitement un Node conforme puis générer le projet natif:
+
+```bash
+export PATH="/chemin/vers/node-22/bin:$PATH"
+npx expo-doctor
+CI=1 npx expo prebuild --platform ios --no-install
+cd ios
+COCOAPODS_DISABLE_STATS=1 pod install
+```
+
+Le pod privé ajoute des dépendances SwiftPM exactes pour Core ML/MLX et un
+wrapper binaire llama.cpp téléchargé par CocoaPods avec vérification SHA-256.
+L'XCFramework llama.cpp amont
+épinglé contient la tranche iOS arm64, mais pas de tranche iOS Simulator. La
+preuve de compilation et de runtime llama.cpp doit donc utiliser un iPhone
+physique. Sur un hôte qui ne satisfait pas le minimum Xcode d'Expo SDK 57,
+prébuild et analyse statique ne constituent pas une preuve de compilation;
+utiliser EAS Build ou un Mac compatible.
+
+Dans l'app, ouvrir Réglages puis « Ouvrir les modèles locaux ». Pour Core ML,
+sélectionner un dossier contenant exactement un modèle `.mlmodel`, `.mlpackage`
+ou `.mlmodelc` ainsi que `tokenizer.json` et `tokenizer_config.json`; llama.cpp
+attend exactement un fichier `.gguf`. MLX accepte soit un dossier complet
+contenant `config.json`, `tokenizer.json` et les poids `.safetensors`, soit un
+identifiant Hub avec son SHA Git complet. Charger et générer ne soumettent rien
+au serveur. Le bouton de soumission n'apparaît qu'après validation stricte d'une
+proposition d'outil supportée.
+
+L'import de dossier ne suit pas les liens symboliques et ne copie que les
+artefacts directs attendus (le bundle Core ML plus ses sidecars connus, ou les
+fichiers MLX JSON/tokenizer/poids). Un import est refusé au-delà de 16 Gio,
+20 000 fichiers, 4 096 dossiers ou 64 niveaux, et garde 1 Gio d'espace libre.
+La copie est annulable, vérifie l'identité et la taille de chaque fichier avant
+et après lecture, puis nettoie les imports interrompus.
 
 ## Cycle réel d'une tâche
 

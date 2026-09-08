@@ -15,6 +15,7 @@ import type {
   TaskMode,
   TaskStatus,
   ToolCall,
+  ToolProposalInput,
 } from "@/lib/api/types";
 
 export type {
@@ -30,6 +31,7 @@ export type {
   TaskMode,
   TaskStatus,
   ToolCall,
+  ToolProposalInput,
 } from "@/lib/api/types";
 
 const CONNECTION_KEY = "mongars.connection.v1";
@@ -453,6 +455,16 @@ export function planTask(
     `/tasks/${resourceId(taskId)}/plan`,
     { method: "POST" },
   );
+}
+
+export function submitToolProposal(
+  taskId: string,
+  proposal: ToolProposalInput,
+): Promise<ToolCall> {
+  return request<ToolCall>(`/tasks/${resourceId(taskId)}/tool-calls`, {
+    method: "POST",
+    body: JSON.stringify(proposal),
+  });
 }
 
 export function sendChat(

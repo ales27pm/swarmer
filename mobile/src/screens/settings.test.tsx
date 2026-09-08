@@ -12,6 +12,10 @@ import {
   type Bootstrap,
 } from "@/lib/api/client";
 
+const mockPush = jest.fn();
+
+jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }) }));
+
 jest.mock("expo-secure-store", () => ({
   getItemAsync: jest.fn(),
   setItemAsync: jest.fn(),
@@ -188,5 +192,15 @@ describe("SettingsScreen", () => {
       ),
     ).toBeOnTheScreen();
     expect(screen.queryByLabelText(/secret/i)).not.toBeOnTheScreen();
+  });
+
+  it("opens the isolated local-model workspace", async () => {
+    mockHasDeviceToken.mockResolvedValue(false);
+    const user = userEvent.setup();
+    await render(<SettingsScreen />);
+
+    await user.press(screen.getByRole("button", { name: "Ouvrir les modèles locaux" }));
+
+    expect(mockPush).toHaveBeenCalledWith("/local-model");
   });
 });

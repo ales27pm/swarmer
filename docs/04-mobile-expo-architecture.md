@@ -144,6 +144,27 @@ bearer n'est envoyé au serveur candidat.
 
 ## Native bridge Expo
 
+Le slice iOS contient un module privé `SwarmerLocalInference` et un écran
+`/local-model`. Son coordinateur Swift sérialise le chargement et la génération
+et possède au plus une génération active. Les runtimes sont:
+
+- Core ML, avec modèle local et fichiers tokenizer côte à côte;
+- MLX, depuis un dossier importé ou un dépôt Hugging Face lié à un SHA Git
+  complet de 40 caractères;
+- llama.cpp, depuis un fichier GGUF importé.
+
+Les modèles importés sont copiés sous Application Support avec un identifiant
+généré, sans lien symbolique, écriture d'index atomique et exclusion de la
+sauvegarde iCloud. Le module ne connaît pas le control plane. Il retourne
+uniquement une sortie locale bornée; TypeScript exige une enveloppe et des
+arguments exacts avant d'afficher une action soumissible.
+
+La soumission est un geste distinct: l'app crée une tâche via `/chat`, puis
+envoie la proposition à `/tasks/{task_id}/tool-calls` avec le bearer conservé
+dans SecureStore. Une proposition `none`, une annulation, une erreur native ou
+une sortie non conforme ne crée aucune tâche. La page de tâche reste la seule
+preuve d'accord, d'exécution ou de résultat.
+
 Capacités roadmap avec modules Expo, non incluses dans le slice actuel:
 
 - `expo-location`
@@ -165,10 +186,10 @@ Pour appels/SMS/email:
 
 Phase 1 doit tenter Expo Go pour itérer vite.
 
-Development build requis dès que:
+Development build requis pour:
 
 - module Swift custom pour iPhone Capability Broker;
-- MLX/Core ML/llama.cpp local;
+- MLX/Core ML/llama.cpp local, maintenant branchés par le module privé;
 - APIs natives non couvertes par Expo Go;
 - config native avancée;
 - extension/app target Apple.

@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fetch } from "expo/fetch";
 import * as SecureStore from "expo-secure-store";
 
-import { createTask, pairDevice, type Bootstrap } from "@/lib/api/client";
+import {
+  createTask,
+  pairDevice,
+  submitToolProposal,
+  type Bootstrap,
+} from "@/lib/api/client";
 
 jest.mock("expo-secure-store", () => ({
   deleteItemAsync: jest.fn(),
@@ -112,6 +117,29 @@ describe("control-plane connection storage", () => {
       "https://control.example/tasks",
       expect.objectContaining({
         body: JSON.stringify({ input: "inspect the workspace", mode: "normal" }),
+        headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
+        method: "POST",
+      }),
+    );
+  });
+
+  it("submits a structured proposal only through the authenticated task route", async () => {
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
+    });
+    request.mockResolvedValue(successfulJson({ id: "call_1" }));
+    const proposal = {
+      tool_name: "workspace.read_text",
+      arguments: { path: "README.md" },
+      summary: "Read the project overview",
+    } as const;
+
+    await submitToolProposal("tsk/one", proposal);
+
+    expect(request).toHaveBeenCalledWith(
+      "https://control.example/tasks/tsk%2Fone/tool-calls",
+      expect.objectContaining({
+        body: JSON.stringify(proposal),
         headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
         method: "POST",
       }),

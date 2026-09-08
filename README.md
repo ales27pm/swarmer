@@ -48,6 +48,12 @@ modèle et d'exécution:
   demeure une évolution, pas une capacité annoncée;
 - planification par le modèle local sans minuterie ni succès simulé: seul un
   résultat réel de l'exécuteur peut terminer une tâche;
+- module iOS local en development build pour Core ML, MLX et llama.cpp/GGUF.
+  Le module conserve les modèles dans le conteneur privé, ne reçoit ni URL ni
+  bearer du control plane et ne retourne que du texte. L'app rejette toute
+  sortie qui ne respecte pas exactement le contrat de proposition JSON; une
+  action acceptée est ensuite soumise explicitement à l'API authentifiée et
+  reste soumise aux règles, accords et preuves serveur;
 - création appel-outil/approbation et décisions atomiques, non rejouables. Une
   tâche annulée ou terminale ne peut pas être ressuscitée. « Autoriser une fois »
   n'installe aucune règle persistante. Chaque accord est lié à l'identifiant,
@@ -102,7 +108,9 @@ mongars-swarm/
 
 ## Mode de build visé
 
-Phase 1 démarre avec Expo Go quand possible. Dès que le projet ajoute un module natif custom pour inférence locale, pont iPhone avancé ou intégration native non incluse dans Expo Go, il faut passer à un **development build** Expo.
+La console sans runtime natif peut encore démarrer avec Expo Go. Le module
+d'inférence locale exige désormais un **development build** Expo; Expo Go ne
+contient pas les binaires Core ML, MLX et llama.cpp de l'application.
 
 ## Stack cible
 

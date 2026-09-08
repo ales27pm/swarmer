@@ -10,13 +10,27 @@
     "userInterfaceStyle": "automatic",
     "plugins": [
       "expo-router",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "extraPods": [
+              {
+                "name": "SwarmerLlamaBinary",
+                "podspec": "https://raw.githubusercontent.com/ales27pm/swarmer/4f999098fd42993ae87308719bc1261905e46f9e/mobile/modules/swarmer-local-inference/ios/LlamaBinary/SwarmerLlamaBinary.podspec"
+              }
+            ]
+          }
+        }
+      ],
       "expo-secure-store",
       "expo-sqlite"
     ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "org.27pm.mongars",
-      "buildNumber": "20260907202655",
+      "buildNumber": "20260908005645",
+      "deploymentTarget": "18.0",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "fr",
         "CFBundleLocalizations": [

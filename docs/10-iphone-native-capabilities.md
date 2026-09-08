@@ -1,7 +1,8 @@
 # 10 — iPhone Native Capabilities
 
-> **Statut:** architecture roadmap. Le slice `0.6` ne branche aucun capteur,
-> capability broker, collecte native ou action téléphone.
+> **Statut:** le capability broker, les capteurs et les actions téléphone
+> restent roadmap. Le runtime d'inférence locale Core ML/MLX/llama.cpp est
+> branché séparément et ne possède aucune capacité téléphone.
 
 ## Objectif
 
@@ -134,4 +135,5 @@ Phase 2:
 - `email.compose`
 - `phone.call.prepare`
 - custom EventKit reminders module
-- on-device LLM module
+- autres capacités du on-device LLM au-delà de la génération de propositions
+  bornées déjà implémentée
