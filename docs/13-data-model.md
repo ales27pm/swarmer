@@ -2,17 +2,22 @@
 
 ## Autorité et version
 
-Le schéma implémenté est SQLite WAL, version `10`, dans
+Le schéma implémenté est SQLite WAL, version `13`, dans
 `server/app/services/state_service.py`. Il est migré de façon additive. Postgres,
-Redis et le câblage de base de données du prototype Vibecode ne sont pas branchés
-au MVP.
+NATS et le câblage de base de données du prototype Vibecode ne sont pas branchés
+au MVP. Redis Streams est un transport de notification optionnel, pas une base
+autoritative et ne remplace aucune table ci-dessous.
 
 La version 7 a ajouté `message_board_events`, `agent_jobs`,
 `memory_embeddings`, `eval_examples`, `corrections` et `agent_scores`. Les
 versions 8–10 ajoutent l'outbox transactionnelle, les leases/générations,
 l'état de capacité des agents, le transport de capabilities iPhone et la
-déduplication de création par fingerprint. Il ne s'agit pas d'un branchement
-Redis/NATS: board, outbox et état partagent SQLite.
+déduplication de création par fingerprint. Les versions 11–13 ajoutent les
+claims de publication fenced, l'enveloppe de board v2, les identités d'instance,
+leases de maintenance, checkpoints consumers, reçus d'idempotence mobile,
+runtime/protocole d'agent, scoring observé et preuves du scheduler. Il ne s'agit
+pas d'un déplacement de l'autorité: outbox, state, leases et receipts restent
+dans SQLite.
 
 Le fichier SQLite et la politique d'exécution doivent rester hors du workspace
 monté en écriture dans Bubblewrap.
@@ -90,8 +95,11 @@ Nom, version, endpoint, modèle, skills, état, heartbeat et digest de la
 credential dédiée. Un agent débute `unverified`; un heartbeat authentifié peut
 ensuite le déclarer `online`, `busy`, `draining` ou `offline`. La table conserve
 aussi `last_seen_at`, `max_concurrency` et la map JSON `capacity`. Les lectures
-calculent `active_jobs` et le score historique; la credential n'est jamais
-retournée par le registre.
+calculent `active_jobs` et le score historique. `runtime` et
+`supported_protocol_version` figent la carte approuvée par le serveur; les
+skills et valeurs de capacité sont rejetés s'ils ne figurent pas dans
+l'allowlist de leur famille. La credential n'est jamais retournée par le
+registre.
 
 ### `agent_jobs`
 
@@ -114,16 +122,59 @@ que lorsqu'aucune exécution locale concurrente n'existe.
 
 ### `message_board_events` et `outbox_events`
 
-`message_board_events` est le board durable SQLite: topic, type, identifiant du
-message, tâche/agent optionnels, payload JSON, date et `dedupe_key` unique.
+`message_board_events` est le board durable SQLite: `schema_version`,
+`event_id`, topic, type, type/ID d'agrégat, tâche/agent optionnels, payload JSON,
+date et `dedupe_key` unique. Les IDs produits par un backend externe ne sont
+jamais l'identité métier.
 
 `outbox_events` contient l'agrégat, le topic, le type, le payload canonique,
 les identifiants corrélés, `published_at`, compteur de tentatives,
-`last_error` expurgé et `dedupe_key` unique. La transition métier et l'entrée
-d'outbox partagent une transaction. Le drain publie au moins une fois; si le
-processus tombe après l'insertion dans le board mais avant `published_at`, le
-rejeu retrouve la même ligne grâce à `dedupe_key` au lieu de créer un doublon.
-Ce mécanisme ne fournit pas de consumer groups ou de transport multi-hôte.
+`last_error` expurgé, `event_id` et `dedupe_key` uniques. Les colonnes
+`publishing_owner`, `publishing_started_at`,
+`publishing_lease_expires_at` et `publish_generation` protègent plusieurs
+drainers. Un `BEGIN IMMEDIATE` revendique les lignes non publiées libres ou
+expirées et incrémente la génération. `mark_published` exige le propriétaire,
+la génération et une lease encore valide; un publisher périmé ne peut pas
+confirmer une reprise plus récente.
+
+La transition métier et l'entrée d'outbox partagent une transaction. Le drain
+publie au moins une fois; si le processus tombe après le board/Redis mais avant
+`published_at`, le rejeu conserve `event_id`/`dedupe_key`, permettant au backend
+de dédupliquer. Une panne de transport laisse toujours la ligne non publiée et
+incrémente seulement le compteur/erreur expurgée. Aucune ligne non publiée n'est
+supprimée.
+
+### `control_plane_instances` et `maintenance_leases`
+
+Une instance reçoit un `instance_id` aléatoire propre au démarrage, un label de
+hostname normalisé, une version et ses timestamps de démarrage, heartbeat et
+arrêt. Le hostname seul n'est jamais l'identité.
+
+Une lease de maintenance associe un nom, l'instance propriétaire, une
+génération, acquisition/renouvellement et expiration. Le reaper de jobs,
+l'expirer de capabilities, l'entretien d'outbox et le recalcul feedback/scoring
+acquièrent des noms distincts. Le takeover après expiration incrémente la
+génération; toute mutation singleton revérifie propriétaire/génération dans sa
+transaction SQLite.
+
+### `message_consumer_deliveries` et `message_consumer_checkpoints`
+
+Ces tables forment le ledger des consumers internes de confiance. Une delivery
+est liée au groupe, à `event_id` et `dedupe_key`; elle porte état, tentatives,
+budget, propriétaire du claim, génération/expiration, erreur expurgée et issue.
+Le checkpoint avance seulement après succès du handler et ack fenced. Une
+delivery épuisée devient `dead_letter`; elle n'autorise aucun effet de worker.
+Cette fondation est backend-neutre mais n'est pas un consumer group Redis
+déployé.
+
+### `idempotency_receipts`
+
+Chaque reçu lie `actor_id` (device authentifié), `idempotency_key`, opération,
+digest canonique et réponse JSON. L'effet ordinaire et le reçu sont écrits dans
+le même `BEGIN IMMEDIATE`. Une répétition exacte retourne la réponse enregistrée;
+la même clé avec une autre opération ou un autre payload est refusée. La surface
+est limitée à feedback, champ `pinned` de mémoire et message de chat avec
+`start_task: false`; aucune action sensible n'utilise cette table.
 
 ### `iphone_capability_requests`, `iphone_capability_grants` et `iphone_capability_results`
 
@@ -155,12 +206,28 @@ timestamps. La recherche reste lexicale par défaut. Quand un provider
 d'embeddings est configuré, `memory_embeddings` conserve le vecteur, son
 provider et ses dimensions, et la recherche combine scores vectoriel et lexical.
 Sans provider ou en cas d'échec de celui-ci, le runtime retombe sur le lexical;
-aucun FAISS/Qdrant externe n'est annoncé.
+la projection FAISS optionnelle est secondaire et reconstruisible. Qdrant n'est
+pas annoncé comme implémenté.
 
 ### `feedback_events`
 
 Référence optionnelle à une tâche ou un agent, type, label, score, notes, payload
 et date. Le serveur valide les références présentes avant insertion.
+
+### `agent_score_snapshots` et `scheduler_decisions`
+
+`agent_score_snapshots` est une projection reconstruisible produite uniquement
+depuis les jobs, audits de lease et feedback observés par le serveur. Elle
+sépare completed/failed, expirations, taux, feedback moyen, latence et score
+composite avec version de formule. La formule courante est transparente:
+`0.60 × completion + 0.20 × (1 - timeout) + 0.20 × feedback_normalisé`, avec
+composante neutre `0.5` lorsqu'aucune observation n'existe. La latence est
+diagnostique et sert au classement seulement après trois résultats.
+
+`scheduler_decisions` conserve la job, les candidats avec métadonnées sûres,
+l'agent sélectionné, l'ordre de scoring et la date. Les tokens, endpoints,
+payloads et secrets n'y figurent jamais. Même état observé et même job produisent
+le même ordre de candidats; un LLM ne décide pas l'éligibilité.
 
 ### `audit_events`
 
@@ -170,6 +237,24 @@ de rendre une modification ultérieure détectable; ce mécanisme n'est pas une
 signature externe. La lecture API peut expurger un payload historique sensible;
 les hash restent ceux de la ligne interne brute et ne sont pas recalculés sur la
 projection publique.
+
+## Projection vectorielle externe
+
+FAISS n'est pas une table ni une source de vérité. L'adaptateur optionnel écrit
+des générations contenant les IDs stables de `memory_items`, puis permute un
+pointeur local `CURRENT.json` seulement après validation complète. La commande
+de rebuild relit `memory_embeddings` sous un provider donné. Perte, corruption
+ou absence de FAISS laisse intactes les mémoires SQLite et le fallback lexical.
+Qdrant reste **PLANNED**.
+
+## Outbox SQLite mobile
+
+Dans la base Expo locale, `mutation_outbox` contient `id`, `origin`, opération,
+ressource, payload JSON, clé d'idempotence, timestamps, tentatives, erreur et
+fin. L'unicité `(origin,idempotency_key)` et la revalidation du contenu empêchent
+une clé d'être re-liée. Les entrées ne contiennent ni bearer ni grant. Elles ne
+sont drainées qu'après bootstrap autoritatif et restent isolées de toute autre
+origine; un changement de jumelage les abandonne.
 
 ## Indexes actuels
 
@@ -182,13 +267,18 @@ projection publique.
 - feedback par tâche;
 - audit par trace et date;
 - board par topic/ordre et `dedupe_key` unique;
-- outbox par publication/ordre et `dedupe_key` unique;
+- board et outbox par `event_id` unique;
+- outbox par publication/expiration de claim/ordre et `dedupe_key` unique;
+- instances par état/heartbeat et maintenance par expiration/nom;
+- consumers par groupe, état, expiration et identité/déduplication;
+- reçus d'idempotence par appareil/clé et date;
 - jobs par file/compétence, agent, et index partiel unique d'une job active par
   tâche;
 - demandes iPhone par device/statut/date, par job/génération/date et par l'index
   partiel unique `idx_iphone_capability_one_nonterminal_fingerprint` sur le
   fingerprint tant que l'état n'est pas terminal;
 - grant et résultat uniques par demande.
+- snapshots de score par score/agent et décisions du scheduler par job/date.
 
 ## Rétention et limites
 
@@ -200,3 +290,8 @@ projection publique.
 - grants iPhone: éphémères et à usage unique; arguments/résultats: rétention à
   définir selon leur sensibilité;
 - sauvegarde/restauration et purge ne sont pas encore qualifiées en production.
+
+Les migrations `0.8 → 0.10` et `0.9 → 0.10` sont additives: aucune table
+autoritative n'est recréée ou supprimée. Les colonnes anciennes sont complétées,
+les anciens IDs d'événements reçoivent une identité stable et les invariants de
+jobs/capabilities restent réconciliés avant la hausse de `PRAGMA user_version`.

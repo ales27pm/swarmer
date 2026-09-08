@@ -1,6 +1,6 @@
 # monGARS Swarm App — Build Documents
 
-Version: 0.9.0 leased-swarm + iPhone capability transport
+Version: 0.10.0 multi-host swarm fabric foundation
 Date: 2026-09-08
 Owner: ales27pm / 27PM  
 Target: iPhone Expo app + Ubuntu local AI control plane + distributed autonomous swarm
@@ -51,8 +51,12 @@ modèle et d'exécution:
 - tâches enrichies, conversations/messages, appels d'outils, approbations,
   mémoire, agents, audit chaîné par hash et feedback;
 - message board durable SQLite et outbox transactionnelle dans la même base que
-  l'état. Une clé de déduplication rend la livraison au board rejouable sans
-  doubler l'événement. Les jobs sont revendiqués atomiquement par compétence,
+  l'état. Chaque drainer revendique atomiquement un lot avec une identité
+  d'instance, une lease de publication et une génération de fencing. Un
+  publisher périmé ne peut donc pas marquer la publication d'une génération
+  plus récente. Une clé de déduplication applicative obligatoire rend la
+  livraison au board rejouable, y compris après un crash survenu entre
+  publication et `published_at`. Les jobs sont revendiqués atomiquement par compétence,
   avec une seule exécution distante active par tâche, capacité déclarée,
   credential agent, lease opaque expirante et génération de fencing. Le reaper
   ne remet automatiquement en file que `workspace.list_dir` et
@@ -60,14 +64,52 @@ modèle et d'exécution:
   génération expirée n'a eu aucune activité de capability iPhone. Toute autre
   expiration est traitée comme un résultat potentiellement incertain, échoue et
   est auditée. Les heartbeats renouvellent toujours l'état autoritatif, mais leur
-  publication durable est coalescée par job et génération. Redis Streams/NATS
-  et le bus multi-hôte restent planifiés;
+  publication durable est coalescée par job et génération;
+- contrat de transport `DurableEvent` indépendant du backend et adaptateur
+  Redis Streams optionnel. SQLite demeure le backend par défaut et la seule
+  source de vérité; Redis ne contient que des notifications, conserve les
+  identifiants applicatifs et la `dedupe_key`, et une indisponibilité laisse
+  l'outbox en attente jusqu'à récupération. Cette fondation n'est pas une preuve
+  de disponibilité multi-hôte en production;
+- identité aléatoire par démarrage de chaque instance du control plane, avec
+  heartbeat persistant, et leases singleton à génération pour le reaper, les
+  expirations de capabilities, l'entretien de l'outbox et le recalcul de score.
+  Une fondation de consumers de confiance conserve checkpoint, retry borné,
+  dead letter et ack après succès; aucun worker ne reçoit pour autant des
+  identifiants Redis ni un accès direct au broker;
 - recherche mémoire lexicale conservée avec architecture d'embeddings et ranking
-  hybride lorsqu'un provider est configuré; aucun moteur vectoriel externe n'est
-  requis ni annoncé;
+  hybride lorsqu'un provider est configuré. Un index FAISS local optionnel et
+  reconstruisible peut être régénéré depuis les embeddings SQLite; sa perte ou
+  sa corruption ne détruit aucune mémoire et le chemin lexical continue de
+  fonctionner;
 - réplica iPhone étendue aux tâches, approbations, appels d'outils,
   conversations/messages, agents, mémoire épinglée et métadonnées d'audit. Cette
   réplica n'autorise jamais une action sensible;
+- outbox de mutations mobile, locale et liée à l'origine, pour trois opérations
+  rejouables seulement: feedback, épinglage de mémoire et message de chat sans
+  création de tâche. Le serveur lie `Idempotency-Key`, identité de l'appareil et
+  digest canonique dans un reçu atomique. Le drain ne commence qu'après un
+  bootstrap autoritatif réussi et revérifie l'origine et le bearer capturés. Un
+  changement de jumelage abandonne les anciennes entrées. Décisions
+  d'approbation, grants/exécution iPhone, composeurs, `process.run` et toute
+  action sensible sont refusés par cette outbox;
+- flotte exemple composée des workers Files, Research et Code Review. Le
+  Research Worker ne reçoit jamais d'URL de job: il utilise un unique adaptateur
+  HTTPS configuré par l'opérateur, avec limites de temps/taille et contenu
+  marqué non fiable. Le Code Review Worker construit uniquement des appels Git
+  et Ruff en lecture, sans shell, write ni push. Les cartes d'agents sont
+  validées par une allowlist serveur; une compétence inconnue, privilégiée ou
+  incompatible est refusée. La règle opérateur courante est réévaluée à
+  l'inscription, à chaque claim et avant toute redistribution; une compétence
+  révoquée laisse un job en attente non exécutable ou le dead-letter après une
+  lease expirée, sans l'envoyer à un autre worker;
+- scheduler déterministe v2: compatibilité de protocole et de compétence,
+  agent `online` avec heartbeat encore frais, capacité disponible, ratio de
+  charge, score observé, latence
+  après un minimum d'échantillons, ancienneté puis identifiant stable. Chaque
+  décision persiste une preuve expurgée. Les scores proviennent des résultats,
+  expirations et feedback observés par le serveur, jamais de l'auto-évaluation
+  d'un worker;
 - transport corrélé du Capability Broker pour position, contacts, calendrier,
   sélection de photo et composition mail/SMS. Un worker ne peut créer ou sonder
   une demande qu'avec sa lease active. Seul l'iPhone ciblé peut décider, puis
@@ -88,7 +130,12 @@ modèle et d'exécution:
   iOS et ce POST laisse donc l'issue inconnue côté Ubuntu, sans réexécution
   automatique;
 - export JSONL de corrections revues avec expurgation de chemins protégés et de
-  secrets; le scoring avancé reste à compléter;
+  secrets;
+- sérialisation centralisée et fermée des événements partagés: aucun bearer,
+  token de lease/grant, argument ou résultat natif sensible, contenu de
+  contact/localisation/mail/SMS ni contenu de chemin protégé n'entre dans le
+  board, Redis ou le WebSocket générique. `/status` expose seulement version,
+  identité d'instance, santé du backend et compteurs opérationnels;
 - planification par le modèle local sans minuterie ni succès simulé: seul un
   résultat réel de l'exécuteur peut terminer une tâche;
 - module iOS local en development build pour Core ML, MLX et llama.cpp/GGUF.
@@ -173,14 +220,22 @@ Ubuntu — présent dans le MVP:
 - FastAPI control plane
 - llama.cpp/Ollama/vLLM-compatible OpenAI local endpoint
 - SQLite WAL autoritatif; Postgres n'est pas branché
+- board SQLite par défaut; Redis Streams optionnel comme transport de
+  notification, jamais comme source de vérité
+- consumer ledger SQLite pour services de confiance du control plane
+- projection FAISS locale optionnelle et reconstruisible depuis SQLite
+- workers de lecture Files, Research borné et Code Review en lecture seule
 - append-only audit log
 - pytest + ruff + mypy + bandit
 
 Ubuntu — évolutions ciblées, non annoncées comme déjà livrées:
 
-- Redis Streams/NATS multi-hôte, consumer groups et ordonnanceur autonome
+- qualification opérationnelle Redis multi-hôte, orchestration de consumer
+  groups Redis et procédures de reprise/monitoring en production
+- NATS JetStream, si une migration future le justifie
 - migration Postgres si plusieurs writers deviennent nécessaires
-- mémoire vectorielle FAISS ou Qdrant; le MVP utilise SQLite et un ranking hybride optionnel
+- branchement de la projection FAISS dans le chemin de recherche en production
+  ou adaptateur Qdrant; le MVP garde SQLite et le fallback lexical
 
 ## Non-objectifs du MVP
 

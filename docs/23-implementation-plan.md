@@ -1,10 +1,11 @@
 # 23 — Implementation Plan
 
 > **Statut:** ordre de construction historique et architecture cible. Le contrat
-> courant est l'OpenAPI `0.9.0`. `docs/21-acceptance-criteria.md` documente
+> courant est l'OpenAPI `0.10.0`. `docs/21-acceptance-criteria.md` documente
 > encore les preuves du slice `0.7` et ne valide pas à lui seul cette release.
-> Les mentions Redis/NATS ou Postgres ci-dessous sont **PLANNED**, jamais une
-> dépendance cachée du runtime.
+> Redis Streams est un backend optionnel de notification; SQLite reste le
+> défaut et la source de vérité. NATS, Postgres et la qualification multi-hôte
+> de production restent **PLANNED**, jamais une dépendance cachée du runtime.
 
 ## Ordre cible historique
 
@@ -65,12 +66,17 @@ Livré localement avec tests de frontières simulées:
 - WebSocket.
 - Reconnect handling.
 - cache SQLite lié à l'origine et lecture hors ligne en mode sûr.
+- outbox mobile pour feedback, épinglage de mémoire et chat sans tâche;
+- reçus serveur `Idempotency-Key` liés au device et au digest exact;
+- bootstrap autoritatif avant drain et abandon lors d'un changement de
+  jumelage/origine.
 
 Roadmap:
 
 - journal durable et Pull par curseur;
-- Push idempotent;
-- Outbox.
+- résolution générale de conflits multi-writer;
+- nouvelles opérations offline uniquement après preuve d'idempotence et revue
+  de sécurité.
 
 ### Step 6 — Task flow
 
@@ -106,10 +112,19 @@ Roadmap:
 
 ### Step 10 — Message board
 
-IMPLEMENTED en `0.9.0`:
+IMPLEMENTED en `0.10.0`:
 
-- interface de board et implémentation SQLite durable;
-- outbox transactionnelle, livraison au moins une fois et déduplication;
+- interface `DurableEvent`, board SQLite durable par défaut et adaptateur Redis
+  Streams optionnel;
+- outbox transactionnelle avec claims concurrents, lease/génération de
+  publication, fencing du marquage, livraison au moins une fois et
+  déduplication applicative;
+- reprise des claims expirés et panne Redis sans perte d'état;
+- identité aléatoire/heartbeat de chaque instance du control plane;
+- leases de maintenance singleton pour reaper, capability expirer, outbox et
+  feedback/scoring;
+- fondation consumer de confiance avec claim fenced, ack après succès, retry
+  borné, dead letter et checkpoint SQLite;
 - protocole worker HTTP authentifié, capacité et scheduler déterministe;
 - une job distante active par tâche;
 - lease opaque hashée, id/génération/expiration, heartbeat et fencing;
@@ -118,24 +133,46 @@ IMPLEMENTED en `0.9.0`:
   issue potentiellement incertaine et dead letter locale;
 - heartbeat autoritatif à chaque renouvellement, publication durable coalescée
   par job et génération.
+- Agent Cards et allowlist serveur de skills/protocole/capacity, réévaluée à
+  l'inscription, au claim et avant redistribution;
+- workers Files, Research à adaptateur HTTPS borné et Code Review sans write,
+  push ou shell générique;
+- scheduler v2 avec ratio de charge, score observé, latence qualifiée,
+  ancienneté et tie-break stable; décision expurgée persistée;
+- scoring transparent depuis résultats, expirations et feedback observés par le
+  serveur;
+- sérialiseur central de confidentialité pour WebSocket, board, Redis et
+  outbox;
+- `/status` authentifié avec identité, santé backend et compteurs seulement.
 
 PLANNED:
 
-- Redis Streams ou NATS JetStream multi-hôte;
-- consumer groups réseau, partitionnement et dead-letter queue externe;
-- ordonnanceur autonome au-delà de la claim déterministe.
+- qualification opérationnelle Redis multi-hôte et consommateurs Redis actifs;
+- NATS JetStream, partitionnement et dead-letter queue externe;
+- affectation push aux workers; ils continuent actuellement à claim via HTTP;
+- préparation production multi-hôte et migration Postgres si plusieurs writers
+  deviennent nécessaires.
 
 ### Step 11 — Memory
 
-- Embedding model.
-- Chunker.
-- FAISS.
-- Memory search API.
-- Memory UI.
+IMPLEMENTED:
+
+- recherche lexicale et embeddings SQLite optionnels avec ranking hybride;
+- protocole `VectorIndex`, adapter de test en mémoire et projection FAISS locale
+  optionnelle;
+- rebuild FAISS par génération depuis les IDs/embeddings SQLite autoritatifs;
+- fallback lexical si l'index manque ou échoue;
+- Memory API/UI existantes.
+
+PLANNED:
+
+- branchement/qualification de FAISS sur le chemin production complet;
+- Qdrant et stratégie multi-hôte de l'index;
+- enrichissement du chunker et du retrieval pack.
 
 ### Step 12 — iPhone bridge
 
-IMPLEMENTED en `0.9.0`:
+IMPLEMENTED et conservé en `0.10.0`:
 
 - `iphone.location.current`, `iphone.contacts.lookup`,
   `iphone.calendar.events`, `iphone.photos.pick`;
@@ -149,8 +186,10 @@ IMPLEMENTED en `0.9.0`:
   expiration et marqueur d'arguments expurgés; mise à jour avec `request_id`
   seulement.
 
-VALIDATION PENDING: permissions, dialogues et exécution native sur iPhone
-physique; un build ou un test unitaire ne remplace pas cette preuve.
+MANUAL VALIDATION REQUIRED: permissions, dialogues, refus/annulation, succès,
+arrière-plan/reprise, expiration, perte réseau et non-rejeu sur iPhone physique.
+Le protocole `docs/26-iphone-physical-device-validation.md` reste `NOT RUN`; un
+build ou un test unitaire ne remplace pas cette preuve.
 
 PLANNED:
 
@@ -159,10 +198,10 @@ PLANNED:
 
 ### Step 13 — Feedback/evals
 
-- Feedback UI.
-- Feedback event store.
-- Eval export.
-- Parser regression fixtures.
+- Feedback UI et event store: IMPLEMENTED.
+- Corrections, exemples d'eval et export JSONL expurgé: IMPLEMENTED.
+- score agent observé et versionné: IMPLEMENTED.
+- eval builder/curation et pipeline LoRA: PLANNED.
 
 ### Step 14 — Custom native / on-device LLM
 

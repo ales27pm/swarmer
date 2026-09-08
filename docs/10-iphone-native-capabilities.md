@@ -1,18 +1,22 @@
 # 10 — iPhone Native Capabilities
 
-> **IMPLEMENTED — slice `0.9.0`:** transport corrélé agent → control plane →
+> **IMPLEMENTED — conservé et durci en `0.10.0`:** transport corrélé agent → control plane →
 > iPhone pour six capabilities, avec approbation par l'appareil ciblé, grant
 > opaque court et consommable une fois, validation native stricte et résultat
 > sondable par le worker. La notification initiale transporte seulement les
 > métadonnées expurgées nécessaires à l'affichage; les mises à jour ne
-> transportent que `request_id`. **PLANNED:** capacités d'écriture
+> transportent que `request_id`. Le sérialiseur partagé interdit aussi les
+> arguments/résultats natifs sur le board SQLite, Redis et le WebSocket. Les
+> demandes de capability ne passent jamais par l'outbox mobile hors ligne.
+> **PLANNED:** capacités d'écriture
 > supplémentaires, push externe et accès direct agent/appareil — ce dernier
 > reste volontairement interdit.
 
-> **VALIDATION PENDING:** le code natif et ses contrats automatisés sont livrés,
+> **MANUAL VALIDATION REQUIRED:** le code natif et ses contrats automatisés sont livrés,
 > mais les dialogues de permission et l'exécution réelle sur iPhone physique
 > n'ont pas encore été prouvés. Cette preuve appareil reste distincte d'un test
-> unitaire ou d'un build réussi.
+> unitaire ou d'un build réussi. Le protocole à exécuter est documenté dans
+> `docs/26-iphone-physical-device-validation.md`.
 
 ## Objectif
 
@@ -86,7 +90,7 @@ La réponse `201` masque les arguments et le grant:
 ```
 
 Le champ d'enveloppe `schema_version: "0.9"` identifie le schéma du protocole
-capability; il est distinct de la version de release/API `0.9.0`.
+capability; il est distinct de la version de release/API `0.10.0`.
 
 Le poll exige la même preuve de lease et retourne:
 
@@ -233,6 +237,13 @@ Après exécution native, un POST de résultat échoué peut être repris dans l
 processus sans reconsommer le grant ni réexécuter iOS. Si l'app meurt avant ce
 POST, Ubuntu conserve une issue inconnue plutôt que de rejouer l'action.
 
+L'outbox mobile `mutation_outbox` ne change pas cette règle: sa liste blanche
+contient seulement feedback, épinglage de mémoire et chat sans tâche. Elle
+refuse approbations, demandes/grants/résultats de capability, SMS/mail,
+`process.run` et tout effet sensible. Une perte réseau avant ou après l'effet
+natif reste gérée dans le workflow éphémère ci-dessus, sans mise en file durable
+ni exécution automatique ultérieure.
+
 ## Notifications WebSocket
 
 Les événements ciblés sont:
@@ -248,6 +259,13 @@ n'expose que l'identifiant. Aucun des deux événements ne contient arguments,
 coordonnées, contacts, contenu de message, résultat natif ou grant. Après
 reconnexion, l'app utilise les `GET` REST autoritatifs; le WebSocket n'est pas
 une preuve d'autorisation.
+
+Le sérialiseur central rejette ou expurge aussi bearer, credential, token de
+lease, secret, chemin protégé et champ de résultat natif avant tout transport
+partagé. Lorsque le backend optionnel est Redis Streams, il reçoit la même
+projection minimale. Les données natives restent uniquement dans les tables
+autoritatives et les réponses REST ciblées. Redis n'est ni une source de vérité
+ni un canal direct entre worker et iPhone.
 
 ## Data minimization
 
@@ -265,3 +283,11 @@ une preuve d'autorisation.
 - push externe et reprise multi-hôte;
 - toute capability supplémentaire, après règle Gateway, schéma, tests et UI
   d'approbation dédiés.
+
+## MANUAL VALIDATION REQUIRED
+
+Sur iPhone physique, vérifier séparément pour les six capabilities: dialogue ou
+UI système, refus, annulation quand elle existe, succès, arrière-plan/reprise,
+expiration du grant, perte réseau après l'effet et double notification sans
+rejeu. Tant que la fiche `docs/26-iphone-physical-device-validation.md` reste
+`NOT RUN`, aucune validation physique n'est revendiquée.

@@ -1,11 +1,14 @@
 # 08 — State, Memory and Sync
 
-> **Statut:** le slice `0.8` hydrate tâches, approbations, appels d'outils,
+> **IMPLEMENTED — slice `0.10.0`:** le bootstrap hydrate tâches, approbations, appels d'outils,
 > conversations/messages, agents, mémoire épinglée, curseur et compteurs dans
 > la réplica liée à l'origine. Elle demeure un cache et n'autorise aucune action
-> sensible. La recherche lexicale est conservée; un provider d'embeddings
-> optionnel active un ranking hybride SQLite. FAISS/Qdrant, outbox et résolution
-> de conflits restent roadmap.
+> sensible. Une outbox mobile distincte synchronise seulement trois mutations
+> explicitement sûres et idempotentes. La recherche lexicale est conservée; un
+> provider d'embeddings optionnel active un ranking hybride SQLite et une
+> projection FAISS locale peut être reconstruite depuis SQLite. **PLANNED:**
+> résolution de conflits générale, Qdrant et branchement opérationnel de FAISS
+> dans toutes les recherches.
 
 ## Objectif
 
@@ -23,15 +26,16 @@ State Service
 Memory Service
   ├─ chunker
   ├─ embedding model
-  ├─ FAISS/Qdrant vector index
+  ├─ SQLite embeddings (authoritative metadata)
+  ├─ optional rebuildable FAISS projection
   ├─ metadata store
   └─ retrieval pack builder
 
 iPhone Local Replica
   ├─ SQLite app DB
-  ├─ outbox
+  ├─ safe mutation outbox scoped by origin
   ├─ synced cursors
-  └─ cached capabilities
+  └─ cached resource projections (never capability grants)
 ```
 
 ## Source de vérité
@@ -49,7 +53,8 @@ Ubuntu est maître pour:
 L'iPhone est maître temporaire pour:
 
 - draft local;
-- outbox non synchronisée;
+- mutations ordinaires non synchronisées qui appartiennent encore exactement à
+  l'origine et au contexte de jumelage capturés;
 - permissions iOS runtime;
 - capteur/donnée native demandée;
 - UI state.
@@ -66,13 +71,19 @@ CREATE TABLE messages (
   sync_status TEXT NOT NULL DEFAULT 'pending'
 );
 
-CREATE TABLE sync_outbox (
+CREATE TABLE mutation_outbox (
   id TEXT PRIMARY KEY,
-  op_type TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  resource_id TEXT,
   payload_json TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
   created_at TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT
+  last_attempt_at TEXT,
+  last_error TEXT,
+  completed_at TEXT,
+  UNIQUE(origin, idempotency_key)
 );
 
 CREATE TABLE approvals (
@@ -92,16 +103,14 @@ Voir `docs/13-data-model.md` pour le schéma complet.
 
 Tables principales:
 
-- `tasks`
-- `messages`
-- `agents`
-- `approvals`
-- `permissions`
-- `memory_items`
-- `artifacts`
-- `feedback_events`
-- `audit_events`
-- `sync_events`
+- `tasks`, `conversations`, `messages`, `tool_calls`, `approvals`;
+- `agents`, `agent_jobs`, `scheduler_decisions`, `agent_score_snapshots`;
+- `outbox_events`, `message_board_events`, deliveries/checkpoints consumers;
+- `control_plane_instances`, `maintenance_leases`;
+- `memory_items`, `memory_embeddings`;
+- `feedback_events`, `eval_examples`, `corrections`, `agent_scores`;
+- tables de pairing, demandes/grants/résultats iPhone, reçus d'idempotence et
+  `audit_events`.
 
 ## Memory layers
 
@@ -123,6 +132,15 @@ Chunks textuels vectorisés:
 - corrections utilisateur;
 - préférences;
 - project facts.
+
+`memory_embeddings` conserve les vecteurs associés à des IDs de mémoire stables.
+L'interface `VectorIndex` traite tout index externe comme une projection
+reconstruisible. L'adaptateur FAISS optionnel écrit une nouvelle génération puis
+permute atomiquement son pointeur `CURRENT.json`; une génération absente ou
+corrompue n'efface aucun item SQLite. La commande
+`python -m app.commands.rebuild_vector_index --db ... --provider ... --index-path ...`
+reconstruit cette projection. Le backend FAISS et ses dépendances restent
+optionnels; le fallback lexical demeure utilisable.
 
 ### Artifact memory
 
@@ -185,40 +203,59 @@ Quand l'orchestrateur démarre une tâche:
 ### Bootstrap
 
 ```http
-GET /sync/bootstrap?device_id=...
+GET /sync/bootstrap
 ```
 
 Retourne:
 
-- server clock;
-- user profile minimal;
-- last tasks;
-- pending approvals;
-- agent status;
-- sync cursor.
+- heure serveur;
+- tâches, approbations et appels d'outils;
+- conversations et messages récents;
+- agents et mémoire épinglée;
+- compteurs et curseur d'audit.
 
-### Pull
+Le client applique le bootstrap uniquement à la partition SQLite correspondant
+à l'origine active. Après reconnexion WebSocket, il effectue ce bootstrap REST
+autoritatif avant de drainer les mutations ordinaires en attente.
 
-```http
-GET /sync/pull?cursor=...
-```
-
-### Push
+### Mutation push idempotent — IMPLEMENTED
 
 ```http
-POST /sync/push
+POST /sync/mutations
+Authorization: Bearer <device-token>
+Idempotency-Key: <opaque-client-id>
 ```
 
-Payload:
+Le serveur accepte une seule mutation par requête et persiste atomiquement le
+résultat avec un reçu lié à l'appareil, à la clé, à l'opération et au digest
+canonique exact. Une réponse perdue peut être demandée de nouveau avec la même
+clé; une autre charge sous cette clé est refusée.
 
-```json
-{
-  "device_id": "iphone-ales",
-  "ops": [
-    {"id": "op_1", "type": "message.create", "payload": {}}
-  ]
-}
-```
+Allowlist mobile:
+
+- `feedback.create`;
+- `memory.metadata.update`, uniquement le booléen `pinned` d'un item existant;
+- `chat.message.create`, uniquement avec `start_task: false`.
+
+La ligne locale conserve origine, opération, ressource éventuelle, payload,
+clé d'idempotence, tentatives et issue. Avant chaque POST, le client revérifie
+que l'origine et le bearer actifs sont exactement ceux de la session de drain.
+Lorsqu'un nouveau jumelage est finalisé et son bootstrap actif validé, les
+mutations de l'ancienne origine sont marquées abandonnées plutôt que rejouées
+sur le nouveau serveur.
+
+### Exclusions de l'outbox — INVARIANT
+
+Ne sont jamais mis en attente hors ligne:
+
+- décisions d'approbation ou actions de la Permission Gateway;
+- création, autorisation, consommation ou résultat de capability iPhone;
+- composition mail/SMS et autres effets natifs;
+- `process.run`, writes, push ou création automatique de tâche;
+- toute mutation dont l'idempotence externe n'est pas définie.
+
+La réplica, un WebSocket reçu ou une permission iOS locale ne suffit jamais à
+autoriser une action sensible.
 
 ### Conflict resolution
 
@@ -227,9 +264,14 @@ Payload:
 - Merge: messages, feedback, memory corrections.
 - Ask user: conflicting permission rules.
 
+Une résolution générale multi-writer reste **PLANNED**. Le slice courant
+implémente seulement l'idempotence exacte des trois opérations ci-dessus et la
+préférence serveur pour tout état de sécurité.
+
 ## Backups
 
 - Daily SQLite backup.
-- Weekly vector index snapshot.
+- Projection FAISS reconstruisible; sauvegarder d'abord SQLite et ses
+  embeddings autoritatifs.
 - Audit log rotated but immutable.
 - Export JSONL for dataset.

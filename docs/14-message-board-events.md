@@ -6,16 +6,17 @@ Standardiser les événements internes entre orchestrateur, workers, gateway,
 state, capability broker et UI sans confondre le board SQLite avec le canal
 WebSocket mobile.
 
-## IMPLEMENTED — runtime `0.9.0`
+## IMPLEMENTED — runtime `0.10.0`
 
 Le runtime possède deux mécanismes distincts:
 
-1. `outbox_events` et `message_board_events`, durables dans la base SQLite
-   autoritative;
+1. `outbox_events`, durable dans la base SQLite autoritative, puis un backend de
+   notification SQLite par défaut ou Redis Streams optionnel;
 2. `/ws`, canal best-effort authentifié par ticket unique pour rafraîchir l'UI.
 
-Redis Streams, NATS, consumer groups et une dead-letter queue externe restent
-**PLANNED**.
+Redis Streams est **IMPLEMENTED** comme transport optionnel et non autoritatif.
+NATS, un pipeline consumer Redis de production et une dead-letter queue externe
+restent **PLANNED**.
 
 ## Outbox transactionnelle
 
@@ -23,34 +24,48 @@ Une transition de job, tâche ou capability insère son audit et son entrée
 `outbox_events` dans le même `BEGIN IMMEDIATE`. Le commit de l'état ne dépend
 donc pas de la disponibilité momentanée du board.
 
-Le drain lit les entrées sans `published_at` par identifiant croissant, publie
-leur payload dans `message_board_events`, puis marque l'outbox. La livraison est
-au moins une fois. `dedupe_key`, unique dans les deux tables, rend sûr un crash
-après publication mais avant marquage: le rejeu récupère l'événement existant.
-Un échec incrémente `attempts` et conserve seulement une classe d'erreur
-expurgée. Le drain s'exécute au démarrage, après les transitions et dans la
-boucle de maintenance.
+Un drainer identifié par son `instance_id` revendique atomiquement les entrées
+sans `published_at` qui sont libres ou dont la lease de publication a expiré.
+Le claim écrit `publishing_owner`, dates de début/expiration et incrémente
+`publish_generation`. Après publication, `mark_published` exige encore ce
+propriétaire, cette génération et une lease non expirée. Un publisher ancien ne
+peut pas confirmer une nouvelle génération.
 
-Ce mécanisme garantit la persistance locale et la déduplication; il ne garantit
-ni diffusion réseau, ni consumer group, ni ordre global inter-topic.
+La livraison est au moins une fois. `event_id` et `dedupe_key` applicatifs sont
+stables et uniques, ce qui rend sûr un crash après publication mais avant
+marquage: le rejeu republie la même identité et le backend retourne un ack de
+duplicate. Un échec libère le claim, incrémente `attempts` et conserve seulement
+une classe d'erreur expurgée. Les claims expirés sont récupérés au démarrage et
+par la boucle singleton `outbox-maintenance`; une ligne non publiée n'est jamais
+supprimée.
 
-## Enveloppe du board SQLite
+Ce mécanisme garantit la persistance autoritative locale et la convergence
+après crash. Redis apporte une diffusion réseau de notification, mais cette
+release ne garantit ni déploiement multi-hôte prêt production, ni ordre global
+inter-topic.
+
+## Enveloppe durable backend-neutre
 
 Une ligne matérialisée contient:
 
 ```json
 {
-  "id": 42,
+  "schema_version": "1.0",
+  "event_id": "evt_01",
+  "dedupe_key": "agent-job:job_01:lease-expired:2",
   "topic": "tasks.status",
   "event_type": "lease_expired",
-  "message_id": "job_...",
+  "aggregate_type": "agent_job",
+  "aggregate_id": "job_01",
   "agent_id": "agt_...",
   "task_id": "tsk_...",
   "payload": {"job_id": "job_...", "lease_generation": 2},
-  "created_at": "2026-09-08T13:00:00Z",
-  "dedupe_key": "agent-job:job_...:lease-expired:2"
+  "created_at": "2026-09-08T13:00:00Z"
 }
 ```
+
+L'ID de ligne SQLite ou l'ID de stream Redis est seulement un curseur backend;
+il ne remplace jamais `event_id` ou `dedupe_key` pour l'idempotence métier.
 
 Types acceptés par l'implémentation:
 
@@ -73,9 +88,44 @@ Pour un résultat iPhone, le board ne conserve que `request_id` et `status`. La
 valeur native validée reste dans la table de résultats SQLite et n'est renvoyée
 qu'au worker autorisé par le poll sous lease.
 
-Le board est une interface remplaçable, mais l'unique implémentation livrée est
-SQLite. Les workers actuels utilisent l'API HTTP authentifiée pour claim,
-heartbeat, résultat et poll; ils ne consomment pas un stream Redis caché.
+Les workers actuels utilisent l'API HTTP authentifiée pour claim, heartbeat,
+résultat et poll; ils ne consomment pas un stream Redis caché et ne reçoivent
+aucun credential du broker.
+
+## Backends de notification
+
+### SQLite — défaut
+
+`SQLiteMessageBoard` matérialise l'enveloppe dans `message_board_events`. Sa
+contrainte `dedupe_key` rend les publications répétées observables comme
+duplicates sans ajouter de seconde ligne.
+
+### Redis Streams — optionnel
+
+`RedisStreamsMessageBoard` est activé par
+`MONGARS_MESSAGE_BOARD_BACKEND=redis`; la connexion vient de
+`MONGARS_REDIS_URL` et les streams de
+`MONGARS_REDIS_STREAM_PREFIX`. Les topics sont regroupés en quatre streams:
+`<prefix>:tasks`, `:agents`, `:iphone` et `:system`. Un script Redis associe
+atomiquement la `dedupe_key` applicative à l'ID du stream avant de répondre.
+
+Si Redis est absent ou tombe, l'outbox reste autoritative et non publiée; les
+transitions de tâche/job déjà commises ne sont ni annulées ni perdues. La santé
+passe à `degraded`, sans URL ni credential. Le prochain drain reprend la ligne.
+Un ID ou ack Redis ne modifie jamais directement le state SQLite.
+
+## Consumers de confiance — fondation implémentée
+
+`ConsumerCheckpointStore` et `MessageConsumer` fournissent un ledger SQLite aux
+services internes du control plane. L'identité de groupe/consumer est contrôlée
+par l'application. Une delivery est claimed avec expiration et génération;
+l'ack et le checkpoint n'avancent qu'après succès du handler et avec la preuve
+de claim courante. Les échecs ont un retry borné, puis `dead_letter`; un handler
+reçoit une clé d'idempotence stable.
+
+Cette fondation émule les sémantiques attendues en tests SQLite. Elle n'autorise
+pas les workers à consommer Redis et n'est pas encore raccordée à un consumer
+group Redis opérationnel.
 
 ## Leases, retry et dead letter locaux
 
@@ -127,6 +177,13 @@ résultat natif, bearer ou grant n'entre dans la notification. Après reconnexio
 le client fait un bootstrap ou un `GET` REST autoritatif; le WebSocket n'est ni
 un journal complet, ni une preuve de succès.
 
+Tous les WebSocket passent par un sérialiseur central. Les événements partagés
+refusent les champs bearer/credential/secret/token/grant, arguments ou résultats
+natifs, URL contenant des identifiants et texte ressemblant à un bearer. Les
+résultats d'outil sont projetés sous forme expurgée; une mise à jour mémoire ne
+porte que ses métadonnées sûres. Le même contrat de payload est appliqué avant
+toute insertion dans l'outbox et donc avant SQLite ou Redis.
+
 ## Ordering et idempotence
 
 - L'identifiant SQLite fournit l'ordre de matérialisation local du board.
@@ -143,15 +200,24 @@ un journal complet, ni une preuve de succès.
 
 ## Observabilité locale
 
-`GET /status`, authentifié comme les autres ressources, expose les compteurs
-`queued_jobs`, `leased_jobs`, `dead_letter_jobs`, `expired_leases`, `retries`,
-`dead_letter_events`, `pending_outbox_events` et
-`pending_capability_requests`. Ces compteurs décrivent l'état SQLite local; ils
-ne prouvent ni livraison réseau ni disponibilité d'un bus externe.
+`GET /status`, authentifié comme les autres ressources, expose seulement:
 
-## PLANNED — bus externe
+- version et `instance_id` de boot;
+- backend de board, santé et dernière publication réussie;
+- `outbox_pending`, `outbox_publishing`, `outbox_failed`;
+- `queued_jobs`, `leased_jobs`, `dead_letter_jobs`, `expired_leases`, `retries`
+  et `dead_letter_events`;
+- agents actifs/hors ligne, propriétaires des leases de maintenance, demandes
+  iPhone en attente et backend vectoriel configuré.
 
-Une migration vers Redis Streams ou NATS JetStream devra définir explicitement:
+Ces compteurs/labels ne contiennent aucun payload ni credential. Ils décrivent
+l'état local et la santé vue par l'instance; ils ne constituent pas une preuve
+de disponibilité multi-hôte.
+
+## PLANNED — exploitation multi-hôte
+
+Une qualification de Redis Streams ou une migration vers NATS JetStream devra
+encore définir explicitement:
 
 - consumer groups et acknowledgements;
 - partitionnement/ordre par agrégat;
@@ -160,5 +226,5 @@ Une migration vers Redis Streams ou NATS JetStream devra définir explicitement:
 - idempotence durable des consommateurs hors SQLite;
 - observabilité et limites de rétention.
 
-Aucun nom de stream futur ne doit être présenté comme une dépendance active du
-runtime `0.9.0`.
+Le backend SQLite reste le défaut. L'existence de l'adaptateur Redis ne constitue
+pas une revendication de production multi-hôte.
