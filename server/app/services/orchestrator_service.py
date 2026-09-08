@@ -28,7 +28,19 @@ Schema: {"tool_name": string, "arguments": object, "summary": string}.
 For a real tool, summary is proposal-only context and the server replaces it with a fixed label.
 For tool_name 'none', summary is the proposal-only response shown to the user.
 Do not claim an action already happened. You only propose the next action.
+All path and cwd values are relative to the configured workspace; never use an absolute path.
+The configured project, repository, or workspace root is exactly ".". For example,
+"Liste les fichiers du projet" must use workspace.list_dir with {"path": "."}.
+Only name another relative path when the user explicitly names that file or directory.
+Never invent or translate a directory name for the workspace root, and never add arguments
+outside the selected tool's shape above.
 """
+    ROOT_LIST_INTENTS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "liste les fichiers du projet et résume sa structure.",
+            "liste les fichiers à la racine du projet.",
+        }
+    )
     TOOL_NAMES: ClassVar[tuple[str, ...]] = (
         "none",
         "workspace.list_dir",
@@ -57,10 +69,22 @@ Do not claim an action already happened. You only propose the next action.
                         "type": "object",
                         "additionalProperties": False,
                         "properties": {
-                            "path": {"type": "string"},
+                            "path": {
+                                "type": "string",
+                                "description": (
+                                    "Workspace-relative path. For workspace.list_dir, use '.' "
+                                    "for the configured project root; never use an absolute path."
+                                ),
+                            },
                             "content": {"type": "string"},
                             "argv": {"type": "array", "items": {"type": "string"}},
-                            "cwd": {"type": "string"},
+                            "cwd": {
+                                "type": "string",
+                                "description": (
+                                    "Workspace-relative process directory; use '.' for the "
+                                    "configured project root."
+                                ),
+                            },
                             "timeout_seconds": {"type": "number"},
                         },
                     },
@@ -144,4 +168,12 @@ Do not claim an action already happened. You only propose the next action.
             # values keeps this path inert even when a provider only partially
             # implements the requested response schema.
             arguments = {}
+        elif tool_name == "workspace.list_dir":
+            # These shipped suggestions unambiguously name the configured root. Small
+            # local models have translated that concept into nonexistent or absolute
+            # directory names. Bind only these product-owned intents to "."; arbitrary
+            # user paths (including a real child named "project") remain untouched.
+            normalized_input = " ".join(task_input.strip().casefold().split())
+            if normalized_input in self.ROOT_LIST_INTENTS:
+                arguments = {**arguments, "path": "."}
         return {"tool_name": tool_name, "arguments": arguments, "summary": summary}

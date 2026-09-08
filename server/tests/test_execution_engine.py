@@ -118,6 +118,31 @@ async def test_workspace_escape_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_list_reports_a_missing_directory_without_implying_a_symlink(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    engine = ExecutionEngine(tmp_path / "state.db", workspace, permission_policy())
+
+    with pytest.raises(ExecutionError, match="^workspace directory does not exist$"):
+        await engine._dispatch("workspace.list_dir", {"path": "missing"})
+
+
+@pytest.mark.asyncio
+async def test_workspace_list_still_rejects_a_symbolic_link_component(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / "linked").symlink_to(outside, target_is_directory=True)
+    engine = ExecutionEngine(tmp_path / "state.db", workspace, permission_policy())
+
+    with pytest.raises(ExecutionError, match="unavailable or contains a symbolic link"):
+        await engine._dispatch("workspace.list_dir", {"path": "linked"})
+
+
+@pytest.mark.asyncio
 async def test_protected_paths_are_rejected_before_persistence(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     workspace = tmp_path / "workspace"

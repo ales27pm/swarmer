@@ -162,6 +162,21 @@ describe("ChatScreen", () => {
     });
   });
 
+  it("identifies the control-plane planner and offers a capability-matched root listing", async () => {
+    await render(<ChatScreen />);
+
+    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(screen.getByText("Liste les fichiers à la racine du projet.")).toBeOnTheScreen();
+    expect(
+      screen.getByText(
+        "Décris une intention. Le modèle du control plane propose; l’exécuteur prouve; les actions sensibles attendent ton accord.",
+      ),
+    ).toBeOnTheScreen();
+    expect(
+      screen.getByText("Prêt à confier une intention au modèle du control plane."),
+    ).toBeOnTheScreen();
+  });
+
   it("refreshes authentication when Chat regains focus after pairing", async () => {
     mockBootstrap.mockRejectedValueOnce(new Error("Non jumelé"));
     const user = userEvent.setup();

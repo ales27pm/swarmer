@@ -1,8 +1,9 @@
 import json
 import sqlite3
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -118,6 +119,45 @@ def test_model_none_proposal_remains_planned_and_truthfully_labeled(
     assert detail["tool_calls"] == []
     assert detail["messages"][-1]["content"] == proposal_text
     assert detail["messages"][-1]["metadata"]["verified_status"] == "proposal_only"
+
+
+def test_shipped_french_root_intent_executes_against_the_configured_workspace(
+    client: TestClient, paired_headers: dict[str, str]
+) -> None:
+    intent = "Liste les fichiers du projet et résume sa structure."
+    request = httpx.Request("POST", "http://127.0.0.1:11434/v1/chat/completions")
+    model_response = httpx.Response(
+        200,
+        request=request,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "tool_name": "workspace.list_dir",
+                                "arguments": {"path": "projet"},
+                                "summary": "Liste les fichiers du projet.",
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+    chat = client.post("/chat", headers=paired_headers, json={"content": intent}).json()
+
+    with patch("httpx.AsyncClient.post", AsyncMock(return_value=model_response)):
+        response = client.post(f"/tasks/{chat['task']['id']}/plan", headers=paired_headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["arguments"] == {"path": "."}
+    assert response.json()["result"] == {"entries": []}
+    detail = client.get(f"/tasks/{chat['task']['id']}", headers=paired_headers).json()
+    assert detail["task"]["status"] == "completed"
+    assert detail["tool_calls"] == [response.json()]
+    assert detail["messages"][-1]["metadata"]["verified_status"] == "completed"
 
 
 def test_invalid_model_process_proposal_is_rejected_before_public_proposal_event(

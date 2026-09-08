@@ -75,6 +75,14 @@ MONGARS_PAIRING_MAX_ATTEMPTS=10
 MONGARS_ALLOW_INSECURE_REMOTE_HTTP=false
 ```
 
+`MONGARS_WORKSPACE_ROOT` doit se résoudre vers un répertoire dédié. En
+production, configure directement son chemin canonique plutôt qu’un alias par
+lien symbolique. Le serveur peut créer un répertoire absent, mais il ne le
+remplit pas implicitement: pour agir sur un projet existant, place une copie ou
+un checkout réel de ce projet à cette adresse avant le démarrage. Dans les
+propositions d’outil, `.` désigne cette racine; tous les autres chemins restent
+relatifs à celle-ci.
+
 Créer la valeur `MONGARS_PAIRING_BOOTSTRAP_TOKEN` avec un générateur aléatoire,
 par exemple `openssl rand -hex 32`, puis la placer uniquement dans `server/.env`.
 Ne pas la envoyer au téléphone, la mettre dans Git, l'imprimer dans les logs ou

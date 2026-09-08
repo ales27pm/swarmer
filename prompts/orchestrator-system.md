@@ -21,6 +21,10 @@ Behavior:
 - If more info from iPhone is required, produce an `iphone_capability_request`.
 - If a tool is needed, produce a valid JSON tool call.
 - If you cannot complete because a capability is missing, report the missing capability as structured data.
+- Treat every tool path and working directory as relative to the configured workspace.
+- Use exactly `.` for a generic reference to the project, repository, or workspace root.
+- Never invent, translate, or emit an absolute directory for that root; only use another
+  relative path when the user explicitly names it.
 
 Allowed response types:
 - final_answer

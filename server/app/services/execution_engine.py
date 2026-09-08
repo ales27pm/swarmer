@@ -191,6 +191,8 @@ class ExecutionEngine:
                     descriptors.append(next_fd)
                     current = next_fd
             yield current
+        except FileNotFoundError as exc:
+            raise ExecutionError("workspace directory does not exist") from exc
         except OSError as exc:
             raise ExecutionError(
                 "workspace path is unavailable or contains a symbolic link"

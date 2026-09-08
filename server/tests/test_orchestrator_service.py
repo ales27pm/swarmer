@@ -77,6 +77,60 @@ async def test_plan_accepts_exact_typed_proposal() -> None:
         "cwd",
         "timeout_seconds",
     }
+    system_prompt = payload["messages"][0]["content"]
+    assert 'project, repository, or workspace root is exactly "."' in system_prompt
+    assert "never use an absolute path" in system_prompt
+    assert (
+        "use '.' for the configured project root" in arguments["properties"]["path"]["description"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_input", "generated_path"),
+    [
+        ("Liste les fichiers du projet et résume sa structure.", "projet"),
+        ("  LISTE   les fichiers à la racine du PROJET.  ", "/monProjet"),
+    ],
+)
+async def test_plan_binds_shipped_root_intents_to_the_configured_workspace(
+    task_input: str, generated_path: str
+) -> None:
+    proposal = {
+        "tool_name": "workspace.list_dir",
+        "arguments": {"path": generated_path},
+        "summary": "List files",
+    }
+    service = OrchestratorService("http://127.0.0.1:11434/v1", "local-model")
+    post = AsyncMock(return_value=response_for(json.dumps(proposal)))
+
+    with patch("httpx.AsyncClient.post", post):
+        result = await service.plan(task_input)
+
+    assert result == {**proposal, "arguments": {"path": "."}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "path"),
+    [
+        ("workspace.list_dir", "projet/src"),
+        ("workspace.list_dir", "/project"),
+        ("workspace.list_dir", "project"),
+        ("workspace.read_text", "projet"),
+        ("workspace.write_text", "project"),
+    ],
+)
+async def test_plan_preserves_non_root_alias_paths(tool_name: str, path: str) -> None:
+    arguments = {"path": path}
+    if tool_name == "workspace.write_text":
+        arguments["content"] = "text"
+    proposal = {"tool_name": tool_name, "arguments": arguments, "summary": "Inspect"}
+    service = OrchestratorService("http://127.0.0.1:11434/v1", "local-model")
+    post = AsyncMock(return_value=response_for(json.dumps(proposal)))
+
+    with patch("httpx.AsyncClient.post", post):
+        assert await service.plan("List the explicitly named project directory") == proposal
 
 
 @pytest.mark.asyncio

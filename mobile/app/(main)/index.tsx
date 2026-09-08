@@ -24,7 +24,7 @@ import {
 } from "@/lib/api/client";
 
 const SUGGESTIONS = [
-  "Liste les fichiers du projet et résume sa structure.",
+  "Liste les fichiers à la racine du projet.",
   "Vérifie les tests actuels sans modifier le code.",
 ];
 
@@ -51,7 +51,7 @@ const INITIAL_CHAT_STATE: ChatState = {
   messages: [],
   lastTask: null,
   bootstrap: null,
-  notice: "Prêt à confier une intention au modèle local.",
+  notice: "Prêt à confier une intention au modèle du control plane.",
   error: null,
   busy: false,
   refreshing: false,
@@ -155,7 +155,7 @@ async function submitChatIntent(
       input: "",
     });
     dispatch({ messages: await listMessages(chat.conversation_id) });
-    dispatch({ notice: "Le modèle local prépare un plan…" });
+    dispatch({ notice: "Le modèle du control plane prépare un plan…" });
     const result = await planTask(chat.task.id);
     dispatch({ notice: planningStatus(result) });
     dispatch({ lastTask: taskAfterPlanning(result, chat.task) });
@@ -351,7 +351,7 @@ function Conversation({
     <>
       <EmptyState
         title="Console du swarm"
-        subtitle="Décris une intention. Le modèle propose; l’exécuteur prouve; les actions sensibles attendent ton accord."
+        subtitle="Décris une intention. Le modèle du control plane propose; l’exécuteur prouve; les actions sensibles attendent ton accord."
       />
       <Suggestions onSelect={onSelectSuggestion} />
     </>
