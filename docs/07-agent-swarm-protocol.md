@@ -1,8 +1,13 @@
 # 07 — Agent Swarm Protocol
 
-> **Statut:** le slice `0.6` livre le registre et les heartbeats authentifiés.
-> Routage distant, message board durable, consumer groups et progression publiée
-> par les agents restent roadmap.
+> **Statut:** le slice `0.8` livre un message board durable SQLite derrière une
+> interface remplaçable, les jobs revendiqués atomiquement par compétence, les
+> heartbeats et résultats idempotents authentifiés. Redis/NATS, les leases
+> expirables et la redistribution multi-hôte restent roadmap.
+
+Le worker exemple `workers/file-worker` ne sait que lister ou lire sous une
+racine dédiée et refuse les chemins protégés. La mise en file n'accepte que des
+outils de lecture explicitement autorisés par la Gateway.
 
 ## Objectif
 

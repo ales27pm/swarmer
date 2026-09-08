@@ -2,7 +2,7 @@
 
 ## Contrat courant
 
-Le MVP local expose l'API `0.7.0`. [`api/openapi.yaml`](../api/openapi.yaml) est
+Le MVP local expose l'API `0.8.0`. [`api/openapi.yaml`](../api/openapi.yaml) est
 la source machine-readable; cette page résume les règles qui ne doivent pas être
 perdues par un client.
 
@@ -206,7 +206,7 @@ Les erreurs HTTP suivent actuellement la forme FastAPI:
 
 Les clients doivent traiter explicitement `401`, `409`, `422`, `426` et `502`.
 Les anciennes routes `sync/pull`, `sync/push`, `iphone/capability-result` et le
-WebSocket par `device_id` ne font pas partie du contrat `0.7.0`.
+WebSocket par `device_id` ne font pas partie du contrat `0.8.0`.
 
 Le gate local valide le métaschéma OpenAPI, les routes, statuts générés, corps de
 requête, paramètres, sécurité et schémas de réponse clés. Les JSON Schemas dans

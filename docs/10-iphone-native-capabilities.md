@@ -1,8 +1,10 @@
 # 10 — iPhone Native Capabilities
 
-> **Statut:** le capability broker, les capteurs et les actions téléphone
-> restent roadmap. Le runtime d'inférence locale Core ML/MLX/llama.cpp est
-> branché séparément et ne possède aucune capacité téléphone.
+> **Statut:** le slice `0.8` ajoute un broker TypeScript pour position, recherche
+> de contacts, lecture calendrier, sélection de photo et composition mail/SMS.
+> Il exige une autorisation Gateway fraîche avant la permission iOS. Mail et SMS
+> composent sans envoyer silencieusement. Le transport corrélé agent→iPhone et
+> les capacités d'écriture restent roadmap.
 
 ## Objectif
 

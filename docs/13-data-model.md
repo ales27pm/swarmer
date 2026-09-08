@@ -2,10 +2,13 @@
 
 ## Autorité et version
 
-Le schéma implémenté est SQLite WAL, version `5`, dans
+Le schéma implémenté est SQLite WAL, version `7`, dans
 `server/app/services/state_service.py`. Il est migré de façon additive. Postgres,
 Redis et le câblage de base de données du prototype Vibecode ne sont pas branchés
 au MVP.
+
+La version 7 ajoute `message_board_events`, `agent_jobs`,
+`memory_embeddings`, `eval_examples`, `corrections` et `agent_scores`.
 
 Le fichier SQLite et la politique d'exécution doivent rester hors du workspace
 monté en écriture dans Bubblewrap.

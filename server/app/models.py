@@ -75,6 +75,7 @@ class ChatCreate(BaseModel):
 
 
 class MemoryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     content: str = Field(min_length=1, max_length=32_000)
     summary: str | None = Field(default=None, max_length=2_000)
     scope: str = Field(default="general", min_length=1, max_length=100)
@@ -85,18 +86,21 @@ class MemoryCreate(BaseModel):
 
 
 class MemoryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     content: str | None = Field(default=None, min_length=1, max_length=32_000)
     summary: str | None = Field(default=None, max_length=2_000)
     pinned: bool | None = None
 
 
 class MemorySearch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=2_000)
     scope: str | None = Field(default=None, max_length=100)
     kind: str | None = Field(default=None, max_length=100)
 
 
 class AgentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=200)
     version: str = Field(default="0.1.0", min_length=1, max_length=100)
     endpoint: AnyHttpUrl = Field(
@@ -108,15 +112,53 @@ class AgentCreate(BaseModel):
 
 
 class AgentHeartbeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     status: str = Field(default="online", pattern="^(online|offline|busy)$")
 
 
 class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     task_id: str | None = None
     agent_id: str | None = None
     type: str = Field(default="rating", min_length=1, max_length=100)
     label: str | None = Field(default=None, max_length=200)
     score: float | None = Field(default=None, ge=0, le=5)
+    notes: str | None = Field(default=None, max_length=4_000)
+
+
+class AgentJobClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wait_seconds: int = Field(default=0, ge=0, le=30)
+
+
+class AgentJobHeartbeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_token: str = Field(min_length=20, max_length=500)
+
+
+class AgentJobResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_token: str = Field(min_length=20, max_length=500)
+    status: str = Field(pattern="^(completed|failed)$")
+    result: dict[str, Any] | None = None
+    error: str | None = Field(default=None, max_length=4_000)
+
+
+class AgentJobDispatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    required_skill: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
+    payload: dict[str, Any]
+
+
+class FeedbackCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1, max_length=200)
+    corrected_behavior: str = Field(min_length=1, max_length=32_000)
     notes: str | None = Field(default=None, max_length=4_000)
 
 

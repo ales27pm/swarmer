@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -271,6 +271,26 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /tasks/{task_id}/dispatch:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Agents]
+      summary: Queue a gateway-authorized read job for a remote agent
+      description: Only explicitly allowed read tools can be dispatched; approval-requiring tools fail closed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentJobDispatch'}
+      responses:
+        '201': {description: Job queued, content: {application/json: {schema: {$ref: '#/components/schemas/AgentJob'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
   /chat:
     post:
       tags: [Chat]
@@ -585,6 +605,74 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /agents/{agent_id}/claim:
+    post:
+      tags: [Agents]
+      summary: Atomically claim the oldest compatible queued job
+      security: [{agentBearer: []}]
+      parameters: [{$ref: '#/components/parameters/AgentId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AgentJobClaim'}}}
+      responses:
+        '200':
+          description: Claimed job with claim token, or null when no matching skill exists
+          content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/ClaimedAgentJob'}, {type: 'null'}]}}}
+        '401': {description: Missing or invalid agent-specific credential}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /agents/{agent_id}/jobs:
+    get:
+      tags: [Agents]
+      summary: List jobs owned by the authenticated agent
+      security: [{agentBearer: []}]
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 100}}
+      responses:
+        '200': {description: Agent jobs, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/AgentJob'}}}}}
+        '401': {description: Missing or invalid agent-specific credential}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /agents/{agent_id}/jobs/{job_id}/heartbeat:
+    post:
+      tags: [Agents]
+      summary: Record liveness for an actively claimed job
+      security: [{agentBearer: []}]
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - {name: job_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AgentJobHeartbeat'}}}
+      responses:
+        '200': {description: Running job, content: {application/json: {schema: {$ref: '#/components/schemas/AgentJob'}}}}
+        '401': {description: Missing or invalid agent-specific credential}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /agents/{agent_id}/jobs/{job_id}/result:
+    post:
+      tags: [Agents]
+      summary: Submit an idempotent terminal worker result
+      security: [{agentBearer: []}]
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - {name: job_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AgentJobResult'}}}
+      responses:
+        '200': {description: Terminal job, content: {application/json: {schema: {$ref: '#/components/schemas/AgentJobResultRecord'}}}}
+        '401': {description: Missing or invalid agent-specific credential}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /audit:
     get:
       tags: [Audit]
@@ -634,6 +722,34 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /feedback/correction:
+    post:
+      tags: [Feedback]
+      summary: Store a reviewed correction for a task
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/FeedbackCorrection'}}}
+      responses:
+        '201':
+          description: Redacted correction stored
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /feedback/dataset/export:
+    get:
+      tags: [Feedback]
+      summary: Export reviewed training and evaluation examples as JSONL
+      responses:
+        '200': {description: Redacted JSONL envelope, content: {application/json: {schema: {$ref: '#/components/schemas/DatasetExport'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /ws/ticket:
     post:
       tags: [Events]
@@ -668,6 +784,11 @@ x-websocket-endpoints:
       - approval.requested
       - approval.decided
       - orchestrator.proposed
+      - message.created
+      - agent.job.queued
+      - agent.job.claimed
+      - agent.job.completed
+      - agent.job.failed
 
 components:
   securitySchemes:
@@ -911,6 +1032,10 @@ components:
         arguments:
           type: object
           additionalProperties: true
+        planner_source:
+          type: string
+          enum: [iphone_local, ubuntu_local, manual, test]
+          default: manual
         summary:
           type: string
           minLength: 1
@@ -1018,10 +1143,11 @@ components:
         updated_at: {type: string, format: date-time}
     ModelProposal:
       type: object
-      required: [tool_name, arguments, summary]
+      required: [tool_name, arguments, summary, planner_source]
       properties:
         tool_name: {type: string}
         arguments: {type: object, additionalProperties: true}
+        planner_source: {type: string, enum: [iphone_local, ubuntu_local, manual, test]}
         summary:
           type: string
           description: Shown as proposal-only text only when tool_name is none; otherwise replaced by a fixed server label before publication.
@@ -1038,6 +1164,7 @@ components:
       enum: [pending, approved, denied, expired, cancelled]
     ApprovalDecision:
       type: object
+      additionalProperties: false
       required: [decision]
       properties:
         decision: {type: string, enum: [approve, allow_once, deny]}
@@ -1185,6 +1312,7 @@ components:
 
     MemoryCreate:
       type: object
+      additionalProperties: false
       required: [content]
       properties:
         content: {type: string, minLength: 1, maxLength: 32000}
@@ -1196,12 +1324,14 @@ components:
         pinned: {type: boolean, default: false}
     MemoryUpdate:
       type: object
+      additionalProperties: false
       properties:
         content: {type: [string, 'null'], minLength: 1, maxLength: 32000}
         summary: {type: [string, 'null'], maxLength: 2000}
         pinned: {type: [boolean, 'null']}
     MemorySearch:
       type: object
+      additionalProperties: false
       required: [query]
       properties:
         query: {type: string, minLength: 1, maxLength: 2000}
@@ -1232,10 +1362,11 @@ components:
           required: [score, search_kind]
           properties:
             score: {type: number, minimum: 0, maximum: 1}
-            search_kind: {const: lexical}
+            search_kind: {type: string, enum: [lexical, vector, hybrid]}
 
     AgentCreate:
       type: object
+      additionalProperties: false
       required: [name, endpoint]
       properties:
         name: {type: string, minLength: 1, maxLength: 200}
@@ -1250,6 +1381,7 @@ components:
         skills: {type: array, maxItems: 200, items: {type: string}, default: []}
     AgentHeartbeat:
       type: object
+      additionalProperties: false
       properties:
         status: {type: string, enum: [online, offline, busy], default: online}
     Agent:
@@ -1273,6 +1405,65 @@ components:
           required: [credential]
           properties:
             credential: {type: string, readOnly: true}
+    AgentJobDispatch:
+      type: object
+      additionalProperties: false
+      required: [required_skill, payload]
+      properties:
+        required_skill: {type: string, enum: [workspace.list_dir, workspace.read_text]}
+        payload: {type: object, additionalProperties: true}
+    AgentJobClaim:
+      type: object
+      additionalProperties: false
+      properties:
+        wait_seconds: {type: integer, minimum: 0, maximum: 30, default: 0}
+    AgentJobHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [claim_token]
+      properties:
+        claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
+    AgentJobResult:
+      type: object
+      additionalProperties: false
+      required: [claim_token, status]
+      properties:
+        claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
+        status: {type: string, enum: [completed, failed]}
+        result: {type: [object, 'null'], additionalProperties: true}
+        error: {type: [string, 'null'], maxLength: 4000}
+    AgentJob:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, required_skill, payload, status, claimed_by, result, error, created_at, updated_at, claimed_at, heartbeat_at, completed_at]
+      properties:
+        id: {type: string}
+        task_id: {type: string}
+        required_skill: {type: string}
+        payload: {type: object, additionalProperties: true}
+        status: {type: string, enum: [queued, claimed, running, completed, failed, cancelled]}
+        claimed_by: {type: [string, 'null']}
+        result: {type: [object, 'null'], additionalProperties: true}
+        error: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        claimed_at: {type: [string, 'null'], format: date-time}
+        heartbeat_at: {type: [string, 'null'], format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+    ClaimedAgentJob:
+      allOf:
+        - $ref: '#/components/schemas/AgentJob'
+        - type: object
+          required: [claim_token]
+          properties:
+            claim_token: {type: string, minLength: 20, readOnly: true}
+    AgentJobResultRecord:
+      allOf:
+        - $ref: '#/components/schemas/AgentJob'
+        - type: object
+          required: [idempotent_replay]
+          properties:
+            idempotent_replay: {type: boolean}
 
     AuditEvent:
       type: object
@@ -1305,6 +1496,7 @@ components:
         created_at: {type: string, format: date-time}
     FeedbackCreate:
       type: object
+      additionalProperties: false
       properties:
         task_id: {type: [string, 'null']}
         agent_id: {type: [string, 'null']}
@@ -1312,6 +1504,21 @@ components:
         label: {type: [string, 'null'], maxLength: 200}
         score: {type: [number, 'null'], minimum: 0, maximum: 5}
         notes: {type: [string, 'null'], maxLength: 4000}
+    FeedbackCorrection:
+      type: object
+      additionalProperties: false
+      required: [task_id, corrected_behavior]
+      properties:
+        task_id: {type: string, minLength: 1, maxLength: 200}
+        corrected_behavior: {type: string, minLength: 1, maxLength: 32000}
+        notes: {type: [string, 'null'], maxLength: 4000}
+    DatasetExport:
+      type: object
+      additionalProperties: false
+      required: [format, data]
+      properties:
+        format: {const: jsonl}
+        data: {type: string}
     FeedbackRecord:
       type: object
       additionalProperties: false
@@ -1329,13 +1536,14 @@ components:
 
     Bootstrap:
       type: object
-      required: [server_time, tasks, approvals, tool_calls, conversations, agents, pinned_memory, counts, cursor]
+      required: [server_time, tasks, approvals, tool_calls, conversations, messages, agents, pinned_memory, counts, cursor]
       properties:
         server_time: {type: string, format: date-time}
         tasks: {type: array, items: {$ref: '#/components/schemas/TaskRecord'}}
         approvals: {type: array, items: {$ref: '#/components/schemas/Approval'}}
         tool_calls: {type: array, items: {$ref: '#/components/schemas/ToolCall'}}
         conversations: {type: array, items: {$ref: '#/components/schemas/Conversation'}}
+        messages: {type: array, items: {$ref: '#/components/schemas/Message'}}
         agents: {type: array, items: {$ref: '#/components/schemas/Agent'}}
         pinned_memory: {type: array, items: {$ref: '#/components/schemas/MemoryItem'}}
         counts:

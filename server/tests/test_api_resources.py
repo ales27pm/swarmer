@@ -21,8 +21,9 @@ def test_chat_memory_agent_audit_and_bootstrap(
     client: TestClient, paired_headers: dict[str, str]
 ) -> None:
     chat = client.post(
-        "/chat", headers=paired_headers,
-        json={"content": "Inspect the local workspace", "start_task": True}
+        "/chat",
+        headers=paired_headers,
+        json={"content": "Inspect the local workspace", "start_task": True},
     )
     assert chat.status_code == 201
     conversation_id = chat.json()["conversation_id"]

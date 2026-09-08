@@ -1,7 +1,7 @@
 # 23 — Implementation Plan
 
 > **Statut:** ordre de construction historique et architecture cible. Le contrat
-> courant est l'OpenAPI `0.7.0`; les capacités livrées et les limites vérifiées
+> courant est l'OpenAPI `0.8.0`; les capacités livrées et les limites vérifiées
 > sont suivies dans `docs/21-acceptance-criteria.md`.
 
 ## Ordre cible historique

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import stat
@@ -29,8 +30,9 @@ from app.services.approval_binding import (
     public_tool_call,
 )
 from app.services.audit_log import append_audit_event
+from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -187,6 +189,68 @@ CREATE TABLE IF NOT EXISTS feedback_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_task ON feedback_events(task_id, created_at);
+CREATE TABLE IF NOT EXISTS message_board_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    agent_id TEXT,
+    task_id TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_board_topic
+    ON message_board_events(topic, id);
+CREATE TABLE IF NOT EXISTS agent_jobs (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    required_skill TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    claimed_by TEXT,
+    claim_token TEXT,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    claimed_at TEXT,
+    heartbeat_at TEXT,
+    completed_at TEXT,
+    FOREIGN KEY(task_id) REFERENCES tasks(id),
+    FOREIGN KEY(claimed_by) REFERENCES agents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_queue
+    ON agent_jobs(status, required_skill, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_agent
+    ON agent_jobs(claimed_by, updated_at);
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    memory_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    vector_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(memory_id, provider),
+    FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS eval_examples (
+    id TEXT PRIMARY KEY,
+    task_id TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS corrections (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    corrected_behavior TEXT NOT NULL,
+    notes TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_scores (
+    agent_id TEXT PRIMARY KEY,
+    sample_count INTEGER NOT NULL,
+    score REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT,
@@ -209,8 +273,9 @@ class StateConflict(RuntimeError):
 class StateService:
     """Authoritative domain state and additive migrations for the local database."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, embedding_service: EmbeddingService | None = None) -> None:
         self.db_path = db_path
+        self.embedding_service = embedding_service
 
     async def initialize(self) -> None:
         parent_existed = self.db_path.parent.exists()
@@ -627,6 +692,11 @@ class StateService:
                 """,
                 (now, task_id),
             )
+            await db.execute(
+                """UPDATE agent_jobs SET status='cancelled',updated_at=?,completed_at=?
+                WHERE task_id=? AND status='queued'""",
+                (now, now, task_id),
+            )
             await append_audit_event(
                 db,
                 "task.cancelled",
@@ -757,8 +827,14 @@ class StateService:
                 VALUES(?,?,?,?,?,?,?,?)
                 """,
                 (
-                    record["id"], conversation_id, None, role, agent_id, content,
-                    json.dumps(record["metadata"]), now,
+                    record["id"],
+                    conversation_id,
+                    None,
+                    role,
+                    agent_id,
+                    content,
+                    json.dumps(record["metadata"]),
+                    now,
                 ),
             )
             await db.execute(
@@ -800,6 +876,16 @@ class StateService:
             rows = await (
                 await db.execute(
                     "SELECT * FROM messages WHERE task_id=? ORDER BY created_at ASC", (task_id,)
+                )
+            ).fetchall()
+        return [self._decode_json_fields(dict(row), ("metadata_json",)) for row in rows]
+
+    async def list_recent_messages(self, limit: int = 500) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM messages ORDER BY created_at DESC LIMIT ?", (limit,)
                 )
             ).fetchall()
         return [self._decode_json_fields(dict(row), ("metadata_json",)) for row in rows]
@@ -896,6 +982,11 @@ class StateService:
                 created_at=now,
             )
             await db.commit()
+        if self.embedding_service is not None:
+            try:
+                await self.index_memory(memory_id)
+            except EmbeddingServiceError:
+                pass
         record = await self.get_memory(memory_id)
         if record is None:
             raise RuntimeError("memory disappeared after creation")
@@ -928,7 +1019,82 @@ class StateService:
             matches = sum(term in haystack for term in terms)
             if matches:
                 scored.append({**item, "score": matches / len(terms), "search_kind": "lexical"})
-        return sorted(scored, key=lambda item: (-item["score"], not item["pinned"]))[:50]
+        lexical = sorted(scored, key=lambda item: (-item["score"], not item["pinned"]))[:50]
+        if self.embedding_service is None:
+            return lexical
+        try:
+            vectors = await self.embedding_service.embed([request.query])
+        except EmbeddingServiceError:
+            return lexical
+        if not vectors:
+            return lexical
+        async with aiosqlite.connect(self.db_path) as db:
+            rows = await (
+                await db.execute(
+                    "SELECT memory_id,vector_json FROM memory_embeddings WHERE provider=?",
+                    (self.embedding_service.provider_name,),
+                )
+            ).fetchall()
+        if not rows:
+            return lexical
+        query_vector = vectors[0]
+        lexical_scores = {str(item["id"]): float(item["score"]) for item in lexical}
+        item_by_id = {str(item["id"]): item for item in items}
+        combined: list[dict[str, Any]] = []
+        for memory_id, encoded in rows:
+            candidate = item_by_id.get(str(memory_id))
+            if (
+                candidate is None
+                or (request.scope and candidate["scope"] != request.scope)
+                or (request.kind and candidate["kind"] != request.kind)
+            ):
+                continue
+            vector = json.loads(str(encoded))
+            dot = sum(a * b for a, b in zip(query_vector, vector, strict=False))
+            qnorm = math.sqrt(sum(value * value for value in query_vector)) or 1.0
+            vnorm = math.sqrt(sum(value * value for value in vector)) or 1.0
+            vector_score = max(0.0, dot / (qnorm * vnorm))
+            lexical_score = lexical_scores.get(str(memory_id), 0.0)
+            combined.append(
+                {
+                    **candidate,
+                    "score": 0.65 * vector_score + 0.35 * lexical_score,
+                    "search_kind": "hybrid",
+                }
+            )
+        return sorted(combined, key=lambda item: (-item["score"], not item["pinned"]))[:50]
+
+    async def index_memory(self, memory_id: str) -> None:
+        if self.embedding_service is None:
+            return
+        item = await self.get_memory(memory_id)
+        if item is None:
+            return
+        vectors = await self.embedding_service.embed(
+            [f"{item['content']} {item.get('summary') or ''}"]
+        )
+        if len(vectors) != 1 or not vectors[0]:
+            raise ValueError("embedding provider returned an invalid vector")
+        now = datetime.now(UTC).isoformat()
+        await self._store_embedding(memory_id, vectors[0], now)
+
+    async def _store_embedding(self, memory_id: str, vector: list[float], updated_at: str) -> None:
+        if self.embedding_service is None:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT OR REPLACE INTO memory_embeddings(
+                    memory_id,provider,dimensions,vector_json,updated_at
+                ) VALUES(?,?,?,?,?)""",
+                (
+                    memory_id,
+                    self.embedding_service.provider_name,
+                    len(vector),
+                    json.dumps(vector),
+                    updated_at,
+                ),
+            )
+            await db.commit()
 
     async def update_memory(
         self, memory_id: str, request: MemoryUpdate, actor_id: str
@@ -958,6 +1124,11 @@ class StateService:
                 created_at=now,
             )
             await db.commit()
+        if self.embedding_service is not None and request.content is not None:
+            try:
+                await self.index_memory(memory_id)
+            except EmbeddingServiceError:
+                pass
         return await self.get_memory(memory_id)
 
     async def delete_memory(self, memory_id: str, actor_id: str) -> bool:
@@ -1091,6 +1262,17 @@ class StateService:
                     now,
                 ),
             )
+            if request.agent_id is not None and request.score is not None:
+                await db.execute(
+                    """INSERT INTO agent_scores(agent_id,sample_count,score,updated_at)
+                    VALUES(?,1,?,?)
+                    ON CONFLICT(agent_id) DO UPDATE SET
+                      score=((agent_scores.score * agent_scores.sample_count) + excluded.score)
+                            / (agent_scores.sample_count + 1),
+                      sample_count=agent_scores.sample_count + 1,
+                      updated_at=excluded.updated_at""",
+                    (request.agent_id, request.score, now),
+                )
             await append_audit_event(
                 db,
                 "feedback.created",
@@ -1245,6 +1427,7 @@ class StateService:
             "approvals": approvals,
             "tool_calls": calls,
             "conversations": await self.list_conversations(50),
+            "messages": await self.list_recent_messages(500),
             "agents": await self.list_agents(),
             "pinned_memory": [item for item in await self.list_memory(200) if item["pinned"]],
             "counts": counts,

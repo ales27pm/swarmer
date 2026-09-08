@@ -1,9 +1,11 @@
 # 08 — State, Memory and Sync
 
-> **Statut:** architecture cible. Le slice `0.6` livre SQLite WAL côté serveur,
-> un bootstrap de réplica et une recherche lexicale. Embeddings, index vectoriel,
-> outbox, pull/push incrémental et résolution de conflits restent roadmap et ne
-> doivent pas être présentés comme des capacités observées.
+> **Statut:** le slice `0.8` hydrate tâches, approbations, appels d'outils,
+> conversations/messages, agents, mémoire épinglée, curseur et compteurs dans
+> la réplica liée à l'origine. Elle demeure un cache et n'autorise aucune action
+> sensible. La recherche lexicale est conservée; un provider d'embeddings
+> optionnel active un ranking hybride SQLite. FAISS/Qdrant, outbox et résolution
+> de conflits restent roadmap.
 
 ## Objectif
 

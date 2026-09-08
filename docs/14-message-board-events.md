@@ -4,12 +4,13 @@
 
 Standardiser les messages entre orchestrateur, agents, gateway, state, memory, iPhone broker et feedback service.
 
-## État du runtime `0.6`
+## État du runtime `0.8`
 
-Le serveur expose aujourd'hui un WebSocket authentifié par ticket à usage unique.
-L'app mobile ne s'y abonne pas encore: ses écrans utilisent REST et un
-rafraîchissement explicite. Le bus durable, Redis Streams, les consumer groups,
-le dead-letter stream et l'enveloppe riche ci-dessous restent roadmap.
+Le serveur expose un WebSocket authentifié par ticket à usage unique auquel le
+mobile se reconnecte avec bootstrap autoritatif. Le message board persiste les
+événements `published`, `claimed`, `heartbeat`, `acked` et `failed` dans SQLite
+derrière une interface remplaçable. Redis Streams/NATS, les consumer groups et
+le dead-letter stream restent roadmap.
 
 ## Enveloppe WebSocket actuelle
 

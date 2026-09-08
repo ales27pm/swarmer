@@ -129,8 +129,9 @@ def test_model_none_proposal_remains_planned_and_truthfully_labeled(
         }
     )
     chat = client.post(
-        "/chat", headers=paired_headers,
-        json={"content": "answer without a tool", "start_task": True}
+        "/chat",
+        headers=paired_headers,
+        json={"content": "answer without a tool", "start_task": True},
     ).json()
     task = chat["task"]
 
@@ -244,8 +245,9 @@ def test_two_post_commit_reread_failures_still_return_durable_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = client.post(
-        "/chat", headers=paired_headers,
-        json={"content": "list workspace after commit", "start_task": True}
+        "/chat",
+        headers=paired_headers,
+        json={"content": "list workspace after commit", "start_task": True},
     ).json()["task"]
     engine = test_app.state.execution_engine
     original_get = engine.get

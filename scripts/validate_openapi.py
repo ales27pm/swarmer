@@ -158,7 +158,13 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
             ("/sync/bootstrap", "get"),
         }:
             expected_security = [{"bearerAuth": []}, {"pairingCandidateBearer": []}]
-        elif path == "/agents/{agent_id}/heartbeat":
+        elif path in {
+            "/agents/{agent_id}/heartbeat",
+            "/agents/{agent_id}/claim",
+            "/agents/{agent_id}/jobs",
+            "/agents/{agent_id}/jobs/{job_id}/heartbeat",
+            "/agents/{agent_id}/jobs/{job_id}/result",
+        }:
             expected_security = [{"agentBearer": []}]
         else:
             expected_security = [{"bearerAuth": []}]

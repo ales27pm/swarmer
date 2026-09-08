@@ -1,6 +1,6 @@
 # monGARS Swarm App — Build Documents
 
-Version: 0.6 local MVP
+Version: 0.8 distributed-foundation MVP
 Date: 2026-09-04  
 Owner: ales27pm / 27PM  
 Target: iPhone Expo app + Ubuntu local AI control plane + distributed autonomous swarm
@@ -50,8 +50,22 @@ modèle et d'exécution:
   sensibles restent verrouillées sans preuve serveur fraîche;
 - tâches enrichies, conversations/messages, appels d'outils, approbations,
   mémoire, agents, audit chaîné par hash et feedback;
-- recherche mémoire actuelle explicitement **lexicale**; la recherche vectorielle
-  demeure une évolution, pas une capacité annoncée;
+- message board durable SQLite derrière une interface remplaçable, jobs d'agents
+  revendiqués atomiquement par compétence, authentification agent, heartbeat et
+  résultats terminaux idempotents; Redis Streams/NATS et la reprise de lease
+  multi-hôte restent planifiés;
+- recherche mémoire lexicale conservée avec architecture d'embeddings et ranking
+  hybride lorsqu'un provider est configuré; aucun moteur vectoriel externe n'est
+  requis ni annoncé;
+- réplica iPhone étendue aux tâches, approbations, appels d'outils,
+  conversations/messages, agents, mémoire épinglée et métadonnées d'audit. Cette
+  réplica n'autorise jamais une action sensible;
+- fondation typée du Capability Broker pour position, contacts, calendrier,
+  sélection de photo et composition mail/SMS. Chaque appel exige d'abord une
+  autorisation Gateway fraîche, puis la permission iOS; mail et SMS ouvrent une
+  composition et ne sont pas envoyés silencieusement;
+- export JSONL de corrections revues avec expurgation de chemins protégés et de
+  secrets; le scoring avancé reste à compléter;
 - planification par le modèle local sans minuterie ni succès simulé: seul un
   résultat réel de l'exécuteur peut terminer une tâche;
 - module iOS local en development build pour Core ML, MLX et llama.cpp/GGUF.
@@ -141,8 +155,8 @@ Ubuntu — présent dans le MVP:
 
 Ubuntu — évolutions ciblées, non annoncées comme déjà livrées:
 
-- Redis Streams puis NATS JetStream si le swarm distribué le justifie
-- mémoire vectorielle FAISS ou Qdrant; le MVP actuel utilise une recherche lexicale
+- Redis Streams/NATS multi-hôte, leases/reprise de workers et ordonnanceur autonome
+- mémoire vectorielle FAISS ou Qdrant; le MVP utilise SQLite et un ranking hybride optionnel
 
 ## Non-objectifs du MVP
 

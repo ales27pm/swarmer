@@ -3,12 +3,14 @@
 Date: 2026-09-04  
 Statut: Draft build-ready
 
-> **Portée:** architecture cible. Le slice `0.7` livré est décrit par l'OpenAPI
+> **Portée:** architecture cible. Le slice `0.8` livré est décrit par l'OpenAPI
 > et `docs/21-acceptance-criteria.md`: REST authentifié, cache SQLite lié à
 > l'origine et hydraté au bootstrap, WebSocket mobile avec reconnexion et
 > réconciliation, propositions modèle réelles et résultats d'exécuteur vérifiés.
-> Outbox, journal d'événements durable, bus distribué, capacités natives de
-> données et mémoire vectorielle restent roadmap.
+> L'outbox mobile, Redis/NATS multi-hôte, les leases/reprises automatiques et un
+> index vectoriel externe restent roadmap. Le message board SQLite, le protocole
+> worker, la réplica élargie, le broker iPhone typé et les embeddings optionnels
+> constituent désormais une fondation réelle, sans autonomie cachée.
 
 ## 1. Résumé
 

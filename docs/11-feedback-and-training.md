@@ -1,8 +1,9 @@
 # 11 — Feedback and Training Pipeline
 
-> **Statut:** le slice `0.6` stocke le feedback explicite relié aux tâches ou
-> agents. Scoring automatique, export de dataset, eval pipeline et entraînement
-> restent roadmap.
+> **Statut:** le slice `0.8` stocke les corrections revues et exporte du JSONL
+> expurgé avec entrée de tâche, proposition disponible, résultat, feedback et
+> comportement corrigé. Les tables d'exemples, corrections et scores existent;
+> leur alimentation/scoring automatique et l'entraînement restent roadmap.
 
 ## Objectif
 

@@ -24,7 +24,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models import (
     AgentCreate,
     AgentHeartbeat,
+    AgentJobClaim,
+    AgentJobDispatch,
+    AgentJobHeartbeat,
+    AgentJobResult,
     ChatCreate,
+    FeedbackCorrection,
     FeedbackCreate,
     HealthResponse,
     MemoryCreate,
@@ -34,6 +39,7 @@ from app.models import (
     TaskRecord,
     TaskStatus,
 )
+from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.approval_binding import (
     public_tool_arguments,
     public_tool_error,
@@ -41,6 +47,7 @@ from app.services.approval_binding import (
 )
 from app.services.approval_gateway import ApprovalConflict, ApprovalGateway
 from app.services.auth_service import AuthService, PairingConflict, PairingRateLimited
+from app.services.embedding_service import HttpEmbeddingService
 from app.services.execution_engine import (
     AuthenticatedRequester,
     ExecutionConflict,
@@ -48,12 +55,15 @@ from app.services.execution_engine import (
     ExecutionError,
     ExecutionOutcomeUncertain,
 )
+from app.services.feedback_dataset import FeedbackDatasetService
+from app.services.message_board import MessageBoardService
 from app.services.orchestrator_service import OrchestratorError, OrchestratorService
 from app.services.permission_policy import PermissionPolicy
+from app.services.planner_provider import UbuntuLLMPlannerProvider
 from app.services.state_service import StateConflict, StateService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.7.0"
+API_VERSION = "0.8.0"
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +97,8 @@ class PairFinalizeResponse(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     decision: Literal["approve", "allow_once", "deny"]
     user_note: str | None = Field(default=None, max_length=2_000)
 
@@ -96,6 +108,7 @@ class ToolProposal(BaseModel):
 
     tool_name: str
     arguments: dict[str, Any]
+    planner_source: Literal["iphone_local", "ubuntu_local", "manual", "test"] = "manual"
     summary: str = Field(
         min_length=1,
         max_length=2_000,
@@ -139,7 +152,12 @@ def _validate_runtime_boundaries(settings: Settings) -> None:
 def create_app(config: Settings | None = None) -> FastAPI:
     settings = config or get_settings()
     _validate_runtime_boundaries(settings)
-    state_service = StateService(settings.db_path)
+    embedding_service = (
+        HttpEmbeddingService(settings.embedding_base_url, settings.embedding_model)
+        if settings.embedding_base_url and settings.embedding_model
+        else None
+    )
+    state_service = StateService(settings.db_path, embedding_service)
     configured_pairing_secret = settings.pairing_bootstrap_token
     auth_service = AuthService(
         settings.db_path,
@@ -156,6 +174,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
     permission_policy = PermissionPolicy.from_yaml(settings.permissions_path)
     execution_engine = ExecutionEngine(settings.db_path, settings.workspace_root, permission_policy)
     orchestrator_service = OrchestratorService(settings.llm_base_url, settings.orchestrator_model)
+    planner_provider = UbuntuLLMPlannerProvider(orchestrator_service)
+    message_board = MessageBoardService(settings.db_path)
+    agent_dispatcher = AgentDispatcher(settings.db_path, message_board)
+    feedback_dataset = FeedbackDatasetService(settings.db_path)
     websockets: set[WebSocket] = set()
 
     @asynccontextmanager
@@ -171,6 +193,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.approval_gateway = approval_gateway
     app.state.execution_engine = execution_engine
     app.state.orchestrator_service = orchestrator_service
+    app.state.planner_provider = planner_provider
+    app.state.message_board = message_board
+    app.state.agent_dispatcher = agent_dispatcher
 
     async def require_secure_transport(request: Request) -> None:
         if settings.allow_insecure_remote_http:
@@ -207,6 +232,19 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid device or pairing credential")
         return principal
 
+    async def require_agent(
+        agent_id: str,
+        request: Request,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        await require_secure_transport(request)
+        principal = await agent_dispatcher.authenticate(
+            agent_id, _bearer_token(authorization) or ""
+        )
+        if principal is None:
+            raise HTTPException(status_code=401, detail="invalid agent credential")
+        return principal
+
     async def require_pairing_operator(
         request: Request,
         x_mongars_operator_token: Annotated[str | None, Header()] = None,
@@ -230,6 +268,23 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 dead.append(websocket)
         for websocket in dead:
             websockets.discard(websocket)
+
+    def public_job_event(job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: job.get(key)
+            for key in (
+                "id",
+                "task_id",
+                "required_skill",
+                "status",
+                "claimed_by",
+                "created_at",
+                "updated_at",
+                "claimed_at",
+                "heartbeat_at",
+                "completed_at",
+            )
+        }
 
     async def snapshot_tool_and_task(
         tool_call_id: str, task_id: str
@@ -407,6 +462,12 @@ def create_app(config: Settings | None = None) -> FastAPI:
             ) from exc
 
         await state_service.append_audit(
+            "planner.proposal.accepted",
+            {"planner_source": request.planner_source, "tool_call_id": record["id"]},
+            task_id=task_id,
+            trace_id=task_id,
+        )
+        await state_service.append_audit(
             "tool.proposed",
             {"tool_call_id": record["id"], "tool_name": request.tool_name},
             actor_type="device",
@@ -446,7 +507,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             trace_id=task_id,
         )
         try:
-            proposal = await orchestrator_service.plan(task.input, task.mode.value)
+            proposal = await planner_provider.plan(task.input, task.mode.value)
         except OrchestratorError as exc:
             try:
                 await state_service.update_task_status(task_id, "failed", error=str(exc))
@@ -476,13 +537,18 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
         await state_service.append_audit(
             "orchestrator.proposed",
-            {"tool_name": proposal["tool_name"], "model": settings.orchestrator_model},
+            {
+                "tool_name": proposal["tool_name"],
+                "model": settings.orchestrator_model,
+                "planner_source": planner_provider.source,
+            },
             task_id=task_id,
             trace_id=task_id,
         )
         public_proposal = {
             **proposal,
             "arguments": public_tool_arguments(proposal["tool_name"], proposal["arguments"]),
+            "planner_source": planner_provider.source,
             "summary": (
                 proposal["summary"]
                 if proposal["tool_name"] == "none"
@@ -516,6 +582,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             ToolProposal(
                 tool_name=proposal["tool_name"],
                 arguments=proposal["arguments"],
+                planner_source="ubuntu_local",
                 summary=public_tool_summary(proposal["tool_name"]),
             ),
             principal,
@@ -834,6 +901,101 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid agent credential")
         return record
 
+    @app.post("/tasks/{task_id}/dispatch", status_code=status.HTTP_201_CREATED)
+    async def dispatch_agent_job(
+        task_id: str,
+        request: AgentJobDispatch,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        if request.required_skill not in {"workspace.list_dir", "workspace.read_text"}:
+            raise HTTPException(
+                status_code=403,
+                detail="remote dispatch requires an explicitly supported gateway tool",
+            )
+        try:
+            execution_engine.validate_arguments(request.required_skill, request.payload)
+            rule = permission_policy.evaluate_tool(request.required_skill)
+        except (ExecutionError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="invalid remote worker payload") from exc
+        if rule.decision != "allow":
+            raise HTTPException(status_code=403, detail="gateway approval is required")
+        try:
+            job = await agent_dispatcher.queue_job(task_id, request.required_skill, request.payload)
+        except AgentDispatchConflict as exc:
+            code = 404 if str(exc) == "task not found" else 409
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        await broadcast({"type": "agent.job.queued", "payload": public_job_event(job)})
+        task = await state_service.get_task(task_id)
+        if task:
+            await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+        return job
+
+    @app.post("/agents/{agent_id}/claim")
+    async def claim_agent_job(
+        agent_id: str,
+        request: AgentJobClaim,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+    ) -> dict[str, Any] | None:
+        del request, principal
+        try:
+            job = await agent_dispatcher.claim(agent_id)
+        except AgentDispatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if job:
+            await broadcast({"type": "agent.job.claimed", "payload": public_job_event(job)})
+        return job
+
+    @app.post("/agents/{agent_id}/jobs/{job_id}/heartbeat")
+    async def heartbeat_agent_job(
+        agent_id: str,
+        job_id: str,
+        request: AgentJobHeartbeat,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            return await agent_dispatcher.heartbeat(agent_id, job_id, request.claim_token)
+        except AgentDispatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/agents/{agent_id}/jobs/{job_id}/result")
+    async def submit_agent_job_result(
+        agent_id: str,
+        job_id: str,
+        request: AgentJobResult,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            job, changed = await agent_dispatcher.submit_result(
+                agent_id,
+                job_id,
+                request.claim_token,
+                status=request.status,
+                result=request.result,
+                error=request.error,
+            )
+        except AgentDispatchConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if changed:
+            await broadcast(
+                {"type": f"agent.job.{request.status}", "payload": public_job_event(job)}
+            )
+            task = await state_service.get_task(str(job["task_id"]))
+            if task:
+                await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+        return {**job, "idempotent_replay": not changed}
+
+    @app.get("/agents/{agent_id}/jobs")
+    async def list_agent_jobs(
+        agent_id: str,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> list[dict[str, Any]]:
+        del principal
+        return await agent_dispatcher.list_jobs(agent_id, limit=limit)
+
     @app.get("/audit")
     @app.get("/sync/audit", include_in_schema=False)
     async def list_audit(
@@ -855,6 +1017,23 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if request.agent_id and not await state_service.get_agent(request.agent_id):
             raise HTTPException(status_code=404, detail="agent not found")
         return await state_service.create_feedback(request, str(principal["id"]))
+
+    @app.post("/feedback/correction", status_code=status.HTTP_201_CREATED)
+    async def create_feedback_correction(
+        request: FeedbackCorrection,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            return await feedback_dataset.add_correction(request, actor_id=str(principal["id"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/feedback/dataset/export")
+    async def export_feedback_dataset(
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, str]:
+        del principal
+        return {"format": "jsonl", "data": await feedback_dataset.export_jsonl()}
 
     @app.post("/ws/ticket")
     async def websocket_ticket(
