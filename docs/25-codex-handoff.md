@@ -11,7 +11,8 @@ this document is roadmap, not a claim that the runtime already implements it.
 - Mobile app: Expo + React Native + TypeScript.
 - Server: Ubuntu local FastAPI control plane.
 - Ubuntu is the source of truth for state/memory/audit.
-- iPhone has a bootstrap-hydrated SQLite cache; UI reads remain authenticated REST.
+- iPhone has an origin-scoped, bootstrap-hydrated SQLite cache. REST remains
+  authoritative; cached task/approval reads are explicitly stale and read-only.
 - LLMs never execute directly.
 - Permission Gateway validates all sensitive actions.
 - Agents and models never write SQLite directly; control-plane services own mutations.
@@ -28,12 +29,15 @@ this document is roadmap, not a claim that the runtime already implements it.
 3. Keep proposal-only text distinct from verified executor completion.
 4. Bind sensitive tool calls to one-use approvals with trusted provenance.
 5. Execute only supported tools and retain audit/evidence.
-6. Hydrate the SQLite cache through bootstrap; use explicit REST refresh in UI.
+6. Hydrate an origin-scoped SQLite cache through bootstrap and expose safe,
+   read-only offline task/approval views.
+7. Subscribe with one-use WebSocket tickets, reconnect with bounded backoff, and
+   reconcile from an authoritative bootstrap after every connection.
 
 ## Roadmap after the current slice
 
-- mobile WebSocket subscription/reconnect and live cache reconciliation;
-- offline outbox and pull/push sync;
+- durable cursor-based event pull and gap recovery;
+- idempotent offline outbox and push sync;
 - durable Redis/NATS message board;
 - vector embeddings and retrieval injection;
 - native iPhone capability broker;

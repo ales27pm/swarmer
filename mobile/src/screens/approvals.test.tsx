@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import ApprovalsScreen from "@/../app/(main)/approvals";
 import {
   decideApproval,
+  getServerUrl,
   listApprovals,
   type Approval,
   type ApprovalDecisionReceipt,
   type ApprovalDecisionResult,
   type ToolCall,
 } from "@/lib/api/client";
+import { localApprovals } from "@/lib/state/replica";
 
 const mockPush = jest.fn();
 
@@ -18,8 +20,10 @@ jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }) }));
 jest.mock("@/lib/api/client", () => ({
   ApiError: Error,
   decideApproval: jest.fn(),
+  getServerUrl: jest.fn(),
   listApprovals: jest.fn(),
 }));
+jest.mock("@/lib/state/replica", () => ({ localApprovals: jest.fn() }));
 
 const approval: Approval = {
   id: "apr_test",
@@ -73,6 +77,8 @@ const failedToolCall: ToolCall = {
 
 const mockListApprovals = jest.mocked(listApprovals);
 const mockDecideApproval = jest.mocked(decideApproval);
+const mockGetServerUrl = jest.mocked(getServerUrl);
+const mockLocalApprovals = jest.mocked(localApprovals);
 
 function decisionReceipt(
   authoritativeResult: ApprovalDecisionResult,
@@ -84,8 +90,10 @@ function decisionReceipt(
 describe("ApprovalsScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetServerUrl.mockResolvedValue("https://control.example");
     mockListApprovals.mockResolvedValue([approval]);
     mockDecideApproval.mockResolvedValue(decisionReceipt(approval));
+    mockLocalApprovals.mockRejectedValue(new Error("Cache indisponible"));
   });
 
   it("presents an explicit one-shot decision and sends it once", async () => {
@@ -215,6 +223,22 @@ describe("ApprovalsScreen", () => {
     ).toBeOnTheScreen();
     await user.press(allow);
 
+    expect(mockDecideApproval).not.toHaveBeenCalled();
+  });
+
+  it("shows cached approvals offline but keeps both decisions disabled", async () => {
+    mockListApprovals.mockRejectedValue(new Error("Accords indisponibles"));
+    mockLocalApprovals.mockResolvedValue([approval]);
+    const user = userEvent.setup();
+
+    await render(<ApprovalsScreen />);
+
+    const allow = await screen.findByRole("button", { name: /^Autoriser une fois/ });
+    const deny = screen.getByRole("button", { name: /^Refuser/ });
+    expect(allow).toBeDisabled();
+    expect(deny).toBeDisabled();
+    expect(screen.getByText(/Hors ligne — accords en cache, décisions désactivées/)).toBeOnTheScreen();
+    await user.press(allow);
     expect(mockDecideApproval).not.toHaveBeenCalled();
   });
 

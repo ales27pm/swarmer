@@ -686,6 +686,87 @@ class StateService:
             await db.commit()
         return conversation_id, task
 
+    async def append_chat_user_message(
+        self, content: str, conversation_id: str | None, actor_id: str
+    ) -> tuple[str, dict[str, Any]]:
+        now = datetime.now(UTC).isoformat()
+        conversation_id = conversation_id or f"cnv_{uuid4().hex}"
+        record = {
+            "id": f"msg_{uuid4().hex}",
+            "conversation_id": conversation_id,
+            "task_id": None,
+            "role": "user",
+            "agent_id": None,
+            "content": content,
+            "metadata": None,
+            "created_at": now,
+        }
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            existing = await (
+                await db.execute("SELECT id FROM conversations WHERE id=?", (conversation_id,))
+            ).fetchone()
+            if existing:
+                await db.execute(
+                    "UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id)
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)",
+                    (conversation_id, content.strip()[:80], now, now),
+                )
+            await db.execute(
+                """
+                INSERT INTO messages(id,conversation_id,task_id,role,agent_id,content,metadata_json,created_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (record["id"], conversation_id, None, "user", None, content, None, now),
+            )
+            await append_audit_event(
+                db,
+                "chat.message.created",
+                {},
+                actor_type="device",
+                actor_id=actor_id,
+                trace_id=conversation_id,
+                created_at=now,
+            )
+            await db.commit()
+        return conversation_id, record
+
+    async def append_conversation_message(
+        self, conversation_id: str, role: str, content: str, *, agent_id: str | None = None
+    ) -> dict[str, Any]:
+        if role not in {"agent", "system"}:
+            raise ValueError("unsupported conversation role")
+        now = datetime.now(UTC).isoformat()
+        record = {
+            "id": f"msg_{uuid4().hex}",
+            "conversation_id": conversation_id,
+            "task_id": None,
+            "role": role,
+            "agent_id": agent_id,
+            "content": content,
+            "metadata": {"verified_status": "conversation_only"},
+            "created_at": now,
+        }
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO messages(id,conversation_id,task_id,role,agent_id,content,metadata_json,created_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    record["id"], conversation_id, None, role, agent_id, content,
+                    json.dumps(record["metadata"]), now,
+                ),
+            )
+            await db.execute(
+                "UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id)
+            )
+            await db.commit()
+        return record
+
     async def list_conversations(self, limit: int = 50) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

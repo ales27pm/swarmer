@@ -25,13 +25,18 @@ Un appareil authentifié peut créer une conversation et une tâche. Une répons
 modèle sans outil reste `planned` et `proposal_only`; elle ne devient pas
 `completed`. Le modèle local réel reste à qualifier.
 
-### AC-003 — Source de vérité — Partiel
+### AC-003 — Source de vérité — Couvert localement, device partiel
 
 Ubuntu contrôle les statuts. Le bootstrap REST écrit tâches, approbations et
-curseur dans le cache SQLite, dont le wrapper possède une lecture locale des
-approbations testée avec la frontière SQLite simulée. Les écrans restent alimentés
-par REST et offrent un rafraîchissement explicite. La base native sur device, la
-lecture UI offline et la reconnexion WebSocket mobile ne sont pas exercées.
+curseur dans un cache SQLite lié à l'origine actuellement jumelée; une autre
+origine ne peut pas lire les anciens enregistrements. Le client WebSocket utilise
+un ticket court à usage unique, se reconnecte avec backoff, redémarre après un
+re-jumelage et déclenche un bootstrap autoritatif à chaque reconnexion. Les listes
+de tâches et d'accords ainsi que le résumé d'une tâche peuvent utiliser le cache
+hors ligne avec un avertissement explicite. Les décisions, annulations,
+planifications et feedback restent verrouillés sans preuve fraîche. Ces parcours
+sont couverts avec les frontières réseau/SQLite simulées; la persistance et la
+reconnexion sur iPhone physique restent à exercer.
 
 ### AC-004 — Outbox offline — Roadmap
 
@@ -94,7 +99,7 @@ OpenAPI passent. Une release opérationnelle exige encore:
 - endpoint modèle live et résultats d'exécuteur observés;
 - terminaison TLS privée vérifiée;
 - build, signature, installation, lancement et parcours sur iPhone physique;
-- tests de reconnexion, restauration et persistance.
+- tests de reconnexion, restauration et persistance sur iPhone physique.
 
 Tant que ces couches ne sont pas prouvées, le statut reste localement validé et
 non « production ready ».

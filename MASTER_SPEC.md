@@ -3,11 +3,12 @@
 Date: 2026-09-04  
 Statut: Draft build-ready
 
-> **Portée:** architecture cible. Le slice `0.6` livré est décrit par l'OpenAPI
-> et `docs/21-acceptance-criteria.md`: REST authentifié, cache SQLite hydraté au
-> bootstrap, rafraîchissement manuel, propositions modèle réelles et résultats
-> d'exécuteur vérifiés. Outbox, souscription WebSocket mobile, bus durable,
-> capacités natives et mémoire vectorielle restent roadmap.
+> **Portée:** architecture cible. Le slice `0.7` livré est décrit par l'OpenAPI
+> et `docs/21-acceptance-criteria.md`: REST authentifié, cache SQLite lié à
+> l'origine et hydraté au bootstrap, WebSocket mobile avec reconnexion et
+> réconciliation, propositions modèle réelles et résultats d'exécuteur vérifiés.
+> Outbox, journal d'événements durable, bus distribué, capacités natives de
+> données et mémoire vectorielle restent roadmap.
 
 ## 1. Résumé
 

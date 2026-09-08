@@ -657,11 +657,36 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: ChatCreate,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
-        conversation_id, task = await state_service.create_chat_task(
-            request.content, request.conversation_id, request.mode.value, str(principal["id"])
+        if request.start_task:
+            conversation_id, task = await state_service.create_chat_task(
+                request.content, request.conversation_id, request.mode.value, str(principal["id"])
+            )
+            await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+            return {"conversation_id": conversation_id, "task": task.model_dump(mode="json")}
+
+        conversation_id, user_message = await state_service.append_chat_user_message(
+            request.content, request.conversation_id, str(principal["id"])
         )
-        await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
-        return {"conversation_id": conversation_id, "task": task.model_dump(mode="json")}
+        await broadcast({"type": "message.created", "payload": user_message})
+        history = await state_service.list_messages(conversation_id, 40)
+        try:
+            reply = await orchestrator_service.chat(
+                [
+                    {
+                        "role": "assistant" if item["role"] in {"agent", "assistant"} else "user",
+                        "content": item["content"],
+                    }
+                    for item in history
+                    if item["role"] in {"user", "agent", "assistant"}
+                ]
+            )
+        except OrchestratorError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        assistant_message = await state_service.append_conversation_message(
+            conversation_id, "agent", reply, agent_id="local-orchestrator"
+        )
+        await broadcast({"type": "message.created", "payload": assistant_message})
+        return {"conversation_id": conversation_id, "task": None, "message": assistant_message}
 
     @app.get("/conversations")
     async def list_conversations(

@@ -20,6 +20,7 @@ import {
   updateMemory,
   type MemoryItem,
 } from "@/lib/api/client";
+import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
 function memoryIdentity(item: MemoryItem): string {
   const value = item.summary?.trim() || item.content.trim();
@@ -285,6 +286,7 @@ export default function MemoryScreen() {
       await refresh();
     })();
   }, [refresh]);
+  useLiveRefresh(refresh);
 
   async function runSearch() {
     const value = query.trim();

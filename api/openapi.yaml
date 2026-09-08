@@ -852,17 +852,29 @@ components:
 
     ChatCreate:
       type: object
+      additionalProperties: false
       required: [content]
       properties:
         content: {type: string, minLength: 1, maxLength: 32000}
         conversation_id: {type: [string, 'null']}
         mode: {$ref: '#/components/schemas/TaskMode', default: normal}
+        start_task:
+          type: boolean
+          default: false
+          description: Create a task only after an explicit user action; otherwise remain conversational.
     ChatResult:
       type: object
       required: [conversation_id, task]
       properties:
         conversation_id: {type: string}
-        task: {$ref: '#/components/schemas/TaskRecord'}
+        task:
+          oneOf:
+            - {$ref: '#/components/schemas/TaskRecord'}
+            - {type: 'null'}
+        message:
+          oneOf:
+            - {$ref: '#/components/schemas/Message'}
+            - {type: 'null'}
     Conversation:
       type: object
       required: [id, title, created_at, updated_at]

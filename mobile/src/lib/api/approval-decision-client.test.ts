@@ -82,6 +82,10 @@ describe("decideApproval", () => {
         method: "POST",
       }),
     );
-    expect(writeReplica).toHaveBeenCalledWith("approval.decided", decidedApproval);
+    expect(writeReplica).toHaveBeenCalledWith(
+      "https://control.example",
+      "approval.decided",
+      decidedApproval,
+    );
   });
 });

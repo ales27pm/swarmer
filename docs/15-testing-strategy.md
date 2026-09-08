@@ -19,11 +19,12 @@ Tester les couches déterministes fortement:
 
 Tester les modèles par fixtures et evals, pas seulement en live.
 
-Le slice `0.6` possède des tests déterministes pour l'authentification,
+Le slice `0.7` possède des tests déterministes pour l'authentification,
 lifecycle tâche/appel/approbation, migrations, ressources API, sandbox et
-plusieurs composants mobiles. Les scénarios WebSocket reconnect, outbox,
-capteurs et device build ci-dessous restent des objectifs; ils ne sont pas des
-preuves acquises.
+plusieurs composants mobiles. La reconnexion WebSocket, le changement d'origine
+et la réconciliation bootstrap sont couverts avec des frontières simulées. Les
+scénarios outbox, capteurs et device build ci-dessous restent des objectifs; les
+tests simulés ne constituent pas une preuve d'exécution sur iPhone physique.
 
 ## Mobile test stack
 

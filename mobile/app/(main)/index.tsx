@@ -1,6 +1,6 @@
-import { type Dispatch, useCallback, useReducer, useRef } from "react";
+import { type Dispatch, useCallback, useEffect, useReducer, useRef } from "react";
 import { AppState, Pressable, Text, TextInput, View } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import {
@@ -22,6 +22,8 @@ import {
   type Task,
   type ToolCall,
 } from "@/lib/api/client";
+import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
+import type { LiveSyncState } from "@/lib/sync/live-sync";
 
 const SUGGESTIONS = [
   "Liste les fichiers à la racine du projet.",
@@ -32,6 +34,7 @@ type PlanningResult = ToolCall | { task_id: string; proposal: unknown; task: Tas
 
 type ChatState = {
   input: string;
+  interactionMode: "chat" | "task";
   conversationId: string | undefined;
   messages: Message[];
   lastTask: Task | null;
@@ -47,11 +50,12 @@ type ChatDispatch = Dispatch<ChatStatePatch>;
 
 const INITIAL_CHAT_STATE: ChatState = {
   input: "",
+  interactionMode: "chat",
   conversationId: undefined,
   messages: [],
   lastTask: null,
   bootstrap: null,
-  notice: "Prêt à confier une intention au modèle du control plane.",
+  notice: "Prêt à discuter. Passe en mode Tâche lorsque tu veux agir.",
   error: null,
   busy: false,
   refreshing: false,
@@ -141,24 +145,35 @@ async function submitChatIntent(
   dispatch({
     busy: true,
     error: null,
-    notice: "Création de la tâche authentifiée…",
+    notice: state.interactionMode === "task"
+      ? "Création de la tâche authentifiée…"
+      : "Le modèle local prépare une réponse…",
   });
   let activeConversation = state.conversationId;
   let createdTask: Task | null = null;
   try {
-    const chat = await sendChat(content, state.conversationId);
+    const chat = await sendChat(
+      content,
+      state.conversationId,
+      "normal",
+      state.interactionMode === "task",
+    );
     createdTask = chat.task;
     activeConversation = chat.conversation_id;
     dispatch({
       conversationId: chat.conversation_id,
-      lastTask: chat.task,
+      lastTask: chat.task ?? state.lastTask,
       input: "",
     });
     dispatch({ messages: await listMessages(chat.conversation_id) });
-    dispatch({ notice: "Le modèle du control plane prépare un plan…" });
-    const result = await planTask(chat.task.id);
-    dispatch({ notice: planningStatus(result) });
-    dispatch({ lastTask: taskAfterPlanning(result, chat.task) });
+    if (chat.task) {
+      dispatch({ notice: "Le modèle du control plane prépare un plan…" });
+      const result = await planTask(chat.task.id);
+      dispatch({ notice: planningStatus(result) });
+      dispatch({ lastTask: taskAfterPlanning(result, chat.task) });
+    } else {
+      dispatch({ notice: "Réponse conversationnelle reçue. Aucune tâche n’a été créée." });
+    }
   } catch (cause) {
     dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
   } finally {
@@ -172,6 +187,7 @@ function useChatController() {
   const [state, dispatch] = useReducer(mergeChatState, INITIAL_CHAT_STATE);
   const refreshEpoch = useRef(0);
   useAccessibilityAnnouncement(state.notice);
+  const setInput = useCallback((input: string) => dispatch({ input }), []);
 
   const refreshStatus = useCallback(
     (updateError = true) => {
@@ -198,11 +214,13 @@ function useChatController() {
       };
     }, [refreshStatus]),
   );
+  useLiveRefresh(() => refreshStatus(false));
 
   return {
     ...state,
     refreshStatus,
-    setInput: (input: string) => dispatch({ input }),
+    setInteractionMode: (interactionMode: "chat" | "task") => dispatch({ interactionMode }),
+    setInput,
     submit: () => submitChatIntent(state, dispatch, refreshStatus),
   };
 }
@@ -213,6 +231,7 @@ function pendingAgreementLabel(pending: number): string {
 
 type ConnectionPanelProps = {
   bootstrap: Bootstrap | null;
+  liveState: LiveSyncState;
   pending: number;
   onOpenSettings: () => void;
   onOpenApprovals: () => void;
@@ -220,6 +239,7 @@ type ConnectionPanelProps = {
 
 function ConnectionPanel({
   bootstrap,
+  liveState,
   pending,
   onOpenSettings,
   onOpenApprovals,
@@ -249,6 +269,17 @@ function ConnectionPanel({
           <Text style={{ color: COLORS.accent, fontSize: 13, fontWeight: "700" }}>Réglages</Text>
         </Pressable>
       </View>
+      <Text style={{ color: liveState === "connected" ? COLORS.accent : COLORS.subtle, fontSize: 11 }}>
+        {liveState === "connected"
+          ? "Temps réel connecté"
+          : liveState === "connecting"
+            ? "Connexion temps réel en cours…"
+            : liveState === "paused"
+              ? "Temps réel en pause"
+              : bootstrap
+                ? "Temps réel déconnecté — actualisation REST disponible"
+                : "Temps réel non établi"}
+      </Text>
 
       {pending ? (
         <ActionButton
@@ -360,26 +391,56 @@ function Conversation({
 
 type IntentComposerProps = {
   input: string;
+  interactionMode: "chat" | "task";
   busy: boolean;
   authenticated: boolean;
   notice: string;
   onChangeInput: (input: string) => void;
+  onChangeMode: (mode: "chat" | "task") => void;
   onSubmit: () => void;
 };
 
 function IntentComposer({
   input,
+  interactionMode,
   busy,
   authenticated,
   notice,
   onChangeInput,
+  onChangeMode,
   onSubmit,
 }: IntentComposerProps) {
   return (
     <>
-      <SectionTitle title="Nouvelle intention" />
+      <SectionTitle title={interactionMode === "chat" ? "Discussion" : "Nouvelle tâche"} />
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        {(["chat", "task"] as const).map((mode) => (
+          <Pressable
+            accessibilityRole="button"
+            key={mode}
+            onPress={() => onChangeMode(mode)}
+            style={{
+              backgroundColor: interactionMode === mode ? COLORS.accent : COLORS.panel,
+              borderColor: interactionMode === mode ? COLORS.accent : COLORS.border,
+              borderRadius: 12,
+              borderWidth: 1,
+              flex: 1,
+              padding: 12,
+            }}
+            testID={`interaction-mode-${mode}`}
+          >
+            <Text style={{
+              color: interactionMode === mode ? COLORS.accentText : COLORS.text,
+              fontWeight: "700",
+              textAlign: "center",
+            }}>
+              {mode === "chat" ? "Discuter" : "Tâche"}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
       <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
-        Intention pour le swarm
+        {interactionMode === "chat" ? "Message" : "Intention pour le swarm"}
       </Text>
       <TextInput
         accessibilityLabel="Intention pour le swarm"
@@ -427,8 +488,23 @@ function LastTaskLink({ lastTask, onOpen }: { lastTask: Task | null; onOpen: (id
 
 export default function ChatScreen() {
   const router = useRouter();
+  const launchParameters = useLocalSearchParams<{ draft?: string; intentMode?: string }>();
   const chat = useChatController();
+  const setChatInput = chat.setInput;
+  const setInteractionMode = chat.setInteractionMode;
+  const live = useLiveSync();
   const pending = chat.bootstrap?.counts.approvals_pending ?? 0;
+  const handledDraft = useRef<string | null>(null);
+
+  useEffect(() => {
+    const draft = Array.isArray(launchParameters.draft)
+      ? launchParameters.draft[0]
+      : launchParameters.draft;
+    if (!draft || handledDraft.current === draft) return;
+    handledDraft.current = draft;
+    setChatInput(draft.slice(0, 8_000));
+    if (launchParameters.intentMode === "task") setInteractionMode("task");
+  }, [launchParameters.draft, launchParameters.intentMode, setChatInput, setInteractionMode]);
 
   return (
     <ScreenShell
@@ -440,6 +516,7 @@ export default function ChatScreen() {
     >
       <ConnectionPanel
         bootstrap={chat.bootstrap}
+        liveState={live.state}
         pending={pending}
         onOpenSettings={() => router.push("/settings")}
         onOpenApprovals={() => router.push("/approvals")}
@@ -450,8 +527,10 @@ export default function ChatScreen() {
         authenticated={Boolean(chat.bootstrap)}
         busy={chat.busy}
         input={chat.input}
+        interactionMode={chat.interactionMode}
         notice={chat.notice}
         onChangeInput={chat.setInput}
+        onChangeMode={chat.setInteractionMode}
         onSubmit={() => void chat.submit()}
       />
       <LastTaskLink

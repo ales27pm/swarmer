@@ -534,7 +534,8 @@ export default function LocalModelScreen() {
     setError(null);
     let taskId: string | null = null;
     try {
-      const chat = await sendChat(prompt.trim());
+      const chat = await sendChat(prompt.trim(), undefined, "normal", true);
+      if (!chat.task) throw new Error("Le serveur n’a pas créé la tâche demandée.");
       taskId = chat.task.id;
       await submitToolProposal(chat.task.id, proposal);
       if (!mounted.current) return;

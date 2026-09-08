@@ -4,7 +4,9 @@ import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { Card, COLORS, EmptyState, ErrorBanner, StatusBadge, timeAgo } from "@/components/swarm-ui";
-import { listTasks, type Task, type TaskStatus } from "@/lib/api/client";
+import { getServerUrl, listTasks, type Task, type TaskStatus } from "@/lib/api/client";
+import { localTasks } from "@/lib/state/replica";
+import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
 const FILTERS: { key: TaskStatus | "all"; label: string }[] = [
   { key: "all", label: "Toutes" },
@@ -25,14 +27,25 @@ export default function TasksScreen() {
   const [items, setItems] = useState<Task[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     setError(null);
     try {
       setItems(await listTasks(filter === "all" ? undefined : filter));
+      setOffline(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      try {
+        const scope = await getServerUrl();
+        const cached = await localTasks(scope, filter === "all" ? undefined : filter);
+        setItems(cached);
+        setOffline(true);
+        setError(cached.length ? `Hors ligne — affichage du cache local. ${message}` : message);
+      } catch {
+        setError(message);
+      }
     } finally {
       setRefreshing(false);
     }
@@ -43,6 +56,7 @@ export default function TasksScreen() {
       await refresh();
     })();
   }, [refresh]);
+  useLiveRefresh(refresh);
 
   return (
     <ScreenShell
@@ -80,6 +94,9 @@ export default function TasksScreen() {
         })}
       </View>
       <ErrorBanner message={error} />
+      {offline ? (
+        <Text style={{ color: COLORS.warning }}>Les statuts affichés peuvent être périmés.</Text>
+      ) : null}
       {!items.length && !refreshing && !error ? (
         <EmptyState
           title="Aucune tâche"

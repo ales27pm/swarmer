@@ -323,7 +323,7 @@ def test_process_failure_details_remain_internal_across_all_public_surfaces(
     task = client.post(
         "/chat",
         headers=paired_headers,
-        json={"content": "exercise process failure projection"},
+        json={"content": "exercise process failure projection", "start_task": True},
     ).json()["task"]
     ticket = client.post("/ws/ticket", headers=paired_headers).json()["ticket"]
 

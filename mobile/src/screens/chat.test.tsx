@@ -13,8 +13,10 @@ import {
   type Task,
   type ToolCall,
 } from "@/lib/api/client";
+import { LiveSyncContextProvider } from "@/lib/sync/live-sync-context";
 
 const mockPush = jest.fn();
+let mockSearchParams: { draft?: string; intentMode?: string } = {};
 let mockFocusEffect: (() => void | (() => void)) | undefined;
 let mockFocusCleanup: (() => void) | undefined;
 let mockAppStateListener: ((state: AppStateStatus) => void) | undefined;
@@ -30,6 +32,7 @@ jest.mock("expo-router", () => {
 
   return {
     useRouter: () => ({ push: mockPush }),
+    useLocalSearchParams: () => mockSearchParams,
     useFocusEffect: (effect: () => void | (() => void)) => {
       mockFocusEffect = effect;
       React.useEffect(() => {
@@ -152,6 +155,7 @@ describe("ChatScreen", () => {
     mockFocusEffect = undefined;
     mockFocusCleanup = undefined;
     mockAppStateListener = undefined;
+    mockSearchParams = {};
     mockBootstrap.mockResolvedValue(bootstrap);
     mockListMessages.mockResolvedValue([message]);
     mockSendChat.mockResolvedValue({ conversation_id: "conv_test", task });
@@ -173,8 +177,28 @@ describe("ChatScreen", () => {
       ),
     ).toBeOnTheScreen();
     expect(
-      screen.getByText("Prêt à confier une intention au modèle du control plane."),
+      screen.getByText("Prêt à discuter. Passe en mode Tâche lorsque tu veux agir."),
     ).toBeOnTheScreen();
+  });
+
+  it("prefills but does not submit an App Intent task draft", async () => {
+    mockSearchParams = { draft: "Inspecte les tests", intentMode: "task" };
+    await render(<ChatScreen />);
+
+    expect(await screen.findByDisplayValue("Inspecte les tests")).toBeOnTheScreen();
+    expect(mockSendChat).not.toHaveBeenCalled();
+    expect(mockPlanTask).not.toHaveBeenCalled();
+  });
+
+  it("reports REST authentication and live transport as separate states", async () => {
+    await render(
+      <LiveSyncContextProvider value={{ error: null, revision: 0, state: "connected" }}>
+        <ChatScreen />
+      </LiveSyncContextProvider>,
+    );
+
+    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(screen.getByText("Temps réel connecté")).toBeOnTheScreen();
   });
 
   it("refreshes authentication when Chat regains focus after pairing", async () => {

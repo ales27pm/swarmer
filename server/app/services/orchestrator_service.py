@@ -35,6 +35,12 @@ Only name another relative path when the user explicitly names that file or dire
 Never invent or translate a directory name for the workspace root, and never add arguments
 outside the selected tool's shape above.
 """
+    CHAT_SYSTEM_PROMPT = """You are monGARS, a local conversational assistant.
+Have a useful conversation with the user. Ask concise clarifying questions when needed.
+Do not emit tool calls, JSON, permission requests, or claims that an action was performed.
+If the user describes work they may want executed, help refine it and explain that they can
+explicitly start a task when ready. Never claim a task exists unless the server created one.
+"""
     ROOT_LIST_INTENTS: ClassVar[frozenset[str]] = frozenset(
         {
             "liste les fichiers du projet et résume sa structure.",
@@ -177,3 +183,31 @@ outside the selected tool's shape above.
             if normalized_input in self.ROOT_LIST_INTENTS:
                 arguments = {**arguments, "path": "."}
         return {"tool_name": tool_name, "arguments": arguments, "summary": summary}
+
+    async def chat(self, messages: list[dict[str, str]]) -> str:
+        bounded = [
+            {"role": item["role"], "content": item["content"][:32_000]}
+            for item in messages[-40:]
+            if item.get("role") in {"user", "assistant"} and item.get("content")
+        ]
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": self.CHAT_SYSTEM_PROMPT}, *bounded],
+            "temperature": 0.4,
+            "stream": False,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(f"{self.base_url}/chat/completions", json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise OrchestratorError(f"local conversational model unavailable: {exc}") from exc
+
+        body = response.json()
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise OrchestratorError("invalid conversational response envelope") from exc
+        if not isinstance(content, str) or not content.strip():
+            raise OrchestratorError("conversational response is empty")
+        return content.strip()[:32_000]

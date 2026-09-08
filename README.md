@@ -42,6 +42,12 @@ modèle et d'exécution:
   anciennes clés URL/jeton séparées ne sont jamais recombinées;
 - ticket WebSocket de 30 secondes, consommable une seule fois, afin de ne jamais
   mettre le jeton d'appareil longue durée dans une URL;
+- souscription WebSocket mobile avec reconnexion bornée, pause en arrière-plan
+  et nouveau ticket à usage unique à chaque connexion. Une reconnexion force un
+  bootstrap REST autoritatif afin de combler les événements manqués;
+- cache SQLite limité à l'origine actuellement jumelée. Les listes et détails
+  mis en cache sont signalés comme périmables hors ligne, et toutes les actions
+  sensibles restent verrouillées sans preuve serveur fraîche;
 - tâches enrichies, conversations/messages, appels d'outils, approbations,
   mémoire, agents, audit chaîné par hash et feedback;
 - recherche mémoire actuelle explicitement **lexicale**; la recherche vectorielle

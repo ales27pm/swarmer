@@ -209,7 +209,7 @@ describe("LocalModelScreen", () => {
     await user.press(screen.getByRole("button", { name: "Soumettre au control plane" }));
 
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(1));
-    expect(mockSendChat).toHaveBeenCalledWith("Inspecter le projet");
+    expect(mockSendChat).toHaveBeenCalledWith("Inspecter le projet", undefined, "normal", true);
     expect(mockSubmit).toHaveBeenCalledWith(task.id, {
       tool_name: "workspace.read_text",
       arguments: { path: "README.md" },

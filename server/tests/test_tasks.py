@@ -54,6 +54,30 @@ def test_task_source_cannot_be_forged(client: TestClient, paired_headers: dict[s
     assert response.status_code == 422
 
 
+def test_conversation_message_does_not_create_or_plan_a_task(
+    client: TestClient, paired_headers: dict[str, str], test_app
+) -> None:
+    test_app.state.orchestrator_service.chat = AsyncMock(
+        return_value="Oui. Quel genre d’application web veux-tu construire?"
+    )
+
+    response = client.post(
+        "/chat", headers=paired_headers, json={"content": "Je veux créer une application web"}
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["task"] is None
+    assert payload["message"]["role"] == "agent"
+    assert payload["message"]["metadata"] == {"verified_status": "conversation_only"}
+    assert client.get("/tasks", headers=paired_headers).json() == []
+    messages = client.get(
+        f"/conversations/{payload['conversation_id']}/messages", headers=paired_headers
+    ).json()
+    assert [message["role"] for message in messages] == ["user", "agent"]
+    test_app.state.orchestrator_service.chat.assert_awaited_once()
+
+
 def test_tool_proposal_requires_exact_structured_fields(
     client: TestClient, paired_headers: dict[str, str]
 ) -> None:
@@ -105,7 +129,8 @@ def test_model_none_proposal_remains_planned_and_truthfully_labeled(
         }
     )
     chat = client.post(
-        "/chat", headers=paired_headers, json={"content": "answer without a tool"}
+        "/chat", headers=paired_headers,
+        json={"content": "answer without a tool", "start_task": True}
     ).json()
     task = chat["task"]
 
@@ -145,7 +170,9 @@ def test_shipped_french_root_intent_executes_against_the_configured_workspace(
             ]
         },
     )
-    chat = client.post("/chat", headers=paired_headers, json={"content": intent}).json()
+    chat = client.post(
+        "/chat", headers=paired_headers, json={"content": intent, "start_task": True}
+    ).json()
 
     with patch("httpx.AsyncClient.post", AsyncMock(return_value=model_response)):
         response = client.post(f"/tasks/{chat['task']['id']}/plan", headers=paired_headers)
@@ -217,7 +244,8 @@ def test_two_post_commit_reread_failures_still_return_durable_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = client.post(
-        "/chat", headers=paired_headers, json={"content": "list workspace after commit"}
+        "/chat", headers=paired_headers,
+        json={"content": "list workspace after commit", "start_task": True}
     ).json()["task"]
     engine = test_app.state.execution_engine
     original_get = engine.get

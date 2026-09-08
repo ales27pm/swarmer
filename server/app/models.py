@@ -66,9 +66,12 @@ class TaskRecord(BaseModel):
 
 
 class ChatCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     content: str = Field(min_length=1, max_length=32_000)
     conversation_id: str | None = None
     mode: TaskMode = TaskMode.NORMAL
+    start_task: bool = False
 
 
 class MemoryCreate(BaseModel):

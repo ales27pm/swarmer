@@ -4,6 +4,7 @@ import * as SecureStore from "expo-secure-store";
 
 import {
   bootstrapSync,
+  createEventStreamTicket,
   createTask,
   pairDevice,
   submitToolProposal,
@@ -222,6 +223,10 @@ describe("control-plane connection storage", () => {
     expect(deleteItem).toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
     expect(deleteItem).toHaveBeenCalledWith("mongars.server_url");
     expect(deleteItem).toHaveBeenCalledWith("mongars.device_token");
+    expect(mockApplyBootstrap).toHaveBeenCalledWith(
+      verifiedBootstrap,
+      "https://new.example",
+    );
   });
 
   it("keeps the working origin and token when staged pairing fails", async () => {
@@ -371,6 +376,27 @@ describe("control-plane connection storage", () => {
     expect(deleteItem).not.toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
   });
 
+  it("uses the durable pending origin for the replica when active storage fails", async () => {
+    request
+      .mockResolvedValueOnce(successfulJson(candidateResponse()))
+      .mockResolvedValueOnce(successfulJson(verifiedBootstrap))
+      .mockResolvedValueOnce(successfulJson(readyResponse()))
+      .mockResolvedValueOnce(successfulJson(verifiedBootstrap));
+    setItem
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(new Error("active connection storage unavailable"));
+
+    await expect(
+      pairDevice("123456", "iphone_test", "Test iPhone", "https://new.example"),
+    ).resolves.toEqual({ bootstrap: verifiedBootstrap, serverUrl: "https://new.example" });
+
+    expect(mockApplyBootstrap).toHaveBeenCalledWith(
+      verifiedBootstrap,
+      "https://new.example",
+    );
+    expect(deleteItem).not.toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
+  });
+
   it("promotes a durable pending bearer after a lost activation response", async () => {
     mockConnections({
       [PENDING_CONNECTION_KEY]: pendingConnection(
@@ -444,6 +470,36 @@ describe("control-plane connection storage", () => {
     ).toHaveLength(0);
     expect(deleteItem).toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
   });
+
+  it("exchanges the bearer for a short websocket ticket without putting it in the URL", async () => {
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "long-lived-device-token"),
+    });
+    const ticket = "short-lived-ticket-with-enough-entropy";
+    request.mockResolvedValue(successfulJson({ ticket, expires_in_seconds: 30 }));
+
+    await expect(createEventStreamTicket()).resolves.toEqual({
+      expiresInSeconds: 30,
+      serverUrl: "https://control.example",
+      url: `wss://control.example/ws?ticket=${ticket}`,
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "https://control.example/ws/ticket",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer long-lived-device-token" }),
+        method: "POST",
+      }),
+    );
+    expect(String(request.mock.calls[0][0])).not.toContain("long-lived-device-token");
+  });
+
+  it("refuses to create a websocket ticket while the device is not paired", async () => {
+    mockConnections({});
+
+    await expect(createEventStreamTicket()).rejects.toThrow("jumelé");
+    expect(request).not.toHaveBeenCalled();
+  });
 });
 
 describe("bootstrap replica commit ordering", () => {
@@ -478,7 +534,10 @@ describe("bootstrap replica commit ordering", () => {
     await expect(olderSync).resolves.toEqual(olderBootstrap);
 
     expect(mockApplyBootstrap).toHaveBeenCalledTimes(1);
-    expect(mockApplyBootstrap).toHaveBeenCalledWith(newerBootstrap);
+    expect(mockApplyBootstrap).toHaveBeenCalledWith(
+      newerBootstrap,
+      "https://control.example",
+    );
   });
 
   it("returns a blurred caller's response without committing it to the replica", async () => {
@@ -540,8 +599,8 @@ describe("bootstrap replica commit ordering", () => {
       newerBootstrap,
     ]);
     expect(mockApplyBootstrap.mock.calls).toEqual([
-      [olderBootstrap],
-      [newerBootstrap],
+      [olderBootstrap, "https://control.example"],
+      [newerBootstrap, "https://control.example"],
     ]);
   });
 
@@ -555,6 +614,9 @@ describe("bootstrap replica commit ordering", () => {
     const recoveredBootstrap = { ...verifiedBootstrap, cursor: "recovered" };
     request.mockResolvedValueOnce(successfulJson(recoveredBootstrap));
     await expect(bootstrapSync()).resolves.toEqual(recoveredBootstrap);
-    expect(mockApplyBootstrap).toHaveBeenLastCalledWith(recoveredBootstrap);
+    expect(mockApplyBootstrap).toHaveBeenLastCalledWith(
+      recoveredBootstrap,
+      "https://control.example",
+    );
   });
 });

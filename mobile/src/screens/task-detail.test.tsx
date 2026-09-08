@@ -6,6 +6,7 @@ import TaskDetailScreen from "@/../app/task/[id]";
 import {
   cancelTask,
   decideApproval,
+  getServerUrl,
   getTask,
   type Approval,
   type ApprovalDecisionReceipt,
@@ -13,6 +14,7 @@ import {
   type TaskDetail,
   type ToolCall,
 } from "@/lib/api/client";
+import { localApprovals, localTask } from "@/lib/state/replica";
 
 jest.mock("expo-router", () => ({ useLocalSearchParams: () => ({ id: "tsk_test" }) }));
 jest.mock("@/lib/api/client", () => ({
@@ -20,8 +22,13 @@ jest.mock("@/lib/api/client", () => ({
   cancelTask: jest.fn(),
   createFeedback: jest.fn(),
   decideApproval: jest.fn(),
+  getServerUrl: jest.fn(),
   getTask: jest.fn(),
   planTask: jest.fn(),
+}));
+jest.mock("@/lib/state/replica", () => ({
+  localApprovals: jest.fn(),
+  localTask: jest.fn(),
 }));
 
 const detail: TaskDetail = {
@@ -58,6 +65,9 @@ const proposalOnlyMessage: TaskDetail["messages"][number] = {
 const mockCancelTask = jest.mocked(cancelTask);
 const mockDecideApproval = jest.mocked(decideApproval);
 const mockGetTask = jest.mocked(getTask);
+const mockGetServerUrl = jest.mocked(getServerUrl);
+const mockLocalApprovals = jest.mocked(localApprovals);
+const mockLocalTask = jest.mocked(localTask);
 const hiddenWriteContent = "private data";
 
 function decisionReceipt(
@@ -149,7 +159,10 @@ const failedProcessToolCall: ToolCall = {
 describe("TaskDetailScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetServerUrl.mockResolvedValue("https://control.example");
     mockGetTask.mockResolvedValue(detail);
+    mockLocalApprovals.mockResolvedValue([]);
+    mockLocalTask.mockResolvedValue(null);
     mockCancelTask.mockResolvedValue({ ...detail.task, status: "cancelled" });
     mockDecideApproval.mockResolvedValue(decisionReceipt(approval));
   });
@@ -176,6 +189,39 @@ describe("TaskDetailScreen", () => {
       resolveRequest(detail);
     });
     expect(screen.queryByText("Chargement des preuves authentifiées…")).not.toBeOnTheScreen();
+  });
+
+  it("shows cached task evidence read-only when authenticated refresh fails", async () => {
+    mockGetTask.mockRejectedValue(new Error("Control plane indisponible"));
+    mockLocalTask.mockResolvedValue({ ...detail.task, status: "waiting_permission" });
+    mockLocalApprovals.mockResolvedValue([approval]);
+    const user = userEvent.setup();
+
+    await render(<TaskDetailScreen />);
+
+    expect(await screen.findByText(/Copie locale hors ligne/)).toBeOnTheScreen();
+    expect(screen.getByTestId("detail-allow-button")).toBeDisabled();
+    expect(screen.getByTestId("detail-deny-button")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Annuler la tâche" })).not.toBeOnTheScreen();
+    await user.press(screen.getByTestId("detail-allow-button"));
+    expect(mockDecideApproval).not.toHaveBeenCalled();
+  });
+
+  it("locks previously loaded evidence after a refresh loses authentication", async () => {
+    mockGetTask
+      .mockResolvedValueOnce({ ...detail, approvals: [approval] })
+      .mockRejectedValueOnce(new Error("Session indisponible"));
+    const user = userEvent.setup();
+
+    await render(<TaskDetailScreen />);
+    expect(await screen.findByTestId("detail-allow-button")).toBeEnabled();
+
+    await user.press(screen.getByRole("button", { name: "Actualiser les preuves" }));
+
+    expect(await screen.findByText(/Copie locale hors ligne/)).toBeOnTheScreen();
+    expect(screen.getByTestId("detail-allow-button")).toBeDisabled();
+    expect(screen.getByTestId("detail-deny-button")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Annuler la tâche" })).not.toBeOnTheScreen();
   });
 
   it("requires explicit confirmation before cancelling a task", async () => {

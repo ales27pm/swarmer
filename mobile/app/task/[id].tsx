@@ -20,6 +20,7 @@ import {
   ApiError,
   cancelTask,
   createFeedback,
+  getServerUrl,
   getTask,
   planTask,
   type Approval,
@@ -29,6 +30,8 @@ import {
   approvalDecisionError,
   submitApprovalDecision,
 } from "@/lib/approval-decision";
+import { localApprovals, localTask } from "@/lib/state/replica";
+import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
 const CANCELLABLE = new Set(["created", "planned", "waiting_permission", "queued", "blocked"]);
 
@@ -60,11 +63,13 @@ function JsonEvidence({ label, value }: { label: string; value: unknown }) {
 function TaskSummary({
   task,
   busy,
+  readOnly,
   onPlan,
   onCancel,
 }: {
   task: TaskDetail["task"];
   busy: string | null;
+  readOnly: boolean;
   onPlan: () => void;
   onCancel: () => void;
 }) {
@@ -82,7 +87,7 @@ function TaskSummary({
           {task.error_json.message}
         </Text>
       ) : null}
-      {task.status === "created" ? (
+      {task.status === "created" && !readOnly ? (
         <ActionButton
           busy={busy === "plan"}
           disabled={Boolean(busy)}
@@ -91,7 +96,7 @@ function TaskSummary({
           variant="accent"
         />
       ) : null}
-      {CANCELLABLE.has(task.status) ? (
+      {CANCELLABLE.has(task.status) && !readOnly ? (
         <ActionButton
           busy={busy === "cancel"}
           disabled={Boolean(busy)}
@@ -266,6 +271,7 @@ function useTaskDetailLoader(
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
 
   const refresh = useCallback(async (clearError = true) => {
     if (!taskId) {
@@ -277,11 +283,21 @@ function useTaskDetailLoader(
     try {
       const nextDetail = await getTask(taskId);
       setDetail(nextDetail);
+      setOffline(false);
       reconcileApprovals(nextDetail.approvals);
       return null;
     } catch (cause) {
       const message = errorMessage(cause);
       setError(message);
+      setOffline(true);
+      const scope = await getServerUrl().catch(() => null);
+      const cachedTask = scope ? await localTask(scope, taskId).catch(() => null) : null;
+      if (cachedTask && scope) {
+        const approvals = await localApprovals(scope, "all").catch(() => []);
+        const cachedApprovals = approvals.filter((approval) => approval.task_id === taskId);
+        setDetail({ task: cachedTask, approvals: cachedApprovals, messages: [], tool_calls: [] });
+        reconcileApprovals(cachedApprovals);
+      }
       return message;
     } finally {
       setRefreshing(false);
@@ -294,8 +310,9 @@ function useTaskDetailLoader(
       await refresh(false);
     })();
   }, [refresh]);
+  useLiveRefresh(() => refresh(false));
 
-  return { detail, error, initialLoading, refresh, refreshing, setError };
+  return { detail, error, initialLoading, offline, refresh, refreshing, setError };
 }
 
 async function runTaskAction(
@@ -400,12 +417,14 @@ function TaskEvidence({
   detail,
   feedback,
   lockedApprovalIds,
+  readOnly,
 }: {
   actions: ReturnType<typeof createTaskActions>;
   busy: string | null;
   detail: TaskDetail;
   feedback: string | null;
   lockedApprovalIds: ReadonlySet<string>;
+  readOnly: boolean;
 }) {
   const { task } = detail;
   return (
@@ -413,18 +432,19 @@ function TaskEvidence({
       <TaskSummary
         task={task}
         busy={busy}
+        readOnly={readOnly}
         onPlan={() => actions.plan(task.id)}
         onCancel={() => actions.cancel(task)}
       />
       <ApprovalRequests
         approvals={detail.approvals}
         busy={busy}
-        lockedApprovalIds={lockedApprovalIds}
+        lockedApprovalIds={readOnly ? new Set(detail.approvals.map((approval) => approval.id)) : lockedApprovalIds}
         onDecision={actions.decide}
       />
       <ToolEvidence tools={detail.tool_calls} />
       <Timeline messages={detail.messages} />
-      {task.status === "completed" ? (
+      {task.status === "completed" && !readOnly ? (
         <FeedbackControls busy={busy} feedback={feedback} onRate={actions.rate} />
       ) : null}
     </>
@@ -439,6 +459,7 @@ function TaskDetailContent({
   feedback,
   initialLoading,
   lockedApprovalIds,
+  offline,
   refreshing,
 }: {
   actions: ReturnType<typeof createTaskActions>;
@@ -448,6 +469,7 @@ function TaskDetailContent({
   feedback: string | null;
   initialLoading: boolean;
   lockedApprovalIds: ReadonlySet<string>;
+  offline: boolean;
   refreshing: boolean;
 }) {
   if (detail) {
@@ -458,6 +480,7 @@ function TaskDetailContent({
         detail={detail}
         feedback={feedback}
         lockedApprovalIds={lockedApprovalIds}
+        readOnly={offline}
       />
     );
   }
@@ -512,6 +535,11 @@ export default function TaskDetailScreen() {
       testID="task-detail-screen"
     >
       <ErrorBanner message={state.error} />
+      {state.offline ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning, lineHeight: 19 }}>
+          Copie locale hors ligne : les messages et appels d’outils peuvent être incomplets. Toutes les actions sont verrouillées jusqu’au retour des preuves authentifiées.
+        </Text>
+      ) : null}
       {state.notice ? (
         <Text accessibilityLiveRegion="polite" selectable style={{ color: COLORS.accent }}>
           {state.notice}
@@ -532,6 +560,7 @@ export default function TaskDetailScreen() {
         feedback={state.feedback}
         initialLoading={state.initialLoading}
         lockedApprovalIds={state.lockedApprovalIds}
+        offline={state.offline}
         refreshing={state.refreshing}
       />
     </ScreenShell>

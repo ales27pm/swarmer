@@ -12,7 +12,9 @@ import {
   useAccessibilityAnnouncement,
   useApprovalDecisionLocks,
 } from "@/components/swarm-ui";
-import { listApprovals, type Approval } from "@/lib/api/client";
+import { getServerUrl, listApprovals, type Approval } from "@/lib/api/client";
+import { localApprovals } from "@/lib/state/replica";
+import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 import {
   approvalDecisionError,
   submitApprovalDecision,
@@ -26,6 +28,7 @@ export default function ApprovalsScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [decidedTaskId, setDecidedTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
   const { lockedApprovalIds, lockApproval, reconcileApprovals } =
     useApprovalDecisionLocks();
   useAccessibilityAnnouncement(notice);
@@ -36,11 +39,23 @@ export default function ApprovalsScreen() {
     try {
       const approvals = await listApprovals();
       setItems(approvals);
+      setOffline(false);
       reconcileApprovals(approvals);
       return null;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      setError(message);
+      try {
+        const cached = await localApprovals(await getServerUrl());
+        setItems(cached);
+        setOffline(true);
+        setError(
+          cached.length
+            ? `Hors ligne — accords en cache, décisions désactivées. ${message}`
+            : message,
+        );
+      } catch {
+        setError(message);
+      }
       return message;
     } finally {
       setRefreshing(false);
@@ -52,6 +67,7 @@ export default function ApprovalsScreen() {
       await refresh(false);
     })();
   }, [refresh]);
+  useLiveRefresh(() => refresh(false));
 
   async function decide(id: string, decision: "approve" | "deny") {
     if (deciding) return;
@@ -115,9 +131,11 @@ export default function ApprovalsScreen() {
             approval={item}
             busy={deciding}
             cardTestID={`approval-card-${item.id}`}
-            decisionLocked={lockedApprovalIds.has(item.id)}
+            decisionLocked={offline || lockedApprovalIds.has(item.id)}
             denyTestID={`deny-button-${item.id}`}
-            onDecision={(decision) => void decide(item.id, decision)}
+            onDecision={(decision) => {
+              if (!offline) void decide(item.id, decision);
+            }}
             onOpenTask={() =>
               router.push({ pathname: "/task/[id]", params: { id: item.task_id } })
             }

@@ -1,6 +1,7 @@
 import { fetch } from "expo/fetch";
 import * as SecureStore from "expo-secure-store";
 
+import { notifyConnectionChanged } from "@/lib/connection-events";
 import { applyBootstrap, upsertEvent } from "@/lib/state/replica";
 import type {
   Agent,
@@ -60,6 +61,12 @@ type ResolvedConnection =
 export type PairingResult = {
   bootstrap: Bootstrap;
   serverUrl: string;
+};
+
+export type EventStreamTicket = {
+  expiresInSeconds: number;
+  serverUrl: string;
+  url: string;
 };
 
 export class ApiError extends Error {
@@ -200,6 +207,45 @@ export async function hasDeviceToken(): Promise<boolean> {
   return Boolean((await getConnection()).token);
 }
 
+export async function createEventStreamTicket(): Promise<EventStreamTicket> {
+  const stored = await getConnection();
+  const connection = stored.source === "pending"
+    ? await resolvePendingConnection(stored)
+    : stored;
+  if (!connection.token) {
+    throw new ApiError(401, "Cet iPhone n’est pas jumelé au control plane.");
+  }
+
+  const value = await requestAt<unknown>(
+    connection.baseUrl,
+    "/ws/ticket",
+    { method: "POST" },
+    connection.token,
+  );
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !["ticket", "expires_in_seconds"].includes(key)) ||
+    typeof value.ticket !== "string" ||
+    !/^[A-Za-z0-9_-]{20,256}$/.test(value.ticket) ||
+    !Number.isSafeInteger(value.expires_in_seconds) ||
+    Number(value.expires_in_seconds) < 1 ||
+    Number(value.expires_in_seconds) > 300
+  ) {
+    throw new Error("Le control plane a retourné un ticket temps réel invalide.");
+  }
+
+  const url = new URL(connection.baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/ws";
+  url.search = "";
+  url.searchParams.set("ticket", value.ticket);
+  return {
+    expiresInSeconds: Number(value.expires_in_seconds),
+    serverUrl: connection.baseUrl,
+    url: url.toString(),
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const stored = await getConnection();
   const connection = stored.source === "pending"
@@ -221,7 +267,7 @@ async function resolvePendingConnection(
     if (!isBootstrapEnvelope(bootstrap)) {
       throw new Error("Le candidat n’a pas retourné un bootstrap de reprise valide.");
     }
-    await promotePendingConnection(pending);
+    if (await promotePendingConnection(pending)) notifyConnectionChanged();
     return pending;
   } catch (cause) {
     if (!(cause instanceof ApiError) || cause.status !== 401) throw cause;
@@ -232,7 +278,7 @@ async function resolvePendingConnection(
   }
 }
 
-async function promotePendingConnection(connection: StoredConnection): Promise<void> {
+async function promotePendingConnection(connection: StoredConnection): Promise<boolean> {
   try {
     await SecureStore.setItemAsync(
       CONNECTION_KEY,
@@ -240,13 +286,14 @@ async function promotePendingConnection(connection: StoredConnection): Promise<v
     );
   } catch {
     // The pending record remains a durable, origin-bound recovery credential.
-    return;
+    return false;
   }
   await Promise.allSettled([
     SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY),
     SecureStore.deleteItemAsync(LEGACY_SERVER_URL_KEY),
     SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY),
   ]);
+  return true;
 }
 
 async function requestAt<T>(
@@ -427,7 +474,9 @@ export async function pairDevice(
   if (!isBootstrapEnvelope(activeBootstrap)) {
     throw new Error("Le serveur activé n’a pas retourné un bootstrap authentifié valide.");
   }
+  await applyBootstrap(activeBootstrap, target);
   await promotePendingConnection(pending);
+  notifyConnectionChanged();
   return { bootstrap: activeBootstrap, serverUrl: target };
 }
 
@@ -474,10 +523,11 @@ export function sendChat(
   content: string,
   conversationId?: string,
   mode: TaskMode = "normal",
-): Promise<{ conversation_id: string; task: Task }> {
-  return request<{ conversation_id: string; task: Task }>("/chat", {
+  startTask = false,
+): Promise<{ conversation_id: string; task: Task | null; message?: Message }> {
+  return request<{ conversation_id: string; task: Task | null; message?: Message }>("/chat", {
     method: "POST",
-    body: JSON.stringify({ content, conversation_id: conversationId, mode }),
+    body: JSON.stringify({ content, conversation_id: conversationId, mode, start_task: startTask }),
   });
 }
 
@@ -489,12 +539,21 @@ export async function bootstrapSync(
   shouldApply: () => boolean = () => true,
 ): Promise<Bootstrap> {
   const generation = ++latestBootstrapGeneration;
-  const data = await request<Bootstrap>("/sync/bootstrap");
+  const stored = await getConnection();
+  const connection = stored.source === "pending"
+    ? await resolvePendingConnection(stored)
+    : stored;
+  const data = await requestAt<Bootstrap>(
+    connection.baseUrl,
+    "/sync/bootstrap",
+    undefined,
+    connection.token,
+  );
   const pendingApply = bootstrapReplicaApplyTail
     .catch(() => undefined)
     .then(async () => {
       if (generation !== latestBootstrapGeneration || !shouldApply()) return;
-      await applyBootstrap(data);
+      await applyBootstrap(data, connection.baseUrl);
     });
   bootstrapReplicaApplyTail = pendingApply;
   await pendingApply;
@@ -516,13 +575,19 @@ export async function decideApproval(
   id: string,
   decision: "approve" | "deny",
 ): Promise<ApprovalDecisionReceipt> {
-  const result = await request<ApprovalDecisionResult>(
+  const stored = await getConnection();
+  const connection = stored.source === "pending"
+    ? await resolvePendingConnection(stored)
+    : stored;
+  const result = await requestAt<ApprovalDecisionResult>(
+    connection.baseUrl,
     `/approvals/${resourceId(id)}/decision`,
     { method: "POST", body: JSON.stringify({ decision }) },
+    connection.token,
   );
   const approval = "approval" in result ? result.approval : result;
   try {
-    await upsertEvent("approval.decided", approval);
+    await upsertEvent(connection.baseUrl, "approval.decided", approval);
     return { authoritativeResult: result, localReplicaError: null };
   } catch (cause) {
     return {

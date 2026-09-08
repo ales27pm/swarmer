@@ -10,6 +10,10 @@ type StackScreenProps = {
 
 const mockStackScreen = jest.fn((_props: StackScreenProps) => null);
 
+jest.mock("@/lib/sync/live-sync-provider", () => ({
+  LiveSyncProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const Stack = ({ children }: { children: React.ReactNode }) =>

@@ -4,6 +4,7 @@ import { Text, View } from "react-native";
 import { ScreenShell } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, EmptyState, ErrorBanner, timeAgo } from "@/components/swarm-ui";
 import { listAgents, type Agent } from "@/lib/api/client";
+import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
 const STATUS_COLOR = {
   online: COLORS.accent,
@@ -39,6 +40,7 @@ export default function AgentsScreen() {
   useEffect(() => {
     void Promise.resolve().then(refresh);
   }, [refresh]);
+  useLiveRefresh(refresh);
 
   const active = items.filter((item) => item.status === "online" || item.status === "busy").length;
   const unverified = items.filter((item) => item.status === "unverified").length;

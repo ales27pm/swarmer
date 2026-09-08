@@ -57,14 +57,18 @@ Priorité:
 
 ### Step 5 — Sync
 
-Roadmap au-delà du bootstrap REST et du rafraîchissement explicite:
+Livré localement avec tests de frontières simulées:
 
 - Bootstrap.
-- Pull.
-- Push.
 - WebSocket.
-- Outbox.
 - Reconnect handling.
+- cache SQLite lié à l'origine et lecture hors ligne en mode sûr.
+
+Roadmap:
+
+- journal durable et Pull par curseur;
+- Push idempotent;
+- Outbox.
 
 ### Step 6 — Task flow
 
