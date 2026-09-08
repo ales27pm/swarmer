@@ -7,9 +7,8 @@ enum LocalModelDirectorySelection: Sendable {
   case cancelled
 }
 
-@MainActor
 final class LocalModelDirectoryPicker: NSObject, UIDocumentPickerDelegate,
-  UIAdaptivePresentationControllerDelegate
+  UIAdaptivePresentationControllerDelegate, @unchecked Sendable
 {
   private var completion: (@Sendable (LocalModelDirectorySelection) -> Void)?
   private(set) var isActive = true
