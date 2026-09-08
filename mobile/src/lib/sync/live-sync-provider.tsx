@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { AppState } from "react-native";
 
-import { bootstrapSync } from "@/lib/api/client";
+import { bootstrapSync, drainMutationOutbox } from "@/lib/api/client";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
 import { LiveSyncContextProvider } from "@/lib/sync/live-sync-context";
@@ -23,6 +23,8 @@ export function LiveSyncProvider({ children }: { children: ReactNode }) {
       const epoch = ++reconcileEpoch;
       try {
         await bootstrapSync(() => !disposed && epoch === reconcileEpoch);
+        if (disposed || epoch !== reconcileEpoch) return;
+        await drainMutationOutbox();
         if (disposed || epoch !== reconcileEpoch) return;
         setError(null);
         setRevision((value) => value + 1);

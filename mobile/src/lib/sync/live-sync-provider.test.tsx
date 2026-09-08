@@ -2,7 +2,7 @@ import { act, render, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { Text } from "react-native";
 
-import { bootstrapSync } from "@/lib/api/client";
+import { bootstrapSync, drainMutationOutbox } from "@/lib/api/client";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
 import {
@@ -11,7 +11,10 @@ import {
 } from "@/lib/sync/live-sync";
 import { LiveSyncProvider } from "@/lib/sync/live-sync-provider";
 
-jest.mock("@/lib/api/client", () => ({ bootstrapSync: jest.fn() }));
+jest.mock("@/lib/api/client", () => ({
+  bootstrapSync: jest.fn(),
+  drainMutationOutbox: jest.fn(),
+}));
 jest.mock("@/lib/connection-events", () => ({ subscribeConnectionChanges: jest.fn() }));
 jest.mock("@/lib/iphone-capabilities/runtime", () => ({
   iphoneCapabilityTransport: {
@@ -22,6 +25,7 @@ jest.mock("@/lib/iphone-capabilities/runtime", () => ({
 jest.mock("@/lib/sync/live-sync", () => ({ createLiveSyncController: jest.fn() }));
 
 const mockBootstrap = jest.mocked(bootstrapSync);
+const mockDrainMutationOutbox = jest.mocked(drainMutationOutbox);
 const mockCreateController = jest.mocked(createLiveSyncController);
 const mockSubscribe = jest.mocked(subscribeConnectionChanges);
 const mockCapabilityTransport = jest.mocked(iphoneCapabilityTransport);
@@ -35,6 +39,12 @@ describe("LiveSyncProvider", () => {
     controllers.length = 0;
     notifyConnectionChanged = undefined;
     mockBootstrap.mockResolvedValue({} as never);
+    mockDrainMutationOutbox.mockResolvedValue({
+      attempted: 0,
+      completed: 0,
+      failed: 0,
+      remaining: 0,
+    });
     mockSubscribe.mockImplementation((listener) => {
       notifyConnectionChanged = listener;
       return () => undefined;
@@ -72,6 +82,37 @@ describe("LiveSyncProvider", () => {
     await act(async () => options?.onStateChange?.("connected"));
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockDrainMutationOutbox).toHaveBeenCalledTimes(1));
+  });
+
+  it("drains safe offline mutations only after reconnect bootstrap succeeds", async () => {
+    await render(<LiveSyncProvider><Text>child</Text></LiveSyncProvider>);
+    const options = mockCreateController.mock.calls[0][0];
+    const order: string[] = [];
+    mockBootstrap.mockImplementationOnce(async () => {
+      order.push("bootstrap");
+      return {} as never;
+    });
+    mockDrainMutationOutbox.mockImplementationOnce(async () => {
+      order.push("drain");
+      return { attempted: 1, completed: 1, failed: 0, remaining: 0 };
+    });
+
+    await act(async () => options?.onStateChange?.("connected"));
+
+    await waitFor(() => expect(mockDrainMutationOutbox).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["bootstrap", "drain"]);
+  });
+
+  it("does not drain after a failed reconnect bootstrap", async () => {
+    await render(<LiveSyncProvider><Text>child</Text></LiveSyncProvider>);
+    const options = mockCreateController.mock.calls[0][0];
+    mockBootstrap.mockRejectedValueOnce(new Error("offline"));
+
+    await act(async () => options?.onStateChange?.("connected"));
+
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    expect(mockDrainMutationOutbox).not.toHaveBeenCalled();
   });
 
   it("queues capability notifications without executing them", async () => {

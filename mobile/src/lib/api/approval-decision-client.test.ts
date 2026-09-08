@@ -11,6 +11,12 @@ jest.mock("expo-secure-store", () => ({
   setItemAsync: jest.fn(),
 }));
 jest.mock("expo/fetch", () => ({ fetch: jest.fn() }));
+jest.mock("@/lib/state/mutation-outbox", () => ({
+  mutationOutbox: {
+    abandonPending: jest.fn(),
+    drain: jest.fn(),
+  },
+}));
 jest.mock("@/lib/state/replica", () => ({
   applyBootstrap: jest.fn(),
   upsertEvent: jest.fn(),

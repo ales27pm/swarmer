@@ -275,9 +275,27 @@ export type Agent = {
   version: string;
   endpoint: string;
   model_id: string | null;
-  status: "online" | "offline" | "busy" | "unverified";
+  status: "online" | "offline" | "busy" | "draining" | "unverified";
   skills: string[];
   last_heartbeat_at: string | null;
+  last_seen_at: string | null;
+  max_concurrency: number;
+  capacity: Record<string, number>;
+  runtime: "python";
+  supported_protocol_version: "mongars-worker-v0.9";
+  active_jobs: number;
+  historical_score: number;
+  agent_card: {
+    agent_id: string;
+    name: string;
+    version: string;
+    skills: string[];
+    model_id: string | null;
+    runtime: "python";
+    max_concurrency: number;
+    supported_protocol_version: "mongars-worker-v0.9";
+    capabilities: Record<string, number>;
+  };
   created_at: string;
   updated_at: string;
 };

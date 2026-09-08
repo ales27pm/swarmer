@@ -25,6 +25,11 @@ import type {
   ConsumedCapabilityGrant,
 } from "@/lib/iphone-capabilities/types";
 import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
+import {
+  mutationOutbox,
+  type MutationDelivery,
+  type MutationDrainResult,
+} from "@/lib/state/mutation-outbox";
 import { applyBootstrap, upsertEvent } from "@/lib/state/replica";
 import type {
   Agent,
@@ -75,10 +80,12 @@ type StoredConnection = {
 type PendingConnection = StoredConnection & {
   deviceId: string;
   pairingId: string;
+  replacedOrigins?: string[];
 };
 
 type ResolvedConnection =
-  | (StoredConnection & { source: "active" | "pending" })
+  | (StoredConnection & { source: "active" })
+  | (PendingConnection & { source: "pending" })
   | { baseUrl: string; source: "default"; token: null };
 
 export type PairingResult = {
@@ -90,6 +97,17 @@ export type EventStreamTicket = {
   expiresInSeconds: number;
   serverUrl: string;
   url: string;
+};
+
+export type MutationSyncReceipt = {
+  idempotent_replay: boolean;
+  result: unknown;
+};
+
+export type MutationOutboxApiSession = {
+  origin: string;
+  drain: (limit?: number) => Promise<MutationDrainResult>;
+  send: (mutation: MutationDelivery) => Promise<MutationSyncReceipt>;
 };
 
 export class ApiError extends Error {
@@ -160,18 +178,51 @@ function parseStoredConnection(value: string): StoredConnection {
   return { baseUrl: normalizeServerUrl(parsed.baseUrl), token: parsed.token };
 }
 
+function requiredPendingDeviceId(value: unknown): string {
+  if (typeof value !== "string" || !value) {
+    throw new Error("invalid pending shape");
+  }
+  return value;
+}
+
+function requiredPendingPairingId(value: unknown): string {
+  if (typeof value !== "string" || !/^pair_[0-9a-f]{32}$/.test(value)) {
+    throw new Error("invalid pending shape");
+  }
+  return value;
+}
+
+function normalizeReplacedOrigin(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("invalid pending shape");
+  }
+  return normalizeServerUrl(value);
+}
+
+function parseReplacedOrigins(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 2) {
+    throw new Error("invalid pending shape");
+  }
+  const origins = value.map(normalizeReplacedOrigin);
+  if (new Set(origins).size !== origins.length) {
+    throw new Error("invalid pending shape");
+  }
+  return origins;
+}
+
 function parsePendingConnection(value: string): PendingConnection {
   const parsed = JSON.parse(value) as Partial<PendingConnection>;
   const connection = parseStoredConnection(value);
-  if (
-    typeof parsed.deviceId !== "string" ||
-    !parsed.deviceId ||
-    typeof parsed.pairingId !== "string" ||
-    !/^pair_[0-9a-f]{32}$/.test(parsed.pairingId)
-  ) {
-    throw new Error("invalid pending shape");
-  }
-  return { ...connection, deviceId: parsed.deviceId, pairingId: parsed.pairingId };
+  const deviceId = requiredPendingDeviceId(parsed.deviceId);
+  const pairingId = requiredPendingPairingId(parsed.pairingId);
+  const replacedOrigins = parseReplacedOrigins(parsed.replacedOrigins);
+  return {
+    ...connection,
+    deviceId,
+    pairingId,
+    ...(replacedOrigins?.length ? { replacedOrigins } : {}),
+  };
 }
 
 async function readActiveConnection(): Promise<StoredConnection | null> {
@@ -280,7 +331,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function resolvePendingConnection(
-  pending: StoredConnection,
+  pending: PendingConnection,
 ): Promise<StoredConnection> {
   try {
     const bootstrap = await requestAt<unknown>(
@@ -292,6 +343,7 @@ async function resolvePendingConnection(
     if (!isBootstrapEnvelope(bootstrap)) {
       throw new Error("Le candidat n’a pas retourné un bootstrap de reprise valide.");
     }
+    await abandonReplacedMutationOrigins(pending);
     if (await promotePendingConnection(pending)) notifyConnectionChanged();
     return pending;
   } catch (cause) {
@@ -300,6 +352,17 @@ async function resolvePendingConnection(
     const active = await readActiveConnection();
     if (!active) throw cause;
     return active;
+  }
+}
+
+async function abandonReplacedMutationOrigins(pending: PendingConnection): Promise<void> {
+  let origins = pending.replacedOrigins;
+  if (origins === undefined) {
+    const active = await readActiveConnection();
+    origins = active && !sameConnection(active, pending) ? [active.baseUrl] : [];
+  }
+  for (const origin of origins) {
+    await mutationOutbox.abandonPending(origin);
   }
 }
 
@@ -399,6 +462,18 @@ function isBootstrapEnvelope(value: unknown): value is Bootstrap {
   );
 }
 
+function parseMutationSyncReceipt(value: unknown): MutationSyncReceipt {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !["idempotent_replay", "result"].includes(key)) ||
+    typeof value.idempotent_replay !== "boolean" ||
+    !("result" in value)
+  ) {
+    throw new Error("Le control plane a retourné un reçu de mutation invalide.");
+  }
+  return { idempotent_replay: value.idempotent_replay, result: value.result };
+}
+
 function resourceId(value: string): string {
   return encodeURIComponent(value);
 }
@@ -477,11 +552,25 @@ export async function pairDevice(
   );
   assertPairingFinalization(finalized, candidate);
 
+  const [priorPending, priorActive] = await Promise.all([
+    readPendingConnection(),
+    readActiveConnection(),
+  ]);
+  const replacedOrigins = [...new Set(
+    [priorPending, priorActive]
+      .filter((connection): connection is StoredConnection => (
+        connection !== null &&
+        (connection.baseUrl !== target || connection.token !== candidate.candidateToken)
+      ))
+      .map((connection) => connection.baseUrl),
+  )];
+
   const pending = {
     baseUrl: target,
     token: candidate.candidateToken,
     pairingId: candidate.pairingId,
     deviceId: candidate.deviceId,
+    ...(replacedOrigins.length ? { replacedOrigins } : {}),
   } satisfies PendingConnection;
   await SecureStore.setItemAsync(
     PENDING_CONNECTION_KEY,
@@ -501,9 +590,56 @@ export async function pairDevice(
     throw new Error("Le serveur activé n’a pas retourné un bootstrap authentifié valide.");
   }
   await applyBootstrap(activeBootstrap, target);
+  await abandonReplacedMutationOrigins(pending);
   await promotePendingConnection(pending);
   notifyConnectionChanged();
   return { bootstrap: activeBootstrap, serverUrl: target };
+}
+
+async function requireMutationConnection(): Promise<StoredConnection> {
+  const connection = await resolveRequestConnection();
+  if (!connection.token) {
+    throw new ApiError(401, "Cet iPhone n’est pas jumelé au control plane.");
+  }
+  return { baseUrl: connection.baseUrl, token: connection.token };
+}
+
+export async function createMutationOutboxApiSession(): Promise<MutationOutboxApiSession> {
+  const connection = await requireMutationConnection();
+  const send = async (mutation: MutationDelivery): Promise<MutationSyncReceipt> => {
+    if (mutation.origin !== connection.baseUrl) {
+      throw new Error("La mutation locale appartient à un autre control plane.");
+    }
+    const current = await requireMutationConnection();
+    if (!sameConnection(current, connection)) {
+      throw new Error("La connexion jumelée a changé; la mutation locale a été bloquée.");
+    }
+    const value = await requestAt<unknown>(
+      connection.baseUrl,
+      "/sync/mutations",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": mutation.idempotencyKey },
+        body: JSON.stringify({
+          operation: mutation.operation,
+          ...(mutation.resourceId ? { resource_id: mutation.resourceId } : {}),
+          payload: mutation.payload,
+        }),
+      },
+      connection.token,
+    );
+    return parseMutationSyncReceipt(value);
+  };
+  return {
+    origin: connection.baseUrl,
+    send,
+    drain: (limit) => mutationOutbox.drain(connection.baseUrl, send, limit),
+  };
+}
+
+export async function drainMutationOutbox(limit?: number): Promise<MutationDrainResult> {
+  const session = await createMutationOutboxApiSession();
+  return session.drain(limit);
 }
 
 export function createTask(input: string, mode: TaskMode = "normal"): Promise<Task> {

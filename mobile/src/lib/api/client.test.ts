@@ -21,6 +21,7 @@ import type {
   CapabilityRequestDetail,
   CapabilityRequestEnvelope,
 } from "@/lib/iphone-capabilities/types";
+import { mutationOutbox } from "@/lib/state/mutation-outbox";
 import { applyBootstrap } from "@/lib/state/replica";
 
 type MailCapabilityDetail = Extract<
@@ -38,6 +39,12 @@ jest.mock("expo-secure-store", () => ({
   setItemAsync: jest.fn(),
 }));
 jest.mock("expo/fetch", () => ({ fetch: jest.fn() }));
+jest.mock("@/lib/state/mutation-outbox", () => ({
+  mutationOutbox: {
+    abandonPending: jest.fn(),
+    drain: jest.fn(),
+  },
+}));
 jest.mock("@/lib/state/replica", () => ({
   applyBootstrap: jest.fn(),
   upsertEvent: jest.fn(),
@@ -47,6 +54,7 @@ const getItem = jest.mocked(SecureStore.getItemAsync);
 const deleteItem = jest.mocked(SecureStore.deleteItemAsync);
 const setItem = jest.mocked(SecureStore.setItemAsync);
 const request = jest.mocked(fetch);
+const mockAbandonPending = jest.mocked(mutationOutbox.abandonPending);
 const mockApplyBootstrap = jest.mocked(applyBootstrap);
 
 const CONNECTION_KEY = "mongars.connection.v1";
@@ -116,8 +124,19 @@ function storedConnection(baseUrl: string, token: string) {
   return JSON.stringify({ baseUrl, token });
 }
 
-function pendingConnection(baseUrl: string, token: string, deviceId = "iphone_test") {
-  return JSON.stringify({ baseUrl, token, pairingId: PAIRING_ID, deviceId });
+function pendingConnection(
+  baseUrl: string,
+  token: string,
+  deviceId = "iphone_test",
+  replacedOrigins?: string[],
+) {
+  return JSON.stringify({
+    baseUrl,
+    token,
+    pairingId: PAIRING_ID,
+    deviceId,
+    ...(replacedOrigins?.length ? { replacedOrigins } : {}),
+  });
 }
 
 function capabilityDetail(): MailCapabilityDetail {
@@ -198,6 +217,7 @@ describe("control-plane connection storage", () => {
     getItem.mockResolvedValue(null);
     deleteItem.mockResolvedValue();
     setItem.mockResolvedValue();
+    mockAbandonPending.mockResolvedValue(0);
   });
 
   it("rejects URLs that could conceal credentials before pairing", async () => {
@@ -307,7 +327,12 @@ describe("control-plane connection storage", () => {
     expect(setItem).toHaveBeenNthCalledWith(
       1,
       PENDING_CONNECTION_KEY,
-      pendingConnection("https://new.example", "new-device-token"),
+      pendingConnection(
+        "https://new.example",
+        "new-device-token",
+        "iphone_test",
+        ["https://new.example"],
+      ),
     );
     expect(setItem).toHaveBeenCalledWith(
       CONNECTION_KEY,
@@ -319,6 +344,39 @@ describe("control-plane connection storage", () => {
     expect(mockApplyBootstrap).toHaveBeenCalledWith(
       verifiedBootstrap,
       "https://new.example",
+    );
+    expect(mockAbandonPending).toHaveBeenCalledWith("https://new.example");
+    expect(request.mock.invocationCallOrder[3]).toBeLessThan(
+      mockAbandonPending.mock.invocationCallOrder[0],
+    );
+    expect(mockAbandonPending.mock.invocationCallOrder[0]).toBeLessThan(
+      setItem.mock.invocationCallOrder[1],
+    );
+  });
+
+  it("abandons only the prior origin after a changed-origin pairing is fully ready", async () => {
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://old.example", "old-device-token"),
+    });
+    request
+      .mockResolvedValueOnce(successfulJson(candidateResponse()))
+      .mockResolvedValueOnce(successfulJson(verifiedBootstrap))
+      .mockResolvedValueOnce(successfulJson(readyResponse()))
+      .mockResolvedValueOnce(successfulJson(verifiedBootstrap));
+
+    await pairDevice("123456", "iphone_test", "Test iPhone", "https://new.example");
+
+    expect(mockAbandonPending).toHaveBeenCalledTimes(1);
+    expect(mockAbandonPending).toHaveBeenCalledWith("https://old.example");
+    expect(mockAbandonPending).not.toHaveBeenCalledWith("https://new.example");
+    expect(setItem).toHaveBeenCalledWith(
+      PENDING_CONNECTION_KEY,
+      pendingConnection(
+        "https://new.example",
+        "new-device-token",
+        "iphone_test",
+        ["https://old.example"],
+      ),
     );
   });
 
@@ -347,6 +405,7 @@ describe("control-plane connection storage", () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(setItem).not.toHaveBeenCalled();
     expect(deleteItem).not.toHaveBeenCalled();
+    expect(mockAbandonPending).not.toHaveBeenCalled();
   });
 
   it("keeps the prior connection when the new bearer fails authenticated bootstrap", async () => {
@@ -434,6 +493,44 @@ describe("control-plane connection storage", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it.each([
+    JSON.stringify({
+      baseUrl: "https://new.example",
+      token: "pending-device-token",
+      deviceId: "",
+      pairingId: PAIRING_ID,
+    }),
+    pendingConnection(
+      "https://new.example",
+      "pending-device-token",
+      "iphone_test",
+      ["https://old.example", "https://old.example"],
+    ),
+    JSON.stringify({
+      baseUrl: "https://new.example",
+      token: "pending-device-token",
+      deviceId: "iphone_test",
+      pairingId: PAIRING_ID,
+      replacedOrigins: ["https://old.example", 42],
+    }),
+  ])("discards malformed pending connection state before using the active bearer", async (pending) => {
+    mockConnections({
+      [PENDING_CONNECTION_KEY]: pending,
+      [CONNECTION_KEY]: storedConnection("https://old.example", "active-device-token"),
+    });
+    request.mockResolvedValueOnce(successfulJson({ id: "tsk_active" }, 201));
+
+    await createTask("use active connection", "normal");
+
+    expect(deleteItem).toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
+    expect(request).toHaveBeenCalledWith(
+      "https://old.example/tasks",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer active-device-token" }),
+      }),
+    );
+  });
+
   it("keeps the prior atomic connection if committing a new pairing fails", async () => {
     request
       .mockResolvedValueOnce(successfulJson(candidateResponse()))
@@ -467,6 +564,7 @@ describe("control-plane connection storage", () => {
     );
     expect(setItem).not.toHaveBeenCalledWith(CONNECTION_KEY, expect.any(String));
     expect(deleteItem).not.toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
+    expect(mockAbandonPending).not.toHaveBeenCalled();
   });
 
   it("uses the durable pending origin for the replica when active storage fails", async () => {
@@ -495,6 +593,8 @@ describe("control-plane connection storage", () => {
       [PENDING_CONNECTION_KEY]: pendingConnection(
         "https://new.example",
         "new-device-token",
+        "iphone_test",
+        ["https://old.example"],
       ),
       [CONNECTION_KEY]: storedConnection("https://old.example", "old-device-token"),
     });
@@ -521,6 +621,13 @@ describe("control-plane connection storage", () => {
     expect(setItem).toHaveBeenCalledWith(
       CONNECTION_KEY,
       storedConnection("https://new.example", "new-device-token"),
+    );
+    expect(mockAbandonPending).toHaveBeenCalledWith("https://old.example");
+    expect(mockAbandonPending.mock.invocationCallOrder[0]).toBeLessThan(
+      setItem.mock.invocationCallOrder[0],
+    );
+    expect(mockAbandonPending.mock.invocationCallOrder[0]).toBeLessThan(
+      request.mock.invocationCallOrder[1],
     );
     expect(deleteItem).toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
   });

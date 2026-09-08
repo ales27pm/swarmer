@@ -9,16 +9,18 @@ import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 const STATUS_COLOR = {
   online: COLORS.accent,
   busy: COLORS.warning,
+  draining: COLORS.warning,
   offline: COLORS.subtle,
   unverified: COLORS.warning,
-} as const;
+} as const satisfies Record<Agent["status"], string>;
 
 const STATUS_LABEL = {
   online: "en ligne",
   busy: "occupé",
+  draining: "en retrait",
   offline: "hors ligne",
   unverified: "non vérifié",
-} as const;
+} as const satisfies Record<Agent["status"], string>;
 
 export default function AgentsScreen() {
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +44,9 @@ export default function AgentsScreen() {
   }, [refresh]);
   useLiveRefresh(refresh);
 
-  const active = items.filter((item) => item.status === "online" || item.status === "busy").length;
+  const active = items.filter((item) =>
+    item.status === "online" || item.status === "busy" || item.status === "draining"
+  ).length;
   const unverified = items.filter((item) => item.status === "unverified").length;
 
   return (
