@@ -26,7 +26,7 @@ actor CoreMLRuntime {
     }
   }
 
-  private final class LoadedModel: @unchecked Sendable {
+  private final class LoadedModel {
     private let value: MLModel
 
     init(_ value: MLModel) {
