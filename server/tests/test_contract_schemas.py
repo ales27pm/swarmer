@@ -261,7 +261,11 @@ def test_current_resource_schemas_validate_live_api_payloads(
     registration = client.post(
         "/agents/register",
         headers=paired_headers,
-        json={"name": "Schema agent", "endpoint": "http://127.0.0.1:9001"},
+        json={
+            "name": "Schema agent",
+            "endpoint": "http://127.0.0.1:9001",
+            "skills": ["workspace.list_dir"],
+        },
     ).json()
     registration.pop("credential")
     validate_json_schema("agent-card.schema.json", registration)
@@ -348,11 +352,22 @@ def test_agent_endpoint_openapi_boundaries_match_fastapi(
 ) -> None:
     prefix = "https://example.test/"
     maximum_endpoint = prefix + ("a" * (2_083 - len(prefix)))
-    validate_openapi_component("AgentCreate", {"name": "Maximum URL", "endpoint": maximum_endpoint})
+    validate_openapi_component(
+        "AgentCreate",
+        {
+            "name": "Maximum URL",
+            "endpoint": maximum_endpoint,
+            "skills": ["workspace.list_dir"],
+        },
+    )
     accepted = client.post(
         "/agents/register",
         headers=paired_headers,
-        json={"name": "Maximum URL", "endpoint": maximum_endpoint},
+        json={
+            "name": "Maximum URL",
+            "endpoint": maximum_endpoint,
+            "skills": ["workspace.list_dir"],
+        },
     )
     assert accepted.status_code == 201
 

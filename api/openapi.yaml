@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -18,12 +18,18 @@ info:
     `process.run` is constrained by the Bubblewrap policy and fails closed when
     `/usr/bin/bwrap` is unavailable.
 
-    Distributed jobs use a SQLite transactional outbox, one active remote job
-    per task, skill- and concurrency-aware claims and expiring hashed-token
-    leases fenced by id and generation. Automatic redispatch is limited to the
-    two read-only workspace skills. iPhone capabilities use a separate device approval and a
-    short, one-use grant consumed before native execution. Redis/NATS and an
-    external multi-host bus are not part of this runtime.
+    Distributed jobs use an authoritative SQLite transactional outbox, one
+    active remote job per task, server-approved agent cards, deterministic
+    skill/capacity scheduling, and expiring hashed-token leases fenced by id and
+    generation. Automatic redispatch remains limited to the two read-only
+    workspace skills. iPhone capabilities use a separate device approval and a
+    short, one-use grant consumed before native execution.
+
+    The notification board defaults to SQLite. Redis Streams is an optional
+    application-level event transport selected by server configuration; it is
+    never authoritative, workers receive no Redis credentials, and publication
+    failures leave the corresponding outbox row pending for recovery. NATS is
+    planned, not implemented.
 servers:
   - url: https://ubuntu.example
     description: TLS-protected private-network control plane
@@ -298,8 +304,12 @@ paths:
       - $ref: '#/components/parameters/TaskId'
     post:
       tags: [Agents]
-      summary: Queue a gateway-authorized read job for a remote agent
-      description: Only explicitly allowed read tools can be dispatched; approval-requiring tools fail closed.
+      summary: Queue a policy-authorized narrow job for a remote agent
+      description: |
+        Accepts only the seven server-approved workspace, research and code-review
+        skills declared by `AgentSkill`. Payloads are normalized by a per-skill
+        policy before the durable job is created. No generic shell, arbitrary URL,
+        write or push capability is exposed; approval-requiring tools fail closed.
       requestBody:
         required: true
         content:
@@ -400,6 +410,45 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /sync/mutations:
+    post:
+      tags: [System]
+      summary: Apply one replay-safe mobile mutation idempotently
+      description: |
+        Applies one explicitly allowlisted ordinary mutation. `Idempotency-Key`
+        is bound to the authenticated device, operation, resource and canonical
+        payload; an exact retry returns the stored response and a changed retry
+        is rejected. Only feedback creation, pinned-memory metadata changes and
+        ordinary chat messages with `start_task: false` are accepted. Approval
+        decisions, capability grants or execution, native effects and process
+        execution cannot be queued through this endpoint.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Stable caller-generated key reused only for an exact retry.
+          schema:
+            type: string
+            minLength: 20
+            maxLength: 200
+            pattern: '^[A-Za-z0-9._:-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SafeMutationRequest'}
+      responses:
+        '201':
+          description: Mutation applied, or the exact stored response returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IdempotentMutationReceipt'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: 'Bound task, agent, or memory resource does not exist'}
+        '409': {description: 'Idempotency key is invalid or already bound to different canonical input'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /approvals:
     get:
       tags: [Approvals]
@@ -495,8 +544,12 @@ paths:
   /memory/search:
     post:
       tags: [Memory]
-      summary: Search memory lexically
-      description: "Results are labelled `search_kind: lexical`; this is not a vector-search API."
+      summary: Search memory with lexical fallback and optional hybrid ranking
+      description: |
+        SQLite memory remains authoritative. When the configured embedding
+        provider and stored embeddings are available, ranking is hybrid;
+        otherwise the endpoint falls back to lexical search. Any external
+        vector index is rebuildable and cannot destroy or replace memory state.
       requestBody:
         required: true
         content:
@@ -504,7 +557,7 @@ paths:
             schema: {$ref: '#/components/schemas/MemorySearch'}
       responses:
         '200':
-          description: Up to 50 ranked lexical matches
+          description: Up to 50 ranked lexical or hybrid matches
           content:
             application/json:
               schema:
@@ -586,9 +639,11 @@ paths:
       tags: [Agents]
       summary: Register an agent
       description: |
-        The endpoint must be a syntactically valid `http` or `https` URL. The
-        new agent starts `unverified`; its heartbeat credential is returned once
-        and is never included in later reads.
+        The endpoint must be a credential-free `http` or `https` URL. Skills,
+        runtime, protocol and bounded capability metadata are validated against
+        server policy; self-declared unknown or privileged skills are rejected.
+        The new agent starts `unverified`; its heartbeat credential is returned
+        once and is never included in later reads or its public `agent_card`.
       requestBody:
         required: true
         content:
@@ -1152,17 +1207,54 @@ components:
     RuntimeStatus:
       type: object
       additionalProperties: false
-      required: [status, queued_jobs, leased_jobs, dead_letter_jobs, expired_leases, retries, dead_letter_events, pending_outbox_events, pending_capability_requests]
+      required:
+        - status
+        - version
+        - instance_id
+        - message_board_backend
+        - message_board_health
+        - last_successful_publication
+        - outbox_pending
+        - outbox_publishing
+        - outbox_failed
+        - queued_jobs
+        - leased_jobs
+        - dead_letter_jobs
+        - expired_leases
+        - retries
+        - dead_letter_events
+        - active_agents
+        - offline_agents
+        - maintenance_lease_owner
+        - pending_capability_requests
+        - vector_backend
       properties:
         status: {type: string, const: ok}
+        version: {const: 0.10.0}
+        instance_id:
+          type: string
+          pattern: '^cp_[0-9a-f]{32}$'
+          description: Random boot-scoped control-plane instance identity.
+        message_board_backend: {type: string, enum: [sqlite, redis]}
+        message_board_health: {type: string, enum: [connected, degraded]}
+        last_successful_publication: {type: [string, 'null'], format: date-time}
+        outbox_pending: {type: integer, minimum: 0}
+        outbox_publishing: {type: integer, minimum: 0}
+        outbox_failed: {type: integer, minimum: 0}
         queued_jobs: {type: integer, minimum: 0}
         leased_jobs: {type: integer, minimum: 0}
         dead_letter_jobs: {type: integer, minimum: 0}
         expired_leases: {type: integer, minimum: 0}
         retries: {type: integer, minimum: 0}
         dead_letter_events: {type: integer, minimum: 0}
-        pending_outbox_events: {type: integer, minimum: 0}
+        active_agents: {type: integer, minimum: 0}
+        offline_agents: {type: integer, minimum: 0}
+        maintenance_lease_owner:
+          type: object
+          description: Named singleton lease to boot-scoped owner identity mapping.
+          additionalProperties: {type: string}
         pending_capability_requests: {type: integer, minimum: 0}
+        vector_backend: {type: string, enum: [sqlite, faiss]}
     PairingCode:
       type: object
       required: [code, expires_in_seconds]
@@ -1269,6 +1361,65 @@ components:
           oneOf:
             - {$ref: '#/components/schemas/Message'}
             - {type: 'null'}
+    SafeMutationRequest:
+      description: |
+        Strict allowlist for replay-safe local mutation delivery. The server
+        additionally binds each canonical body to the authenticated device and
+        `Idempotency-Key` in the same SQLite transaction as the mutation.
+      oneOf:
+        - $ref: '#/components/schemas/FeedbackMutationRequest'
+        - $ref: '#/components/schemas/MemoryMetadataMutationRequest'
+        - $ref: '#/components/schemas/ChatMessageMutationRequest'
+    FeedbackMutationRequest:
+      type: object
+      additionalProperties: false
+      required: [operation, payload]
+      properties:
+        operation: {const: feedback.create}
+        resource_id: {type: 'null'}
+        payload: {$ref: '#/components/schemas/FeedbackCreate'}
+    MemoryMetadataMutationRequest:
+      type: object
+      additionalProperties: false
+      required: [operation, resource_id, payload]
+      properties:
+        operation: {const: memory.metadata.update}
+        resource_id: {type: string, minLength: 1, maxLength: 500}
+        payload:
+          type: object
+          additionalProperties: false
+          required: [pinned]
+          properties:
+            pinned: {type: boolean}
+    ChatMessageMutationRequest:
+      type: object
+      additionalProperties: false
+      required: [operation, payload]
+      properties:
+        operation: {const: chat.message.create}
+        resource_id: {type: [string, 'null'], minLength: 1, maxLength: 500}
+        payload:
+          type: object
+          additionalProperties: false
+          required: [content]
+          properties:
+            content: {type: string, minLength: 1, maxLength: 32000}
+            conversation_id: {type: [string, 'null']}
+            mode: {$ref: '#/components/schemas/TaskMode', default: normal}
+            start_task: {const: false, default: false}
+    IdempotentMutationReceipt:
+      type: object
+      additionalProperties: false
+      required: [idempotent_replay, result]
+      properties:
+        idempotent_replay:
+          type: boolean
+          description: True only when the exact previously stored response was returned.
+        result:
+          oneOf:
+            - {$ref: '#/components/schemas/FeedbackRecord'}
+            - {$ref: '#/components/schemas/MemoryItem'}
+            - {$ref: '#/components/schemas/ChatResult'}
     Conversation:
       type: object
       required: [id, title, created_at, updated_at]
@@ -1637,26 +1788,84 @@ components:
             score: {type: number, minimum: 0, maximum: 1}
             search_kind: {type: string, enum: [lexical, vector, hybrid]}
 
+    AgentSkill:
+      type: string
+      enum:
+        - workspace.list_dir
+        - workspace.read_text
+        - research.query
+        - code_review.git_status
+        - code_review.git_diff
+        - code_review.git_show
+        - code_review.static_analysis
+    AgentCapabilities:
+      type: object
+      additionalProperties: false
+      description: |
+        Bounded metadata accepted by server policy. A registration may include
+        only keys applicable to its single declared worker family.
+      properties:
+        max_concurrency: {type: integer, minimum: 1, maximum: 32}
+        memory_mb: {type: integer, minimum: 1, maximum: 4194304}
+        max_results: {type: integer, minimum: 1, maximum: 10}
+        max_query_characters: {type: integer, minimum: 1, maximum: 2000}
+        max_result_bytes: {type: integer, minimum: 1, maximum: 524288}
+        max_operation_seconds: {type: integer, minimum: 1, maximum: 120}
+        max_paths: {type: integer, minimum: 1, maximum: 50}
+        max_selected_files: {type: integer, minimum: 1, maximum: 100}
     AgentCreate:
       type: object
       additionalProperties: false
       required: [name, endpoint]
       properties:
         name: {type: string, minLength: 1, maxLength: 200}
-        version: {type: string, minLength: 1, maxLength: 100, default: 0.1.0}
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '^\d{1,4}\.\d{1,4}\.\d{1,4}$'
+          default: 0.1.0
         endpoint:
           type: string
           format: uri
           minLength: 1
           maxLength: 2083
           pattern: '^[Hh][Tt][Tt][Pp][Ss]?://'
+          description: HTTP(S) registration metadata without credentials, query, or fragment.
         model_id: {type: [string, 'null'], maxLength: 500}
-        skills: {type: array, maxItems: 200, items: {type: string}, default: []}
+        skills:
+          type: array
+          maxItems: 7
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/AgentSkill'}
+          description: Empty is inert; non-empty skills must belong to one server-approved worker family.
+          default: []
         max_concurrency: {type: integer, minimum: 1, maximum: 32, default: 1}
-        capacity:
-          type: object
-          additionalProperties: {type: integer}
-          default: {}
+        capacity: {$ref: '#/components/schemas/AgentCapabilities', default: {}}
+        runtime: {type: string, const: python, default: python}
+        supported_protocol_version:
+          type: string
+          const: mongars-worker-v0.9
+          default: mongars-worker-v0.9
+          description: Worker protocol v0.9 remains the compatible protocol carried by API v0.10.
+    AgentCard:
+      type: object
+      additionalProperties: false
+      required: [agent_id, name, version, skills, model_id, runtime, max_concurrency, supported_protocol_version, capabilities]
+      properties:
+        agent_id: {type: string}
+        name: {type: string}
+        version: {type: string}
+        skills:
+          type: array
+          maxItems: 7
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/AgentSkill'}
+        model_id: {type: [string, 'null']}
+        runtime: {type: string, const: python}
+        max_concurrency: {type: integer, minimum: 1, maximum: 32}
+        supported_protocol_version: {type: string, const: mongars-worker-v0.9}
+        capabilities: {$ref: '#/components/schemas/AgentCapabilities'}
     AgentHeartbeat:
       type: object
       additionalProperties: false
@@ -1664,7 +1873,7 @@ components:
         status: {type: string, enum: [online, offline, busy, draining], default: online}
     Agent:
       type: object
-      required: [id, name, version, endpoint, model_id, status, skills, last_heartbeat_at, last_seen_at, max_concurrency, capacity, created_at, updated_at, active_jobs, historical_score]
+      required: [id, name, version, endpoint, model_id, status, skills, last_heartbeat_at, last_seen_at, max_concurrency, capacity, runtime, supported_protocol_version, agent_card, created_at, updated_at, active_jobs, historical_score]
       properties:
         id: {type: string}
         name: {type: string}
@@ -1672,11 +1881,18 @@ components:
         endpoint: {type: string}
         model_id: {type: [string, 'null']}
         status: {type: string, enum: [online, offline, busy, draining, unverified]}
-        skills: {type: array, items: {type: string}}
+        skills:
+          type: array
+          maxItems: 7
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/AgentSkill'}
         last_heartbeat_at: {type: [string, 'null'], format: date-time}
         last_seen_at: {type: [string, 'null'], format: date-time}
         max_concurrency: {type: integer, minimum: 1, maximum: 32}
-        capacity: {type: object, additionalProperties: {type: integer}}
+        capacity: {$ref: '#/components/schemas/AgentCapabilities'}
+        runtime: {type: string, const: python}
+        supported_protocol_version: {type: string, const: mongars-worker-v0.9}
+        agent_card: {$ref: '#/components/schemas/AgentCard'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         active_jobs: {type: integer, minimum: 0}
@@ -1694,11 +1910,7 @@ components:
       required: [required_skill, payload]
       properties:
         required_skill:
-          type: string
-          minLength: 1
-          maxLength: 200
-          pattern: '^[A-Za-z0-9._:-]+$'
-          enum: [workspace.list_dir, workspace.read_text]
+          $ref: '#/components/schemas/AgentSkill'
         payload: {type: object, additionalProperties: true}
     AgentJobClaim:
       type: object
@@ -1731,7 +1943,7 @@ components:
       properties:
         id: {type: string}
         task_id: {type: string}
-        required_skill: {type: string}
+        required_skill: {$ref: '#/components/schemas/AgentSkill'}
         payload: {type: object, additionalProperties: true}
         status: {type: string, enum: [queued, claimed, running, completed, failed, cancelled]}
         claimed_by: {type: [string, 'null']}
@@ -1756,7 +1968,7 @@ components:
       properties:
         id: {type: string}
         task_id: {type: string}
-        required_skill: {type: string}
+        required_skill: {$ref: '#/components/schemas/AgentSkill'}
         payload: {type: object, additionalProperties: true}
         status: {const: claimed}
         claimed_by: {type: string}
@@ -1782,7 +1994,7 @@ components:
       properties:
         id: {type: string}
         task_id: {type: string}
-        required_skill: {type: string}
+        required_skill: {$ref: '#/components/schemas/AgentSkill'}
         payload: {type: object, additionalProperties: true}
         status: {type: string, enum: [completed, failed]}
         claimed_by: {type: string}
@@ -1878,7 +2090,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
       properties:
-        schema_version: {const: '0.9', description: Capability-envelope schema identifier; the API release is 0.9.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.10.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -1892,7 +2104,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
       properties:
-        schema_version: {const: '0.9', description: Capability-envelope schema identifier; the API release is 0.9.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.10.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -1933,7 +2145,7 @@ components:
       additionalProperties: false
       required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
       properties:
-        schema_version: {const: '0.9', description: Capability-envelope schema identifier; the API release is 0.9.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.10.0.}
         grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
         request_id: {type: string}
         task_id: {type: string}

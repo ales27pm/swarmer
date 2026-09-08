@@ -12,6 +12,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OPERATOR_TOKEN = "test-operator-token-with-sufficient-entropy"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "integration: requires explicitly configured external infrastructure",
+    )
+
+
 @pytest.fixture
 def test_app(tmp_path: Path) -> FastAPI:
     workspace = tmp_path / "workspace"

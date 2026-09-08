@@ -64,7 +64,7 @@ def test_chat_memory_agent_audit_and_bootstrap(
         json={
             "name": "Local reviewer",
             "endpoint": "http://127.0.0.1:9001",
-            "skills": ["review", "tests"],
+            "skills": ["code_review.git_status", "code_review.static_analysis"],
         },
     )
     assert agent.status_code == 201

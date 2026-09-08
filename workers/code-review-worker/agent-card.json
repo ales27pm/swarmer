@@ -1,0 +1,41 @@
+{
+  "manifest_version": "1",
+  "name": "mongars-code-review-worker",
+  "version": "0.10.0",
+  "protocol": "mongars-worker-v0.9",
+  "skills": [
+    {
+      "id": "code_review.git_status",
+      "risk": "low",
+      "result_trust": "untrusted"
+    },
+    {
+      "id": "code_review.git_diff",
+      "risk": "low",
+      "result_trust": "untrusted"
+    },
+    {
+      "id": "code_review.git_show",
+      "risk": "low",
+      "result_trust": "untrusted"
+    },
+    {
+      "id": "code_review.static_analysis",
+      "risk": "low",
+      "result_trust": "untrusted"
+    }
+  ],
+  "limits": {
+    "max_concurrency": 1,
+    "max_paths": 50,
+    "max_selected_files": 100,
+    "max_result_bytes": 524288,
+    "max_operation_seconds": 120
+  },
+  "policy": {
+    "filesystem": "configured-repository-read-only",
+    "network": "control-plane-only",
+    "writes": false,
+    "shell": false
+  }
+}

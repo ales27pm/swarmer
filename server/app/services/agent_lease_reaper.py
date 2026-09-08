@@ -12,8 +12,10 @@ from app.services.distributed_state import (
     DistributedStateConflict,
     TaskStateMachine,
 )
+from app.services.maintenance_lease import MaintenanceLeaseService
 from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
+from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 
 AUTOMATIC_RETRY_SKILLS = frozenset({"workspace.list_dir", "workspace.read_text"})
 TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -27,10 +29,23 @@ class AgentLeaseReaper:
         db_path: Path,
         board: MessageBoard,
         *,
+        maintenance_leases: MaintenanceLeaseService | None = None,
+        owner_instance_id: str | None = None,
+        outbox_instance_id: str | None = None,
+        outbox_publication_lease_seconds: int = 30,
+        permission_policy: PermissionPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.db_path = db_path
-        self.outbox = OutboxService(db_path, board)
+        self.outbox = OutboxService(
+            db_path,
+            board,
+            instance_id=outbox_instance_id,
+            publication_lease_seconds=outbox_publication_lease_seconds,
+        )
+        self.maintenance_leases = maintenance_leases
+        self.owner_instance_id = owner_instance_id
+        self.permission_policy = permission_policy
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def _now(self) -> datetime:
@@ -39,12 +54,43 @@ class AgentLeaseReaper:
             raise RuntimeError("agent lease reaper clock must be timezone-aware")
         return value.astimezone(UTC)
 
-    async def reap_expired(self) -> dict[str, int]:
+    def _can_redistribute(self, skill: str) -> bool:
+        if skill not in AUTOMATIC_RETRY_SKILLS:
+            return False
+        if self.permission_policy is None:
+            return True
+        try:
+            rule = self.permission_policy.evaluate_worker_skill(skill)
+        except PermissionPolicyError:
+            return False
+        return rule.decision == "allow" and rule.auto_redistribute
+
+    async def reap_expired(self, *, maintenance_generation: int | None = None) -> dict[str, int]:
+        effective_generation = maintenance_generation
+        if self.maintenance_leases is not None and effective_generation is None:
+            if self.owner_instance_id is None:
+                raise RuntimeError("agent lease reaper maintenance owner is not configured")
+            lease = await self.maintenance_leases.acquire(
+                "agent-lease-reaper", self.owner_instance_id
+            )
+            if lease is None:
+                return {"expired": 0, "requeued": 0, "dead_lettered": 0, "cancelled": 0}
+            effective_generation = lease.generation
         now = self._now().isoformat()
         counts = {"expired": 0, "requeued": 0, "dead_lettered": 0, "cancelled": 0}
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            if self.maintenance_leases is not None:
+                if self.owner_instance_id is None or effective_generation is None:
+                    await db.rollback()
+                    raise RuntimeError("agent lease reaper requires a current maintenance lease")
+                await self.maintenance_leases.require_current_locked(
+                    db,
+                    "agent-lease-reaper",
+                    self.owner_instance_id,
+                    effective_generation,
+                )
             rows = list(
                 await (
                     await db.execute(
@@ -96,7 +142,11 @@ class AgentLeaseReaper:
         await append_audit_event(
             db,
             "agent.job.lease_expired",
-            {"job_id": job_id, "lease_generation": generation},
+            {
+                "job_id": job_id,
+                "agent_id": agent_id,
+                "lease_generation": generation,
+            },
             actor_type="control-plane",
             actor_id="lease-reaper",
             task_id=task_id,
@@ -132,9 +182,11 @@ class AgentLeaseReaper:
             await self._record_outcome_locked(db, row, now, "cancelled", "parent task is terminal")
             return "cancelled"
 
+        skill = str(row["required_skill"])
+        policy_allows_retry = self._can_redistribute(skill)
         retryable = (
             capability_history is None
-            and str(row["required_skill"]) in AUTOMATIC_RETRY_SKILLS
+            and policy_allows_retry
             and int(row["attempt_count"]) < int(row["max_attempts"])
         )
         if retryable and task_status == "running":
@@ -152,9 +204,13 @@ class AgentLeaseReaper:
             await self._record_outcome_locked(db, row, now, "requeued", reason)
             return "requeued"
 
-        failure_error = (
-            reason if capability_history is not None else "remote worker retry budget exhausted"
-        )
+        if capability_history is not None:
+            failure_error = reason
+        elif not policy_allows_retry:
+            reason = "remote worker skill denied by current policy; not retried"
+            failure_error = reason
+        else:
+            failure_error = "remote worker retry budget exhausted"
         await self._transition_job_locked(
             db,
             row,

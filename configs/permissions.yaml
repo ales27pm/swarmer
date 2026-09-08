@@ -88,6 +88,53 @@ capability_rules:
     risk: high
     approval_ttl_seconds: 180
 
+# Remote agent cards are validated separately; these rules are the Gateway's
+# executable allowlist for dispatch. Only the two original workspace reads are
+# safe for automatic lease redistribution.
+worker_skill_rules:
+  workspace.list_dir:
+    id: allow-worker-workspace-list
+    description: A policy-bound worker may list validated non-protected workspace paths.
+    decision: allow
+    risk: low
+    auto_redistribute: true
+  workspace.read_text:
+    id: allow-worker-workspace-read
+    description: A policy-bound worker may read one validated non-protected workspace file.
+    decision: allow
+    risk: low
+    auto_redistribute: true
+  research.query:
+    id: allow-worker-bounded-research
+    description: A research worker may submit a bounded query only through its configured adapter.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  code_review.git_status:
+    id: allow-worker-git-status
+    description: A review worker may inspect repository status without writes.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  code_review.git_diff:
+    id: allow-worker-git-diff
+    description: A review worker may inspect bounded diffs without writes.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  code_review.git_show:
+    id: allow-worker-git-show
+    description: A review worker may inspect HEAD or a full immutable object ID.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  code_review.static_analysis:
+    id: allow-worker-static-analysis
+    description: A review worker may run its fixed read-only static-analysis routine.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+
 protected_paths:
   - "**/.env"
   - "**/.env.*"

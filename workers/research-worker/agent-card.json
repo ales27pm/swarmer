@@ -1,0 +1,25 @@
+{
+  "manifest_version": "1",
+  "name": "mongars-research-worker",
+  "version": "0.10.0",
+  "protocol": "mongars-worker-v0.9",
+  "skills": [
+    {
+      "id": "research.query",
+      "risk": "low",
+      "result_trust": "untrusted"
+    }
+  ],
+  "limits": {
+    "max_concurrency": 1,
+    "max_results": 10,
+    "max_query_characters": 2000,
+    "max_result_bytes": 524288,
+    "max_operation_seconds": 60
+  },
+  "policy": {
+    "filesystem": "none",
+    "network": "configured-research-adapter-only",
+    "writes": false
+  }
+}

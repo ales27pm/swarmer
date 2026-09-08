@@ -12,6 +12,7 @@ from uuid import uuid4
 import aiosqlite
 
 from app.services.agent_lease import lease_matches, lease_token_hash
+from app.services.agent_liveness import DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS
 from app.services.agent_scheduler import SchedulerService
 from app.services.audit_log import append_audit_event
 from app.services.distributed_state import (
@@ -21,6 +22,8 @@ from app.services.distributed_state import (
 )
 from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
+from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
+from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 DISPATCHABLE_TASK_STATUSES = frozenset({"created", "planned"})
@@ -38,15 +41,30 @@ class AgentDispatcher:
         *,
         lease_seconds: int = 60,
         max_attempts: int = 3,
+        outbox_instance_id: str | None = None,
+        outbox_publication_lease_seconds: int = 30,
+        agent_offline_timeout_seconds: int = DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
+        permission_policy: PermissionPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.db_path = db_path
         self.board = board
-        self.outbox = OutboxService(db_path, board)
-        self.scheduler = SchedulerService(db_path)
+        self.outbox = OutboxService(
+            db_path,
+            board,
+            instance_id=outbox_instance_id,
+            publication_lease_seconds=outbox_publication_lease_seconds,
+        )
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
+        self.permission_policy = permission_policy
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.scheduler = SchedulerService(
+            db_path,
+            offline_timeout_seconds=agent_offline_timeout_seconds,
+            permission_policy=permission_policy,
+            clock=self.clock,
+        )
 
     def _now(self) -> datetime:
         value = self.clock()
@@ -92,6 +110,17 @@ class AgentDispatcher:
     async def queue_job(
         self, task_id: str, required_skill: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
+        try:
+            payload = validate_remote_job(required_skill, payload)
+        except RemoteJobPolicyError as exc:
+            raise AgentDispatchConflict(str(exc)) from exc
+        if self.permission_policy is not None:
+            try:
+                worker_rule = self.permission_policy.evaluate_worker_skill(required_skill)
+            except PermissionPolicyError as exc:
+                raise AgentDispatchConflict("remote worker skill is not covered by policy") from exc
+            if worker_rule.decision != "allow":
+                raise AgentDispatchConflict("remote worker skill is denied by policy")
         try:
             encoded_payload = json.dumps(
                 payload,
@@ -207,7 +236,9 @@ class AgentDispatcher:
             if agent is None:
                 await db.rollback()
                 raise AgentDispatchConflict("agent not found")
-            if str(agent["status"]) != "online":
+            if str(agent["status"]) != "online" or not self.scheduler.is_fresh(
+                agent, now=claimed_at
+            ):
                 await db.rollback()
                 raise AgentDispatchConflict("agent is not online and eligible for new work")
             if int(agent["active_jobs"]) >= int(agent["max_concurrency"]):
@@ -218,20 +249,44 @@ class AgentDispatcher:
                 await db.rollback()
                 return None
             placeholders = ",".join("?" for _ in skills)
-            row = await (
+            rows = await (
                 await db.execute(
                     f"""
                     SELECT j.* FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
                     WHERE j.status='queued' AND j.required_skill IN ({placeholders})
                       AND j.attempt_count<j.max_attempts AND t.status='queued'
-                    ORDER BY t.priority DESC,j.created_at ASC,j.id ASC LIMIT 1
+                    ORDER BY t.priority DESC,j.created_at ASC,j.id ASC
                     """,  # nosec B608 - placeholders derive only from the list length
                     skills,
                 )
-            ).fetchone()
+            ).fetchall()
+            row: aiosqlite.Row | None = None
+            selection = None
+            for candidate in rows:
+                if not self.scheduler.skill_is_allowed(str(candidate["required_skill"])):
+                    continue
+                candidate_selection = await self.scheduler.select_for_job_locked(
+                    db, str(candidate["id"]), now=claimed_at
+                )
+                if (
+                    candidate_selection is not None
+                    and candidate_selection.selected_agent_id == agent_id
+                ):
+                    row = candidate
+                    selection = candidate_selection
+                    break
             if row is None:
                 await db.rollback()
                 return None
+            if selection is None:  # pragma: no cover - row and selection are assigned together
+                await db.rollback()
+                raise RuntimeError("scheduler selection disappeared")
+            decision_id = await self.scheduler.record_decision_locked(
+                db,
+                job_id=str(row["id"]),
+                selection=selection,
+                created_at=now,
+            )
             generation = int(row["lease_generation"]) + 1
             attempt_count = int(row["attempt_count"]) + 1
             try:
@@ -272,6 +327,7 @@ class AgentDispatcher:
                     "job_id": str(row["id"]),
                     "agent_id": agent_id,
                     "lease_generation": generation,
+                    "scheduler_decision_id": decision_id,
                 },
                 actor_type="agent",
                 actor_id=agent_id,
@@ -378,6 +434,14 @@ class AgentDispatcher:
             except DistributedStateConflict as exc:
                 await db.rollback()
                 raise AgentDispatchConflict(str(exc)) from exc
+            await db.execute(
+                """
+                UPDATE agents
+                SET last_heartbeat_at=?,last_seen_at=?,updated_at=?
+                WHERE id=?
+                """,
+                (now, now, now, agent_id),
+            )
             await self.outbox.enqueue_locked(
                 db,
                 aggregate_type="agent_job",

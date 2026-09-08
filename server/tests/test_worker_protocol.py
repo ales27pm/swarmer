@@ -34,7 +34,7 @@ def test_worker_claim_requires_agent_credential_and_matches_skills(
         json={"required_skill": "workspace.list_dir", "payload": {"path": "."}},
     )
     assert dispatched.status_code == 201
-    wrong = register(client, paired_headers, "writer", ["workspace.write_text"])
+    wrong = register(client, paired_headers, "text-reader", ["workspace.read_text"])
     matching = register(client, paired_headers, "reader", ["workspace.list_dir"])
 
     assert client.post(f"/agents/{matching['id']}/claim", json={}).status_code == 401
@@ -72,16 +72,49 @@ def test_distributed_runtime_status_is_authenticated_and_payload_free(
     assert response.status_code == 200
     assert set(response.json()) == {
         "status",
+        "version",
+        "instance_id",
+        "message_board_backend",
+        "message_board_health",
+        "last_successful_publication",
+        "outbox_pending",
+        "outbox_publishing",
+        "outbox_failed",
         "queued_jobs",
         "leased_jobs",
         "dead_letter_jobs",
         "expired_leases",
         "retries",
         "dead_letter_events",
-        "pending_outbox_events",
+        "active_agents",
+        "offline_agents",
+        "maintenance_lease_owner",
         "pending_capability_requests",
+        "vector_backend",
     }
     assert response.json()["status"] == "ok"
+    assert response.json()["message_board_backend"] == "sqlite"
+    assert "redis" not in str(response.json()).casefold()
+
+
+def test_distributed_runtime_status_counts_stale_online_agent_as_offline(
+    client: TestClient, paired_headers: dict[str, str], test_app
+) -> None:
+    fresh = register(client, paired_headers, "fresh-reader", ["workspace.list_dir"])
+    stale = register(client, paired_headers, "stale-reader", ["workspace.list_dir"])
+    db_path = test_app.state.settings.db_path
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "UPDATE agents SET last_seen_at=?,last_heartbeat_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", stale["id"]),
+        )
+
+    response = client.get("/status", headers=paired_headers)
+
+    assert response.status_code == 200
+    assert response.json()["active_agents"] == 1
+    assert response.json()["offline_agents"] == 1
+    assert fresh["id"] != stale["id"]
 
 
 def test_worker_result_is_idempotent_and_cannot_change_terminal_result(

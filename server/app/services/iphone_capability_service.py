@@ -19,6 +19,7 @@ from app.services.iphone_capability_binding import (
     CapabilityRequestBindingError,
     canonical_capability_request_fingerprint,
 )
+from app.services.maintenance_lease import MaintenanceLeaseService
 from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
@@ -40,12 +41,23 @@ class IPhoneCapabilityService:
         policy: PermissionPolicy,
         *,
         grant_ttl_seconds: int = 90,
+        maintenance_leases: MaintenanceLeaseService | None = None,
+        owner_instance_id: str | None = None,
+        outbox_instance_id: str | None = None,
+        outbox_publication_lease_seconds: int = 30,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.db_path = db_path
         self.policy = policy
         self.grant_ttl_seconds = grant_ttl_seconds
-        self.outbox = OutboxService(db_path, board)
+        self.outbox = OutboxService(
+            db_path,
+            board,
+            instance_id=outbox_instance_id,
+            publication_lease_seconds=outbox_publication_lease_seconds,
+        )
+        self.maintenance_leases = maintenance_leases
+        self.owner_instance_id = owner_instance_id
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def _now(self) -> datetime:
@@ -693,11 +705,31 @@ class IPhoneCapabilityService:
             "completed_at": str(row["completed_at"]) if row["completed_at"] else None,
         }
 
-    async def expire_requests(self) -> int:
+    async def expire_requests(self, *, maintenance_generation: int | None = None) -> int:
+        effective_generation = maintenance_generation
+        if self.maintenance_leases is not None and effective_generation is None:
+            if self.owner_instance_id is None:
+                raise RuntimeError("capability expiry maintenance owner is not configured")
+            lease = await self.maintenance_leases.acquire(
+                "capability-expirer", self.owner_instance_id
+            )
+            if lease is None:
+                return 0
+            effective_generation = lease.generation
         now = self._now().isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            if self.maintenance_leases is not None:
+                if self.owner_instance_id is None or effective_generation is None:
+                    await db.rollback()
+                    raise RuntimeError("capability expiry requires a current maintenance lease")
+                await self.maintenance_leases.require_current_locked(
+                    db,
+                    "capability-expirer",
+                    self.owner_instance_id,
+                    effective_generation,
+                )
             rows = list(
                 await (
                     await db.execute(

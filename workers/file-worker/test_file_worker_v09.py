@@ -3,9 +3,10 @@ import importlib.util
 import threading
 import time
 import urllib.error
+import urllib.request
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -28,6 +29,115 @@ def claimed_job(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         "lease_id": "lease_1234567890",
         "lease_generation": 4,
     }
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://control.example",
+        "https://control.example:8443",
+        "http://localhost:8710",
+        "http://127.0.0.1:8710",
+        "http://[::1]:8710",
+    ],
+)
+def test_control_plane_origin_accepts_https_and_loopback_http(origin: str) -> None:
+    worker = load_worker()
+
+    assert worker.validate_control_plane_origin(origin) == origin
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://control.example",
+        "https://user:password@control.example",
+        "https://control.example/",
+        "https://control.example/api",
+        "https://control.example?",
+        "https://control.example?debug=1",
+        "https://control.example#fragment",
+        "https://control.example\\@attacker.invalid",
+        "https://control.example:",
+        "https://control .example",
+        "ftp://control.example",
+        "not-a-url",
+    ],
+)
+def test_control_plane_origin_rejects_non_bare_or_unsafe_urls(origin: str) -> None:
+    worker = load_worker()
+
+    with pytest.raises(ValueError, match="control-plane URL"):
+        worker.validate_control_plane_origin(origin)
+
+
+def test_control_plane_request_disables_redirects_with_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    handlers: list[Any] = []
+
+    class RejectingOpener:
+        def open(self, request: Any, timeout: float) -> Any:
+            assert timeout == 30
+            assert request.get_header("Authorization") == "Bearer agent-secret"
+            assert len(handlers) == 1
+            assert isinstance(handlers[0], worker._RejectRedirects)
+            assert (
+                handlers[0].redirect_request(
+                    request,
+                    None,
+                    302,
+                    "Found",
+                    {},
+                    "https://attacker.invalid/capture",
+                )
+                is None
+            )
+            raise urllib.error.HTTPError(request.full_url, 302, "Found", {}, None)
+
+    def build_opener(*configured: Any) -> RejectingOpener:
+        handlers.extend(configured)
+        return RejectingOpener()
+
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+
+    with pytest.raises(urllib.error.HTTPError):
+        worker.request(
+            "https://control.example",
+            "/agents/agent/claim",
+            "agent-secret",
+            "POST",
+            {"wait_seconds": 0},
+        )
+
+
+def test_control_plane_response_read_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    requested_sizes: list[int] = []
+
+    class OversizedResponse:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int) -> bytes:
+            requested_sizes.append(size)
+            return b"x" * size
+
+    class FakeOpener:
+        def open(self, request: Any, timeout: float) -> OversizedResponse:
+            return OversizedResponse()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: FakeOpener())
+
+    with pytest.raises(worker.WorkerProtocolError, match="size limit"):
+        worker.request("https://control.example", "/agents/agent/claim", "secret")
+    assert requested_sizes == [worker.MAX_CONTROL_RESPONSE_BYTES + 1]
 
 
 def test_repeats_lease_heartbeat_during_execution_and_submits_proof(
@@ -302,3 +412,73 @@ def test_worker_still_rejects_writes_and_protected_paths(tmp_path: Path) -> None
             tmp_path,
             {"required_skill": "workspace.write_text", "payload": {"path": "."}},
         )
+
+
+def test_read_rejects_intermediate_directory_swapped_to_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    root = tmp_path / "root"
+    nested = root / "nested"
+    outside = tmp_path / "outside"
+    nested.mkdir(parents=True)
+    outside.mkdir()
+    (nested / "safe.txt").write_text("inside", encoding="utf-8")
+    (outside / "safe.txt").write_text("outside secret", encoding="utf-8")
+    parked = root / "nested-original"
+    real_open = worker.os.open
+    swapped = False
+
+    def racing_open(
+        path: Any,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "nested" and dir_fd is not None and not swapped:
+            nested.rename(parked)
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(worker.os, "open", racing_open)
+
+    with pytest.raises(ValueError, match="symbolic links"):
+        worker.execute(
+            root,
+            {
+                "required_skill": "workspace.read_text",
+                "payload": {"path": "nested/safe.txt"},
+            },
+        )
+    assert swapped is True
+
+
+def test_descriptor_relative_traversal_reads_and_lists_nested_paths(
+    tmp_path: Path,
+) -> None:
+    worker = load_worker()
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "safe.txt").write_text("verified content", encoding="utf-8")
+    (nested / ".env").write_text("SECRET=hidden", encoding="utf-8")
+
+    listing = worker.execute(
+        tmp_path,
+        {"required_skill": "workspace.list_dir", "payload": {"path": "nested"}},
+    )
+    content = worker.execute(
+        tmp_path,
+        {
+            "required_skill": "workspace.read_text",
+            "payload": {"path": "nested/safe.txt"},
+        },
+    )
+
+    assert listing == {"entries": ["safe.txt"]}
+    assert content == {"content": "verified content"}

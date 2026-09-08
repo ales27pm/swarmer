@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -45,8 +46,11 @@ from app.models import (
     TaskRecord,
     TaskStatus,
 )
+from app.services.agent_card import AgentCardPolicyError, validate_agent_registration
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
+from app.services.agent_liveness import agent_counts_as_active
+from app.services.agent_scoring import AgentScoringService
 from app.services.approval_binding import (
     public_tool_arguments,
     public_tool_error,
@@ -54,7 +58,9 @@ from app.services.approval_binding import (
 )
 from app.services.approval_gateway import ApprovalConflict, ApprovalGateway
 from app.services.auth_service import AuthService, PairingConflict, PairingRateLimited
+from app.services.control_plane_instance import ControlPlaneInstanceService
 from app.services.embedding_service import HttpEmbeddingService
+from app.services.event_privacy import safe_websocket_event
 from app.services.execution_engine import (
     AuthenticatedRequester,
     ExecutionConflict,
@@ -63,18 +69,30 @@ from app.services.execution_engine import (
     ExecutionOutcomeUncertain,
 )
 from app.services.feedback_dataset import FeedbackDatasetService
+from app.services.idempotency import (
+    IdempotencyConflict,
+    IdempotencyService,
+    SafeMutationRequest,
+)
 from app.services.iphone_capability_service import (
     IPhoneCapabilityConflict,
     IPhoneCapabilityService,
 )
-from app.services.message_board import MessageBoardService
+from app.services.maintenance_lease import MaintenanceLeaseService
+from app.services.message_board import (
+    MessageBoard,
+    RedisStreamsMessageBoard,
+    SQLiteMessageBoard,
+)
+from app.services.message_consumer import ConsumerCheckpointStore
 from app.services.orchestrator_service import OrchestratorError, OrchestratorService
-from app.services.permission_policy import PermissionPolicy
+from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.planner_provider import UbuntuLLMPlannerProvider
+from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.state_service import StateConflict, StateService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.9.0"
+API_VERSION = "0.10.0"
 logger = logging.getLogger(__name__)
 
 
@@ -186,38 +204,102 @@ def create_app(config: Settings | None = None) -> FastAPI:
     execution_engine = ExecutionEngine(settings.db_path, settings.workspace_root, permission_policy)
     orchestrator_service = OrchestratorService(settings.llm_base_url, settings.orchestrator_model)
     planner_provider = UbuntuLLMPlannerProvider(orchestrator_service)
-    message_board = MessageBoardService(settings.db_path)
+    message_board: MessageBoard
+    if settings.message_board_backend == "redis":
+        message_board = RedisStreamsMessageBoard(
+            redis_url=settings.redis_url.get_secret_value(),
+            stream_prefix=settings.redis_stream_prefix,
+            operation_timeout_seconds=settings.redis_operation_timeout_seconds,
+        )
+    else:
+        message_board = SQLiteMessageBoard(settings.db_path)
+    control_plane_instance = ControlPlaneInstanceService(
+        settings.db_path,
+        version=API_VERSION,
+    )
+    maintenance_leases = MaintenanceLeaseService(
+        settings.db_path,
+        lease_seconds=settings.maintenance_lease_seconds,
+    )
     agent_dispatcher = AgentDispatcher(
         settings.db_path,
         message_board,
         lease_seconds=settings.agent_lease_seconds,
         max_attempts=settings.agent_job_max_attempts,
+        outbox_instance_id=f"{control_plane_instance.instance_id}:dispatcher",
+        outbox_publication_lease_seconds=settings.outbox_publication_lease_seconds,
+        agent_offline_timeout_seconds=settings.agent_offline_timeout_seconds,
+        permission_policy=permission_policy,
     )
-    agent_lease_reaper = AgentLeaseReaper(settings.db_path, message_board)
+    agent_lease_reaper = AgentLeaseReaper(
+        settings.db_path,
+        message_board,
+        maintenance_leases=maintenance_leases,
+        owner_instance_id=control_plane_instance.instance_id,
+        outbox_instance_id=f"{control_plane_instance.instance_id}:lease-reaper",
+        outbox_publication_lease_seconds=settings.outbox_publication_lease_seconds,
+        permission_policy=permission_policy,
+    )
     iphone_capability_service = IPhoneCapabilityService(
         settings.db_path,
         message_board,
         permission_policy,
         grant_ttl_seconds=settings.iphone_capability_grant_ttl_seconds,
+        maintenance_leases=maintenance_leases,
+        owner_instance_id=control_plane_instance.instance_id,
+        outbox_instance_id=f"{control_plane_instance.instance_id}:iphone",
+        outbox_publication_lease_seconds=settings.outbox_publication_lease_seconds,
     )
     feedback_dataset = FeedbackDatasetService(settings.db_path)
+    idempotency_service = IdempotencyService(settings.db_path)
+    consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)
+    agent_scoring = AgentScoringService(
+        settings.db_path,
+        maintenance_leases=maintenance_leases,
+        owner_instance_id=control_plane_instance.instance_id,
+    )
     websockets: dict[WebSocket, str] = {}
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await state_service.initialize()
+        await consumer_checkpoints.initialize()
+        await agent_scoring.initialize()
+        await control_plane_instance.start()
         settings.workspace_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         await agent_lease_reaper.reap_expired()
         await iphone_capability_service.expire_requests()
-        await agent_dispatcher.outbox.drain()
+        startup_outbox_lease = await maintenance_leases.acquire(
+            "outbox-maintenance", control_plane_instance.instance_id
+        )
+        if startup_outbox_lease is not None:
+            await agent_dispatcher.outbox.recover_expired_claims()
+            await agent_dispatcher.outbox.drain()
+        await agent_scoring.rebuild()
 
         async def maintain_distributed_runtime() -> None:
+            last_score_refresh = asyncio.get_running_loop().time()
             while True:
-                await asyncio.sleep(settings.agent_heartbeat_seconds)
+                await asyncio.sleep(
+                    min(
+                        settings.agent_heartbeat_seconds,
+                        settings.control_plane_heartbeat_seconds,
+                    )
+                )
                 try:
+                    await control_plane_instance.heartbeat()
                     await agent_lease_reaper.reap_expired()
                     await iphone_capability_service.expire_requests()
-                    await agent_dispatcher.outbox.drain()
+                    outbox_lease = await maintenance_leases.acquire(
+                        "outbox-maintenance", control_plane_instance.instance_id
+                    )
+                    if outbox_lease is not None:
+                        await agent_dispatcher.outbox.recover_expired_claims()
+                        await agent_dispatcher.outbox.drain()
+                    current_time = asyncio.get_running_loop().time()
+                    if current_time - last_score_refresh >= settings.agent_score_refresh_seconds:
+                        await agent_scoring.rebuild()
+                        last_score_refresh = current_time
                 except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
                     logger.exception("distributed runtime maintenance failed")
 
@@ -230,6 +312,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
             maintenance.cancel()
             with suppress(asyncio.CancelledError):
                 await maintenance
+            with suppress(OSError, RuntimeError, sqlite3.Error):
+                await control_plane_instance.stop()
+            await message_board.close()
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
     app.state.settings = settings
@@ -243,6 +328,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.agent_dispatcher = agent_dispatcher
     app.state.agent_lease_reaper = agent_lease_reaper
     app.state.iphone_capability_service = iphone_capability_service
+    app.state.control_plane_instance = control_plane_instance
+    app.state.maintenance_leases = maintenance_leases
+    app.state.idempotency_service = idempotency_service
+    app.state.consumer_checkpoints = consumer_checkpoints
+    app.state.agent_scoring = agent_scoring
 
     async def require_secure_transport(request: Request) -> None:
         if settings.allow_insecure_remote_http:
@@ -307,12 +397,13 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="operator authentication required")
 
     async def broadcast(event: dict[str, Any], *, device_id: str | None = None) -> None:
+        safe_event = safe_websocket_event(event)
         dead: list[WebSocket] = []
         for websocket, connected_device_id in list(websockets.items()):
             if device_id is not None and connected_device_id != device_id:
                 continue
             try:
-                await websocket.send_json(event)
+                await websocket.send_json(safe_event)
             except (OSError, RuntimeError, WebSocketDisconnect):
                 dead.append(websocket)
         for websocket in dead:
@@ -332,7 +423,6 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 "claimed_at",
                 "heartbeat_at",
                 "completed_at",
-                "lease_id",
                 "lease_expires_at",
                 "lease_generation",
                 "attempt_count",
@@ -651,14 +741,36 @@ def create_app(config: Settings | None = None) -> FastAPI:
     @app.get("/status")
     async def runtime_status(
         principal: Annotated[DevicePrincipal, Depends(require_device)],
-    ) -> dict[str, int | str]:
+    ) -> dict[str, Any]:
         del principal
-        metrics = await agent_lease_reaper.metrics()
+        job_metrics = await agent_lease_reaper.metrics()
+        outbox_metrics = await agent_dispatcher.outbox.metrics()
+        board_health = await message_board.health()
+        agents = await state_service.list_agents()
+        liveness_now = datetime.now(UTC)
+        active_agents = sum(
+            1
+            for agent in agents
+            if agent_counts_as_active(
+                agent,
+                now=liveness_now,
+                timeout_seconds=settings.agent_offline_timeout_seconds,
+            )
+        )
         return {
             "status": "ok",
-            **metrics,
-            "pending_outbox_events": await agent_dispatcher.outbox.pending_count(),
+            "version": API_VERSION,
+            "instance_id": control_plane_instance.instance_id,
+            "message_board_backend": str(board_health.get("backend", "unknown")),
+            "message_board_health": str(board_health.get("status", "degraded")),
+            "last_successful_publication": board_health.get("last_successful_publication"),
+            **outbox_metrics,
+            **job_metrics,
+            "active_agents": active_agents,
+            "offline_agents": len(agents) - active_agents,
+            "maintenance_lease_owner": await maintenance_leases.current_owners(),
             "pending_capability_requests": await iphone_capability_service.pending_count(),
+            "vector_backend": settings.vector_backend,
         }
 
     @app.post("/pairing/code", dependencies=[Depends(require_pairing_operator)])
@@ -954,6 +1066,21 @@ def create_app(config: Settings | None = None) -> FastAPI:
         parsed = urlparse(str(request.endpoint))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise HTTPException(status_code=422, detail="agent endpoint must be an http(s) URL")
+        try:
+            validated_card = validate_agent_registration(request)
+        except AgentCardPolicyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            denied = any(
+                permission_policy.evaluate_worker_skill(skill).decision != "allow"
+                for skill in validated_card.skills
+            )
+        except PermissionPolicyError as exc:
+            raise HTTPException(
+                status_code=403, detail="remote worker skill is denied by policy"
+            ) from exc
+        if denied:
+            raise HTTPException(status_code=403, detail="remote worker skill is denied by policy")
         return await state_service.register_agent(request, str(principal["id"]))
 
     @app.post("/agents/{agent_id}/heartbeat")
@@ -977,20 +1104,24 @@ def create_app(config: Settings | None = None) -> FastAPI:
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
         del principal
-        if request.required_skill not in {"workspace.list_dir", "workspace.read_text"}:
-            raise HTTPException(
-                status_code=403,
-                detail="remote dispatch requires an explicitly supported gateway tool",
-            )
         try:
-            execution_engine.validate_arguments(request.required_skill, request.payload)
-            rule = permission_policy.evaluate_tool(request.required_skill)
-        except (ExecutionError, ValueError) as exc:
+            validated_payload = validate_remote_job(request.required_skill, request.payload)
+            rule = permission_policy.evaluate_worker_skill(request.required_skill)
+            if request.required_skill in {"workspace.list_dir", "workspace.read_text"}:
+                execution_engine.validate_arguments(
+                    request.required_skill,
+                    {"path": validated_payload["path"]},
+                )
+                if permission_policy.evaluate_tool(request.required_skill).decision != "allow":
+                    raise RemoteJobPolicyError("workspace worker skill is not allowed by policy")
+        except (ExecutionError, RemoteJobPolicyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail="invalid remote worker payload") from exc
         if rule.decision != "allow":
-            raise HTTPException(status_code=403, detail="gateway approval is required")
+            raise HTTPException(status_code=403, detail="remote worker skill is denied by policy")
         try:
-            job = await agent_dispatcher.queue_job(task_id, request.required_skill, request.payload)
+            job = await agent_dispatcher.queue_job(
+                task_id, request.required_skill, validated_payload
+            )
         except AgentDispatchConflict as exc:
             code = 404 if str(exc) == "task not found" else 409
             raise HTTPException(status_code=code, detail=str(exc)) from exc
@@ -1229,6 +1360,38 @@ def create_app(config: Settings | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         del principal
         return await state_service.list_audit(limit, after_id)
+
+    @app.post("/sync/mutations", status_code=status.HTTP_201_CREATED)
+    async def apply_idempotent_mobile_mutation(
+        request: SafeMutationRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        idempotency_key: Annotated[
+            str,
+            Header(alias="Idempotency-Key", min_length=20, max_length=200),
+        ],
+    ) -> dict[str, Any]:
+        try:
+            receipt = await idempotency_service.apply(
+                actor_id=str(principal["id"]),
+                idempotency_key=idempotency_key,
+                request=request,
+            )
+        except IdempotencyConflict as exc:
+            code = (
+                404
+                if str(exc) in {"task not found", "agent not found", "memory not found"}
+                else 409
+            )
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        if not bool(receipt["idempotent_replay"]):
+            result = receipt["result"]
+            if request.operation == "memory.metadata.update":
+                await broadcast({"type": "memory.updated", "payload": result})
+            elif request.operation == "chat.message.create" and isinstance(result, dict):
+                message = result.get("message")
+                if isinstance(message, dict):
+                    await broadcast({"type": "message.created", "payload": message})
+        return receipt
 
     @app.post("/feedback", status_code=status.HTTP_201_CREATED)
     @app.post("/sync/feedback", status_code=status.HTTP_201_CREATED, include_in_schema=False)

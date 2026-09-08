@@ -27,6 +27,16 @@ class MutableClock:
         self.value += timedelta(seconds=seconds)
 
 
+async def set_agent_seen(database: Path, agent_id: str, at: datetime) -> None:
+    timestamp = at.isoformat()
+    async with aiosqlite.connect(database) as db:
+        await db.execute(
+            "UPDATE agents SET last_seen_at=?,last_heartbeat_at=? WHERE id=?",
+            (timestamp, timestamp, agent_id),
+        )
+        await db.commit()
+
+
 async def setup_runtime(
     database: Path, clock: MutableClock, *, max_attempts: int = 3
 ) -> tuple[StateService, AgentDispatcher, AgentLeaseReaper, dict[str, Any], str]:
@@ -42,6 +52,7 @@ async def setup_runtime(
         "phone",
     )
     assert await state.heartbeat_agent(agent["id"], "online", agent["credential"])
+    await set_agent_seen(database, str(agent["id"]), clock.value)
     board = MessageBoardService(database)
     dispatcher = AgentDispatcher(
         database, board, lease_seconds=60, max_attempts=max_attempts, clock=clock
@@ -97,6 +108,7 @@ async def test_expired_lease_is_requeued_and_old_holder_is_fenced(tmp_path: Path
         "phone",
     )
     assert await state.heartbeat_agent(second["id"], "online", second["credential"])
+    await set_agent_seen(state.db_path, str(second["id"]), clock.value)
 
     clock.advance(61)
     assert await reaper.reap_expired() == {

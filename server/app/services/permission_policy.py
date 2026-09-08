@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 import yaml
 
+from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+
 
 class PermissionPolicyError(RuntimeError):
     pass
@@ -49,6 +51,15 @@ class ToolPermissionRule:
         }
 
 
+@dataclass(frozen=True)
+class WorkerPermissionRule:
+    id: str
+    description: str
+    decision: Literal["allow", "deny"]
+    risk: Literal["low"]
+    auto_redistribute: bool
+
+
 class PermissionPolicy:
     """Validated, fail-closed projection of the executable permission policy."""
 
@@ -78,6 +89,7 @@ class PermissionPolicy:
         process: ProcessPolicy,
         tool_rules: Mapping[str, ToolPermissionRule],
         capability_rules: Mapping[str, ToolPermissionRule] | None = None,
+        worker_skill_rules: Mapping[str, WorkerPermissionRule] | None = None,
     ) -> None:
         missing = self.SUPPORTED_TOOLS - set(tool_rules)
         extra = set(tool_rules) - self.SUPPORTED_TOOLS
@@ -106,6 +118,24 @@ class PermissionPolicy:
         self.process = process
         self.tool_rules = MappingProxyType(dict(tool_rules))
         self.capability_rules = MappingProxyType(dict(effective_capability_rules))
+        effective_worker_rules = worker_skill_rules or {
+            name: WorkerPermissionRule(
+                id=f"deny-unconfigured-{name.replace('.', '-')}",
+                description="Remote worker skill was not explicitly configured.",
+                decision="deny",
+                risk="low",
+                auto_redistribute=False,
+            )
+            for name in SUPPORTED_AGENT_SKILLS
+        }
+        missing_worker_skills = SUPPORTED_AGENT_SKILLS - set(effective_worker_rules)
+        extra_worker_skills = set(effective_worker_rules) - SUPPORTED_AGENT_SKILLS
+        if missing_worker_skills or extra_worker_skills:
+            raise PermissionPolicyError(
+                "worker_skill_rules must define exactly the supported remote skills; "
+                f"missing={sorted(missing_worker_skills)}, extra={sorted(extra_worker_skills)}"
+            )
+        self.worker_skill_rules = MappingProxyType(dict(effective_worker_rules))
 
     @classmethod
     def from_yaml(cls, path: Path) -> PermissionPolicy:
@@ -120,6 +150,7 @@ class PermissionPolicy:
         execution = raw.get("execution")
         tool_rules = raw.get("tool_rules")
         capability_rules = raw.get("capability_rules")
+        worker_skill_rules = raw.get("worker_skill_rules")
         if not isinstance(protected_paths, list) or not all(
             isinstance(pattern, str) and pattern for pattern in protected_paths
         ):
@@ -130,6 +161,8 @@ class PermissionPolicy:
             raise PermissionPolicyError("tool_rules policy is required")
         if not isinstance(capability_rules, dict):
             raise PermissionPolicyError("capability_rules policy is required")
+        if not isinstance(worker_skill_rules, dict):
+            raise PermissionPolicyError("worker_skill_rules policy is required")
 
         process = cls._parse_process_policy(execution)
         return cls(
@@ -137,7 +170,50 @@ class PermissionPolicy:
             process=process,
             tool_rules=cls._parse_tool_rules(tool_rules),
             capability_rules=cls._parse_tool_rules(capability_rules),
+            worker_skill_rules=cls._parse_worker_skill_rules(worker_skill_rules),
         )
+
+    @classmethod
+    def _parse_worker_skill_rules(cls, raw: dict[str, Any]) -> dict[str, WorkerPermissionRule]:
+        parsed: dict[str, WorkerPermissionRule] = {}
+        for skill, value in raw.items():
+            if not isinstance(skill, str) or not isinstance(value, dict):
+                raise PermissionPolicyError("each worker skill rule must be a named object")
+            if set(value) != {
+                "id",
+                "description",
+                "decision",
+                "risk",
+                "auto_redistribute",
+            }:
+                raise PermissionPolicyError(f"worker skill rule {skill} has invalid fields")
+            rule_id = value.get("id")
+            description = value.get("description")
+            decision = value.get("decision")
+            risk = value.get("risk")
+            auto_redistribute = value.get("auto_redistribute")
+            if not isinstance(rule_id, str) or not rule_id:
+                raise PermissionPolicyError(f"worker skill rule {skill} requires a stable id")
+            if not isinstance(description, str) or not description.strip():
+                raise PermissionPolicyError(f"worker skill rule {skill} requires a description")
+            if decision not in {"allow", "deny"} or risk != "low":
+                raise PermissionPolicyError(f"worker skill rule {skill} is not fail-closed")
+            if not isinstance(auto_redistribute, bool):
+                raise PermissionPolicyError(
+                    f"worker skill rule {skill} requires an auto_redistribute boolean"
+                )
+            if auto_redistribute and skill not in {"workspace.list_dir", "workspace.read_text"}:
+                raise PermissionPolicyError(
+                    f"worker skill rule {skill} cannot be automatically redistributed"
+                )
+            parsed[skill] = WorkerPermissionRule(
+                id=rule_id,
+                description=description.strip(),
+                decision=decision,
+                risk=risk,
+                auto_redistribute=auto_redistribute,
+            )
+        return parsed
 
     @classmethod
     def _parse_tool_rules(cls, raw: dict[str, Any]) -> dict[str, ToolPermissionRule]:
@@ -188,6 +264,14 @@ class PermissionPolicy:
         except KeyError as exc:
             raise PermissionPolicyError(
                 f"iPhone capability is not covered by policy: {capability_name}"
+            ) from exc
+
+    def evaluate_worker_skill(self, skill: str) -> WorkerPermissionRule:
+        try:
+            return self.worker_skill_rules[skill]
+        except KeyError as exc:
+            raise PermissionPolicyError(
+                f"remote worker skill is not covered by policy: {skill}"
             ) from exc
 
     @staticmethod

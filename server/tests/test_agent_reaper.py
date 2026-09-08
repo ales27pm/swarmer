@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,8 +11,24 @@ from app.models import AgentCreate, TaskCreate, TaskRecord
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
 from app.services.message_board import MessageBoardService
+from app.services.permission_policy import PermissionPolicy
 from app.services.state_service import StateService
 from tests.test_agent_leases import MutableClock, setup_runtime
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def denied_worker_policy(skill: str) -> PermissionPolicy:
+    base = PermissionPolicy.from_yaml(REPO_ROOT / "configs" / "permissions.yaml")
+    worker_rules = dict(base.worker_skill_rules)
+    worker_rules[skill] = replace(worker_rules[skill], decision="deny", auto_redistribute=False)
+    return PermissionPolicy(
+        protected_paths=base.protected_paths,
+        process=base.process,
+        tool_rules=base.tool_rules,
+        capability_rules=base.capability_rules,
+        worker_skill_rules=worker_rules,
+    )
 
 
 @pytest.mark.asyncio
@@ -45,6 +62,34 @@ async def test_retry_budget_dead_letters_read_only_job(tmp_path: Path) -> None:
     assert counts["dead_lettered"] == 1
     assert (await dispatcher.get_job(claimed["id"]))["status"] == "failed"
     task = await _.get_task(task_id)
+    assert task is not None and task.status.value == "failed"
+
+
+@pytest.mark.asyncio
+async def test_policy_revocation_prevents_expired_read_job_redistribution(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock(datetime(2026, 1, 1, tzinfo=UTC))
+    state, dispatcher, _, agent, task_id = await setup_runtime(tmp_path / "state.db", clock)
+    claimed = await dispatcher.claim(agent["id"])
+    assert claimed is not None
+    clock.advance(61)
+    revoked_reaper = AgentLeaseReaper(
+        state.db_path,
+        MessageBoardService(state.db_path),
+        permission_policy=denied_worker_policy("workspace.list_dir"),
+        clock=clock,
+    )
+
+    counts = await revoked_reaper.reap_expired()
+
+    assert counts == {"expired": 1, "requeued": 0, "dead_lettered": 1, "cancelled": 0}
+    job = await dispatcher.get_job(claimed["id"])
+    assert job is not None and job["status"] == "failed"
+    assert job["last_failure_reason"] == (
+        "remote worker skill denied by current policy; not retried"
+    )
+    task = await state.get_task(task_id)
     assert task is not None and task.status.value == "failed"
 
 
@@ -89,20 +134,25 @@ async def test_expired_mutating_job_is_never_automatically_redistributed(tmp_pat
     clock = MutableClock(datetime(2026, 1, 1, tzinfo=UTC))
     state = StateService(database)
     await state.initialize()
-    task = await state.create_task(TaskRecord.new(TaskCreate(input="write"), source="phone"))
+    task = await state.create_task(TaskRecord.new(TaskCreate(input="research"), source="phone"))
     agent = await state.register_agent(
         AgentCreate(
-            name="writer",
+            name="researcher",
             endpoint="http://127.0.0.1:9001",
-            skills=["workspace.write_text"],
+            skills=["research.query"],
         ),
         "phone",
     )
     assert await state.heartbeat_agent(agent["id"], "online", agent["credential"])
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "UPDATE agents SET last_seen_at=?,last_heartbeat_at=? WHERE id=?",
+            (clock.value.isoformat(), clock.value.isoformat(), agent["id"]),
+        )
     board = MessageBoardService(database)
     dispatcher = AgentDispatcher(database, board, lease_seconds=60, clock=clock)
     reaper = AgentLeaseReaper(database, board, clock=clock)
-    await dispatcher.queue_job(task.id, "workspace.write_text", {"path": "x", "content": "y"})
+    await dispatcher.queue_job(task.id, "research.query", {"query": "bounded evidence"})
     claimed = await dispatcher.claim(agent["id"])
     assert claimed is not None
     clock.advance(61)

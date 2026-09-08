@@ -2,25 +2,120 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://27pm.org/schemas/agent-card.schema.json",
   "title": "monGARS Agent",
-  "description": "Current authenticated agent resource returned by the control plane.",
+  "description": "Current authenticated agent resource with its server-validated, metadata-only public AgentCard.",
   "type": "object",
-  "required": ["id", "name", "version", "endpoint", "model_id", "status", "skills", "last_heartbeat_at", "last_seen_at", "max_concurrency", "capacity", "active_jobs", "historical_score", "created_at", "updated_at"],
+  "required": [
+    "id",
+    "name",
+    "version",
+    "endpoint",
+    "model_id",
+    "status",
+    "skills",
+    "last_heartbeat_at",
+    "last_seen_at",
+    "max_concurrency",
+    "capacity",
+    "runtime",
+    "supported_protocol_version",
+    "agent_card",
+    "active_jobs",
+    "historical_score",
+    "created_at",
+    "updated_at"
+  ],
   "properties": {
     "id": {"type": "string"},
-    "name": {"type": "string"},
-    "version": {"type": "string"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 200},
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}$"
+    },
     "endpoint": {"type": "string", "format": "uri"},
-    "model_id": {"type": ["string", "null"]},
-    "status": {"enum": ["online", "offline", "busy", "draining", "unverified"]},
-    "skills": {"type": "array", "items": {"type": "string"}},
+    "model_id": {"type": ["string", "null"], "maxLength": 500},
+    "status": {
+      "type": "string",
+      "enum": ["online", "offline", "busy", "draining", "unverified"]
+    },
+    "skills": {"$ref": "#/$defs/skills"},
     "last_heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
     "last_seen_at": {"type": ["string", "null"], "format": "date-time"},
     "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 32},
-    "capacity": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "capacity": {"$ref": "#/$defs/capabilities"},
+    "runtime": {"const": "python"},
+    "supported_protocol_version": {"const": "mongars-worker-v0.9"},
+    "agent_card": {"$ref": "#/$defs/agentCard"},
     "active_jobs": {"type": "integer", "minimum": 0},
     "historical_score": {"type": "number"},
     "created_at": {"type": "string", "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "agentSkill": {
+      "type": "string",
+      "enum": [
+        "workspace.list_dir",
+        "workspace.read_text",
+        "research.query",
+        "code_review.git_status",
+        "code_review.git_diff",
+        "code_review.git_show",
+        "code_review.static_analysis"
+      ]
+    },
+    "skills": {
+      "type": "array",
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/agentSkill"}
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 32},
+        "memory_mb": {"type": "integer", "minimum": 1, "maximum": 4194304},
+        "max_results": {"type": "integer", "minimum": 1, "maximum": 10},
+        "max_query_characters": {"type": "integer", "minimum": 1, "maximum": 2000},
+        "max_result_bytes": {"type": "integer", "minimum": 1, "maximum": 524288},
+        "max_operation_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+        "max_paths": {"type": "integer", "minimum": 1, "maximum": 50},
+        "max_selected_files": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "agentCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "name",
+        "version",
+        "skills",
+        "model_id",
+        "runtime",
+        "max_concurrency",
+        "supported_protocol_version",
+        "capabilities"
+      ],
+      "properties": {
+        "agent_id": {"type": "string"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 200},
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^\\d{1,4}\\.\\d{1,4}\\.\\d{1,4}$"
+        },
+        "skills": {"$ref": "#/$defs/skills"},
+        "model_id": {"type": ["string", "null"], "maxLength": 500},
+        "runtime": {"const": "python"},
+        "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 32},
+        "supported_protocol_version": {"const": "mongars-worker-v0.9"},
+        "capabilities": {"$ref": "#/$defs/capabilities"}
+      }
+    }
   },
   "additionalProperties": false
 }

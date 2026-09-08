@@ -127,6 +127,24 @@ class AgentCreate(BaseModel):
     skills: list[str] = Field(default_factory=list, max_length=200)
     max_concurrency: int = Field(default=1, ge=1, le=32)
     capacity: dict[str, int] = Field(default_factory=dict)
+    runtime: Literal["python"] = "python"
+    supported_protocol_version: Literal["mongars-worker-v0.9"] = "mongars-worker-v0.9"
+
+
+class AgentCard(BaseModel):
+    """Server-validated, metadata-only worker capability declaration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    name: str
+    version: str
+    skills: list[str]
+    model_id: str | None = None
+    runtime: str
+    max_concurrency: int = Field(ge=1, le=32)
+    supported_protocol_version: str
+    capabilities: dict[str, int]
 
 
 class AgentHeartbeat(BaseModel):

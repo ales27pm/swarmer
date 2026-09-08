@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
@@ -14,11 +15,77 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 PROTECTED_PARTS = frozenset({".env", ".git", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"})
 CAPABILITY_TERMINAL_STATUSES = frozenset({"completed", "denied", "failed", "expired", "cancelled"})
 LOGGER = logging.getLogger("mongars.file_worker")
+MAX_CONTROL_RESPONSE_BYTES = 1_000_000
+SUPPORTS_DESCRIPTOR_TRAVERSAL = os.open in os.supports_dir_fd
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep the worker bearer credential on the configured origin."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_control_plane_origin(origin: str) -> str:
+    """Validate one credential-free bare origin before attaching a bearer token."""
+
+    if origin != origin.strip() or any(character.isspace() for character in origin):
+        raise ValueError("control-plane URL must be a bare HTTPS origin")
+    parsed = urlsplit(origin)
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("control-plane URL has an invalid port") from exc
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc.endswith(":")
+        or "?" in origin
+        or "#" in origin
+        or "\\" in origin
+    ):
+        raise ValueError("control-plane URL must be a credential-free bare origin")
+    if parsed.scheme == "https":
+        return origin
+    if parsed.scheme == "http" and _is_loopback_host(parsed.hostname):
+        return origin
+    raise ValueError("control-plane URL requires HTTPS outside loopback")
+
+
+def _read_control_response(response: Any) -> Any:
+    raw = response.read(MAX_CONTROL_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_CONTROL_RESPONSE_BYTES:
+        raise WorkerProtocolError("control-plane response exceeded its size limit")
+    try:
+        return json.loads(raw) if raw else None
+    except json.JSONDecodeError as exc:
+        raise WorkerProtocolError("control plane returned invalid JSON") from exc
 
 
 def protected_name(name: str) -> bool:
@@ -42,16 +109,22 @@ def request(
     method: str = "GET",
     body: dict[str, Any] | None = None,
 ) -> Any:
-    encoded = json.dumps(body).encode() if body is not None else None
+    base_url = validate_control_plane_origin(base_url)
+    encoded = (
+        json.dumps(body, allow_nan=False, separators=(",", ":")).encode()
+        if body is not None
+        else None
+    )
     headers = {"Authorization": f"Bearer {token}"}
     if encoded is not None:
         headers["Content-Type"] = "application/json"
     call = urllib.request.Request(
         f"{base_url.rstrip('/')}{path}", data=encoded, method=method, headers=headers
     )
-    with urllib.request.urlopen(call, timeout=30) as response:  # nosec B310 - operator-configured control plane
-        raw = response.read()
-    return json.loads(raw) if raw else None
+    opener = urllib.request.build_opener(_RejectRedirects())
+    # This is the strictly validated operator-configured origin, never job input.
+    with opener.open(call, timeout=30) as response:  # nosec B310
+        return _read_control_response(response)
 
 
 class WorkerProtocolError(RuntimeError):
@@ -119,7 +192,7 @@ class ControlPlaneClient:
         credential: str,
         request_fn: Any | None = None,
     ) -> None:
-        self.base_url = base_url
+        self.base_url = validate_control_plane_origin(base_url)
         self.agent_id = agent_id
         self.credential = credential
         self._request = request if request_fn is None else request_fn
@@ -349,7 +422,7 @@ def await_capability_result(
         state = client.poll_capability_request(job_id, lease, request_id)
 
 
-def safe_path(root: Path, relative: str) -> Path:
+def _validated_relative_parts(relative: str) -> tuple[str, ...]:
     candidate = Path(relative)
     if candidate.is_absolute() or "\0" in relative:
         raise ValueError("protected or invalid path")
@@ -357,27 +430,52 @@ def safe_path(root: Path, relative: str) -> Path:
         raise ValueError("path escapes worker root")
     if any(protected_name(part) for part in candidate.parts):
         raise ValueError("protected or invalid path")
-    root = root.resolve(strict=True)
-    unresolved = root / candidate
-    cursor = root
-    for part in candidate.parts:
-        cursor /= part
-        if cursor.is_symlink():
-            raise ValueError("symbolic links are not available to the worker")
-    target = unresolved.resolve(strict=True)
-    if target != root and root not in target.parents:
-        raise ValueError("path escapes worker root")
-    relative_target = target.relative_to(root)
-    if any(protected_name(part) for part in relative_target.parts):
-        raise ValueError("protected or invalid path")
-    return target
+    return tuple(part for part in candidate.parts if part != ".")
 
 
-def read_safe_text(path: Path) -> str:
-    flags = os.O_RDONLY | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
+def _open_beneath(root: Path, relative: str, *, directory: bool) -> int:
+    """Open a path component-by-component without ever following a symlink."""
+
+    if not SUPPORTS_DESCRIPTOR_TRAVERSAL:
+        raise RuntimeError("worker platform lacks descriptor-relative path safety")
+    parts = _validated_relative_parts(relative)
+    base_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = -1
+    try:
+        descriptor = os.open(root, base_flags | os.O_DIRECTORY)
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise ValueError("worker root is not a directory")
+        for index, part in enumerate(parts):
+            flags = base_flags
+            if index < len(parts) - 1 or directory:
+                flags |= os.O_DIRECTORY
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise ValueError(
+            "symbolic links or unavailable paths are not available to the worker"
+        ) from exc
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
+def safe_path(root: Path, relative: str) -> Path:
+    """Validate a path for callers; execution itself remains descriptor-relative."""
+
+    parts = _validated_relative_parts(relative)
+    descriptor = _open_beneath(root, relative, directory=False)
+    os.close(descriptor)
+    return root.absolute().joinpath(*parts)
+
+
+def _read_safe_text(root: Path, relative: str) -> str:
+    descriptor = _open_beneath(root, relative, directory=False)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 1_000_000:
@@ -390,6 +488,24 @@ def read_safe_text(path: Path) -> str:
             os.close(descriptor)
 
 
+def _list_safe_directory(root: Path, relative: str) -> list[str]:
+    descriptor = _open_beneath(root, relative, directory=True)
+    try:
+        entries: list[str] = []
+        for name in os.listdir(descriptor):
+            if protected_name(name):
+                continue
+            try:
+                metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            except OSError:
+                continue
+            if not stat.S_ISLNK(metadata.st_mode):
+                entries.append(name)
+        return sorted(entries)
+    finally:
+        os.close(descriptor)
+
+
 def execute(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     skill = job["required_skill"]
     payload = job.get("payload")
@@ -397,19 +513,12 @@ def execute(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         payload = {}
     if not isinstance(payload, dict):
         raise TypeError("job payload must be an object")
-    path = safe_path(root, str(payload.get("path", ".")))
+    relative = str(payload.get("path", "."))
+    _validated_relative_parts(relative)
     if skill == "workspace.list_dir":
-        if not path.is_dir():
-            raise ValueError("path is not a directory")
-        return {
-            "entries": sorted(
-                entry.name
-                for entry in path.iterdir()
-                if not entry.is_symlink() and not protected_name(entry.name)
-            )
-        }
+        return {"entries": _list_safe_directory(root, relative)}
     if skill == "workspace.read_text":
-        return {"content": read_safe_text(path)}
+        return {"content": _read_safe_text(root, relative)}
     raise ValueError("unsupported worker skill")
 
 

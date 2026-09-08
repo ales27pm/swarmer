@@ -84,7 +84,11 @@ async def test_agent_registration_rolls_back_when_audit_fails(
 
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await state.register_agent(
-            AgentCreate(name="atomic agent", endpoint="http://127.0.0.1:9001"),
+            AgentCreate(
+                name="atomic-agent",
+                endpoint="http://127.0.0.1:9001",
+                skills=["workspace.list_dir"],
+            ),
             "device-1",
         )
 

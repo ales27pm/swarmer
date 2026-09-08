@@ -23,6 +23,7 @@ from app.models import (
     TaskMode,
     TaskRecord,
 )
+from app.services.agent_card import public_agent_card, validate_agent_registration
 from app.services.approval_binding import (
     PUBLIC_PROCESS_ERROR,
     ApprovalBindingError,
@@ -42,7 +43,7 @@ from app.services.iphone_capability_binding import (
 )
 from app.services.outbox import OutboxService
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 14
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -172,6 +173,8 @@ CREATE TABLE IF NOT EXISTS agents (
     last_seen_at TEXT,
     max_concurrency INTEGER NOT NULL DEFAULT 1,
     capacity_json TEXT NOT NULL DEFAULT '{}',
+    runtime TEXT NOT NULL DEFAULT 'python',
+    supported_protocol_version TEXT NOT NULL DEFAULT 'mongars-worker-v0.9',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -202,11 +205,27 @@ CREATE TABLE IF NOT EXISTS feedback_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_task ON feedback_events(task_id, created_at);
+CREATE TABLE IF NOT EXISTS idempotency_receipts (
+    actor_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    PRIMARY KEY(actor_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_receipts_created
+    ON idempotency_receipts(created_at);
 CREATE TABLE IF NOT EXISTS message_board_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
     topic TEXT NOT NULL,
     event_type TEXT NOT NULL,
     message_id TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
     agent_id TEXT,
     task_id TEXT,
     payload_json TEXT NOT NULL,
@@ -217,6 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_message_board_topic
     ON message_board_events(topic, id);
 CREATE TABLE IF NOT EXISTS outbox_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
     aggregate_type TEXT NOT NULL,
     aggregate_id TEXT NOT NULL,
     topic TEXT NOT NULL,
@@ -229,10 +249,67 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     published_at TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    dedupe_key TEXT NOT NULL UNIQUE
+    dedupe_key TEXT NOT NULL UNIQUE,
+    publishing_owner TEXT,
+    publishing_started_at TEXT,
+    publishing_lease_expires_at TEXT,
+    publish_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
     ON outbox_events(published_at, id);
+CREATE TABLE IF NOT EXISTS control_plane_instances (
+    instance_id TEXT PRIMARY KEY,
+    hostname_label TEXT NOT NULL,
+    version TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    stopped_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_control_plane_instances_heartbeat
+    ON control_plane_instances(stopped_at, heartbeat_at);
+CREATE TABLE IF NOT EXISTS maintenance_leases (
+    name TEXT PRIMARY KEY,
+    owner_instance_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation >= 1),
+    acquired_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY(owner_instance_id) REFERENCES control_plane_instances(instance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_leases_expiry
+    ON maintenance_leases(expires_at, name);
+CREATE TABLE IF NOT EXISTS message_consumer_deliveries (
+    consumer_group TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    source_cursor TEXT,
+    envelope_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','processing','completed','dead_letter')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    max_attempts INTEGER NOT NULL CHECK(max_attempts > 0),
+    claim_owner TEXT,
+    claim_generation INTEGER NOT NULL DEFAULT 0 CHECK(claim_generation >= 0),
+    claim_started_at TEXT,
+    claim_expires_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    dead_lettered_at TEXT,
+    PRIMARY KEY(consumer_group, event_id),
+    UNIQUE(consumer_group, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_message_consumer_claimable
+    ON message_consumer_deliveries(
+        consumer_group,status,claim_expires_at,created_at,event_id
+    );
+CREATE TABLE IF NOT EXISTS message_consumer_checkpoints (
+    consumer_group TEXT PRIMARY KEY,
+    last_event_id TEXT NOT NULL,
+    last_source_cursor TEXT,
+    completed_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -339,6 +416,37 @@ CREATE TABLE IF NOT EXISTS agent_scores (
     score REAL NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_score_snapshots (
+    agent_id TEXT PRIMARY KEY,
+    completed_jobs INTEGER NOT NULL CHECK(completed_jobs >= 0),
+    failed_jobs INTEGER NOT NULL CHECK(failed_jobs >= 0),
+    terminal_jobs INTEGER NOT NULL CHECK(terminal_jobs >= 0),
+    lease_expiry_count INTEGER NOT NULL CHECK(lease_expiry_count >= 0),
+    observed_outcomes INTEGER NOT NULL CHECK(observed_outcomes >= 0),
+    completion_rate REAL NOT NULL,
+    failure_rate REAL NOT NULL,
+    timeout_rate REAL NOT NULL,
+    feedback_count INTEGER NOT NULL CHECK(feedback_count >= 0),
+    feedback_average REAL,
+    average_latency_seconds REAL,
+    composite_score REAL NOT NULL,
+    formula_version TEXT NOT NULL,
+    rebuilt_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_score_snapshots_rank
+    ON agent_score_snapshots(composite_score DESC,agent_id ASC);
+CREATE TABLE IF NOT EXISTS scheduler_decisions (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    candidates_json TEXT NOT NULL,
+    selected_agent_id TEXT NOT NULL,
+    scoring_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES agent_jobs(id),
+    FOREIGN KEY(selected_agent_id) REFERENCES agents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_scheduler_decisions_job
+    ON scheduler_decisions(job_id, created_at);
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT,
@@ -386,13 +494,21 @@ class StateService:
 
         interrupted: list[tuple[str, str, str]] = []
         async with aiosqlite.connect(self.db_path) as db:
-            await db.executescript(SCHEMA)
-            await db.execute("BEGIN IMMEDIATE")
             version_row = await (await db.execute("PRAGMA user_version")).fetchone()
             if version_row is None:
                 raise RuntimeError("SQLite did not return a schema version")
             version = int(version_row[0])
+            if version > SCHEMA_VERSION:
+                raise RuntimeError("state database schema is newer than this control plane")
+            await db.executescript(SCHEMA)
+            await db.execute("BEGIN IMMEDIATE")
             await self._migrate_legacy_schema(db)
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_outbox_claimable
+                ON outbox_events(published_at, publishing_lease_expires_at, id)
+                """
+            )
             await self._reconcile_agent_jobs_locked(db)
             await self._reconcile_capability_requests_locked(db)
             await db.execute(
@@ -550,7 +666,20 @@ class StateService:
             },
             "devices": {"last_seen_at": "TEXT", "last_pairing_id": "TEXT"},
             "agents": {"auth_token_hash": "TEXT"},  # nosec B105 - SQLite column type
-            "message_board_events": {"dedupe_key": "TEXT"},
+            "message_board_events": {
+                "schema_version": "TEXT",
+                "event_id": "TEXT",
+                "aggregate_type": "TEXT",
+                "aggregate_id": "TEXT",
+                "dedupe_key": "TEXT",
+            },
+            "outbox_events": {
+                "event_id": "TEXT",
+                "publishing_owner": "TEXT",
+                "publishing_started_at": "TEXT",
+                "publishing_lease_expires_at": "TEXT",
+                "publish_generation": "INTEGER NOT NULL DEFAULT 0",
+            },
             "agent_jobs": {
                 "lease_id": "TEXT",
                 "lease_token_hash": "TEXT",  # nosec B105 - SQLite column type
@@ -580,6 +709,28 @@ class StateService:
             for column, declaration in columns.items():
                 if column not in existing:
                     await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        await db.execute(
+            """UPDATE outbox_events SET event_id='evt_outbox_' || id
+            WHERE event_id IS NULL OR event_id=''"""
+        )
+        await db.execute(
+            """UPDATE message_board_events SET
+                schema_version=COALESCE(NULLIF(schema_version,''), '1.0'),
+                event_id=COALESCE(NULLIF(event_id,''), 'evt_board_' || id),
+                aggregate_type=COALESCE(NULLIF(aggregate_type,''), 'message'),
+                aggregate_id=COALESCE(NULLIF(aggregate_id,''), message_id)
+            WHERE schema_version IS NULL OR schema_version=''
+               OR event_id IS NULL OR event_id=''
+               OR aggregate_type IS NULL OR aggregate_type=''
+               OR aggregate_id IS NULL OR aggregate_id=''"""
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_event_id ON outbox_events(event_id)"
+        )
+        await db.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_message_board_event_id
+            ON message_board_events(event_id)"""
+        )
         agent_columns = {
             str(row[1]) for row in await (await db.execute("PRAGMA table_info(agents)")).fetchall()
         }
@@ -587,12 +738,56 @@ class StateService:
             "last_seen_at": "TEXT",
             "max_concurrency": "INTEGER NOT NULL DEFAULT 1",
             "capacity_json": "TEXT NOT NULL DEFAULT '{}'",
+            "runtime": "TEXT NOT NULL DEFAULT 'python'",
+            "supported_protocol_version": ("TEXT NOT NULL DEFAULT 'mongars-worker-v0.9'"),
         }.items():
             if column not in agent_columns:
                 await db.execute(f"ALTER TABLE agents ADD COLUMN {column} {declaration}")
         await db.execute(
             "UPDATE agents SET last_seen_at=last_heartbeat_at WHERE last_seen_at IS NULL"
         )
+        legacy_agents = await (
+            await db.execute(
+                """SELECT id,name,version,model_id,skills_json,max_concurrency,
+                          capacity_json,runtime,supported_protocol_version
+                FROM agents"""
+            )
+        ).fetchall()
+        for legacy_agent in legacy_agents:
+            agent_id = str(legacy_agent[0])
+            try:
+                public_agent_card(
+                    {
+                        "id": agent_id,
+                        "name": str(legacy_agent[1]),
+                        "version": str(legacy_agent[2]),
+                        "model_id": legacy_agent[3],
+                        "skills": json.loads(str(legacy_agent[4])),
+                        "max_concurrency": int(legacy_agent[5]),
+                        "capacity": json.loads(str(legacy_agent[6])),
+                        "runtime": str(legacy_agent[7]),
+                        "supported_protocol_version": str(legacy_agent[8]),
+                    }
+                )
+            except (TypeError, ValueError):
+                await db.execute(
+                    """UPDATE agents SET status='unverified',skills_json='[]',
+                              capacity_json='{}',max_concurrency=1,runtime='python',
+                              supported_protocol_version='mongars-worker-v0.9'
+                    WHERE id=?""",
+                    (agent_id,),
+                )
+                await append_audit_event(
+                    db,
+                    "agent.card.quarantined",
+                    {
+                        "agent_id": agent_id,
+                        "reason": "legacy registration outside v0.10 policy",
+                    },
+                    actor_type="control-plane",
+                    actor_id="migration",
+                    created_at=datetime.now(UTC).isoformat(),
+                )
         await db.execute(
             "UPDATE tasks SET title=substr(input, 1, 80) WHERE title='' OR title IS NULL"
         )
@@ -1904,9 +2099,11 @@ class StateService:
         value["skills"] = json.loads(str(value.pop("skills_json")))
         value["capacity"] = json.loads(str(value.pop("capacity_json", "{}")))
         value.pop("auth_token_hash", None)
+        value["agent_card"] = public_agent_card(value).model_dump(mode="json")
         return value
 
     async def register_agent(self, request: AgentCreate, actor_id: str) -> dict[str, Any]:
+        policy = validate_agent_registration(request)
         now = datetime.now(UTC).isoformat()
         agent_id = f"agt_{uuid4().hex}"
         credential = secrets.token_urlsafe(32)
@@ -1918,8 +2115,8 @@ class StateService:
                 INSERT INTO agents(
                     id,name,version,endpoint,model_id,status,skills_json,
                     auth_token_hash,last_heartbeat_at,last_seen_at,max_concurrency,
-                    capacity_json,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    capacity_json,runtime,supported_protocol_version,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     agent_id,
@@ -1928,12 +2125,16 @@ class StateService:
                     str(request.endpoint),
                     request.model_id,
                     "unverified",
-                    json.dumps(request.skills),
+                    json.dumps(policy.skills),
                     credential_hash,
                     None,
                     None,
                     request.max_concurrency,
-                    json.dumps(request.capacity, separators=(",", ":"), sort_keys=True),
+                    json.dumps(
+                        dict(policy.capability_metadata), separators=(",", ":"), sort_keys=True
+                    ),
+                    request.runtime,
+                    policy.protocol,
                     now,
                     now,
                 ),
