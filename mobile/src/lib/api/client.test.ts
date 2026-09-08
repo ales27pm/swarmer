@@ -3,11 +3,13 @@ import { fetch } from "expo/fetch";
 import * as SecureStore from "expo-secure-store";
 
 import {
+  bootstrapSync,
   createTask,
   pairDevice,
   submitToolProposal,
   type Bootstrap,
 } from "@/lib/api/client";
+import { applyBootstrap } from "@/lib/state/replica";
 
 jest.mock("expo-secure-store", () => ({
   deleteItemAsync: jest.fn(),
@@ -24,6 +26,7 @@ const getItem = jest.mocked(SecureStore.getItemAsync);
 const deleteItem = jest.mocked(SecureStore.deleteItemAsync);
 const setItem = jest.mocked(SecureStore.setItemAsync);
 const request = jest.mocked(fetch);
+const mockApplyBootstrap = jest.mocked(applyBootstrap);
 
 const CONNECTION_KEY = "mongars.connection.v1";
 const PENDING_CONNECTION_KEY = "mongars.connection.pending.v1";
@@ -53,6 +56,16 @@ function successfulJson(body: unknown, status = 200) {
     status,
     json: async () => body,
   } as never;
+}
+
+function deferred<T>() {
+  let reject!: (cause?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 function candidateResponse(token = "new-device-token", deviceId = "iphone_test") {
@@ -430,5 +443,118 @@ describe("control-plane connection storage", () => {
         url === "https://new.example/tasks" && init?.method === "POST"),
     ).toHaveLength(0);
     expect(deleteItem).toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
+  });
+});
+
+describe("bootstrap replica commit ordering", () => {
+  const activeConnection = storedConnection(
+    "https://control.example",
+    "device-token",
+  );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockConnections({ [CONNECTION_KEY]: activeConnection });
+    mockApplyBootstrap.mockResolvedValue();
+  });
+
+  it("does not apply an older response after a newer bootstrap begins", async () => {
+    const olderBootstrap = { ...verifiedBootstrap, cursor: "older" };
+    const newerBootstrap = { ...verifiedBootstrap, cursor: "newer" };
+    const olderResponse = deferred<never>();
+    const olderRequestStarted = deferred<void>();
+    request.mockImplementationOnce(() => {
+      olderRequestStarted.resolve();
+      return olderResponse.promise;
+    });
+
+    const olderSync = bootstrapSync();
+    await olderRequestStarted.promise;
+
+    request.mockResolvedValueOnce(successfulJson(newerBootstrap));
+    await expect(bootstrapSync()).resolves.toEqual(newerBootstrap);
+
+    olderResponse.resolve(successfulJson(olderBootstrap));
+    await expect(olderSync).resolves.toEqual(olderBootstrap);
+
+    expect(mockApplyBootstrap).toHaveBeenCalledTimes(1);
+    expect(mockApplyBootstrap).toHaveBeenCalledWith(newerBootstrap);
+  });
+
+  it("returns a blurred caller's response without committing it to the replica", async () => {
+    const response = deferred<never>();
+    const requestStarted = deferred<void>();
+    let isCurrent = true;
+    request.mockImplementationOnce(() => {
+      requestStarted.resolve();
+      return response.promise;
+    });
+
+    const sync = bootstrapSync(() => isCurrent);
+    await requestStarted.promise;
+    isCurrent = false;
+    response.resolve(successfulJson(verifiedBootstrap));
+
+    await expect(sync).resolves.toEqual(verifiedBootstrap);
+    expect(mockApplyBootstrap).not.toHaveBeenCalled();
+  });
+
+  it("serializes replica commits so a newer response finishes last", async () => {
+    const olderBootstrap = { ...verifiedBootstrap, cursor: "older-applying" };
+    const newerBootstrap = { ...verifiedBootstrap, cursor: "newer-waiting" };
+    const releaseOlderApply = deferred<void>();
+    const olderApplyStarted = deferred<void>();
+    const newerBodyRead = deferred<void>();
+    let newerApplyStarted = false;
+    request
+      .mockResolvedValueOnce(successfulJson(olderBootstrap))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => {
+          newerBodyRead.resolve();
+          return newerBootstrap;
+        },
+      } as never);
+    mockApplyBootstrap
+      .mockImplementationOnce(async () => {
+        olderApplyStarted.resolve();
+        await releaseOlderApply.promise;
+      })
+      .mockImplementationOnce(async () => {
+        newerApplyStarted = true;
+      });
+
+    const olderSync = bootstrapSync();
+    await olderApplyStarted.promise;
+    const newerSync = bootstrapSync();
+    await newerBodyRead.promise;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(newerApplyStarted).toBe(false);
+    expect(mockApplyBootstrap).toHaveBeenCalledTimes(1);
+
+    releaseOlderApply.resolve();
+    await expect(Promise.all([olderSync, newerSync])).resolves.toEqual([
+      olderBootstrap,
+      newerBootstrap,
+    ]);
+    expect(mockApplyBootstrap.mock.calls).toEqual([
+      [olderBootstrap],
+      [newerBootstrap],
+    ]);
+  });
+
+  it("still rejects the current sync when its replica commit fails", async () => {
+    const replicaError = new Error("replica unavailable");
+    request.mockResolvedValueOnce(successfulJson(verifiedBootstrap));
+    mockApplyBootstrap.mockRejectedValueOnce(replicaError);
+
+    await expect(bootstrapSync()).rejects.toBe(replicaError);
+
+    const recoveredBootstrap = { ...verifiedBootstrap, cursor: "recovered" };
+    request.mockResolvedValueOnce(successfulJson(recoveredBootstrap));
+    await expect(bootstrapSync()).resolves.toEqual(recoveredBootstrap);
+    expect(mockApplyBootstrap).toHaveBeenLastCalledWith(recoveredBootstrap);
   });
 });

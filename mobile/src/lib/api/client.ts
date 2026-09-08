@@ -40,6 +40,9 @@ const LEGACY_SERVER_URL_KEY = "mongars.server_url";
 const LEGACY_TOKEN_KEY = "mongars.device_token";
 const DEFAULT_SERVER_URL = "http://127.0.0.1:8710";
 
+let latestBootstrapGeneration = 0;
+let bootstrapReplicaApplyTail: Promise<void> = Promise.resolve();
+
 type StoredConnection = {
   baseUrl: string;
   token: string;
@@ -482,9 +485,19 @@ export function listMessages(conversationId: string): Promise<Message[]> {
   return request<Message[]>(`/conversations/${resourceId(conversationId)}/messages`);
 }
 
-export async function bootstrapSync(): Promise<Bootstrap> {
+export async function bootstrapSync(
+  shouldApply: () => boolean = () => true,
+): Promise<Bootstrap> {
+  const generation = ++latestBootstrapGeneration;
   const data = await request<Bootstrap>("/sync/bootstrap");
-  await applyBootstrap(data);
+  const pendingApply = bootstrapReplicaApplyTail
+    .catch(() => undefined)
+    .then(async () => {
+      if (generation !== latestBootstrapGeneration || !shouldApply()) return;
+      await applyBootstrap(data);
+    });
+  bootstrapReplicaApplyTail = pendingApply;
+  await pendingApply;
   return data;
 }
 

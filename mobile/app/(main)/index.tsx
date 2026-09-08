@@ -1,6 +1,6 @@
-import { type Dispatch, useEffect, useReducer } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
-import { useRouter } from "expo-router";
+import { type Dispatch, useCallback, useReducer, useRef } from "react";
+import { AppState, Pressable, Text, TextInput, View } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import {
@@ -98,19 +98,26 @@ function failedAttemptNotice(createdTask: Task | null): string {
     : "Aucune création de tâche n’a été confirmée pour cette tentative.";
 }
 
-async function refreshBootstrap(dispatch: ChatDispatch, updateError = true) {
+async function refreshBootstrap(
+  dispatch: ChatDispatch,
+  updateError = true,
+  isCurrent: () => boolean = () => true,
+) {
+  if (!isCurrent()) return;
   dispatch({ refreshing: true });
   try {
-    const bootstrap = await bootstrapSync();
+    const bootstrap = await bootstrapSync(isCurrent);
+    if (!isCurrent()) return;
     dispatch(updateError ? { bootstrap, error: null } : { bootstrap });
   } catch (cause) {
+    if (!isCurrent()) return;
     dispatch(
       updateError
         ? { bootstrap: null, error: errorMessage(cause) }
         : { bootstrap: null },
     );
   } finally {
-    dispatch({ refreshing: false });
+    if (isCurrent()) dispatch({ refreshing: false });
   }
 }
 
@@ -123,7 +130,11 @@ async function refreshConversation(conversationId: string | undefined, dispatch:
   }
 }
 
-async function submitChatIntent(state: ChatState, dispatch: ChatDispatch) {
+async function submitChatIntent(
+  state: ChatState,
+  dispatch: ChatDispatch,
+  refreshStatus: (updateError?: boolean) => Promise<void>,
+) {
   const content = state.input.trim();
   if (!content || state.busy) return;
 
@@ -152,24 +163,47 @@ async function submitChatIntent(state: ChatState, dispatch: ChatDispatch) {
     dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
   } finally {
     await refreshConversation(activeConversation, dispatch);
-    await refreshBootstrap(dispatch, false);
+    await refreshStatus(false);
     dispatch({ busy: false });
   }
 }
 
 function useChatController() {
   const [state, dispatch] = useReducer(mergeChatState, INITIAL_CHAT_STATE);
+  const refreshEpoch = useRef(0);
   useAccessibilityAnnouncement(state.notice);
 
-  useEffect(() => {
-    void refreshBootstrap(dispatch, false);
-  }, [dispatch]);
+  const refreshStatus = useCallback(
+    (updateError = true) => {
+      const requestEpoch = ++refreshEpoch.current;
+      return refreshBootstrap(
+        dispatch,
+        updateError,
+        () => requestEpoch === refreshEpoch.current,
+      );
+    },
+    [dispatch],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshStatus(false);
+      const subscription = AppState.addEventListener("change", (nextState) => {
+        if (nextState === "active") void refreshStatus(false);
+      });
+
+      return () => {
+        refreshEpoch.current += 1;
+        subscription.remove();
+      };
+    }, [refreshStatus]),
+  );
 
   return {
     ...state,
-    refreshStatus: (updateError = true) => refreshBootstrap(dispatch, updateError),
+    refreshStatus,
     setInput: (input: string) => dispatch({ input }),
-    submit: () => submitChatIntent(state, dispatch),
+    submit: () => submitChatIntent(state, dispatch, refreshStatus),
   };
 }
 

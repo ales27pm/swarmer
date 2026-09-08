@@ -1,5 +1,6 @@
-import { render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { act, render, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { AppState, type AppStateStatus } from "react-native";
 
 import ChatScreen from "@/../app/(main)/index";
 import {
@@ -14,8 +15,34 @@ import {
 } from "@/lib/api/client";
 
 const mockPush = jest.fn();
+let mockFocusEffect: (() => void | (() => void)) | undefined;
+let mockFocusCleanup: (() => void) | undefined;
+let mockAppStateListener: ((state: AppStateStatus) => void) | undefined;
+const mockRemoveAppStateListener = jest.fn();
 
-jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }) }));
+jest.spyOn(AppState, "addEventListener").mockImplementation((_event, listener) => {
+  mockAppStateListener = listener;
+  return { remove: mockRemoveAppStateListener };
+});
+
+jest.mock("expo-router", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+
+  return {
+    useRouter: () => ({ push: mockPush }),
+    useFocusEffect: (effect: () => void | (() => void)) => {
+      mockFocusEffect = effect;
+      React.useEffect(() => {
+        const cleanup = effect();
+        mockFocusCleanup = typeof cleanup === "function" ? cleanup : undefined;
+        return () => {
+          mockFocusCleanup?.();
+          mockFocusCleanup = undefined;
+        };
+      }, [effect]);
+    },
+  };
+});
 jest.mock("@/lib/api/client", () => ({
   bootstrapSync: jest.fn(),
   listMessages: jest.fn(),
@@ -101,9 +128,30 @@ const mockListMessages = jest.mocked(listMessages);
 const mockPlanTask = jest.mocked(planTask);
 const mockSendChat = jest.mocked(sendChat);
 
+function deferred<T>() {
+  let reject!: (cause?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+async function refocusChat() {
+  await act(async () => {
+    mockFocusCleanup?.();
+    const cleanup = mockFocusEffect?.();
+    mockFocusCleanup = typeof cleanup === "function" ? cleanup : undefined;
+  });
+}
+
 describe("ChatScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFocusEffect = undefined;
+    mockFocusCleanup = undefined;
+    mockAppStateListener = undefined;
     mockBootstrap.mockResolvedValue(bootstrap);
     mockListMessages.mockResolvedValue([message]);
     mockSendChat.mockResolvedValue({ conversation_id: "conv_test", task });
@@ -112,6 +160,62 @@ describe("ChatScreen", () => {
       proposal: { tool_name: "none", arguments: {}, summary: "Proposal only" },
       task: { ...task, status: "planned" },
     });
+  });
+
+  it("refreshes authentication when Chat regains focus after pairing", async () => {
+    mockBootstrap.mockRejectedValueOnce(new Error("Non jumelé"));
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Control plane injoignable ou non jumelé")).toBeOnTheScreen();
+    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    expect(screen.getByRole("button", { name: "Envoyer" })).toBeDisabled();
+
+    mockBootstrap.mockResolvedValue(bootstrap);
+    await refocusChat();
+
+    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Envoyer" })).toBeEnabled();
+    expect(mockBootstrap).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a stale failed refresh after a newer authenticated focus", async () => {
+    const firstRefresh = deferred<Bootstrap>();
+    mockBootstrap.mockReset();
+    mockBootstrap.mockReturnValueOnce(firstRefresh.promise).mockResolvedValueOnce(bootstrap);
+    await render(<ChatScreen />);
+
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Control plane injoignable ou non jumelé")).toBeOnTheScreen();
+
+    await refocusChat();
+    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+
+    await act(async () => {
+      firstRefresh.reject(new Error("Ancienne requête en échec"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(screen.queryByText("Control plane injoignable ou non jumelé")).not.toBeOnTheScreen();
+  });
+
+  it("refreshes authentication when iOS becomes active while Chat stays focused", async () => {
+    mockBootstrap.mockRejectedValueOnce(new Error("Réseau suspendu"));
+    const rendered = await render(<ChatScreen />);
+
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Control plane injoignable ou non jumelé")).toBeOnTheScreen();
+
+    mockBootstrap.mockResolvedValue(bootstrap);
+    await act(async () => {
+      mockAppStateListener?.("active");
+    });
+
+    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    await rendered.unmount();
+    expect(mockRemoveAppStateListener).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a persisted proposal-only model message explicitly unverified", async () => {

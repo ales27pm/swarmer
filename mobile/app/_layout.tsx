@@ -12,7 +12,10 @@ export default function RootLayout() {
       }}
     >
       <Stack.Screen name="(main)" options={{ headerShown: false }} />
-      <Stack.Screen name="local-model" options={{ title: "Modèle local" }} />
+      <Stack.Screen
+        name="local-model"
+        options={{ headerBackTitle: "Réglages", title: "Modèle local" }}
+      />
       <Stack.Screen name="task/[id]" options={{ title: "Tâche" }} />
     </Stack>
   );

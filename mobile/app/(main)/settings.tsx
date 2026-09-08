@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Text, TextInput, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { useRouter } from "expo-router";
@@ -205,6 +205,7 @@ function errorMessage(cause: unknown): string {
 }
 
 function useAuthenticatedDashboard(setUrl: Dispatch<SetStateAction<string>>) {
+  const requestEpoch = useRef(0);
   const [activeUrl, setActiveUrl] = useState<string | null>(null);
   const [paired, setPaired] = useState(false);
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
@@ -213,18 +214,30 @@ function useAuthenticatedDashboard(setUrl: Dispatch<SetStateAction<string>>) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshAuthenticatedData = useCallback(async () => {
+  const refreshAuthenticatedData = useCallback(async (epoch: number) => {
     setPaired(false);
     setActiveUrl(null);
     setBootstrap(null);
     setAudit([]);
     setAuditLoaded(false);
     const isPaired = await hasDeviceToken();
+    if (epoch !== requestEpoch.current) {
+      return;
+    }
     if (!isPaired) {
       return;
     }
-    const [summary, events] = await Promise.all([bootstrapSync(), listAudit(15)]);
+    const [summary, events] = await Promise.all([
+      bootstrapSync(() => epoch === requestEpoch.current),
+      listAudit(15),
+    ]);
+    if (epoch !== requestEpoch.current) {
+      return;
+    }
     const currentUrl = await getServerUrl();
+    if (epoch !== requestEpoch.current) {
+      return;
+    }
     setBootstrap(summary);
     setAudit(events);
     setAuditLoaded(true);
@@ -233,18 +246,25 @@ function useAuthenticatedDashboard(setUrl: Dispatch<SetStateAction<string>>) {
   }, []);
 
   const refreshDashboard = useCallback(async () => {
+    const epoch = ++requestEpoch.current;
     setRefreshing(true);
     setError(null);
     try {
-      await refreshAuthenticatedData();
+      await refreshAuthenticatedData(epoch);
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (epoch === requestEpoch.current) {
+        setError(errorMessage(cause));
+      }
     } finally {
-      setRefreshing(false);
+      if (epoch === requestEpoch.current) {
+        setRefreshing(false);
+      }
     }
   }, [refreshAuthenticatedData]);
 
   const adoptVerifiedConnection = useCallback((summary: Bootstrap, currentUrl: string) => {
+    requestEpoch.current += 1;
+    setRefreshing(false);
     setError(null);
     setBootstrap(summary);
     setAudit([]);
@@ -254,15 +274,31 @@ function useAuthenticatedDashboard(setUrl: Dispatch<SetStateAction<string>>) {
   }, []);
 
   useEffect(() => {
+    const epoch = ++requestEpoch.current;
     void (async () => {
       try {
-        setUrl(await getServerUrl());
-        await refreshDashboard();
+        const currentUrl = await getServerUrl();
+        if (epoch !== requestEpoch.current) {
+          return;
+        }
+        setUrl(currentUrl);
+        setRefreshing(true);
+        setError(null);
+        await refreshAuthenticatedData(epoch);
       } catch (cause) {
-        setError(errorMessage(cause));
+        if (epoch === requestEpoch.current) {
+          setError(errorMessage(cause));
+        }
+      } finally {
+        if (epoch === requestEpoch.current) {
+          setRefreshing(false);
+        }
       }
     })();
-  }, [refreshDashboard, setUrl]);
+    return () => {
+      requestEpoch.current += 1;
+    };
+  }, [refreshAuthenticatedData, setUrl]);
 
   return {
     activeUrl,

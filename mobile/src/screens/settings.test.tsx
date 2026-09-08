@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { act, render, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 import SettingsScreen from "@/../app/(main)/settings";
@@ -150,6 +150,68 @@ describe("SettingsScreen", () => {
     expect(mockBootstrap).toHaveBeenCalledTimes(1);
     expect(mockListAudit).toHaveBeenCalledTimes(1);
     expect(mockGetServerUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let an older initial refresh overwrite a successful pairing", async () => {
+    let resolveInitialBootstrap!: (value: Bootstrap) => void;
+    const initialBootstrap = new Promise<Bootstrap>((resolve) => {
+      resolveInitialBootstrap = resolve;
+    });
+    const pairedBootstrap: Bootstrap = {
+      ...bootstrap,
+      counts: { ...bootstrap.counts, tasks: 9 },
+      cursor: "9",
+    };
+    mockBootstrap.mockReturnValue(initialBootstrap);
+    mockListAudit.mockResolvedValue([oldAuditEvent]);
+    mockPairDevice.mockResolvedValue({
+      bootstrap: pairedBootstrap,
+      serverUrl: "https://candidate.example",
+    });
+    const user = userEvent.setup();
+    await render(<SettingsScreen />);
+
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    await user.clear(screen.getByLabelText("Adresse du control plane"));
+    await user.type(
+      screen.getByLabelText("Adresse du control plane"),
+      "https://candidate.example",
+    );
+    await user.type(screen.getByLabelText("Code de jumelage à six chiffres"), "123456");
+    await user.press(screen.getByRole("button", { name: "Jumeler cet iPhone" }));
+
+    expect(await screen.findByText(/Jumelage réussi/)).toBeOnTheScreen();
+    expect(
+      screen.getByText("Connexion authentifiée : https://candidate.example"),
+    ).toBeOnTheScreen();
+
+    await act(() => {
+      resolveInitialBootstrap(bootstrap);
+    });
+
+    expect(
+      screen.getByText("Connexion authentifiée : https://candidate.example"),
+    ).toBeOnTheScreen();
+    expect(screen.getByText("9")).toBeOnTheScreen();
+    expect(screen.queryByText("old.origin.event")).not.toBeOnTheScreen();
+    expect(mockGetServerUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates an initial refresh when Settings unmounts", async () => {
+    let resolveInitialBootstrap!: (value: Bootstrap) => void;
+    const initialBootstrap = new Promise<Bootstrap>((resolve) => {
+      resolveInitialBootstrap = resolve;
+    });
+    mockBootstrap.mockReturnValue(initialBootstrap);
+    await render(<SettingsScreen />);
+
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    await screen.unmount();
+    await act(() => {
+      resolveInitialBootstrap(bootstrap);
+    });
+
+    expect(mockGetServerUrl).toHaveBeenCalledTimes(1);
   });
 
   it("separates the authenticated origin from an edited pairing candidate", async () => {
