@@ -207,6 +207,10 @@ physique. Sur un hôte qui ne satisfait pas le minimum Xcode d'Expo SDK 57,
 prébuild et analyse statique ne constituent pas une preuve de compilation;
 utiliser EAS Build ou un Mac compatible.
 
+Le profil EAS `cloud-release` transmet `-skipMacroValidation` à Fastlane/Xcode:
+le macro `MLXHuggingFaceMacros` provient de la version exacte et auditée de
+`mlx-swift-lm`. Ne pas étendre ce contournement à des dépendances non épinglées.
+
 Dans l'app, ouvrir Réglages puis « Ouvrir les modèles locaux ». Pour Core ML,
 sélectionner un dossier contenant exactement un modèle `.mlmodel`, `.mlpackage`
 ou `.mlmodelc` ainsi que `tokenizer.json` et `tokenizer_config.json`; llama.cpp

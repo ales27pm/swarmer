@@ -23,7 +23,10 @@
     },
     "cloud-release": {
       "extends": "production",
-      "credentialsSource": "remote"
+      "credentialsSource": "remote",
+      "env": {
+        "GYM_XCARGS": "-skipMacroValidation"
+      }
     }
   },
   "submit": {
