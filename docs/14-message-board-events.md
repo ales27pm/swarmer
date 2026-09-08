@@ -2,158 +2,163 @@
 
 ## Objectif
 
-Standardiser les messages entre orchestrateur, agents, gateway, state, memory, iPhone broker et feedback service.
+Standardiser les événements internes entre orchestrateur, workers, gateway,
+state, capability broker et UI sans confondre le board SQLite avec le canal
+WebSocket mobile.
 
-## État du runtime `0.8`
+## IMPLEMENTED — runtime `0.9.0`
 
-Le serveur expose un WebSocket authentifié par ticket à usage unique auquel le
-mobile se reconnecte avec bootstrap autoritatif. Le message board persiste les
-événements `published`, `claimed`, `heartbeat`, `acked` et `failed` dans SQLite
-derrière une interface remplaçable. Redis Streams/NATS, les consumer groups et
-le dead-letter stream restent roadmap.
+Le runtime possède deux mécanismes distincts:
 
-## Enveloppe WebSocket actuelle
+1. `outbox_events` et `message_board_events`, durables dans la base SQLite
+   autoritative;
+2. `/ws`, canal best-effort authentifié par ticket unique pour rafraîchir l'UI.
 
-Le contrat exécutable `schemas/event-envelope.schema.json` contient seulement:
+Redis Streams, NATS, consumer groups et une dead-letter queue externe restent
+**PLANNED**.
+
+## Outbox transactionnelle
+
+Une transition de job, tâche ou capability insère son audit et son entrée
+`outbox_events` dans le même `BEGIN IMMEDIATE`. Le commit de l'état ne dépend
+donc pas de la disponibilité momentanée du board.
+
+Le drain lit les entrées sans `published_at` par identifiant croissant, publie
+leur payload dans `message_board_events`, puis marque l'outbox. La livraison est
+au moins une fois. `dedupe_key`, unique dans les deux tables, rend sûr un crash
+après publication mais avant marquage: le rejeu récupère l'événement existant.
+Un échec incrémente `attempts` et conserve seulement une classe d'erreur
+expurgée. Le drain s'exécute au démarrage, après les transitions et dans la
+boucle de maintenance.
+
+Ce mécanisme garantit la persistance locale et la déduplication; il ne garantit
+ni diffusion réseau, ni consumer group, ni ordre global inter-topic.
+
+## Enveloppe du board SQLite
+
+Une ligne matérialisée contient:
 
 ```json
 {
-  "type": "task.updated",
-  "payload": {}
-}
-```
-
-Les types publiés par le serveur sont `connected`, `task.updated`,
-`tool.proposed`, `tool.updated`, `tool.completed`, `tool.failed`,
-`tool.execution_rejected`, `tool.outcome_uncertain`, `tool.denied`,
-`approval.requested`, `approval.decided` et `orchestrator.proposed`.
-
-## Enveloppe durable cible (roadmap)
-
-Le futur message board durable devra suivre:
-
-```json
-{
-  "id": "evt_...",
-  "type": "task.status",
-  "trace_id": "trc_...",
+  "id": 42,
+  "topic": "tasks.status",
+  "event_type": "lease_expired",
+  "message_id": "job_...",
+  "agent_id": "agt_...",
   "task_id": "tsk_...",
-  "agent_id": "agent_...",
-  "producer": "code-worker-01",
-  "timestamp": "2026-09-04T11:30:00Z",
-  "schema_version": "1.0",
-  "payload": {}
+  "payload": {"job_id": "job_...", "lease_generation": 2},
+  "created_at": "2026-09-08T13:00:00Z",
+  "dedupe_key": "agent-job:job_...:lease-expired:2"
 }
 ```
 
-## Types d'événements cibles (roadmap)
+Types acceptés par l'implémentation:
 
-### Task
+- `published`, `claimed`, `heartbeat`, `acked`, `failed`, `cancelled`;
+- `lease_expired`, `dead_lettered`;
+- `capability_requested`, `capability_authorized`,
+  `capability_consumed`, `capability_result`.
 
-- `task.created`
-- `task.planned`
-- `task.assigned`
-- `task.started`
-- `task.progress`
-- `task.blocked`
-- `task.completed`
-- `task.failed`
-- `task.cancelled`
+Topics produits dans le slice:
 
-### Approval et exécution
+| Topic | Événements principaux |
+|---|---|
+| `tasks.inbox` | publication, claim et remise en file d'une job |
+| `tasks.status` | résultat, annulation, expiration de lease, dead letter |
+| `agents.heartbeat` | heartbeat d'une lease de job |
+| `iphone.capabilities` | demande, autorisation et consommation |
+| `agent.job.capability.result` | résultat, expiration ou annulation vers le worker |
 
-- `approval.requested`
-- `approval.decided`
-- `approval.expired`
-- `tool.denied`
-- `tool.completed`
-- `tool.failed`
-- `execution.not_started`
-- `execution.interrupted`
+Pour un résultat iPhone, le board ne conserve que `request_id` et `status`. La
+valeur native validée reste dans la table de résultats SQLite et n'est renvoyée
+qu'au worker autorisé par le poll sous lease.
 
-### Agent
+Le board est une interface remplaçable, mais l'unique implémentation livrée est
+SQLite. Les workers actuels utilisent l'API HTTP authentifiée pour claim,
+heartbeat, résultat et poll; ils ne consomment pas un stream Redis caché.
 
-- `agent.registered`
-- `agent.heartbeat`
-- `agent.offline`
-- `agent.error`
+## Leases, retry et dead letter locaux
 
-### Memory
+Une claim crée un token opaque conservé seulement sous forme de hash, un
+`lease_id`, une date d'expiration et une génération. Le heartbeat renouvelle la
+date. Une preuve ancienne ou étrangère reçoit `409`.
 
-- `memory.search.requested`
-- `memory.search.completed`
-- `memory.write.candidate`
-- `memory.write.accepted`
-- `memory.write.rejected`
+Le reaper émet `lease_expired`, puis:
 
-### iPhone
+- remet en file uniquement `workspace.list_dir` ou `workspace.read_text` si le
+  budget de tentatives reste disponible et si la génération n'a aucune activité
+  de capability iPhone;
+- annule si la tâche parente est déjà terminale;
+- sinon échoue la job/tâche, qualifie l'issue d'incertaine lorsque nécessaire et
+  écrit `dead_lettered` dans `tasks.status`.
 
-- `iphone.capability.requested`
-- `iphone.capability.approved`
-- `iphone.capability.completed`
-- `iphone.capability.failed`
+Ce dernier événement est une preuve locale observable, pas une file externe à
+rejouer automatiquement.
 
-### Feedback
+Le renouvellement de lease reste enregistré à chaque heartbeat dans
+`agent_jobs`. L'événement durable `agents.heartbeat` est en revanche dédupliqué
+par job et génération: la fréquence de renouvellement ne fait pas croître
+indéfiniment l'outbox et le board.
 
-- `feedback.created`
-- `feedback.scored`
-- `dataset.example.created`
+## WebSocket mobile best-effort
 
-### Audit
-
-- `audit.recorded`
-
-## Clés Redis cibles (roadmap)
-
-```yaml
-streams:
-  tasks_inbox: tasks.inbox
-  tasks_status: tasks.status
-  permission_requests: permission.requests
-  permission_decisions: permission.decisions
-  agents_heartbeat: agents.heartbeat
-  memory_events: memory.events
-  iphone_requests: iphone.requests
-  iphone_results: iphone.results
-  feedback_events: feedback.events
-  audit_events: audit.events
-```
-
-## Consumer groups cibles (roadmap)
-
-```yaml
-consumer_groups:
-  orchestrator: cg.orchestrator
-  workers: cg.workers
-  mobile_push: cg.mobile_push
-  feedback: cg.feedback
-  audit: cg.audit
-```
-
-## Idempotency cible (roadmap)
-
-Chaque consumer doit stocker les event ids traités. Un event répété ne doit pas causer une double action.
-
-## Ordering cible (roadmap)
-
-- `task_id` conserve l'ordre logique via `created_at` + `seq`.
-- Ne pas dépendre de l'ordre global de tous les streams.
-- Les décisions permission doivent inclure approval id et action hash.
-
-## Dead letter cible (roadmap)
-
-Events invalides vont dans:
-
-```text
-errors.deadletter
-```
-
-Payload:
+Le contrat exécutable `schemas/event-envelope.schema.json` garde l'enveloppe
+minimale:
 
 ```json
-{
-  "original_event": {},
-  "error": "schema_validation_failed",
-  "consumer": "code-worker-01"
-}
+{"type": "task.updated", "payload": {}}
 ```
+
+Les types actuellement émis sont:
+
+- `connected`, `task.updated`, `message.created`, `orchestrator.proposed`;
+- `tool.proposed`, `tool.updated`, `tool.completed`, `tool.failed`,
+  `tool.execution_rejected`, `tool.outcome_uncertain`, `tool.denied`;
+- `approval.requested`, `approval.decided`;
+- `agent.job.queued`, `agent.job.claimed`, `agent.job.completed`,
+  `agent.job.failed`;
+- `iphone.capability.requested`, `iphone.capability.updated`.
+
+Les événements iPhone sont envoyés seulement au device ciblé.
+`iphone.capability.requested` transporte `request_id`, `capability_name`,
+`expires_at` et `preview.arguments_redacted: true`;
+`iphone.capability.updated` transporte uniquement `request_id`. Aucun argument,
+résultat natif, bearer ou grant n'entre dans la notification. Après reconnexion,
+le client fait un bootstrap ou un `GET` REST autoritatif; le WebSocket n'est ni
+un journal complet, ni une preuve de succès.
+
+## Ordering et idempotence
+
+- L'identifiant SQLite fournit l'ordre de matérialisation local du board.
+- L'ordre métier d'une job repose sur son état et sa `lease_generation`, pas sur
+  un ordre global de tous les topics.
+- Les transitions terminales sont conditionnelles et les résultats de job ou
+  de capability n'acceptent qu'un rejeu strictement identique.
+- Une demande capability identique sous la même job/génération est dédupliquée
+  avant publication; des arguments différents créent une demande distincte.
+- Une reprise `approve` avant consommation fait tourner le grant non consommé;
+  le secret remplacé ne peut plus être utilisé.
+- Les décisions sensibles restent liées à l'identifiant d'approbation et au
+  digest canonique de l'action.
+
+## Observabilité locale
+
+`GET /status`, authentifié comme les autres ressources, expose les compteurs
+`queued_jobs`, `leased_jobs`, `dead_letter_jobs`, `expired_leases`, `retries`,
+`dead_letter_events`, `pending_outbox_events` et
+`pending_capability_requests`. Ces compteurs décrivent l'état SQLite local; ils
+ne prouvent ni livraison réseau ni disponibilité d'un bus externe.
+
+## PLANNED — bus externe
+
+Une migration vers Redis Streams ou NATS JetStream devra définir explicitement:
+
+- consumer groups et acknowledgements;
+- partitionnement/ordre par agrégat;
+- propagation inter-hôtes et reprise;
+- dead-letter queue externe et politique opérateur;
+- idempotence durable des consommateurs hors SQLite;
+- observabilité et limites de rétention.
+
+Aucun nom de stream futur ne doit être présenté comme une dépendance active du
+runtime `0.9.0`.

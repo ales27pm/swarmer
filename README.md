@@ -1,7 +1,7 @@
 # monGARS Swarm App — Build Documents
 
-Version: 0.8 distributed-foundation MVP
-Date: 2026-09-04  
+Version: 0.9.0 leased-swarm + iPhone capability transport
+Date: 2026-09-08
 Owner: ales27pm / 27PM  
 Target: iPhone Expo app + Ubuntu local AI control plane + distributed autonomous swarm
 
@@ -50,20 +50,43 @@ modèle et d'exécution:
   sensibles restent verrouillées sans preuve serveur fraîche;
 - tâches enrichies, conversations/messages, appels d'outils, approbations,
   mémoire, agents, audit chaîné par hash et feedback;
-- message board durable SQLite derrière une interface remplaçable, jobs d'agents
-  revendiqués atomiquement par compétence, authentification agent, heartbeat et
-  résultats terminaux idempotents; Redis Streams/NATS et la reprise de lease
-  multi-hôte restent planifiés;
+- message board durable SQLite et outbox transactionnelle dans la même base que
+  l'état. Une clé de déduplication rend la livraison au board rejouable sans
+  doubler l'événement. Les jobs sont revendiqués atomiquement par compétence,
+  avec une seule exécution distante active par tâche, capacité déclarée,
+  credential agent, lease opaque expirante et génération de fencing. Le reaper
+  ne remet automatiquement en file que `workspace.list_dir` et
+  `workspace.read_text`, dans une limite de tentatives et seulement si la
+  génération expirée n'a eu aucune activité de capability iPhone. Toute autre
+  expiration est traitée comme un résultat potentiellement incertain, échoue et
+  est auditée. Les heartbeats renouvellent toujours l'état autoritatif, mais leur
+  publication durable est coalescée par job et génération. Redis Streams/NATS
+  et le bus multi-hôte restent planifiés;
 - recherche mémoire lexicale conservée avec architecture d'embeddings et ranking
   hybride lorsqu'un provider est configuré; aucun moteur vectoriel externe n'est
   requis ni annoncé;
 - réplica iPhone étendue aux tâches, approbations, appels d'outils,
   conversations/messages, agents, mémoire épinglée et métadonnées d'audit. Cette
   réplica n'autorise jamais une action sensible;
-- fondation typée du Capability Broker pour position, contacts, calendrier,
-  sélection de photo et composition mail/SMS. Chaque appel exige d'abord une
-  autorisation Gateway fraîche, puis la permission iOS; mail et SMS ouvrent une
-  composition et ne sont pas envoyés silencieusement;
+- transport corrélé du Capability Broker pour position, contacts, calendrier,
+  sélection de photo et composition mail/SMS. Un worker ne peut créer ou sonder
+  une demande qu'avec sa lease active. Seul l'iPhone ciblé peut décider, puis
+  consommer un grant opaque, court et à usage unique, lié au digest exact de
+  l'action, avant d'appeler l'API native. Une reprise d'approbation avant
+  consommation fait tourner ce grant et invalide le secret précédent.
+  L'événement WebSocket initial expose
+  seulement l'identifiant, le nom de capability, l'expiration et un marqueur
+  d'arguments expurgés; les mises à jour n'exposent que l'identifiant. Le détail
+  autoritatif vient de REST. Mail et SMS
+  ouvrent une composition visible et ne sont pas envoyés silencieusement. Le
+  code et les contrats sont implémentés; les dialogues de permission et
+  l'exécution sur iPhone physique restent à prouver séparément;
+- le workflow mobile de capability reste lié à l'origine serveur et au bearer
+  d'appareil exacts observés lors de son démarrage. L'app ne persiste ni grant ni
+  résultat sensible; elle ne conserve en mémoire qu'une reprise bornée du POST
+  de résultat après exécution native. Une terminaison de l'app entre l'action
+  iOS et ce POST laisse donc l'issue inconnue côté Ubuntu, sans réexécution
+  automatique;
 - export JSONL de corrections revues avec expurgation de chemins protégés et de
   secrets; le scoring avancé reste à compléter;
 - planification par le modèle local sans minuterie ni succès simulé: seul un
@@ -149,13 +172,14 @@ Ubuntu — présent dans le MVP:
 
 - FastAPI control plane
 - llama.cpp/Ollama/vLLM-compatible OpenAI local endpoint
-- SQLite WAL au MVP, Postgres ensuite
+- SQLite WAL autoritatif; Postgres n'est pas branché
 - append-only audit log
 - pytest + ruff + mypy + bandit
 
 Ubuntu — évolutions ciblées, non annoncées comme déjà livrées:
 
-- Redis Streams/NATS multi-hôte, leases/reprise de workers et ordonnanceur autonome
+- Redis Streams/NATS multi-hôte, consumer groups et ordonnanceur autonome
+- migration Postgres si plusieurs writers deviennent nécessaires
 - mémoire vectorielle FAISS ou Qdrant; le MVP utilise SQLite et un ranking hybride optionnel
 
 ## Non-objectifs du MVP

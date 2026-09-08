@@ -96,12 +96,15 @@ fi
 printf 'check: running server format, lint, type, test, and security gates\n'
 (
   cd "$SERVER_DIR"
-  "$SERVER_BIN/ruff" format --check . "$ROOT/scripts/validate_openapi.py"
-  "$SERVER_BIN/ruff" check . "$ROOT/scripts/validate_openapi.py"
+  "$SERVER_BIN/ruff" format --check . "$ROOT/scripts/validate_openapi.py" "$ROOT/workers/file-worker"
+  "$SERVER_BIN/ruff" check . "$ROOT/scripts/validate_openapi.py" "$ROOT/workers/file-worker"
   "$SERVER_BIN/mypy" app
   MYPYPATH="$SERVER_DIR" "$SERVER_BIN/mypy" --strict "$ROOT/scripts/validate_openapi.py"
+  "$SERVER_BIN/mypy" --strict "$ROOT/workers/file-worker/file_worker.py"
   "$SERVER_BIN/pytest" -q
+  "$SERVER_BIN/pytest" -q "$ROOT/workers/file-worker/test_file_worker_v09.py"
   "$SERVER_BIN/bandit" -r app
+  "$SERVER_BIN/bandit" "$ROOT/workers/file-worker/file_worker.py"
 )
 
 printf 'check: validating the committed OpenAPI contract against FastAPI\n'

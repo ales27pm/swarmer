@@ -1,8 +1,10 @@
 # 23 — Implementation Plan
 
 > **Statut:** ordre de construction historique et architecture cible. Le contrat
-> courant est l'OpenAPI `0.8.0`; les capacités livrées et les limites vérifiées
-> sont suivies dans `docs/21-acceptance-criteria.md`.
+> courant est l'OpenAPI `0.9.0`. `docs/21-acceptance-criteria.md` documente
+> encore les preuves du slice `0.7` et ne valide pas à lui seul cette release.
+> Les mentions Redis/NATS ou Postgres ci-dessous sont **PLANNED**, jamais une
+> dépendance cachée du runtime.
 
 ## Ordre cible historique
 
@@ -104,10 +106,24 @@ Roadmap:
 
 ### Step 10 — Message board
 
-- Redis Streams.
-- Event bus abstraction.
-- Worker consumer.
-- Agent heartbeat.
+IMPLEMENTED en `0.9.0`:
+
+- interface de board et implémentation SQLite durable;
+- outbox transactionnelle, livraison au moins une fois et déduplication;
+- protocole worker HTTP authentifié, capacité et scheduler déterministe;
+- une job distante active par tâche;
+- lease opaque hashée, id/génération/expiration, heartbeat et fencing;
+- reaper: retry automatique borné seulement pour les lectures sans aucune
+  activité de capability iPhone dans la génération expirée; sinon échec avec
+  issue potentiellement incertaine et dead letter locale;
+- heartbeat autoritatif à chaque renouvellement, publication durable coalescée
+  par job et génération.
+
+PLANNED:
+
+- Redis Streams ou NATS JetStream multi-hôte;
+- consumer groups réseau, partitionnement et dead-letter queue externe;
+- ordonnanceur autonome au-delà de la claim déterministe.
 
 ### Step 11 — Memory
 
@@ -119,11 +135,27 @@ Roadmap:
 
 ### Step 12 — iPhone bridge
 
-- Location.
-- Contacts.
-- Calendar.
-- Photos picker.
-- Broker request/response.
+IMPLEMENTED en `0.9.0`:
+
+- `iphone.location.current`, `iphone.contacts.lookup`,
+  `iphone.calendar.events`, `iphone.photos.pick`;
+- `iphone.mail.compose` et `iphone.sms.compose` avec UI native visible;
+- création/poll par worker sous lease;
+- liste/détail/décision/consommation/résultat par l'iPhone ciblé;
+- création identique dédupliquée par fingerprint; reprise d'approbation par
+  rotation du grant non consommé;
+- grant court à usage unique, digest exact et résultat idempotent;
+- notification `iphone.capability.requested` avec identifiant, capability,
+  expiration et marqueur d'arguments expurgés; mise à jour avec `request_id`
+  seulement.
+
+VALIDATION PENDING: permissions, dialogues et exécution native sur iPhone
+physique; un build ou un test unitaire ne remplace pas cette preuve.
+
+PLANNED:
+
+- calendrier en écriture, caméra, audio, notifications, documents et appels;
+- push externe et reprise multi-hôte.
 
 ### Step 13 — Feedback/evals
 
@@ -144,14 +176,15 @@ Roadmap:
 - Ne pas commencer par le on-device LLM. Commencer par la boucle app ↔ Ubuntu ↔ task ↔ approval.
 - Les modèles peuvent être branchés après les schémas/gateway.
 - Les agents doivent être testables avec fake model output.
-- Les iPhone capabilities viennent après le broker et les approvals.
+- Toute nouvelle iPhone capability vient après sa règle Gateway, son schéma, ses
+  tests et son UI d'approbation. Un worker ne reçoit jamais le bearer du device.
 
 ## First vertical slice
 
-La première tranche utile:
+La première tranche utile est implémentée avec le worker de lecture:
 
 > Depuis iPhone, demander “liste les fichiers du projet X”; Ubuntu crée tâche; worker lit seulement le dossier autorisé; retourne résultat; feedback enregistré.
 
-Deuxième tranche:
+Deuxième tranche, encore locale et soumise à approbation:
 
 > Demander “modifie tel fichier”; worker propose diff; gateway demande permission; iPhone approuve; patch appliqué; tests lancés; audit enregistré.

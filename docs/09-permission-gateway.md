@@ -1,10 +1,12 @@
 # 09 — Permission Gateway
 
-> **Statut:** la politique ci-dessous décrit la cible. Le slice `0.6` impose
-> actuellement une approbation ponctuelle à `workspace.write_text` et
-> `process.run`, autorise les outils de lecture validés, et ne livre ni
-> `Allow rule` ni édition de scope. Le comportement exécutable est défini dans
-> `server/app/services/execution_engine.py` et `configs/permissions.yaml`.
+> **IMPLEMENTED — slice `0.9.0`:** approbations ponctuelles non rejouables pour
+> `workspace.write_text` et `process.run`, lectures validées par règle, ainsi
+> que grants iPhone courts, liés au digest et consommables une fois. `Allow
+> rule` et l'édition de scope restent **PLANNED**. Le comportement exécutable est
+> défini dans `server/app/services/execution_engine.py`,
+> `server/app/services/iphone_capability_service.py` et
+> `configs/permissions.yaml`.
 
 ## Objectif
 
@@ -121,6 +123,53 @@ Actions:
 
 `Allow rule` et l'édition de scope restent roadmap.
 
+## Grants de capability iPhone — IMPLEMENTED
+
+Les règles `capability_rules` couvrent exactement les six capabilities
+`iphone.*` actuellement supportées et ont toutes la décision `ask`. Elles sont
+séparées des règles d'outils: une permission de lecture du workspace ne donne
+aucun droit sur l'iPhone.
+
+La demande est créée uniquement par un agent authentifié qui prouve une job et
+une lease encore actives. Le serveur lie atomiquement:
+
+- l'identifiant de demande, de tâche, de job, d'agent et de génération de lease;
+- l'iPhone ciblé, choisi par la source authentifiée de la tâche, ou par l'unique
+  appareil jumelé quand ce choix reste non ambigu;
+- le nom de capability, les arguments canoniques et leur digest SHA-256;
+- un fingerprint interne qui déduplique les créations identiques pour cette
+  job et cette génération tant qu'elles restent non terminales;
+- la règle, le risque, l'expiration, l'identifiant d'approbation et l'événement
+  d'audit monotone.
+
+Le WebSocket `iphone.capability.requested` ciblé contient `request_id`,
+`capability_name`, `expires_at` et `preview.arguments_redacted: true`, sans
+arguments. `iphone.capability.updated` contient uniquement `request_id`.
+L'iPhone relit le détail autoritatif avec son bearer, puis `approve` ou `deny`.
+Une approbation retourne un grant opaque seulement dans cette réponse; les
+lectures exposent toujours `grant: null`. Si cette réponse est perdue, répéter
+`approve` avant consommation fait tourner atomiquement le grant et invalide le
+secret précédent. Une décision différente, un grant déjà consommé ou un état
+terminal ne sont pas rejoués. Le serveur ne conserve que le digest du grant
+actuel. Celui-ci expire au plus tôt entre la demande et le TTL de grant (90
+secondes par défaut), porte `use: once` et reste lié au device, à la capability,
+à l'approbation et au digest exact.
+
+Avant tout appel Location/Contacts/Calendar/Photos/Mail/SMS, l'iPhone doit
+consommer le grant via le serveur. Une seconde consommation, une lease perdue,
+une tâche terminale, un mauvais device ou un digest différent reçoit `409`. Le
+résultat natif doit ensuite respecter le nom et le statut autorisés. Une
+nouvelle livraison strictement identique du résultat est reconnue comme
+`duplicate`; un résultat terminal différent est refusé. L'expiration de lease
+ou l'annulation de tâche annule aussi les demandes non terminales liées. La
+valeur native reste dans la table SQLite de résultats pour le poll du worker;
+l'audit publie la corrélation, le statut et un marqueur d'expurgation; le board
+ne publie que la corrélation et le statut.
+
+Cette voie ne partage pas les lignes `approvals` des appels d'outils et ne
+permet jamais à un worker de prendre la décision utilisateur. Les transitions,
+preuves d'audit et publications d'outbox restent transactionnelles en SQLite.
+
 ## Permission rules
 
 Voir `configs/permissions.yaml`.
@@ -192,7 +241,7 @@ Chaque demande et décision:
 }
 ```
 
-Dans le slice `0.6`, `audit_id` exposé sur l'approbation désigne directement
+Dans le slice `0.9.0`, `audit_id` exposé sur l'approbation désigne directement
 l'identifiant entier de son événement durable `approval.requested`; il ne s'agit
 ni d'un texte du modèle ni d'un identifiant synthétique de l'interface.
 L'événement de décision est écrit dans la même transaction que la consommation

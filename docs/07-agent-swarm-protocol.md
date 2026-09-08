@@ -1,9 +1,11 @@
 # 07 — Agent Swarm Protocol
 
-> **Statut:** le slice `0.8` livre un message board durable SQLite derrière une
-> interface remplaçable, les jobs revendiqués atomiquement par compétence, les
-> heartbeats et résultats idempotents authentifiés. Redis/NATS, les leases
-> expirables et la redistribution multi-hôte restent roadmap.
+> **IMPLEMENTED — slice `0.9.0`:** registre authentifié, capacité déclarée,
+> ordonnanceur déterministe, une seule job active par tâche, leases opaques
+> expirables avec génération de fencing, heartbeat, résultats terminaux
+> idempotents, reaper borné et outbox transactionnelle vers un board SQLite.
+> **PLANNED:** Redis Streams/NATS, consumer groups, bus réseau et ordonnanceur
+> autonome multi-hôte.
 
 Le worker exemple `workers/file-worker` ne sait que lister ou lire sous une
 racine dédiée et refuse les chemins protégés. La mise en file n'accepte que des
@@ -19,7 +21,7 @@ Permettre à un orchestrateur de gérer des agents autonomes à distance via reg
 
 Un service spécialisé qui peut accepter des tâches.
 
-### Agent Card
+### Agent Card — PLANNED
 
 Fichier JSON publié par chaque agent:
 
@@ -27,7 +29,7 @@ Fichier JSON publié par chaque agent:
 GET /.well-known/agent-card.json
 ```
 
-Contient:
+Le fichier cible contiendrait:
 
 - id;
 - name;
@@ -42,7 +44,8 @@ Contient:
 
 ### Skill
 
-Une capacité déclarée:
+Dans `0.9.0`, une compétence est un identifiant déclaré dans `skills` et validé
+par le control plane. Le document riche suivant reste un format cible:
 
 ```json
 {
@@ -61,7 +64,44 @@ Un travail assigné à un agent.
 
 Toute progression publiée sur le message board.
 
-## Lifecycle
+## Contrat HTTP worker implémenté
+
+L'enregistrement est initié par un iPhone déjà jumelé:
+
+```http
+POST /agents/register
+Authorization: Bearer <device-token>
+```
+
+La réponse contient une seule fois la credential opaque de l'agent. La requête
+déclare notamment `skills`, `max_concurrency` (1 à 32) et une map `capacity`.
+Seul un agent `online`, sous sa limite de concurrence et possédant la compétence
+demandée peut réclamer une job.
+
+Le worker s'authentifie ensuite avec sa propre credential:
+
+```http
+POST /agents/{agent_id}/heartbeat
+POST /agents/{agent_id}/claim
+POST /agents/{agent_id}/jobs/{job_id}/heartbeat
+POST /agents/{agent_id}/jobs/{job_id}/result
+Authorization: Bearer <agent-credential>
+```
+
+`claim` sélectionne par priorité de tâche, puis ancienneté et identifiant. La
+réponse contient `claim_token`, `lease_id`, `lease_expires_at` et
+`lease_generation`; le token n'est stocké qu'en digest côté serveur. Le champ
+`wait_seconds` est accepté entre 0 et 30, mais le slice actuel ne fait pas de
+long-poll: il retourne immédiatement une job ou `null`.
+
+Le heartbeat et le résultat doivent renvoyer ensemble `claim_token`, `lease_id`
+et `lease_generation`. Une preuve incomplète, étrangère, périmée ou fencée
+reçoit `409` (ou `422` si sa forme est invalide); elle ne peut ni prolonger la
+nouvelle lease ni écraser son résultat.
+
+## Lifecycles implémentés
+
+Tâche distribuée:
 
 ```mermaid
 stateDiagram-v2
@@ -69,15 +109,57 @@ stateDiagram-v2
   created --> planned
   planned --> queued
   queued --> running
-  running --> waiting_permission
-  waiting_permission --> running
+  running --> queued: lease expirée, lecture rejouable
   running --> completed
   running --> failed
-  waiting_permission --> cancelled
-  failed --> planned: retry
+  queued --> cancelled
+  running --> cancelled
 ```
 
-## Message envelope
+Job distante:
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued
+  queued --> claimed
+  claimed --> running: heartbeat
+  claimed --> completed
+  claimed --> failed
+  running --> running: heartbeat
+  running --> completed
+  running --> failed
+  claimed --> queued: lease expirée et retry sûr
+  running --> queued: lease expirée et retry sûr
+  queued --> cancelled
+  claimed --> cancelled
+  running --> cancelled
+```
+
+L'index SQLite `idx_agent_jobs_one_active_task` interdit plusieurs jobs dans
+`queued`, `claimed` ou `running` pour une même tâche. Une réclamation incrémente
+`attempt_count` et `lease_generation`. Le heartbeat renouvelle
+`lease_expires_at`; un résultat terminal fait évoluer la job et sa tâche dans la
+même transaction que l'audit et l'entrée d'outbox.
+
+Au démarrage puis périodiquement, le reaper clôt les leases expirées. Seules
+`workspace.list_dir` et `workspace.read_text` sont automatiquement remises en
+file, tant que `attempt_count < max_attempts` (3 par défaut) et que la génération
+expirée n'a créé aucune demande de capability iPhone. Toute activité iPhone,
+toute autre action ou un budget épuisé devient `failed` avec issue potentiellement
+incertaine et produit un événement de dead letter dans SQLite. L'annulation
+d'une tâche fence aussi sa job et annule toute demande iPhone liée à la
+génération courante.
+
+Chaque heartbeat renouvelle `heartbeat_at` et `lease_expires_at` dans la ligne
+autoritative. Pour éviter une croissance durable proportionnelle à la fréquence,
+l'outbox/board ne conserve qu'un événement heartbeat par job et génération de
+lease, au moyen d'une clé de déduplication stable.
+
+## Message envelope réseau — PLANNED
+
+Le board SQLite livré utilise le schéma persistant décrit dans
+`docs/14-message-board-events.md`. L'enveloppe inter-hôtes suivante reste une
+cible et n'est ni signée ni transportée par le runtime actuel:
 
 ```json
 {
@@ -92,32 +174,44 @@ stateDiagram-v2
 }
 ```
 
-## Streams Redis MVP
+## Topics du board SQLite — IMPLEMENTED
 
-| Stream | Producer | Consumer |
+| Topic | Producteur | Usage actuel |
 |---|---|---|
 | `tasks.inbox` | orchestrator | workers |
 | `tasks.status` | workers | app/orchestrator |
-| `permission.requests` | gateway | app |
-| `permission.decisions` | app | gateway |
 | `agents.heartbeat` | agents | registry |
-| `memory.events` | memory service | app/orchestrator |
-| `feedback.events` | all | feedback service |
-| `audit.events` | gateway/services | audit ledger |
+| `iphone.capabilities` | capability gateway | iPhone ciblé |
+| `agent.job.capability.result` | iPhone/reaper | worker/orchestrator |
+
+Les transitions persistantes ajoutent d'abord une ligne à `outbox_events` dans
+la transaction métier. Le drain publie ensuite au moins une fois dans
+`message_board_events`. Une `dedupe_key` unique rend sûr le rejeu après une
+panne entre publication et marquage. Ce board n'est pas exposé comme Redis et
+ne fournit pas de consumer group réseau.
+
+## Bus externe — PLANNED
+
+Redis Streams ou NATS JetStream pourront remplacer l'implémentation derrière
+l'interface du board. Leur protocole, les consumer groups, le partitionnement
+et une dead-letter queue externe ne sont pas implémentés dans `0.9.0`.
 
 ## Remote worker boot
 
-1. Worker démarre.
-2. Worker charge son modèle ou se connecte à un model server.
-3. Worker publie son agent card.
-4. Worker s'enregistre au registry.
-5. Worker envoie heartbeat.
-6. Registry le rend disponible.
-7. Orchestrateur peut lui assigner des tâches.
+1. Un appareil jumelé enregistre le worker et conserve sa credential hors Git.
+2. Le worker démarre, charge sa configuration et envoie un heartbeat `online`.
+3. Un appareil jumelé place une action de lecture autorisée dans la file.
+4. Le worker réclame la job, conserve la preuve de lease en mémoire et démarre
+   son heartbeat de job.
+5. Il exécute uniquement la compétence annoncée et soumet un résultat réel.
+6. Il n'annonce jamais de succès si la lease est perdue ou si l'état du résultat
+   est incertain.
 
 ## Agent-to-agent communication
 
-Les agents ne se parlent pas en direct au MVP. Ils publient sur le board. L'orchestrateur ou le registry arbitre.
+Les agents ne se parlent pas en direct. Ils passent par les endpoints HTTP
+authentifiés; les services du control plane inscrivent ensuite les événements
+durables dans l'outbox/board SQLite. L'orchestrateur et le registre arbitrent.
 
 Plus tard, A2A direct possible avec:
 
@@ -129,6 +223,9 @@ Plus tard, A2A direct possible avec:
 
 ## Worker classes
 
+Seul le Files Worker de lecture ci-dessous est livré comme worker exécutable;
+les autres classes sont **PLANNED**.
+
 ### Code Worker
 
 - inspect repo;
@@ -138,9 +235,10 @@ Plus tard, A2A direct possible avec:
 
 ### Files Worker
 
-- read/list/search files;
-- materialize artifacts;
-- write safe files avec permission.
+- `workspace.list_dir` et `workspace.read_text` sous une racine dédiée;
+- aucun write et aucun processus;
+- heartbeat de lease, suppression du résultat si la lease est perdue;
+- demande iPhone optionnelle uniquement via le broker du control plane.
 
 ### Research Worker
 
@@ -168,8 +266,9 @@ Plus tard, A2A direct possible avec:
 
 ## Fail-safe behavior
 
-- Pas de heartbeat = agent offline.
-- Tool schema invalid = task blocked.
-- Permission missing = waiting_permission.
-- Result too large = artifact stored, summary returned.
-- LLM invalid JSON = retry parser; ensuite human review.
+- Agent non `online` ou capacité pleine = aucune nouvelle claim.
+- Lease expirée/étrangère = `409`, résultat supprimé par le worker.
+- Lecture rejouable expirée = retry borné; autre action = échec sans rejeu.
+- Demande iPhone sans lease active, sans grant ou avec digest différent = `409`.
+- Résultat supérieur à 1 Mo = refusé.
+- Redis/NATS indisponible n'entre pas en jeu: le runtime `0.9.0` est SQLite.

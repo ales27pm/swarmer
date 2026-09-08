@@ -1,16 +1,17 @@
 # MASTER SPEC — monGARS Swarm App
 
-Date: 2026-09-04  
+Date: 2026-09-08
 Statut: Draft build-ready
 
-> **Portée:** architecture cible. Le slice `0.8` livré est décrit par l'OpenAPI
-> et `docs/21-acceptance-criteria.md`: REST authentifié, cache SQLite lié à
-> l'origine et hydraté au bootstrap, WebSocket mobile avec reconnexion et
-> réconciliation, propositions modèle réelles et résultats d'exécuteur vérifiés.
-> L'outbox mobile, Redis/NATS multi-hôte, les leases/reprises automatiques et un
-> index vectoriel externe restent roadmap. Le message board SQLite, le protocole
-> worker, la réplica élargie, le broker iPhone typé et les embeddings optionnels
-> constituent désormais une fondation réelle, sans autonomie cachée.
+> **Portée:** architecture cible et frontières du slice `0.9.0`. Son contrat
+> exécutable est décrit par l'OpenAPI. `docs/21-acceptance-criteria.md` conserve
+> les preuves et limites du slice `0.7`; il n'est pas présenté comme validation
+> de `0.9.0`. Le runtime livre REST authentifié, cache SQLite mobile lié à
+> l'origine, WebSocket à ticket unique, exécution
+> locale vérifiée, jobs distants à lease et transport de capabilities iPhone à
+> grant unique. Le message board et son outbox transactionnelle sont tous deux
+> implémentés en SQLite. L'outbox mobile, Redis/NATS multi-hôte, Postgres, les
+> consumer groups et un index vectoriel externe restent **PLANNED**.
 
 ## 1. Résumé
 
@@ -32,20 +33,16 @@ Ubuntu Control Plane
   ├─ Orchestrator LLM abliterated
   ├─ Permission Gateway stricte
   ├─ Agent Registry
-  ├─ Message Board Redis/NATS
-  ├─ State Service SQLite/Postgres
-  ├─ Memory Service FAISS/Qdrant
+  ├─ Message Board + outbox SQLite
+  ├─ State Service SQLite WAL
+  ├─ Memory Service SQLite + embeddings optionnels
   ├─ Feedback Service
   ├─ Audit Ledger append-only
   └─ Worker Runtime(s)
        ↓
 Agents distants
-  ├─ Code worker
-  ├─ Files worker
-  ├─ Research worker
-  ├─ CRM worker
-  ├─ Design worker
-  └─ Phone broker worker
+  ├─ Files worker de lecture (IMPLEMENTED)
+  └─ Code/Research/CRM/Design/Phone workers (PLANNED)
 ```
 
 ## 3. Règles fondatrices
@@ -85,27 +82,26 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
 
 ### Phase 3 — Swarm distribué
 
-- Agent registry.
-- Agent cards.
-- Message board Redis Streams.
-- Agents distants connectés au host.
-- Work queue + task lifecycle.
+- **IMPLEMENTED:** registre authentifié, worker Files de lecture, work queue,
+  lifecycle, leases et message board/outbox SQLite au slice `0.9.0`.
+- **PLANNED:** agent cards, autres classes de workers et flotte autonome
+  multi-hôte.
+- **PLANNED:** Redis Streams/NATS seulement lors d'une future migration
+  multi-hôte.
 
 ### Phase 4 — Native iPhone Bridge
 
-- Contacts, Calendar, Reminders, Location, Photos, Camera, Audio.
-- Capabilities activées par permission explicite.
-- Requests des agents vers iPhone via broker.
-- Approval UI pour données sensibles.
+- **IMPLEMENTED:** Location, Contacts, lecture Calendar, picker Photos et
+  composeurs Mail/SMS via broker, avec permission explicite et Approval UI.
+- **PLANNED:** Reminders, écriture Calendar, Camera, Audio et autres
+  capabilities.
 
 ### Phase 5 — Mémoire et feedback
 
-- Embeddings + FAISS.
-- Memory Service central.
-- Feedback Service.
-- Eval builder.
-- Dataset export JSONL.
-- LoRA candidate pipeline.
+- **IMPLEMENTED:** Memory Service SQLite, embeddings optionnels, Feedback
+  Service et export JSONL revu.
+- **PLANNED:** FAISS/Qdrant externe, eval builder complet et LoRA candidate
+  pipeline.
 
 ### Phase 6 — On-device LLM
 
@@ -141,36 +137,79 @@ Embeddings:
 
 ## 6. State et mémoire
 
-- iPhone: SQLite replica + outbox sync queue.
-- Ubuntu: SQLite WAL au MVP; migration vers Postgres lorsque plusieurs writers/agents.
+- iPhone: réplica/cache SQLite implémentée; outbox de mutations encore planifiée.
+- Ubuntu: SQLite WAL autoritatif au MVP; migration vers Postgres planifiée si
+  les besoins opérationnels exigent plusieurs writers.
 - Memory Service: chunking, embeddings, semantic search, metadata filters.
-- Vector store: FAISS local au départ, Qdrant si besoin multi-agent/collections/filtrage.
+- Vector store externe: FAISS/Qdrant planifié; le runtime actuel conserve les
+  vecteurs optionnels en SQLite et retombe sur la recherche lexicale.
 - Event log: append-only pour replay et audit.
 
 ## 7. Message board
 
-MVP: Redis Streams.
+### IMPLEMENTED — slice `0.9.0`
 
-Streams:
+Le board durable et l'outbox transactionnelle utilisent la même base SQLite que
+l'état. Les transitions métier écrivent leur entrée d'outbox dans la même
+transaction. Un drain la publie ensuite au moins une fois dans
+`message_board_events`; `dedupe_key` empêche qu'un rejeu crée un second
+événement. Ce mécanisme n'est pas un bus réseau et n'offre pas de consumer group
+multi-hôte.
+
+Topics actuellement produits:
 
 - `tasks.inbox`
 - `tasks.status`
 - `agents.heartbeat`
-- `memory.events`
-- `permission.requests`
-- `iphone.requests`
-- `feedback.events`
-- `audit.events`
+- `iphone.capabilities`
+- `agent.job.capability.result`
 
-Plus tard: NATS JetStream si agents sur plusieurs machines, plus robuste, durable et observable.
+### PLANNED
+
+Redis Streams ou NATS JetStream, consumer groups, partitionnement multi-hôte et
+dead-letter stream externe. Aucun de ces composants n'est requis ni annoncé
+comme branché dans le slice `0.9.0`.
 
 ## 8. iPhone Native Bridge
 
-Le iPhone expose des capabilities, pas un accès brut:
+L'iPhone expose des capabilities, pas un accès brut.
+
+### IMPLEMENTED — transport `0.9.0`
+
+- `iphone.location.current`
+- `iphone.contacts.lookup`
+- `iphone.calendar.events`
+- `iphone.photos.pick`
+- `iphone.mail.compose`
+- `iphone.sms.compose`
+
+Une demande est liée à la tâche, au job, à l'agent, à la génération de lease et
+à l'iPhone source. La Gateway crée une approbation courte. Après approbation,
+l'iPhone reçoit le grant opaque lié au digest canonique seulement dans la
+réponse d'autorisation. Il le consomme côté serveur avant tout appel natif, puis
+soumet un résultat corrélé. Une réponse d'approbation perdue peut être reprise
+avant consommation: le serveur fait tourner le grant et invalide le précédent.
+Une lease expirée, une tâche annulée, un digest différent ou un rejeu de
+consommation ferme la voie d'exécution. L'événement WebSocket initial contient
+`request_id`,
+`capability_name`, `expires_at` et `preview.arguments_redacted: true`; les
+événements de mise à jour ne contiennent que `request_id`. Les arguments et le
+grant sont récupérés via REST authentifié.
+Les composeurs mail/SMS restent visibles et ne constituent pas un envoi
+silencieux. Le code et les contrats automatisés sont implémentés; la preuve des
+permissions et dialogues sur iPhone physique reste à produire.
+
+Une génération de lease qui a créé une demande de capability n'est jamais
+redistribuée automatiquement, quel que soit l'état atteint par cette demande:
+l'absence de preuve terminale ne prouve pas l'absence d'effet natif. Sur mobile,
+le workflow est lié à l'origine et au bearer d'appareil initiaux. Grants et
+résultats sensibles restent éphémères; une mort du processus après l'action iOS
+mais avant la remise du résultat laisse Ubuntu dans un état explicitement
+incertain et n'autorise aucun rejeu automatique.
+
+### PLANNED
 
 - `phone.call.prepare`
-- `message.sms.compose`
-- `email.compose`
 - `calendar.events.read`
 - `calendar.event.create`
 - `contacts.search`
@@ -182,7 +221,8 @@ Le iPhone expose des capabilities, pas un accès brut:
 - `notification.schedule`
 - `securestore.get/set`
 
-Chaque capability a:
+Ces identifiants historiques ne sont pas des alias exécutables du contrat
+`iphone.*` actuel. Toute capability future devra encore définir:
 
 - permission iOS;
 - permission monGARS;
@@ -230,7 +270,8 @@ MVP accepté quand:
 - l'iPhone peut se pairer à Ubuntu;
 - l'app affiche chat/tasks/approvals/memory/settings;
 - Ubuntu garde le state maître;
-- iPhone garde une replica locale et outbox;
+- iPhone garde une réplique/cache locale; aucune outbox mobile n'est prétendue
+  livrée dans ce DoD;
 - orchestrateur produit des tool calls JSON validés;
 - gateway demande permission au lieu de laisser le modèle bloquer;
 - un worker sandbox exécute une action file-safe;
