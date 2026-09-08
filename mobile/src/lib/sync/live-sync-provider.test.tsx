@@ -4,6 +4,7 @@ import { Text } from "react-native";
 
 import { bootstrapSync } from "@/lib/api/client";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
+import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
 import {
   createLiveSyncController,
   type LiveSyncController,
@@ -12,11 +13,18 @@ import { LiveSyncProvider } from "@/lib/sync/live-sync-provider";
 
 jest.mock("@/lib/api/client", () => ({ bootstrapSync: jest.fn() }));
 jest.mock("@/lib/connection-events", () => ({ subscribeConnectionChanges: jest.fn() }));
+jest.mock("@/lib/iphone-capabilities/runtime", () => ({
+  iphoneCapabilityTransport: {
+    clear: jest.fn(),
+    receiveNotification: jest.fn(),
+  },
+}));
 jest.mock("@/lib/sync/live-sync", () => ({ createLiveSyncController: jest.fn() }));
 
 const mockBootstrap = jest.mocked(bootstrapSync);
 const mockCreateController = jest.mocked(createLiveSyncController);
 const mockSubscribe = jest.mocked(subscribeConnectionChanges);
+const mockCapabilityTransport = jest.mocked(iphoneCapabilityTransport);
 
 describe("LiveSyncProvider", () => {
   let notifyConnectionChanged: (() => void) | undefined;
@@ -64,5 +72,20 @@ describe("LiveSyncProvider", () => {
     await act(async () => options?.onStateChange?.("connected"));
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+  });
+
+  it("queues capability notifications without executing them", async () => {
+    await render(<LiveSyncProvider><Text>child</Text></LiveSyncProvider>);
+    const options = mockCreateController.mock.calls[0][0];
+    const notification = {
+      request_id: `iphreq_${"a".repeat(32)}`,
+      capability_name: "iphone.location.current" as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      preview: { arguments_redacted: true as const },
+    };
+
+    await act(async () => options?.onCapabilityRequest?.(notification));
+
+    expect(mockCapabilityTransport.receiveNotification).toHaveBeenCalledWith(notification);
   });
 });

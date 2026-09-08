@@ -2,6 +2,29 @@ import { fetch } from "expo/fetch";
 import * as SecureStore from "expo-secure-store";
 
 import { notifyConnectionChanged } from "@/lib/connection-events";
+import {
+  assertCapabilityRequestFresh,
+  CapabilityProtocolError,
+  parseCapabilityAuthorizationResponse,
+  parseCapabilityConsumeReceipt,
+  parseCapabilityRequestDetail,
+  parseCapabilityRequestEnvelope,
+  parseCapabilityRequestList,
+  parseCapabilityRequestLookup,
+  parseCapabilityResult,
+  parseCapabilityResultReceipt,
+} from "@/lib/iphone-capabilities/grant";
+import type {
+  CapabilityAuthorizationDecision,
+  CapabilityAuthorizationResponse,
+  CapabilityRequestDetail,
+  CapabilityRequestEnvelope,
+  CapabilityRequestPreview,
+  CapabilityResult,
+  CapabilityResultReceipt,
+  ConsumedCapabilityGrant,
+} from "@/lib/iphone-capabilities/types";
+import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
 import { applyBootstrap, upsertEvent } from "@/lib/state/replica";
 import type {
   Agent,
@@ -199,6 +222,11 @@ async function getConnection(): Promise<ResolvedConnection> {
   };
 }
 
+async function resolveRequestConnection(): Promise<{ baseUrl: string; token: string | null }> {
+  const stored = await getConnection();
+  return stored.source === "pending" ? resolvePendingConnection(stored) : stored;
+}
+
 export async function getServerUrl(): Promise<string> {
   return (await getConnection()).baseUrl;
 }
@@ -247,10 +275,7 @@ export async function createEventStreamTicket(): Promise<EventStreamTicket> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const stored = await getConnection();
-  const connection = stored.source === "pending"
-    ? await resolvePendingConnection(stored)
-    : stored;
+  const connection = await resolveRequestConnection();
   return requestAt<T>(connection.baseUrl, path, init, connection.token);
 }
 
@@ -640,6 +665,166 @@ export function listAgents(): Promise<Agent[]> {
 export function listAudit(limit = 30): Promise<AuditEvent[]> {
   const bounded = Math.min(Math.max(limit, 1), 200);
   return request<AuditEvent[]>(`/audit?limit=${bounded}`);
+}
+
+type CapabilityRequestFunction = <T>(path: string, init?: RequestInit) => Promise<T>;
+
+async function listIPhoneCapabilityRequestsWith(
+  send: CapabilityRequestFunction,
+): Promise<CapabilityRequestPreview[]> {
+  return parseCapabilityRequestList(await send<unknown>("/iphone/capabilities/requests"));
+}
+
+async function getIPhoneCapabilityRequestWith(
+  send: CapabilityRequestFunction,
+  requestId: string,
+): Promise<CapabilityRequestDetail> {
+  return parseCapabilityRequestLookup(
+    await send<unknown>(`/iphone/capabilities/requests/${resourceId(requestId)}`),
+  );
+}
+
+async function authorizeIPhoneCapabilityRequestWith(
+  send: CapabilityRequestFunction,
+  capabilityRequest: CapabilityRequestDetail,
+  decision: CapabilityAuthorizationDecision,
+): Promise<CapabilityAuthorizationResponse> {
+  if (decision !== "approve" && decision !== "deny") {
+    throw new CapabilityProtocolError("Capability authorization decision is invalid.");
+  }
+  const strictRequest = parseCapabilityRequestDetail(capabilityRequest);
+  assertCapabilityRequestFresh(strictRequest);
+  const canDecide = strictRequest.status === "waiting_approval";
+  const canRecover = (
+    decision === "approve" &&
+    strictRequest.status === "approved" &&
+    strictRequest.grant === null
+  );
+  if ((!canDecide && !canRecover) || strictRequest.grant !== null) {
+    throw new CapabilityProtocolError(
+      "Only a waiting request or an approved grant-recovery request may be authorized.",
+    );
+  }
+  const value = await send<unknown>(
+    `/iphone/capabilities/requests/${resourceId(strictRequest.request_id)}/authorize`,
+    { method: "POST", body: JSON.stringify({ decision }) },
+  );
+  return parseCapabilityAuthorizationResponse(value, decision, strictRequest);
+}
+
+async function consumeIPhoneCapabilityRequestWith(
+  send: CapabilityRequestFunction,
+  capabilityRequest: CapabilityRequestEnvelope,
+): Promise<ConsumedCapabilityGrant> {
+  const strictRequest = parseCapabilityRequestEnvelope(capabilityRequest);
+  const value = await send<unknown>(
+    `/iphone/capabilities/requests/${resourceId(strictRequest.request_id)}/execute`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        grant_id: strictRequest.grant.grant_id,
+        action_digest: strictRequest.action_digest,
+      }),
+    },
+  );
+  return parseCapabilityConsumeReceipt(value, strictRequest);
+}
+
+async function submitIPhoneCapabilityResultWith(
+  send: CapabilityRequestFunction,
+  capabilityRequest: CapabilityRequestEnvelope,
+  result: CapabilityResult,
+): Promise<CapabilityResultReceipt> {
+  const strictResult = parseCapabilityResult(result, capabilityRequest.capability);
+  const value = await send<unknown>(
+    `/iphone/capabilities/requests/${resourceId(capabilityRequest.request_id)}/result`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        grant_id: capabilityRequest.grant.grant_id,
+        action_digest: capabilityRequest.action_digest,
+        result: strictResult,
+      }),
+    },
+  );
+  return parseCapabilityResultReceipt(value, capabilityRequest);
+}
+
+async function requireCapabilityConnection(): Promise<StoredConnection> {
+  const connection = await resolveRequestConnection();
+  if (!connection.token) {
+    throw new ApiError(401, "Cet iPhone n’est pas jumelé au control plane.");
+  }
+  return { baseUrl: connection.baseUrl, token: connection.token };
+}
+
+function sameConnection(left: StoredConnection, right: StoredConnection): boolean {
+  return left.baseUrl === right.baseUrl && left.token === right.token;
+}
+
+async function requestOnBoundCapabilityConnection<T>(
+  connection: StoredConnection,
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const current = await requireCapabilityConnection();
+  if (!sameConnection(current, connection)) {
+    throw new CapabilityProtocolError(
+      "La connexion jumelée a changé; la capacité iPhone a été bloquée avant envoi.",
+    );
+  }
+  return requestAt<T>(connection.baseUrl, path, init, connection.token);
+}
+
+export async function createIPhoneCapabilityApiSession(): Promise<CapabilityTransportSession> {
+  const connection = await requireCapabilityConnection();
+  const send: CapabilityRequestFunction = (path, init) => (
+    requestOnBoundCapabilityConnection(connection, path, init)
+  );
+  return {
+    origin: connection.baseUrl,
+    authorizeRequest: (capabilityRequest, decision) => (
+      authorizeIPhoneCapabilityRequestWith(send, capabilityRequest, decision)
+    ),
+    consumeRequest: (capabilityRequest) => (
+      consumeIPhoneCapabilityRequestWith(send, capabilityRequest)
+    ),
+    getRequest: (requestId) => getIPhoneCapabilityRequestWith(send, requestId),
+    listRequests: () => listIPhoneCapabilityRequestsWith(send),
+    submitResult: (capabilityRequest, result) => (
+      submitIPhoneCapabilityResultWith(send, capabilityRequest, result)
+    ),
+  };
+}
+
+export async function listIPhoneCapabilityRequests(): Promise<CapabilityRequestPreview[]> {
+  return listIPhoneCapabilityRequestsWith(request);
+}
+
+export async function getIPhoneCapabilityRequest(
+  requestId: string,
+): Promise<CapabilityRequestDetail> {
+  return getIPhoneCapabilityRequestWith(request, requestId);
+}
+
+export async function authorizeIPhoneCapabilityRequest(
+  capabilityRequest: CapabilityRequestDetail,
+  decision: CapabilityAuthorizationDecision,
+): Promise<CapabilityAuthorizationResponse> {
+  return authorizeIPhoneCapabilityRequestWith(request, capabilityRequest, decision);
+}
+
+export async function consumeIPhoneCapabilityRequest(
+  capabilityRequest: CapabilityRequestEnvelope,
+): Promise<ConsumedCapabilityGrant> {
+  return consumeIPhoneCapabilityRequestWith(request, capabilityRequest);
+}
+
+export async function submitIPhoneCapabilityResult(
+  capabilityRequest: CapabilityRequestEnvelope,
+  result: CapabilityResult,
+): Promise<CapabilityResultReceipt> {
+  return submitIPhoneCapabilityResultWith(request, capabilityRequest, result);
 }
 
 export function createFeedback(input: {

@@ -102,6 +102,43 @@ describe("live sync controller", () => {
     expect(onError).toHaveBeenCalledWith("Événement temps réel invalide.");
   });
 
+  it("delivers only an ID-only capability notification without persisting or executing it", async () => {
+    const socket = new FakeSocket();
+    const persistEvent = jest.fn(async () => undefined);
+    const onCapabilityRequest = jest.fn();
+    const controller = createLiveSyncController(
+      { onCapabilityRequest },
+      {
+        createSocket: () => socket,
+        createTicket: async () => ({ expiresInSeconds: 30, serverUrl: "https://example", url: "wss://example/ws?ticket=one" }),
+        persistEvent,
+        schedule: () => 1,
+        cancelScheduled: () => undefined,
+      },
+    );
+
+    controller.start();
+    await flush();
+    socket.open();
+    socket.receive({
+      type: "iphone.capability.requested",
+      payload: {
+        request_id: `iphreq_${"a".repeat(32)}`,
+        capability_name: "iphone.location.current",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        preview: { arguments_redacted: true },
+      },
+    });
+    await flush();
+
+    expect(onCapabilityRequest).toHaveBeenCalledWith(expect.objectContaining({
+      request_id: `iphreq_${"a".repeat(32)}`,
+      capability_name: "iphone.location.current",
+      preview: { arguments_redacted: true },
+    }));
+    expect(persistEvent).not.toHaveBeenCalled();
+  });
+
   it("uses a fresh one-use ticket after a disconnect and never reconnects after stop", async () => {
     const sockets: FakeSocket[] = [];
     const tickets = jest

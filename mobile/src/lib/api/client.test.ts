@@ -3,14 +3,34 @@ import { fetch } from "expo/fetch";
 import * as SecureStore from "expo-secure-store";
 
 import {
+  authorizeIPhoneCapabilityRequest,
   bootstrapSync,
+  consumeIPhoneCapabilityRequest,
+  createIPhoneCapabilityApiSession,
   createEventStreamTicket,
   createTask,
+  getIPhoneCapabilityRequest,
+  listIPhoneCapabilityRequests,
   pairDevice,
+  submitIPhoneCapabilityResult,
   submitToolProposal,
   type Bootstrap,
 } from "@/lib/api/client";
+import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
+import type {
+  CapabilityRequestDetail,
+  CapabilityRequestEnvelope,
+} from "@/lib/iphone-capabilities/types";
 import { applyBootstrap } from "@/lib/state/replica";
+
+type MailCapabilityDetail = Extract<
+  CapabilityRequestDetail,
+  { capability: "iphone.mail.compose" }
+>;
+type MailCapabilityEnvelope = Extract<
+  CapabilityRequestEnvelope,
+  { capability: "iphone.mail.compose" }
+>;
 
 jest.mock("expo-secure-store", () => ({
   deleteItemAsync: jest.fn(),
@@ -32,6 +52,11 @@ const mockApplyBootstrap = jest.mocked(applyBootstrap);
 const CONNECTION_KEY = "mongars.connection.v1";
 const PENDING_CONNECTION_KEY = "mongars.connection.pending.v1";
 const PAIRING_ID = `pair_${"a".repeat(32)}`;
+const CAPABILITY_REQUEST_ID = `iphreq_${"a".repeat(32)}`;
+const CAPABILITY_GRANT_ID = `grt_${"c".repeat(64)}`;
+const CAPABILITY_DIGEST = "sha256:928d3688233c2de096a0add2152d9747625307590618670406f332b0002a5461";
+const CAPABILITY_CREATED_AT = new Date(Date.now() - 60_000).toISOString();
+const CAPABILITY_EXPIRES_AT = new Date(Date.now() + 180_000).toISOString();
 const verifiedBootstrap: Bootstrap = {
   server_time: "2026-09-05T12:00:00Z",
   tasks: [],
@@ -95,8 +120,76 @@ function pendingConnection(baseUrl: string, token: string, deviceId = "iphone_te
   return JSON.stringify({ baseUrl, token, pairingId: PAIRING_ID, deviceId });
 }
 
+function capabilityDetail(): MailCapabilityDetail {
+  return {
+    schema_version: "0.9",
+    request_id: CAPABILITY_REQUEST_ID,
+    task_id: `tsk_${"b".repeat(32)}`,
+    agent_id: "mail-worker",
+    target_device_id: "iphone_test",
+    capability: "iphone.mail.compose",
+    status: "waiting_approval",
+    created_at: CAPABILITY_CREATED_AT,
+    expires_at: CAPABILITY_EXPIRES_AT,
+    arguments: { recipients: ["a@example.com"], subject: "Hello", body: "Body" },
+    action_digest: CAPABILITY_DIGEST,
+    grant: null,
+  };
+}
+
+function approvedCapability(): MailCapabilityEnvelope {
+  const issuedAt = new Date(Date.now() - 1_000).toISOString();
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  return {
+    ...capabilityDetail(),
+    status: "approved",
+    grant: {
+      schema_version: "0.9",
+      grant_id: CAPABILITY_GRANT_ID,
+      request_id: CAPABILITY_REQUEST_ID,
+      task_id: `tsk_${"b".repeat(32)}`,
+      agent_id: "mail-worker",
+      target_device_id: "iphone_test",
+      approval_id: `icapr_${"d".repeat(32)}`,
+      audit_id: 42,
+      capability: "iphone.mail.compose",
+      action_digest: CAPABILITY_DIGEST,
+      issued_at: issuedAt,
+      expires_at: expiresAt,
+      use: "once",
+    },
+  };
+}
+
 function mockConnections(values: Record<string, string | null>) {
   getItem.mockImplementation(async (key: string) => values[key] ?? null);
+}
+
+async function expectConnectionRaceBlocked(
+  mutation: (session: CapabilityTransportSession) => Promise<unknown>,
+  replacement = storedConnection("https://new.example", "new-device-token"),
+): Promise<void> {
+  const activeReadStarted = deferred<void>();
+  const releaseActiveRead = deferred<string | null>();
+  let captured = false;
+  getItem.mockImplementation(async (key: string) => {
+    if (key === PENDING_CONNECTION_KEY) return null;
+    if (key !== CONNECTION_KEY) return null;
+    if (!captured) {
+      captured = true;
+      return storedConnection("https://old.example", "old-device-token");
+    }
+    activeReadStarted.resolve();
+    return releaseActiveRead.promise;
+  });
+  const session = await createIPhoneCapabilityApiSession();
+
+  const pendingMutation = mutation(session);
+  await activeReadStarted.promise;
+  releaseActiveRead.resolve(replacement);
+
+  await expect(pendingMutation).rejects.toThrow("bloquée avant envoi");
+  expect(request).not.toHaveBeenCalled();
 }
 
 describe("control-plane connection storage", () => {
@@ -618,5 +711,131 @@ describe("bootstrap replica commit ordering", () => {
       recoveredBootstrap,
       "https://control.example",
     );
+  });
+
+  it("uses the strict authorize, consume, and result protocol without persisting the raw grant", async () => {
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
+    });
+    const approved = approvedCapability();
+    const result = {
+      name: "iphone.mail.compose" as const,
+      status: "completed" as const,
+      value: { composed: true as const },
+    };
+    request
+      .mockResolvedValueOnce(successfulJson(capabilityDetail()))
+      .mockResolvedValueOnce(successfulJson(approved))
+      .mockResolvedValueOnce(successfulJson({
+        status: "consumed",
+        request_id: CAPABILITY_REQUEST_ID,
+        grant_id: CAPABILITY_GRANT_ID,
+        action_digest: CAPABILITY_DIGEST,
+        consumed_at: new Date().toISOString(),
+      }))
+      .mockResolvedValueOnce(successfulJson({
+        status: "accepted",
+        request_id: CAPABILITY_REQUEST_ID,
+        grant_id: CAPABILITY_GRANT_ID,
+      }));
+
+    const detail = await getIPhoneCapabilityRequest(CAPABILITY_REQUEST_ID);
+    const authorization = await authorizeIPhoneCapabilityRequest(detail, "approve");
+    if (authorization.status !== "approved" || authorization.grant === null) {
+      throw new Error("expected approved test grant");
+    }
+    await consumeIPhoneCapabilityRequest(authorization);
+    await submitIPhoneCapabilityResult(authorization, result);
+
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      `https://control.example/iphone/capabilities/requests/${CAPABILITY_REQUEST_ID}/authorize`,
+      expect.objectContaining({
+        body: JSON.stringify({ decision: "approve" }),
+        headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
+        method: "POST",
+      }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      3,
+      `https://control.example/iphone/capabilities/requests/${CAPABILITY_REQUEST_ID}/execute`,
+      expect.objectContaining({
+        body: JSON.stringify({ grant_id: CAPABILITY_GRANT_ID, action_digest: CAPABILITY_DIGEST }),
+        method: "POST",
+      }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      4,
+      `https://control.example/iphone/capabilities/requests/${CAPABILITY_REQUEST_ID}/result`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          grant_id: CAPABILITY_GRANT_ID,
+          action_digest: CAPABILITY_DIGEST,
+          result,
+        }),
+        method: "POST",
+      }),
+    );
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("allows only repeat approval for an approved request whose grant response was lost", async () => {
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
+    });
+    const approvedWithoutGrant = {
+      ...capabilityDetail(),
+      status: "approved" as const,
+      grant: null,
+    };
+    const recovered = approvedCapability();
+    request.mockResolvedValueOnce(successfulJson(recovered));
+
+    await expect(
+      authorizeIPhoneCapabilityRequest(approvedWithoutGrant, "approve"),
+    ).resolves.toEqual(recovered);
+    await expect(
+      authorizeIPhoneCapabilityRequest(approvedWithoutGrant, "deny"),
+    ).rejects.toThrow("grant-recovery");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      "authorization",
+      (session: CapabilityTransportSession) => (
+        session.authorizeRequest(capabilityDetail(), "approve")
+      ),
+    ],
+    [
+      "grant consumption",
+      (session: CapabilityTransportSession) => session.consumeRequest(approvedCapability()),
+    ],
+    [
+      "native result delivery",
+      (session: CapabilityTransportSession) => session.submitResult(approvedCapability(), {
+        name: "iphone.mail.compose",
+        status: "completed",
+        value: { composed: true },
+      }),
+    ],
+  ])("blocks %s before fetch when the paired origin changes during the pre-send check", async (_label, mutation) => {
+    await expectConnectionRaceBlocked(mutation);
+  });
+
+  it("blocks a same-origin device-token replacement before authorization fetch", async () => {
+    await expectConnectionRaceBlocked(
+      (session) => session.authorizeRequest(capabilityDetail(), "approve"),
+      storedConnection("https://old.example", "different-device-token"),
+    );
+  });
+
+  it("rejects a list response that exposes arguments or a grant", async () => {
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
+    });
+    request.mockResolvedValueOnce(successfulJson([capabilityDetail()]));
+
+    await expect(listIPhoneCapabilityRequests()).rejects.toThrow("invalid shape");
   });
 });

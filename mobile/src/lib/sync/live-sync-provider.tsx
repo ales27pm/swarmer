@@ -3,6 +3,7 @@ import { AppState } from "react-native";
 
 import { bootstrapSync } from "@/lib/api/client";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
+import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
 import { LiveSyncContextProvider } from "@/lib/sync/live-sync-context";
 import {
   createLiveSyncController,
@@ -32,6 +33,9 @@ export function LiveSyncProvider({ children }: { children: ReactNode }) {
     };
 
     const createController = () => createLiveSyncController({
+      onCapabilityRequest: (notification) => {
+        iphoneCapabilityTransport.receiveNotification(notification);
+      },
       onError: setError,
       onEvent: () => {
         setError(null);
@@ -57,6 +61,7 @@ export function LiveSyncProvider({ children }: { children: ReactNode }) {
     const unsubscribeConnection = subscribeConnectionChanges(() => {
       reconcileEpoch += 1;
       controller.stop();
+      iphoneCapabilityTransport.clear();
       setError(null);
       controller = createController();
       activate();
@@ -67,6 +72,7 @@ export function LiveSyncProvider({ children }: { children: ReactNode }) {
       unsubscribeConnection();
       subscription.remove();
       controller.stop();
+      iphoneCapabilityTransport.clear();
     };
   }, []);
 

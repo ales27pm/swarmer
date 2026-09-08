@@ -12,6 +12,13 @@ import {
   type ToolCall,
 } from "@/lib/api/client";
 import { localApprovals } from "@/lib/state/replica";
+import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
+import type {
+  CapabilityAuthorizationResponse,
+  CapabilityRequestDetail,
+  CapabilityRequestPreview,
+  CapabilityResult,
+} from "@/lib/iphone-capabilities/types";
 
 const mockPush = jest.fn();
 
@@ -24,6 +31,14 @@ jest.mock("@/lib/api/client", () => ({
   listApprovals: jest.fn(),
 }));
 jest.mock("@/lib/state/replica", () => ({ localApprovals: jest.fn() }));
+jest.mock("@/lib/iphone-capabilities/runtime", () => ({
+  iphoneCapabilityTransport: {
+    authorize: jest.fn(),
+    execute: jest.fn(),
+    load: jest.fn(),
+    refresh: jest.fn(),
+  },
+}));
 
 const approval: Approval = {
   id: "apr_test",
@@ -79,6 +94,59 @@ const mockListApprovals = jest.mocked(listApprovals);
 const mockDecideApproval = jest.mocked(decideApproval);
 const mockGetServerUrl = jest.mocked(getServerUrl);
 const mockLocalApprovals = jest.mocked(localApprovals);
+const mockCapabilityAuthorize = jest.mocked(iphoneCapabilityTransport.authorize);
+const mockCapabilityExecute = jest.mocked(iphoneCapabilityTransport.execute);
+const mockCapabilityLoad = jest.mocked(iphoneCapabilityTransport.load);
+const mockCapabilityRefresh = jest.mocked(iphoneCapabilityTransport.refresh);
+
+const capabilityPreview = {
+  schema_version: "0.9",
+  request_id: `iphreq_${"c".repeat(32)}`,
+  task_id: `tsk_${"d".repeat(32)}`,
+  agent_id: "mail-worker",
+  target_device_id: "iphone_test",
+  capability: "iphone.mail.compose",
+  status: "waiting_approval",
+  created_at: "2099-09-08T11:59:00.000Z",
+  expires_at: "2099-09-08T12:05:00.000Z",
+} satisfies CapabilityRequestPreview;
+
+const capabilityDetail = {
+  ...capabilityPreview,
+  arguments: {
+    recipients: ["alice.private@example.test"],
+    subject: "Quarterly secret",
+    body: "Private body payload",
+  },
+  action_digest: `sha256:${"e".repeat(64)}`,
+  grant: null,
+} satisfies CapabilityRequestDetail;
+
+const capabilityAuthorization = {
+  ...capabilityDetail,
+  status: "approved",
+  grant: {
+    schema_version: "0.9",
+    grant_id: `grt_${"f".repeat(64)}`,
+    request_id: capabilityDetail.request_id,
+    task_id: capabilityDetail.task_id,
+    agent_id: capabilityDetail.agent_id,
+    target_device_id: capabilityDetail.target_device_id,
+    approval_id: `icapr_${"a".repeat(32)}`,
+    audit_id: 43,
+    capability: capabilityDetail.capability,
+    action_digest: capabilityDetail.action_digest,
+    issued_at: "2099-09-08T12:00:00.000Z",
+    expires_at: "2099-09-08T12:01:00.000Z",
+    use: "once",
+  },
+} satisfies CapabilityAuthorizationResponse;
+
+const capabilityResult = {
+  name: "iphone.mail.compose",
+  status: "completed",
+  value: { composed: true },
+} satisfies CapabilityResult;
 
 function decisionReceipt(
   authoritativeResult: ApprovalDecisionResult,
@@ -94,6 +162,10 @@ describe("ApprovalsScreen", () => {
     mockListApprovals.mockResolvedValue([approval]);
     mockDecideApproval.mockResolvedValue(decisionReceipt(approval));
     mockLocalApprovals.mockRejectedValue(new Error("Cache indisponible"));
+    mockCapabilityRefresh.mockResolvedValue([]);
+    mockCapabilityLoad.mockResolvedValue(capabilityDetail);
+    mockCapabilityAuthorize.mockResolvedValue(capabilityAuthorization);
+    mockCapabilityExecute.mockResolvedValue(capabilityResult);
   });
 
   it("presents an explicit one-shot decision and sends it once", async () => {
@@ -257,5 +329,155 @@ describe("ApprovalsScreen", () => {
     await screen.findByText("Cible exacte : notes/result.txt");
     await user.press(screen.getByRole("button", { name: "Actualiser les accords" }));
     await waitFor(() => expect(mockListApprovals).toHaveBeenCalledTimes(2));
+  });
+
+  it("loads authoritative iPhone requests without auto-authorizing or executing them", async () => {
+    mockCapabilityRefresh.mockResolvedValue([capabilityPreview]);
+    await render(<ApprovalsScreen />);
+
+    const card = await screen.findByTestId(`iphone-capability-card-${capabilityPreview.request_id}`);
+    expect(within(card).getByText("Composer un courriel")).toBeOnTheScreen();
+    expect(within(card).getByText(`Expiration : ${capabilityPreview.expires_at}`)).toBeOnTheScreen();
+    expect(within(card).getByText(`Empreinte exacte : ${capabilityDetail.action_digest}`)).toBeOnTheScreen();
+    expect(within(card).getByText(/Destinataires masqués : 1\/20/)).toBeOnTheScreen();
+    expect(screen.queryByText("alice.private@example.test")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Quarterly secret")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Private body payload")).not.toBeOnTheScreen();
+    expect(mockCapabilityLoad).toHaveBeenCalledWith(capabilityPreview.request_id);
+    expect(mockCapabilityAuthorize).not.toHaveBeenCalled();
+    expect(mockCapabilityExecute).not.toHaveBeenCalled();
+  });
+
+  it("shows the exact contacts lookup query before consent", async () => {
+    const contactPreview = {
+      ...capabilityPreview,
+      request_id: `iphreq_${"1".repeat(32)}`,
+      capability: "iphone.contacts.lookup",
+    } as const;
+    const contactDetail = {
+      ...contactPreview,
+      arguments: { query: "Ada Lovelace" },
+      action_digest: `sha256:${"2".repeat(64)}`,
+      grant: null,
+    } satisfies CapabilityRequestDetail;
+    mockCapabilityRefresh.mockResolvedValue([contactPreview]);
+    mockCapabilityLoad.mockResolvedValue(contactDetail);
+
+    await render(<ApprovalsScreen />);
+
+    const card = await screen.findByTestId(`iphone-capability-card-${contactPreview.request_id}`);
+    expect(within(card).getByText("Recherche exacte : Ada Lovelace")).toBeOnTheScreen();
+    expect(mockCapabilityAuthorize).not.toHaveBeenCalled();
+  });
+
+  it("denies an iPhone request without invoking its native execution flow", async () => {
+    mockCapabilityRefresh.mockResolvedValue([capabilityPreview]);
+    mockCapabilityAuthorize.mockResolvedValue({
+      ...capabilityDetail,
+      status: "denied",
+      grant: null,
+    });
+    const user = userEvent.setup();
+    await render(<ApprovalsScreen />);
+
+    await user.press(await screen.findByRole("button", { name: "Refuser l’action iPhone" }));
+
+    await waitFor(() => expect(mockCapabilityAuthorize).toHaveBeenCalledWith(
+      capabilityPreview.request_id,
+      "deny",
+    ));
+    expect(mockCapabilityExecute).not.toHaveBeenCalled();
+    expect(await screen.findByText("Demande iPhone refusée.")).toBeOnTheScreen();
+  });
+
+  it("authorizes before invoking the transport's consume-and-native flow", async () => {
+    const order: string[] = [];
+    mockCapabilityRefresh.mockResolvedValue([capabilityPreview]);
+    mockCapabilityAuthorize.mockImplementation(async () => {
+      order.push("authorize");
+      return capabilityAuthorization;
+    });
+    mockCapabilityExecute.mockImplementation(async () => {
+      order.push("execute");
+      return capabilityResult;
+    });
+    const user = userEvent.setup();
+    await render(<ApprovalsScreen />);
+
+    await user.press(
+      await screen.findByRole("button", { name: "Autoriser l’action iPhone une fois" }),
+    );
+
+    await waitFor(() => expect(mockCapabilityExecute).toHaveBeenCalledWith(capabilityPreview.request_id));
+    expect(order).toEqual(["authorize", "execute"]);
+    expect(await screen.findByText("Action iPhone exécutée et résultat transmis.")).toBeOnTheScreen();
+  });
+
+  it("coalesces duplicate authoritative delivery into one decision card and execution", async () => {
+    mockCapabilityRefresh.mockResolvedValue([capabilityPreview, capabilityPreview]);
+    const user = userEvent.setup();
+    await render(<ApprovalsScreen />);
+
+    const allow = await screen.findByRole("button", {
+      name: "Autoriser l’action iPhone une fois",
+    });
+    expect(screen.getAllByRole("button", {
+      name: "Autoriser l’action iPhone une fois",
+    })).toHaveLength(1);
+    expect(mockCapabilityLoad).toHaveBeenCalledTimes(1);
+
+    await user.press(allow);
+    await waitFor(() => expect(mockCapabilityExecute).toHaveBeenCalledTimes(1));
+    expect(mockCapabilityAuthorize).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers explicit grant recovery after restart and never offers a new denial", async () => {
+    const recoveryPreview = { ...capabilityPreview, status: "approved" as const };
+    const recoveryDetail = { ...capabilityDetail, status: "approved" as const };
+    mockCapabilityRefresh.mockResolvedValue([recoveryPreview]);
+    mockCapabilityLoad.mockResolvedValue(recoveryDetail);
+    const user = userEvent.setup();
+    await render(<ApprovalsScreen />);
+
+    expect(await screen.findByText(/son secret à usage unique n’est plus disponible/)).toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Refuser l’action iPhone" })).not.toBeOnTheScreen();
+    const recover = screen.getByRole("button", {
+      name: "Récupérer l’autorisation iPhone une fois",
+    });
+
+    await user.press(recover);
+
+    await waitFor(() => expect(mockCapabilityAuthorize).toHaveBeenCalledWith(
+      capabilityPreview.request_id,
+      "approve",
+    ));
+    expect(mockCapabilityExecute).toHaveBeenCalledWith(capabilityPreview.request_id);
+  });
+
+  it("fails closed for offline and expired iPhone request states", async () => {
+    mockCapabilityRefresh.mockRejectedValueOnce(new Error("offline"));
+    await render(<ApprovalsScreen />);
+
+    expect(await screen.findByText(/Demandes iPhone indisponibles : offline/)).toBeOnTheScreen();
+    expect(screen.queryByRole("button", {
+      name: "Autoriser l’action iPhone une fois",
+    })).not.toBeOnTheScreen();
+    expect(mockCapabilityAuthorize).not.toHaveBeenCalled();
+
+    mockCapabilityRefresh.mockResolvedValueOnce([
+      { ...capabilityPreview, expires_at: "2000-09-08T12:05:00.000Z" },
+    ]);
+    mockCapabilityLoad.mockResolvedValueOnce({
+      ...capabilityDetail,
+      expires_at: "2000-09-08T12:05:00.000Z",
+    });
+    const user = userEvent.setup();
+    await user.press(screen.getByRole("button", { name: "Actualiser les accords" }));
+
+    const expiredAllow = await screen.findByRole("button", {
+      name: "Autoriser l’action iPhone une fois",
+    });
+    expect(expiredAllow).toBeDisabled();
+    expect(screen.getByText("Demande expirée — actualisez la liste.")).toBeOnTheScreen();
   });
 });

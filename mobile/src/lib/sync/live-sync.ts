@@ -1,7 +1,9 @@
 import { createEventStreamTicket } from "@/lib/api/client";
+import { parseCapabilityNotification } from "@/lib/iphone-capabilities/grant";
+import type { CapabilityNotification } from "@/lib/iphone-capabilities/types";
 import { upsertEvent } from "@/lib/state/replica";
 
-type ControlPlaneEvent = {
+export type ControlPlaneEvent = {
   type: string;
   payload: Record<string, unknown>;
 };
@@ -18,7 +20,8 @@ type SocketLike = {
   send: (value: string) => void;
 };
 
-type LiveSyncOptions = {
+export type LiveSyncOptions = {
+  onCapabilityRequest?: (notification: CapabilityNotification) => void;
   onError?: (message: string) => void;
   onEvent?: (event: ControlPlaneEvent) => void;
   onStateChange?: (state: LiveSyncState) => void;
@@ -59,6 +62,10 @@ function parseEvent(raw: string): ControlPlaneEvent | null {
   } catch {
     return null;
   }
+}
+
+function messageFor(cause: unknown, fallback: string): string {
+  return cause instanceof Error ? cause.message : fallback;
 }
 
 export function createLiveSyncController(
@@ -110,6 +117,61 @@ export function createLiveSyncController(
     }, delay);
   }
 
+  function capabilityNotificationFor(
+    event: ControlPlaneEvent,
+  ): { accepted: true; notification: CapabilityNotification | null } | { accepted: false } {
+    if (event.type !== "iphone.capability.requested") {
+      return { accepted: true, notification: null };
+    }
+    try {
+      return { accepted: true, notification: parseCapabilityNotification(event.payload) };
+    } catch {
+      options.onError?.("Notification de capacité iPhone invalide.");
+      return { accepted: false };
+    }
+  }
+
+  async function processEvent(
+    serverUrl: string,
+    event: ControlPlaneEvent,
+    capabilityNotification: CapabilityNotification | null,
+    connectionEpoch: number,
+  ) {
+    if (stopped || connectionEpoch !== epoch) return;
+    try {
+      if (capabilityNotification) {
+        options.onCapabilityRequest?.(capabilityNotification);
+      } else {
+        await persistEvent(serverUrl, event.type, event.payload);
+      }
+    } catch (cause) {
+      const fallback = capabilityNotification
+        ? "Notification de capacité iPhone invalide."
+        : "Échec de la réplique locale.";
+      options.onError?.(messageFor(cause, fallback));
+    }
+    options.onEvent?.(event);
+  }
+
+  function handleMessage(
+    current: SocketLike,
+    serverUrl: string,
+    connectionEpoch: number,
+    message: { data: unknown },
+  ) {
+    if (socket !== current || !enabled || stopped) return;
+    const event = typeof message.data === "string" ? parseEvent(message.data) : null;
+    if (!event) {
+      options.onError?.("Événement temps réel invalide.");
+      return;
+    }
+    const capability = capabilityNotificationFor(event);
+    if (!capability.accepted) return;
+    persistTail = persistTail
+      .catch(() => undefined)
+      .then(() => processEvent(serverUrl, event, capability.notification, connectionEpoch));
+  }
+
   async function connect() {
     if (!enabled || stopped || connecting || socket) return;
     connecting = true;
@@ -125,25 +187,8 @@ export function createLiveSyncController(
         attempt = 0;
         setState("connected");
       };
-      current.onmessage = (message: { data: unknown }) => {
-        if (socket !== current || !enabled || stopped) return;
-        const event = typeof message.data === "string" ? parseEvent(message.data) : null;
-        if (!event) {
-          options.onError?.("Événement temps réel invalide.");
-          return;
-        }
-        persistTail = persistTail
-          .catch(() => undefined)
-          .then(async () => {
-            try {
-              await persistEvent(ticket.serverUrl, event.type, event.payload);
-            } catch (cause) {
-              options.onError?.(
-                cause instanceof Error ? cause.message : "Échec de la réplique locale.",
-              );
-            }
-            options.onEvent?.(event);
-          });
+      current.onmessage = (message) => {
+        handleMessage(current, ticket.serverUrl, connectionEpoch, message);
       };
       current.onerror = () => {
         if (socket !== current) return;
@@ -158,7 +203,7 @@ export function createLiveSyncController(
       };
     } catch (cause) {
       if (!enabled || stopped || connectionEpoch !== epoch) return;
-      options.onError?.(cause instanceof Error ? cause.message : String(cause));
+      options.onError?.(messageFor(cause, String(cause)));
       setState("disconnected");
       queueReconnect();
     } finally {
