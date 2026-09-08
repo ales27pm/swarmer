@@ -139,6 +139,8 @@ export type ToolProposalInput =
       summary: string;
     };
 
+export type PlannerSource = "iphone_local" | "ubuntu_local" | "manual" | "test";
+
 type ApprovalRequester = {
   type: "device";
   id: string;
@@ -264,7 +266,7 @@ export type MemoryItem = {
   created_at: string;
   updated_at: string;
   score?: number;
-  search_kind?: "lexical";
+  search_kind?: "lexical" | "vector" | "hybrid";
 };
 
 export type Agent = {
@@ -306,6 +308,7 @@ export type Bootstrap = {
   approvals: Approval[];
   tool_calls: ToolCall[];
   conversations: Conversation[];
+  messages?: Message[];
   agents: Agent[];
   pinned_memory: MemoryItem[];
   counts: {

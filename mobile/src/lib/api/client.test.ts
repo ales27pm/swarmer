@@ -153,7 +153,7 @@ describe("control-plane connection storage", () => {
     expect(request).toHaveBeenCalledWith(
       "https://control.example/tasks/tsk%2Fone/tool-calls",
       expect.objectContaining({
-        body: JSON.stringify(proposal),
+        body: JSON.stringify({ ...proposal, planner_source: "iphone_local" }),
         headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
         method: "POST",
       }),

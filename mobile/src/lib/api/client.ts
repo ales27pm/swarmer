@@ -369,6 +369,7 @@ function isBootstrapEnvelope(value: unknown): value is Bootstrap {
     typeof value.server_time === "string" &&
     typeof value.cursor === "string" &&
     arrays.every(Array.isArray) &&
+    (value.messages === undefined || Array.isArray(value.messages)) &&
     counts.every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
   );
 }
@@ -515,7 +516,7 @@ export function submitToolProposal(
 ): Promise<ToolCall> {
   return request<ToolCall>(`/tasks/${resourceId(taskId)}/tool-calls`, {
     method: "POST",
-    body: JSON.stringify(proposal),
+    body: JSON.stringify({ ...proposal, planner_source: "iphone_local" }),
   });
 }
 

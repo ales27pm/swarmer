@@ -24,7 +24,33 @@
         }
       ],
       "expo-secure-store",
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-mail-composer",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "monGARS utilise votre position uniquement après votre autorisation explicite pour répondre à la demande affichée."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "monGARS recherche vos contacts uniquement après votre autorisation explicite pour répondre à la demande affichée."
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "monGARS consulte vos événements uniquement après votre autorisation explicite pour répondre à la demande affichée.",
+          "remindersPermission": "monGARS n’accède aux rappels qu’après votre autorisation explicite."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "monGARS ouvre le sélecteur de photos uniquement après votre autorisation explicite."
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": false,
@@ -37,7 +63,11 @@
           "fr"
         ],
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocalNetworkUsageDescription": "monGARS Swarm se connecte à votre serveur d’agents autorisé sur le réseau local."
+        "NSLocalNetworkUsageDescription": "monGARS Swarm se connecte à votre serveur d’agents autorisé sur le réseau local.",
+        "NSContactsUsageDescription": "monGARS recherche vos contacts uniquement après votre autorisation explicite.",
+        "NSCalendarsFullAccessUsageDescription": "monGARS consulte vos événements uniquement après votre autorisation explicite.",
+        "NSLocationWhenInUseUsageDescription": "monGARS utilise votre position uniquement après votre autorisation explicite.",
+        "NSPhotoLibraryUsageDescription": "monGARS ouvre le sélecteur de photos uniquement après votre autorisation explicite."
       }
     },
     "android": {

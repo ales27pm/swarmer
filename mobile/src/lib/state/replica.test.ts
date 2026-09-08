@@ -4,9 +4,15 @@ import * as SQLite from "expo-sqlite";
 import type { Approval, Task } from "@/lib/api/types";
 import {
   applyBootstrap,
+  localAgents,
+  localAuditMeta,
+  localConversations,
+  localDataAuthorizesSensitiveAction,
+  localMemory,
   localApprovals,
   localTask,
   localTasks,
+  localToolCalls,
   upsertEvent,
 } from "@/lib/state/replica";
 
@@ -65,35 +71,21 @@ describe("SQLite bootstrap replica", () => {
     expect(SQLite.openDatabaseAsync).toHaveBeenCalledWith("mongars-replica.db");
     expect(execAsync).toHaveBeenCalledWith(expect.stringContaining("PRAGMA journal_mode = WAL"));
     expect(withTransactionAsync).toHaveBeenCalledTimes(1);
-    expect(runAsync).toHaveBeenNthCalledWith(
-      1,
-      "DELETE FROM tasks",
-    );
-    expect(runAsync).toHaveBeenNthCalledWith(
-      2,
-      "DELETE FROM approvals",
-    );
-    expect(runAsync).toHaveBeenNthCalledWith(
-      3,
-      "INSERT OR REPLACE INTO sync_meta(key,value) VALUES('scope',?)",
-      "https://control.example",
-    );
-    expect(runAsync).toHaveBeenNthCalledWith(
-      4,
+    expect(runAsync).toHaveBeenCalledWith("DELETE FROM tasks");
+    expect(runAsync).toHaveBeenCalledWith("DELETE FROM approvals");
+    expect(runAsync).toHaveBeenCalledWith(
       "INSERT OR REPLACE INTO tasks(id,payload,updated_at) VALUES(?,?,?)",
       task.id,
       JSON.stringify(task),
       task.updated_at,
     );
-    expect(runAsync).toHaveBeenNthCalledWith(
-      5,
+    expect(runAsync).toHaveBeenCalledWith(
       "INSERT OR REPLACE INTO approvals(id,payload,updated_at) VALUES(?,?,?)",
       approval.id,
       JSON.stringify(approval),
       approval.created_at,
     );
-    expect(runAsync).toHaveBeenNthCalledWith(
-      6,
+    expect(runAsync).toHaveBeenCalledWith(
       "INSERT OR REPLACE INTO sync_meta(key,value) VALUES('cursor',?)",
       "audit:42",
     );
@@ -145,6 +137,46 @@ describe("SQLite bootstrap replica", () => {
       JSON.stringify(approval),
       approval.created_at,
     );
-    expect(runAsync).toHaveBeenCalledTimes(2);
+    expect(runAsync).toHaveBeenCalledTimes(3);
+  });
+
+  it("exposes scoped queries and never authorizes sensitive actions from cached state", async () => {
+    await localToolCalls("https://control.example");
+    await localAgents("https://control.example");
+    await localMemory("https://control.example");
+    await localConversations("https://control.example");
+    expect(getAllAsync).toHaveBeenCalledWith("SELECT payload FROM tool_calls ORDER BY updated_at DESC");
+    expect(getAllAsync).toHaveBeenCalledWith("SELECT payload FROM agents ORDER BY updated_at DESC");
+    expect(getAllAsync).toHaveBeenCalledWith("SELECT payload FROM pinned_memory ORDER BY updated_at DESC");
+    expect(getAllAsync).toHaveBeenCalledWith("SELECT payload FROM conversations ORDER BY updated_at DESC");
+    expect(localDataAuthorizesSensitiveAction()).toBe(false);
+  });
+
+  it("persists audit cursor and counts metadata", async () => {
+    getFirstAsync
+      .mockResolvedValueOnce({ value: "https://control.example" })
+      .mockResolvedValueOnce({ value: "42" })
+      .mockResolvedValueOnce({ value: '{"tasks":1}' });
+    await expect(localAuditMeta("https://control.example")).resolves.toEqual({
+      cursor: "42",
+      counts: { tasks: 1 },
+    });
+  });
+
+  it("hydrates every authoritative bootstrap collection", async () => {
+    await applyBootstrap({
+      tasks: [], approvals: [], cursor: "7",
+      tool_calls: [{ id: "call_1", created_at: "2030-01-01" }] as never[],
+      conversations: [{ id: "cnv_1", created_at: "2030-01-01" }] as never[],
+      messages: [{ id: "msg_1", created_at: "2030-01-01" }] as never[],
+      agents: [{ id: "agt_1", created_at: "2030-01-01" }] as never[],
+      pinned_memory: [{ id: "mem_1", created_at: "2030-01-01" }] as never[],
+    }, "https://control.example");
+    for (const [table, id] of [["tool_calls", "call_1"], ["conversations", "cnv_1"], ["messages", "msg_1"], ["agents", "agt_1"], ["pinned_memory", "mem_1"]]) {
+      expect(runAsync).toHaveBeenCalledWith(
+        `INSERT OR REPLACE INTO ${table}(id,payload,updated_at) VALUES(?,?,?)`,
+        id, expect.any(String), "2030-01-01",
+      );
+    }
   });
 });
