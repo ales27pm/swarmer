@@ -212,16 +212,18 @@ actor LocalInferenceCoordinator {
         state = self.handle == nil ? "idle" : "ready"
         message = nil
       }
-      return GenerationRecord(result: result)
+      return GenerationRecord(
+        text: result.text,
+        finishReason: result.finishReason,
+        tokenCount: result.tokenCount
+      )
     } catch is CancellationError {
       if generationOperation?.id == operationId {
         generationOperation = nil
         state = self.handle == nil ? "idle" : "ready"
         message = nil
       }
-      return GenerationRecord(
-        result: RuntimeGenerationResult(text: "", finishReason: "cancelled", tokenCount: 0)
-      )
+      return GenerationRecord(text: "", finishReason: "cancelled", tokenCount: 0)
     } catch {
       if generationOperation?.id == operationId {
         generationOperation = nil

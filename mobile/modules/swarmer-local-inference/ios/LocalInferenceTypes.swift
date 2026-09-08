@@ -114,19 +114,11 @@ struct StatusRecord: Record, Sendable {
   }
 }
 
-struct GenerationRecord: Record, Sendable {
-  @Field var text: String = ""
-  @Field var finishReason: String = "stop"
-  @Field var tokenCount: Int = 0
-
-  init() {}
-
-  init(result: RuntimeGenerationResult) {
-    self.init()
-    text = result.text
-    finishReason = result.finishReason
-    tokenCount = result.tokenCount
-  }
+@Record
+struct GenerationRecord: Sendable {
+  var text: String = ""
+  var finishReason: String = "stop"
+  var tokenCount: Int = 0
 }
 
 enum LocalInferenceError: LocalizedError, Sendable {
