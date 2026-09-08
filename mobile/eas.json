@@ -33,6 +33,7 @@
     "production": {
       "ios": {
         "appName": "monGARS Swarm",
+        "ascAppId": "6809592768",
         "bundleIdentifier": "org.27pm.mongars",
         "language": "fr-CA",
         "sku": "mongars-swarm-20260907"
