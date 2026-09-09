@@ -6,7 +6,7 @@ Standardiser les événements internes entre orchestrateur, workers, gateway,
 state, capability broker et UI sans confondre le board SQLite avec le canal
 WebSocket mobile.
 
-## IMPLEMENTED — runtime `0.10.0`
+## IMPLEMENTED — runtime `0.11.0`
 
 Le runtime possède deux mécanismes distincts:
 
@@ -43,6 +43,17 @@ Ce mécanisme garantit la persistance autoritative locale et la convergence
 après crash. Redis apporte une diffusion réseau de notification, mais cette
 release ne garantit ni déploiement multi-hôte prêt production, ni ordre global
 inter-topic.
+
+### Publication plus longue que la lease — QUALIFIED
+
+Si un appel broker dépasse la lease de publication, Redis peut accepter la
+génération N puis le `mark_published` local de N est refusé parce qu'il est
+stale. Une génération N+1 republie alors le même `event_id` et la même
+`dedupe_key`. Ce comportement est volontairement **at-least-once**; la
+déduplication applicative rend le duplicate sans effet métier. Les compteurs
+`outbox_duplicate_publications`, `outbox_claim_expirations` et les agrégats
+`outbox_publish_latency_ms_*` l'exposent. Aucune garantie exactly-once n'est
+revendiquée.
 
 ## Enveloppe durable backend-neutre
 
@@ -108,11 +119,35 @@ duplicates sans ajouter de seconde ligne.
 `MONGARS_REDIS_STREAM_PREFIX`. Les topics sont regroupés en quatre streams:
 `<prefix>:tasks`, `:agents`, `:iphone` et `:system`. Un script Redis associe
 atomiquement la `dedupe_key` applicative à l'ID du stream avant de répondre.
+Cette liaison utilise une clé Redis indépendante nommée avec le SHA-256 de la
+`dedupe_key`, pas un index global.
+
+`MONGARS_REDIS_STREAM_MAXLEN` borne approximativement le nombre d'entrées;
+`MONGARS_REDIS_STREAM_RETENTION_SECONDS` fournit la fenêtre temporelle. À chaque
+nouvelle publication non dédupliquée, le script applique `MAXLEN ~` puis
+`MINID ~` au stream ciblé et renouvelle le TTL d'inactivité de ce stream. La
+liaison de déduplication reçoit son propre TTL `PX`; aucun hash ou index global
+n'est conservé. Le stream et les clés de déduplication expirent selon leurs TTL
+renouvelés indépendamment. Le trim ou cette
+expiration ne supprime jamais l'état métier SQLite; un consumer devenu trop
+ancien doit reconstruire sa projection depuis l'API/base autoritative et ne
+peut jamais supposer un historique Redis infini.
 
 Si Redis est absent ou tombe, l'outbox reste autoritative et non publiée; les
 transitions de tâche/job déjà commises ne sont ni annulées ni perdues. La santé
 passe à `degraded`, sans URL ni credential. Le prochain drain reprend la ligne.
 Un ID ou ack Redis ne modifie jamais directement le state SQLite.
+
+### Qualification Redis réelle
+
+**QUALIFIED:** huit tests live ont exercé un Redis authentifié sur `ubuntu-host`
+via tunnel SSH, dont panne/reprise, backlog, duplicate applicatif et rétention.
+Le point d'entrée est `scripts/test-redis-integration.sh`.
+
+**EXPERIMENTAL / NOT QUALIFIED:** TLS Redis et le chemin de certificat invalide
+n'ont pas été exécutés dans ce harness. L'adaptateur impose toujours TLS hors
+loopback, mais cette validation de configuration n'est pas une preuve de test
+TLS live.
 
 ## Consumers de confiance — fondation implémentée
 
@@ -127,6 +162,17 @@ Cette fondation émule les sémantiques attendues en tests SQLite. Elle n'autori
 pas les workers à consommer Redis et n'est pas encore raccordée à un consumer
 group Redis opérationnel.
 
+## Maintenance continuellement fencée — IMPLEMENTED
+
+Les opérations singleton utilisent `MaintenanceLeaseRunner`: acquisition d'une
+lease nommée, renouvellement avant 50 % du TTL et génération transmise au code
+de mutation. Chaque batch autoritatif appelle `require_current_locked()` dans
+la même transaction SQLite. Une perte de renouvellement annule le travail; un
+ancien owner ne peut pas continuer après qu'une génération N+1 a pris la lease.
+Ce contrat couvre reaper de jobs, expiration des capabilities, récupération de
+l'outbox et calcul des scores. La reconstruction FAISS reste une commande
+manuelle, pas une boucle automatique cachée.
+
 ## Leases, retry et dead letter locaux
 
 Une claim crée un token opaque conservé seulement sous forme de hash, un
@@ -138,6 +184,8 @@ Le reaper émet `lease_expired`, puis:
 - remet en file uniquement `workspace.list_dir` ou `workspace.read_text` si le
   budget de tentatives reste disponible et si la génération n'a aucune activité
   de capability iPhone;
+- quarantine une job dont le skill a été révoqué; une lease encore valide peut
+  finir, mais son expiration ne peut jamais provoquer une redistribution;
 - annule si la tâche parente est déjà terminale;
 - sinon échoue la job/tâche, qualifie l'issue d'incertaine lorsque nécessaire et
   écrit `dead_lettered` dans `tasks.status`.
@@ -177,12 +225,61 @@ résultat natif, bearer ou grant n'entre dans la notification. Après reconnexio
 le client fait un bootstrap ou un `GET` REST autoritatif; le WebSocket n'est ni
 un journal complet, ni une preuve de succès.
 
+`task.*`, `message.*` et `approval.*` sont eux aussi des notifications
+d'invalidation, pas des transports de contenu. Une tâche ne publie que ses
+identifiants, son statut et ses horodatages; un message ne publie que ses
+identifiants, son rôle et ses horodatages; une approbation ne publie que ses
+identifiants, son statut et ses échéances. Le marqueur `refetch_required: true`
+oblige le client à relire le contenu autoritatif par REST. `title`, `input`,
+`content`, `user_note`, snapshots d'action, métadonnées libres et erreurs
+textuelles ne passent jamais dans ces événements. La réplica mobile ne remplace
+pas une ligne complète par cette projection volontairement partielle. Le
+provider regroupe les rafales, n'exécute jamais deux réconciliations en
+parallèle, effectue au plus trois reprises différées bornées et clôt toute passe
+devenue obsolète après un changement d'origine.
+`orchestrator.proposed` suit le même contrat: `task_id`, `planner_source`, état
+éventuel et `refetch_required`, sans résumé du modèle, arguments ou nom d'outil.
+La proposition détaillée reste accessible seulement dans la réponse REST
+authentifiée et l'état autoritatif associé à la tâche.
+
+Le ticket est créé sous writer lock après revalidation du bearer actif et de la
+lignée `last_pairing_id`. Un re-pair supprime les tickets non consommés et rend
+obsolète la lignée mémorisée par tout WebSocket déjà ouvert; les chemins d'envoi
+et de réception revérifient cette lignée et ferment la session ancienne avant
+de transporter un nouvel événement. `devices.websocket_connection_id` clôt
+également les connexions concurrentes entre processus: seule la connexion
+durablement courante peut recevoir. Les envois et fermetures sont bornés par
+`MONGARS_WEBSOCKET_IO_TIMEOUT_SECONDS`, puis la socket fautive est évincée hors
+du verrou de bascule. Le fan-out par appareil est concurrent: plusieurs pairs
+lents coûtent un seul intervalle de timeout, pas leur somme.
+
+Les processus se relaient ces projections via `websocket_notifications` dans la
+SQLite autoritative, indépendamment du choix SQLite/Redis pour le message board.
+Chaque instance avance son propre checkpoint après la livraison; un crash entre
+l'envoi et le checkpoint peut donc produire un duplicate inoffensif. Le journal
+est nettoyé seulement jusqu'au minimum des checkpoints encore vivants. Une
+instance revenue après expiration de son checkpoint reçoit `sync.invalidated`
+et force un bootstrap REST. L'insertion WebSocket reste une indication
+best-effort post-commit: une panne à cet endroit ne change jamais la réponse ni
+l'état métier, et reconnexion/bootstrap reste le mécanisme de convergence.
+
 Tous les WebSocket passent par un sérialiseur central. Les événements partagés
 refusent les champs bearer/credential/secret/token/grant, arguments ou résultats
 natifs, URL contenant des identifiants et texte ressemblant à un bearer. Les
 résultats d'outil sont projetés sous forme expurgée; une mise à jour mémoire ne
 porte que ses métadonnées sûres. Le même contrat de payload est appliqué avant
 toute insertion dans l'outbox et donc avant SQLite ou Redis.
+Les payloads durables refusent en plus les champs de texte libre usuels
+(`content`, `input`, `prompt`, `title`, `description`, `summary`, `note`): le
+board transporte des identifiants, états et catégories machine; le détail reste
+dans SQLite et ses API authentifiées.
+
+En `0.11.0`, des tests paramétrés couvrent aussi les objets/tableaux imbriqués,
+variantes de casse, camelCase, tirets, séparateurs invisibles et homoglyphes
+Unicode courants pour les alias de secrets, corps mail/SMS, contacts et
+coordonnées. Cette défense complète la minimisation par type d'événement; elle
+ne remplace pas la règle de ne jamais placer la donnée sensible dans un payload
+partagé.
 
 ## Ordering et idempotence
 
@@ -203,28 +300,49 @@ toute insertion dans l'outbox et donc avant SQLite ou Redis.
 `GET /status`, authentifié comme les autres ressources, expose seulement:
 
 - version et `instance_id` de boot;
-- backend de board, santé et dernière publication réussie;
-- `outbox_pending`, `outbox_publishing`, `outbox_failed`;
-- `queued_jobs`, `leased_jobs`, `dead_letter_jobs`, `expired_leases`, `retries`
-  et `dead_letter_events`;
+- backend de board, santé, dernière publication, nombre de reconnects Redis et
+  catégorie d'erreur expurgée;
+- `outbox_pending`, `outbox_publishing`, `outbox_failed`, expirations de claim,
+  duplicates et agrégats de latence;
+- `queued_jobs`, `leased_jobs`, `dead_letter_jobs`, `quarantined_jobs`,
+  `expired_leases`, `retries` et `dead_letter_events`;
 - agents actifs/hors ligne, propriétaires des leases de maintenance, demandes
-  iPhone en attente et backend vectoriel configuré.
+  iPhone en attente, échecs de renouvellement, backend vectoriel et âge de sa
+  génération active.
 
+Les cumuls d'expirations/duplicates/latence outbox et
+leases-expirées/retries/dead-letters worker sont persistés en lignes singleton
+SQLite et avancent avec les transactions qui produisent les événements. Leur
+lecture est bornée et ne reparcourt ni l'outbox publiée ni l'audit append-only.
 Ces compteurs/labels ne contiennent aucun payload ni credential. Ils décrivent
 l'état local et la santé vue par l'instance; ils ne constituent pas une preuve
 de disponibilité multi-hôte.
 
-## PLANNED — exploitation multi-hôte
+## Frontière multi-hôte
+
+**SUPPORTED:** un seul control plane Ubuntu avec SQLite autoritatif local,
+plusieurs workers distants via API authentifiée et Redis optionnel comme fabric
+de notification.
+
+**QUALIFIED (protocole/processus):** `scripts/run-multihost-smoke.sh` exerce deux
+identités worker, failover de lease, fencing d'un worker revenu tardivement et
+panne de Redis sans perte d'état. Deux machines worker physiques distinctes
+restent **EXPERIMENTAL / NOT RUN**.
+
+**UNSUPPORTED:** plusieurs control planes qui écrivent le même fichier SQLite
+sur NFS/filesystem réseau et tout active-active SQLite inter-hôtes.
+
+## PLANNED — exploitation étendue
 
 Une qualification de Redis Streams ou une migration vers NATS JetStream devra
 encore définir explicitement:
 
 - consumer groups et acknowledgements;
 - partitionnement/ordre par agrégat;
-- propagation inter-hôtes et reprise;
+- qualification de workers sur hôtes physiques distincts et reprise;
 - dead-letter queue externe et politique opérateur;
 - idempotence durable des consommateurs hors SQLite;
-- observabilité et limites de rétention.
+- observabilité multi-instance externe.
 
-Le backend SQLite reste le défaut. L'existence de l'adaptateur Redis ne constitue
-pas une revendication de production multi-hôte.
+Le backend SQLite reste le défaut. La qualification Redis ne transforme pas le
+broker en source de vérité et ne prouve pas une architecture active-active.

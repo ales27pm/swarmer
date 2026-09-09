@@ -1,6 +1,6 @@
 # 08 — State, Memory and Sync
 
-> **IMPLEMENTED — slice `0.10.0`:** le bootstrap hydrate tâches, approbations, appels d'outils,
+> **IMPLEMENTED — slice `0.11.0`:** le bootstrap hydrate tâches, approbations, appels d'outils,
 > conversations/messages, agents, mémoire épinglée, curseur et compteurs dans
 > la réplica liée à l'origine. Elle demeure un cache et n'autorise aucune action
 > sensible. Une outbox mobile distincte synchronise seulement trois mutations
@@ -137,10 +137,21 @@ Chunks textuels vectorisés:
 L'interface `VectorIndex` traite tout index externe comme une projection
 reconstruisible. L'adaptateur FAISS optionnel écrit une nouvelle génération puis
 permute atomiquement son pointeur `CURRENT.json`; une génération absente ou
-corrompue n'efface aucun item SQLite. La commande
+corrompue n'efface aucun item SQLite. En `0.11.0`, il vérifie l'UID propriétaire,
+les modes privés, l'absence de symlink/hardlink et l'intégrité SHA-256 du root,
+du pointeur, des générations et des fichiers. Une reconstruction interrompue ou
+un disque plein avant la permutation préserve la génération active; les anciennes
+générations sont nettoyées avec une rétention bornée par
+`MONGARS_VECTOR_INDEX_GENERATIONS_TO_KEEP`. La commande
 `python -m app.commands.rebuild_vector_index --db ... --provider ... --index-path ...`
 reconstruit cette projection. Le backend FAISS et ses dépendances restent
 optionnels; le fallback lexical demeure utilisable.
+
+Avant une nouvelle génération, le rebuild tient le lock de projection et traite
+les restes d'un crash: il valide puis supprime seulement les répertoires
+`.tmp-*` et fichiers `.CURRENT-*`/`.digest-*` privés, réguliers et appartenant à
+l'UID courant. Un nom inattendu, un mauvais propriétaire/mode ou un lien fait
+échouer le cleanup sans suivre ni effacer l'artefact.
 
 ### Artifact memory
 
@@ -217,6 +228,19 @@ Retourne:
 Le client applique le bootstrap uniquement à la partition SQLite correspondant
 à l'origine active. Après reconnexion WebSocket, il effectue ce bootstrap REST
 autoritatif avant de drainer les mutations ordinaires en attente.
+Les événements `task.*`, `message.*` et `approval.*` sont des invalidations
+minimales avec `refetch_required: true`: ils ne contiennent ni intention/titre
+de tâche, contenu de message, note utilisateur ni snapshot d'action. La réplica
+ne les écrit donc pas comme des ressources complètes; le provider live regroupe
+les invalidations en une relecture REST authentifiée et liée à l'origine. Une
+seule relecture est active à la fois; trois reprises différées au maximum
+rattrapent une panne transitoire. Un changement d'origine annule attente et
+relecture anciennes avant toute application locale.
+
+Les mutations SecureStore qui installent ou reprennent une connexion sont
+sérialisées. La promotion et la suppression d'un candidat pending comparent sa
+valeur sérialisée exacte et sa génération locale; une ancienne réponse réseau
+ne peut donc ni écraser le re-pair courant ni en supprimer la trace de reprise.
 
 ### Mutation push idempotent — IMPLEMENTED
 
@@ -244,6 +268,23 @@ Lorsqu'un nouveau jumelage est finalisé et son bootstrap actif validé, les
 mutations de l'ancienne origine sont marquées abandonnées plutôt que rejouées
 sur le nouveau serveur.
 
+### Qualification de rejeu mobile — QUALIFIED
+
+- les drainers sont sérialisés par origine, y compris entre instances du runtime
+  dans le même processus;
+- un sender bloqué est borné à 15 secondes par défaut et 120 secondes maximum;
+- une réponse transitoire ou perdue garde la même mutation et la même clé
+  d'idempotence; aucun second envoi concurrent n'est démarré tant que l'issue du
+  premier appel reste incertaine dans le processus;
+- une ligne locale invalide ou un refus serveur permanent est quarantiné sans
+  bloquer les mutations sûres suivantes;
+- un changement d'origine ou de jumelage abandonne l'ancienne file et empêche
+  le démarrage d'un nouvel envoi sous l'ancien contexte.
+
+Ces garanties ont des tests de redémarrage, perte de réponse, course de drain et
+changement d'origine. Elles ne transforment pas l'outbox mobile en canal pour
+effets sensibles.
+
 ### Exclusions de l'outbox — INVARIANT
 
 Ne sont jamais mis en attente hors ligne:
@@ -268,10 +309,11 @@ Une résolution générale multi-writer reste **PLANNED**. Le slice courant
 implémente seulement l'idempotence exacte des trois opérations ci-dessus et la
 préférence serveur pour tout état de sécurité.
 
-## Backups
+## Backups et reprise
 
-- Daily SQLite backup.
-- Projection FAISS reconstruisible; sauvegarder d'abord SQLite et ses
+- **PLANNED:** automatisation et preuve opérationnelle d'un backup SQLite
+  quotidien avec restauration testée.
+- **IMPLEMENTED:** projection FAISS reconstruisible; sauvegarder d'abord SQLite et ses
   embeddings autoritatifs.
-- Audit log rotated but immutable.
-- Export JSONL for dataset.
+- **IMPLEMENTED:** chaîne d'audit append-only et export JSONL du dataset;
+  politiques de rotation/rétention d'exploitation encore **PLANNED**.

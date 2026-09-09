@@ -1,10 +1,17 @@
 # 26 — Validation des capabilities sur iPhone physique
 
-> **MANUAL VALIDATION REQUIRED — v0.10:** ce document est un protocole de
+> **MANUAL VALIDATION REQUIRED — v0.11:** ce document est un protocole de
 > validation, pas une preuve d'exécution. Aucun des scénarios ci-dessous n'est
 > marqué réussi tant qu'il n'a pas été observé sur un iPhone physique avec le
 > build, la version iOS et les identifiants de preuve consignés. Les tests
 > unitaires, le typecheck et un build signé ne remplacent pas cette validation.
+
+> **Tentative du 2026-09-08: BLOCKED — guest transport missing.** Le diagnostic
+> a identifié un guest QEMU sans iPhone dans l'énumération USB; les appareils
+> connus de Xcode étaient seulement des entrées en cache hors ligne, avec tunnel
+> CoreDevice non connecté et services DDI indisponibles. Aucun scénario natif
+> n'a donc été exécuté. Voir
+> `docs/evidence/iphone-validation-2026-09-08.md`.
 
 ## Portée
 
@@ -67,6 +74,9 @@ permission avait déjà été accordée.
 - Un grant expiré, consommé, lié à une autre requête ou à un autre appareil est
   refusé avant toute API iOS.
 - Une livraison WebSocket en double ne déclenche pas un second effet natif.
+- Un re-pair pendant qu'un WebSocket est établi ferme l'ancienne lignée de
+  session; elle ne reçoit plus de demande et ne peut pas créer un nouveau
+  ticket avec son ancien bearer. La nouvelle session refait un bootstrap REST.
 - Après passage en arrière-plan puis reprise, l'app relit l'état autoritatif et
   ne déduit aucun droit de la replica.
 - Si le réseau tombe après l'effet natif, une reprise du POST de résultat dans

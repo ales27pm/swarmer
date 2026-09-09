@@ -2,22 +2,21 @@
 
 ## Autorité et version
 
-Le schéma implémenté est SQLite WAL, version `13`, dans
-`server/app/services/state_service.py`. Il est migré de façon additive. Postgres,
+Le schéma implémenté est SQLite WAL et son marqueur exécutable autoritatif est
+`SCHEMA_VERSION` dans `server/app/services/state_service.py`; la documentation
+ne duplique pas ce numéro interne, qui est distinct de la version API/release
+`0.11.0`. Les migrations sont additives et rejouables au démarrage. Postgres,
 NATS et le câblage de base de données du prototype Vibecode ne sont pas branchés
 au MVP. Redis Streams est un transport de notification optionnel, pas une base
 autoritative et ne remplace aucune table ci-dessous.
 
-La version 7 a ajouté `message_board_events`, `agent_jobs`,
-`memory_embeddings`, `eval_examples`, `corrections` et `agent_scores`. Les
-versions 8–10 ajoutent l'outbox transactionnelle, les leases/générations,
-l'état de capacité des agents, le transport de capabilities iPhone et la
-déduplication de création par fingerprint. Les versions 11–13 ajoutent les
-claims de publication fenced, l'enveloppe de board v2, les identités d'instance,
-leases de maintenance, checkpoints consumers, reçus d'idempotence mobile,
-runtime/protocole d'agent, scoring observé et preuves du scheduler. Il ne s'agit
-pas d'un déplacement de l'autorité: outbox, state, leases et receipts restent
-dans SQLite.
+Les migrations historiques ajoutent sans reconstruction destructive le board
+et les jobs, l'outbox et ses claims fenced, les leases worker, le transport
+iPhone, les identités/leases de maintenance, les consumers de confiance, les
+reçus d'idempotence, les cartes/scores du scheduler, les compteurs
+opérationnels persistants et la politique worker à epoch. Il ne s'agit pas d'un
+déplacement de l'autorité: outbox, state, leases et receipts restent dans
+SQLite.
 
 Le fichier SQLite et la politique d'exécution doivent rester hors du workspace
 monté en écriture dans Bubblewrap.
@@ -84,10 +83,33 @@ transition de récupération et son événement partagent la même transaction; 
   ses états `staged` puis `finalized` restent liés au `pairing_id` et au
   `device_id`, et expirent sans modifier le jeton actif;
 - `devices.token` contient `sha256:<digest>` d'un jeton aléatoire opaque;
+- `devices.websocket_connection_id` désigne l'unique propriétaire courant des
+  livraisons WebSocket pour l'appareil. Un nouvel établissement le remplace
+  atomiquement; une autre instance qui conserve l'ancienne socket ne peut plus
+  lui envoyer de contenu;
 - la première authentification ordinaire du candidat finalisé remplace le jeton
   actif dans la même transaction et supprime ses tickets WebSocket inutilisés;
 - `websocket_tickets.ticket_hash` contient le digest d'un ticket court,
-  consommable une fois.
+  consommable une fois;
+- la création d'un ticket relit le token actif et `last_pairing_id` dans la
+  même transaction `BEGIN IMMEDIATE` que son insertion. Un ancien bearer bloqué
+  avant le writer lock ne peut donc pas créer un ticket après qu'un re-pair a
+  remplacé sa session;
+- un WebSocket établi reste lié au `last_pairing_id` et au
+  `websocket_connection_id` courants du device. Un re-pair invalide donc aussi
+  la session déjà ouverte au prochain envoi ou message, pas seulement ses
+  futurs tickets.
+
+### `websocket_notifications` et `websocket_notification_checkpoints`
+
+Le premier est un journal SQLite best-effort de projections WebSocket
+uniquement métadonnées; il ne contient ni contenu utilisateur ni résultat
+natif. Chaque processus possède un checkpoint de boot indépendant. Une ligne
+n'est nettoyée qu'après le minimum de tous les checkpoints d'instances encore
+vivantes. Les checkpoints arrêtés, orphelins ou dont le heartbeat est expiré
+sont supprimés; si l'ancienne instance revient, elle émet une invalidation
+globale et reconstruit par REST plutôt que de rejouer un effet. Un arrêt propre
+supprime son propre checkpoint.
 
 ### `agents`
 
@@ -120,6 +142,17 @@ actifs, invalide les anciens claims en clair, préfère un survivant encore en
 file et clôt toute tâche distribuée orpheline. Elle ne rejoue les deux lectures
 que lorsqu'aucune exécution locale concurrente n'existe.
 
+### `worker_skill_policy_state`
+
+Cette ligne singleton est la projection autoritative des règles de skills
+worker. Elle conserve le JSON canonique validé, son digest, un `epoch`
+monotone et `updated_at`. Un reload capture l'epoch avant de parser le fichier,
+puis compare-and-swap cet epoch sous `BEGIN IMMEDIATE`: un candidat devenu
+périmé ne peut pas écraser une révocation plus récente. Registration, mise en
+file, claim et reaper lisent cette même ligne dans la transaction de leur
+mutation; un cache allow périmé ne peut pas autoriser et un cache deny périmé ne
+peut pas remplacer une règle durablement permise.
+
 ### `message_board_events` et `outbox_events`
 
 `message_board_events` est le board durable SQLite: `schema_version`,
@@ -143,6 +176,22 @@ publie au moins une fois; si le processus tombe après le board/Redis mais avant
 de dédupliquer. Une panne de transport laisse toujours la ligne non publiée et
 incrémente seulement le compteur/erreur expurgée. Aucune ligne non publiée n'est
 supprimée.
+
+`outbox_operational_metrics` et `agent_job_operational_metrics` sont deux lignes
+singleton de compteurs. Elles évitent que `/status` reparcoure les historiques
+d'audit/outbox append-only. Une migration absente initialise une seule fois les
+compteurs worker depuis l'audit, après les réconciliations de redémarrage; les
+incréments futurs partagent la transaction de la lease, du job, de l'audit et de
+l'outbox.
+
+Redis ne remplace aucune de ces lignes. Sa projection applique `MAXLEN ~` et
+un trim temporel `MINID ~` seulement lors d'une nouvelle publication non
+dédupliquée sur le stream concerné; ce stream porte aussi un TTL d'inactivité.
+Chaque
+`dedupe_key` est matérialisée séparément dans une clé Redis nommée avec son
+SHA-256 et munie de son propre TTL `PX`, sans hash ni index global. La
+projection peut donc perdre son historique par trim ou expiration et doit
+toujours pouvoir être reconstruite depuis SQLite/API.
 
 ### `control_plane_instances` et `maintenance_leases`
 
@@ -245,7 +294,10 @@ des générations contenant les IDs stables de `memory_items`, puis permute un
 pointeur local `CURRENT.json` seulement après validation complète. La commande
 de rebuild relit `memory_embeddings` sous un provider donné. Perte, corruption
 ou absence de FAISS laisse intactes les mémoires SQLite et le fallback lexical.
-Qdrant reste **PLANNED**.
+Au début d'un rebuild, sous le lock de projection, les répertoires `.tmp-*` et
+les pointeurs/digests temporaires privés laissés par un crash sont validés puis
+supprimés. Un artefact qui n'est pas privé ou n'appartient pas à l'UID courant
+fait échouer l'entretien sans être suivi ni effacé. Qdrant reste **PLANNED**.
 
 ## Outbox SQLite mobile
 
@@ -291,7 +343,8 @@ origine; un changement de jumelage les abandonne.
   définir selon leur sensibilité;
 - sauvegarde/restauration et purge ne sont pas encore qualifiées en production.
 
-Les migrations `0.8 → 0.10` et `0.9 → 0.10` sont additives: aucune table
-autoritative n'est recréée ou supprimée. Les colonnes anciennes sont complétées,
-les anciens IDs d'événements reçoivent une identité stable et les invariants de
-jobs/capabilities restent réconciliés avant la hausse de `PRAGMA user_version`.
+Les migrations `0.8 → 0.11`, `0.9 → 0.11` et `0.10 → 0.11` sont additives:
+aucune table autoritative n'est recréée ou supprimée. Les colonnes anciennes
+sont complétées, les anciens IDs d'événements reçoivent une identité stable et
+les invariants de jobs/capabilities restent réconciliés avant la hausse de
+`PRAGMA user_version`.

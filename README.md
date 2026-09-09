@@ -1,6 +1,6 @@
 # monGARS Swarm App — Build Documents
 
-Version: 0.10.0 multi-host swarm fabric foundation
+Version: 0.11.0 production qualification and failure hardening
 Date: 2026-09-08
 Owner: ales27pm / 27PM  
 Target: iPhone Expo app + Ubuntu local AI control plane + distributed autonomous swarm
@@ -41,10 +41,25 @@ modèle et d'exécution:
   réponse perdue ou de revenir à la connexion active si le candidat expire. Les
   anciennes clés URL/jeton séparées ne sont jamais recombinées;
 - ticket WebSocket de 30 secondes, consommable une seule fois, afin de ne jamais
-  mettre le jeton d'appareil longue durée dans une URL;
+  mettre le jeton d'appareil longue durée dans une URL. Son émission revalide
+  atomiquement le bearer et la lignée de jumelage sous le writer lock. Un
+  re-pair supprime les tickets inutilisés et change cette lignée; même un
+  WebSocket déjà établi est revérifié à chaque envoi/réception et fermé au
+  prochain échange s'il appartient à l'ancienne session. Un identifiant de
+  connexion durable limite en plus chaque appareil à un seul propriétaire de
+  livraison, même entre processus du control plane; les entrées/sorties socket
+  sont bornées et le fan-out inter-appareils est concurrent afin qu'un pair lent
+  ne puisse pas retenir une bascule ni retarder tous les autres. Un journal
+  SQLite de notifications uniquement métadonnées et ses checkpoints par
+  instance relaient les invalidations entre processus; un checkpoint de crash
+  expiré déclenche un nouveau bootstrap, jamais le rejeu d'un effet;
 - souscription WebSocket mobile avec reconnexion bornée, pause en arrière-plan
   et nouveau ticket à usage unique à chaque connexion. Une reconnexion force un
   bootstrap REST autoritatif afin de combler les événements manqués;
+- mutations SecureStore de jumelage sérialisées et promotions protégées par
+  comparaison de la trace pending exacte et de sa génération; une reprise
+  ancienne ne peut ni remplacer la connexion courante ni supprimer un re-pair
+  plus récent;
 - cache SQLite limité à l'origine actuellement jumelée. Les listes et détails
   mis en cache sont signalés comme périmables hors ligne, et toutes les actions
   sensibles restent verrouillées sans preuve serveur fraîche;
@@ -65,12 +80,29 @@ modèle et d'exécution:
   expiration est traitée comme un résultat potentiellement incertain, échoue et
   est auditée. Les heartbeats renouvellent toujours l'état autoritatif, mais leur
   publication durable est coalescée par job et génération;
+- runner de maintenance continuellement fenced: il renouvelle sa lease avant
+  50 % du TTL et revérifie propriétaire et génération dans chaque transaction
+  autoritative. Une perte de renouvellement annule le travail; le prochain lot
+  de mutations de l'ancien propriétaire est refusé après une reprise en
+  génération `N+1`;
 - contrat de transport `DurableEvent` indépendant du backend et adaptateur
   Redis Streams optionnel. SQLite demeure le backend par défaut et la seule
   source de vérité; Redis ne contient que des notifications, conserve les
   identifiants applicatifs et la `dedupe_key`, et une indisponibilité laisse
-  l'outbox en attente jusqu'à récupération. Cette fondation n'est pas une preuve
-  de disponibilité multi-hôte en production;
+  l'outbox en attente jusqu'à récupération. La rétention est bornée et ne
+  remplace jamais une reconstruction depuis SQLite/API: chaque nouvelle
+  publication non dédupliquée applique `MAXLEN ~` et un trim d'âge `MINID ~` au
+  stream visé, puis renouvelle
+  le TTL d'inactivité du stream. Chaque `dedupe_key` est liée séparément par une
+  clé Redis nommée avec son SHA-256 et son propre TTL `PX`; aucun hash ou index
+  global n'est utilisé. Le trim d'âge est donc opportuniste à la
+  publication, tandis qu'un stream entièrement inactif peut expirer; aucun
+  consumer ne peut supposer un historique Redis infini. Une
+  publication plus longue que sa lease peut réussir dans Redis puis être
+  rejouée par la génération suivante: la livraison est explicitement **au moins une fois**,
+  jamais exactement une fois. Les doublons sont neutralisés par la
+  déduplication applicative et comptés avec les expirations de claim et les
+  latences de publication;
 - identité aléatoire par démarrage de chaque instance du control plane, avec
   heartbeat persistant, et leases singleton à génération pour le reaper, les
   expirations de capabilities, l'entretien de l'outbox et le recalcul de score.
@@ -81,7 +113,12 @@ modèle et d'exécution:
   hybride lorsqu'un provider est configuré. Un index FAISS local optionnel et
   reconstruisible peut être régénéré depuis les embeddings SQLite; sa perte ou
   sa corruption ne détruit aucune mémoire et le chemin lexical continue de
-  fonctionner;
+  fonctionner. La projection vérifie propriétaire UID, modes privés, types,
+  liens et intégrité, conserve un nombre borné de générations et préserve le
+  pointeur publié lors d'une interruption ou d'un manque d'espace. Au rebuild,
+  elle nettoie sous lock uniquement les orphelins privés et possédés laissés par
+  un crash (`.tmp-*`, `.CURRENT-*`, `.digest-*`); tout artefact inattendu ou
+  non sûr fait échouer l'entretien sans suppression;
 - réplica iPhone étendue aux tâches, approbations, appels d'outils,
   conversations/messages, agents, mémoire épinglée et métadonnées d'audit. Cette
   réplica n'autorise jamais une action sensible;
@@ -92,17 +129,37 @@ modèle et d'exécution:
   bootstrap autoritatif réussi et revérifie l'origine et le bearer capturés. Un
   changement de jumelage abandonne les anciennes entrées. Décisions
   d'approbation, grants/exécution iPhone, composeurs, `process.run` et toute
-  action sensible sont refusés par cette outbox;
+  action sensible sont refusés par cette outbox. Les drains sont sérialisés par
+  origine, bornés dans le temps et continuent après avoir isolé une entrée
+  définitivement invalide;
 - flotte exemple composée des workers Files, Research et Code Review. Le
   Research Worker ne reçoit jamais d'URL de job: il utilise un unique adaptateur
   HTTPS configuré par l'opérateur, avec limites de temps/taille et contenu
   marqué non fiable. Le Code Review Worker construit uniquement des appels Git
-  et Ruff en lecture, sans shell, write ni push. Les cartes d'agents sont
+  et Ruff en lecture, sans shell, write ni push. Il épingle l'identité de la
+  racine et du dépôt, revalide le snapshot, désactive hooks, helpers, config Git
+  hôte et récupération paresseuse, assainit l'environnement et borne
+  temps/sorties/fichiers. Un budget monotone unique couvre snapshot et commandes,
+  avec 64 MiB au total, 16 MiB par fichier et une profondeur maximale de 64.
+  Le Research Worker épingle une destination HTTPS
+  publique validée, refuse redirects, credentials URL, adresses
+  privées/loopback/link-local, changement d'adresse résolue et réponses lentes,
+  surdimensionnées ou décompressées hors limite. Un seul deadline monotone
+  couvre DNS, connexion, TLS, requête, headers et lecture, et le resolver DNS
+  est single-flight afin qu'un timeout ne crée pas une accumulation de threads.
+  Les cartes d'agents sont
   validées par une allowlist serveur; une compétence inconnue, privilégiée ou
   incompatible est refusée. La règle opérateur courante est réévaluée à
   l'inscription, à chaque claim et avant toute redistribution; une compétence
-  révoquée laisse un job en attente non exécutable ou le dead-letter après une
-  lease expirée, sans l'envoyer à un autre worker;
+  révoquée met en quarantaine un job en file et empêche tout nouveau claim. Une
+  lease déjà active peut terminer sous l'autorisation qui l'a créée; si elle
+  expire après révocation, le job est mis en quarantaine et n'est jamais
+  redistribué. La règle worker autoritative et son epoch monotone sont persistés
+  dans SQLite. Un reload capture l'epoch attendu avant parsing puis effectue un
+  compare-and-swap sous le writer lock; un candidat périmé ne peut pas restaurer
+  un allow après un deny plus récent. Inscription, mise en file, claim et reaper
+  relisent la projection durable dans leur transaction: ni un cache allow
+  périmé, ni un cache deny périmé ne remplace l'autorité SQLite;
 - scheduler déterministe v2: compatibilité de protocole et de compétence,
   agent `online` avec heartbeat encore frais, capacité disponible, ratio de
   charge, score observé, latence
@@ -135,7 +192,11 @@ modèle et d'exécution:
   token de lease/grant, argument ou résultat natif sensible, contenu de
   contact/localisation/mail/SMS ni contenu de chemin protégé n'entre dans le
   board, Redis ou le WebSocket générique. `/status` expose seulement version,
-  identité d'instance, santé du backend et compteurs opérationnels;
+  identité d'instance, santé du backend et compteurs opérationnels. Les
+  compteurs cumulés d'expiration/retry/dead-letter worker et ceux de
+  publication outbox sont des singletons persistants mis à jour avec leurs
+  transitions; la lecture de statut ne reparcourt pas les historiques
+  append-only;
 - planification par le modèle local sans minuterie ni succès simulé: seul un
   résultat réel de l'exécuteur peut terminer une tâche;
 - module iOS local en development build pour Core ML, MLX et llama.cpp/GGUF.
@@ -164,6 +225,59 @@ modèle et d'exécution:
 
 Le contrat complet est dans [`api/openapi.yaml`](api/openapi.yaml) et la procédure
 locale dans [`docs/18-dev-setup.md`](docs/18-dev-setup.md).
+
+## Qualification et frontière de déploiement v0.11
+
+### QUALIFIED
+
+- Les pertes de lease de maintenance et les publications qui dépassent leur
+  lease ont des tests de fencing/récupération; l'outbox converge par livraison
+  au moins une fois avec déduplication côté transport.
+- Un Redis authentifié réel a été exécuté sur `ubuntu-host` derrière un tunnel
+  SSH: 8 tests ont couvert authentification, panne/reprise, déduplication,
+  timeout et rétention. TLS Redis et le rejet d'un certificat invalide restent
+  non qualifiés.
+- Le smoke test multi-worker couvre une source de vérité SQLite unique, deux
+  identités worker authentifiées, le transfert d'une job de lecture après
+  expiration et le fencing du worker ancien. Il valide le protocole dans des
+  identités isolées; il ne lance pas les workers sur deux machines physiques.
+- Les niveaux sont séparés: `scripts/check.sh` pour l'unitaire,
+  `scripts/check-integration.sh` pour les contrats externes et le smoke test,
+  `scripts/check-chaos.sh` pour les pannes bornées, et le protocole iPhone pour
+  la validation physique manuelle.
+
+### SUPPORTED
+
+- Un control plane Ubuntu autoritatif sur son SQLite local.
+- Plusieurs workers distants qui utilisent exclusivement l'API worker
+  authentifiée.
+- Redis Streams optionnel comme fabric de notification reconstruisible.
+
+### EXPERIMENTAL / UNSUPPORTED
+
+- Plusieurs control planes écrivant le même SQLite sur NFS ou un filesystem
+  réseau, et tout mode active-active SQLite inter-hôtes, sont non supportés.
+- Le harness multi-worker est une qualification de protocole; le placement sur
+  plusieurs hôtes physiques doit encore produire sa propre preuve de
+  déploiement.
+- TLS Redis, certificat invalide et consumers Redis opérationnels restent à
+  qualifier avant une revendication de production multi-hôte complète.
+
+### MANUAL VALIDATION REQUIRED
+
+- Aucun iPhone physique n'était disponible dans l'hôte QEMU. Les six
+  capabilities (location, contacts, calendrier, photo, mail et SMS), leurs
+  refus/annulations, arrière-plan, expiration, perte réseau et absence de rejeu
+  restent `NOT RUN` selon
+  [`docs/26-iphone-physical-device-validation.md`](docs/26-iphone-physical-device-validation.md).
+  La tentative bloquée et ses diagnostics expurgés sont consignés dans
+  [`docs/evidence/iphone-validation-2026-09-08.md`](docs/evidence/iphone-validation-2026-09-08.md).
+
+### IMPLEMENTED — npm audit triage
+
+- `npm audit` signale toujours 13 avis modérés transitifs. Aucun `--force`
+  incompatible avec Expo SDK 57 n'a été appliqué; la disposition détaillée est
+  dans [`docs/security/npm-audit-v011.md`](docs/security/npm-audit-v011.md).
 
 ## Structure du dépôt
 
@@ -195,6 +309,7 @@ mongars-swarm/
 8. `docs/15-testing-strategy.md`
 9. `docs/16-code-analysis-quality-gates.md`
 10. `docs/23-implementation-plan.md`
+11. `docs/27-production-qualification.md`
 
 ## Mode de build visé
 
@@ -230,8 +345,9 @@ Ubuntu — présent dans le MVP:
 
 Ubuntu — évolutions ciblées, non annoncées comme déjà livrées:
 
-- qualification opérationnelle Redis multi-hôte, orchestration de consumer
-  groups Redis et procédures de reprise/monitoring en production
+- qualification TLS Redis, orchestration de consumer groups Redis et
+  procédures de reprise/monitoring en production
+- déploiement prouvé de workers sur plusieurs machines physiques
 - NATS JetStream, si une migration future le justifie
 - migration Postgres si plusieurs writers deviennent nécessaires
 - branchement de la projection FAISS dans le chemin de recherche en production
@@ -243,4 +359,4 @@ Ubuntu — évolutions ciblées, non annoncées comme déjà livrées:
 - Pas d'envoi SMS/iMessage automatique sans UI utilisateur.
 - Pas de contournement des permissions iOS.
 - Pas d'auto-entraînement live sans revue, versioning et rollback.
-- Pas de GitHub Actions obligatoire; les checks sont locaux par défaut.
+- La gate CI unitaire est obligatoire; les mêmes checks restent exécutables localement.

@@ -1,14 +1,17 @@
 # 07 — Agent Swarm Protocol
 
-> **IMPLEMENTED — slice `0.10.0`:** registre authentifié, Agent Cards validées
+> **IMPLEMENTED — slice `0.11.0`:** registre authentifié, Agent Cards validées
 > par le serveur, capacité déclarée,
 > ordonnanceur déterministe, une seule job active par tâche, leases opaques
 > expirables avec génération de fencing, heartbeat, résultats terminaux
 > idempotents, reaper borné, claims de publication d'outbox fenced, board SQLite
 > par défaut et adaptateur Redis Streams optionnel. Trois workers étroits sont
-> fournis: Files, Research et Code Review. **PLANNED:** qualification
-> multi-hôte de production, workers consommant des affectations push, NATS et
-> autres classes métier.
+> fournis: Files, Research et Code Review. **QUALIFIED:** Redis authentifié a
+> été exercé par huit tests live sur `ubuntu-host` via tunnel SSH, et le harness
+> automatisé exerce deux identités worker contre un seul control plane
+> autoritatif. **EXPERIMENTAL:** Redis TLS/invalid-certificat et workers sur deux
+> hôtes physiques distincts restent non exécutés. **PLANNED:** affectations
+> push, NATS et autres classes métier.
 
 Les workers n'obtiennent ni accès Redis, ni bearer iPhone, ni privilège de
 shell générique. La mise en file n'accepte que les skills et payloads bornés par
@@ -49,7 +52,7 @@ discovery HTTP `/.well-known` ou de négociation multi-version.
 
 ### Skill
 
-Dans `0.10.0`, les identifiants exécutables sont limités à:
+Dans `0.11.0`, les identifiants exécutables sont limités à:
 
 - `workspace.list_dir`, `workspace.read_text`;
 - `research.query`;
@@ -136,6 +139,7 @@ stateDiagram-v2
   running --> queued: lease expirée, lecture rejouable
   running --> completed
   running --> failed
+  queued --> failed: skill révoqué, job quarantinée
   queued --> cancelled
   running --> cancelled
 ```
@@ -152,6 +156,9 @@ stateDiagram-v2
   running --> running: heartbeat
   running --> completed
   running --> failed
+  queued --> quarantined: skill révoqué
+  claimed --> quarantined: lease expirée après révocation
+  running --> quarantined: lease expirée après révocation
   claimed --> queued: lease expirée et retry sûr
   running --> queued: lease expirée et retry sûr
   queued --> cancelled
@@ -178,6 +185,33 @@ Chaque heartbeat renouvelle `heartbeat_at` et `lease_expires_at` dans la ligne
 autoritative. Pour éviter une croissance durable proportionnelle à la fréquence,
 l'outbox/board ne conserve qu'un événement heartbeat par job et génération de
 lease, au moyen d'une clé de déduplication stable.
+
+### Révocation de skill — IMPLEMENTED
+
+Une job encore `queued` dont le skill sort de la politique serveur devient
+`quarantined`; elle n'est plus claimable ni redistribuable. Une lease déjà
+valide peut terminer selon l'autorisation qui existait au moment de sa claim.
+Si cette lease expire après la révocation, le reaper quarantine la job au lieu
+de la remettre en file. Les événements d'audit `agent.job.skill_revoked` et
+`agent.job.quarantined` rendent la décision déterministe et observable; aucun
+modèle ne participe à cette décision.
+
+Les règles worker actives sont versionnées dans SQLite par un epoch monotone.
+Le reload capture l'epoch attendu avant de parser puis effectue un
+compare-and-swap sous `BEGIN IMMEDIATE`. Registration, mise en file, claim et
+redistribution relisent la projection durable dans leur transaction; un
+processus dont le candidat a été parsé sur l'epoch N ne peut ni remplacer un
+deny N+1, ni agir selon un cache allow ou deny en mémoire. Une lease valide déjà
+délivrée reste autorisée à finir.
+
+### Maintenance singleton — IMPLEMENTED
+
+Le reaper, l'expiration des capabilities, la maintenance d'outbox et le calcul
+des scores s'exécutent sous `MaintenanceLeaseRunner`. Le runner acquiert une
+lease nommée, la renouvelle avant 50 % de son TTL et transmet une génération
+fencée. Chaque batch qui modifie SQLite appelle `require_current_locked()` dans
+sa transaction. Si le renouvellement échoue ou qu'une génération supérieure a
+pris la lease, le travail ancien est annulé et ne peut plus muter l'état.
 
 ## Enveloppe durable — IMPLEMENTED
 
@@ -222,6 +256,12 @@ supérieure. La livraison est au moins une fois: un crash après publication mai
 avant le marquage republie le même `event_id`/`dedupe_key` et converge par
 déduplication.
 
+Une publication plus lente que `MONGARS_OUTBOX_PUBLICATION_LEASE_SECONDS` suit
+la même règle: le broker peut avoir accepté la génération N alors que son
+`mark_published` local est désormais fencé; N+1 republie donc la même identité.
+Ce duplicate est attendu, mesuré et neutralisé par la déduplication applicative.
+La release ne revendique jamais une livraison exactement une fois.
+
 ## Backends et consumers
 
 ### IMPLEMENTED
@@ -231,26 +271,60 @@ déduplication.
   `MONGARS_MESSAGE_BOARD_BACKEND=redis` et `MONGARS_REDIS_URL`;
 - quatre familles de streams Redis: `<prefix>:tasks`, `:agents`, `:iphone` et
   `:system`;
-- déduplication Redis atomique par `dedupe_key` applicative;
+- déduplication Redis atomique par `dedupe_key` applicative, matérialisée dans
+  une clé indépendante nommée avec son SHA-256 et expirant avec son propre TTL
+  `PX`;
+- rétention bornée par `MONGARS_REDIS_STREAM_MAXLEN` et
+  `MONGARS_REDIS_STREAM_RETENTION_SECONDS`: chaque nouvelle publication non
+  dédupliquée applique `MAXLEN ~` puis `MINID ~` au stream visé, et renouvelle
+  son TTL d'inactivité;
 - santé `connected`/`degraded` et dernière publication réussie, sans exposer
   l'URL ni les credentials;
 - `ConsumerCheckpointStore`/`MessageConsumer` SQLite pour services internes de
   confiance: identité contrôlée par l'application, claim fenced, ack après
   succès du handler, retry borné, dead letter et checkpoint.
 
+Le trim d'âge n'est pas une tâche de fond: il s'exécute opportunistement lors
+d'une nouvelle publication non dédupliquée sur le stream concerné. Le stream et
+chaque clé de déduplication expirent selon leurs TTL renouvelés indépendamment.
+Il n'existe pas de hash ou d'index global à maintenir. Ces mécanismes bornent le
+transport, mais interdisent de traiter Redis comme un historique infini.
+
 En mode Redis, une panne ne change ni tâche ni job: l'événement reste non publié
 dans l'outbox SQLite et sera repris. Les workers continuent d'utiliser les API
 HTTP authentifiées; ils ne connaissent pas Redis. La fondation consumer n'est
 pas encore raccordée à un consumer group Redis de production.
 
-### PLANNED
+### QUALIFIED
 
-- qualification TLS/auth, haute disponibilité, sauvegarde et reprise Redis
-  multi-hôte;
+- huit tests d'intégration ont exercé un Redis authentifié réel sur
+  `ubuntu-host`, joint par tunnel SSH;
+- panne/reprise, backlog d'outbox, duplicate applicatif et trimming borné sont
+  couverts par le harness d'intégration;
+- `scripts/test-redis-integration.sh` fournit l'entrée reproductible.
+
+### EXPERIMENTAL / PLANNED
+
+- TLS Redis et le rejet d'un certificat invalide ne sont pas encore qualifiés;
+- haute disponibilité, sauvegarde et reprise Redis multi-hôte restent à
+  qualifier;
 - ingestion consumer-group Redis dans les services internes;
 - NATS JetStream et dead-letter stream externe si nécessaires;
-- workers affectés par push. La release ne revendique pas une disponibilité
-  multi-hôte de production.
+- workers affectés par push.
+
+### Frontière multi-hôte — QUALIFIED VS EXPERIMENTAL
+
+Le déploiement supporté est un seul control plane Ubuntu autoritatif, avec sa
+base SQLite sur un stockage local supporté, et plusieurs workers distants qui
+utilisent uniquement l'API HTTP authentifiée. Redis est un fabric de
+notification optionnel, jamais une source de vérité.
+
+Le harness automatisé `scripts/run-multihost-smoke.sh` représente deux workers
+indépendamment authentifiés et vérifie failover de lease, fencing du worker
+stale et panne du fabric. Il qualifie le protocole/processus, pas deux machines
+worker physiques distinctes. Ce dernier smoke reste **EXPERIMENTAL / NOT RUN**.
+Plusieurs control planes écrivant un même SQLite via NFS ou un filesystem réseau,
+et l'active-active SQLite inter-hôtes, sont **UNSUPPORTED**.
 
 ## Remote worker boot
 
@@ -291,7 +365,12 @@ Un A2A direct futur demanderait encore:
 - accepte seulement `research.query` avec texte et limite de résultats bornés;
 - utilise une seule URL HTTPS d'adaptateur configurée par l'opérateur, jamais
   fournie par le job;
-- refuse redirects et options réseau arbitraires, borne temps et octets;
+- refuse tout redirect, downgrade HTTP, cible loopback/privée/link-local, URL
+  avec credentials et rebinding DNS; borne temps, octets et
+  décompression;
+- utilise un deadline monotone global pour DNS, connexion, TLS, requête,
+  headers et réponse; le resolver est single-flight, donc un DNS bloqué ne peut
+  pas engendrer une accumulation de threads après timeout;
 - marque titres, URL et extraits comme contenu externe non fiable;
 - n'est jamais redistribué automatiquement après expiration.
 
@@ -300,7 +379,14 @@ Un A2A direct futur demanderait encore:
 - expose uniquement status/diff/show Git et analyse Ruff isolée;
 - construit des argv fixes sans shell, hook, pager, prompt, configuration Git
   globale, filtre externe, lazy fetch ni write;
-- exige des chemins relatifs, réguliers, non symlink et non protégés;
+- fixe l'identité racine/`.git`, relit les fichiers par descripteur sans suivre
+  les symlinks et analyse une copie snapshot privée bornée;
+- partage un deadline monotone entre snapshot et commandes, avec 64 MiB au
+  total, 16 MiB par fichier, 250 000 entrées de manifeste et 64 niveaux au
+  maximum;
+- refuse hardlinks, alternates/grafts, configuration Git `filter`/`include`,
+  remplacement de racine et metadata hostile; désactive replacement objects et
+  pathspecs magiques;
 - n'écrit pas, ne pousse pas et ne reçoit aucune commande arbitraire;
 - n'est jamais redistribué automatiquement après expiration.
 
@@ -332,8 +418,8 @@ Un A2A direct futur demanderait encore:
 
 - Agent non `online` ou capacité pleine = aucune nouvelle claim.
 - Carte/protocole/skill non allowlisté = enregistrement ou dispatch refusé.
-- Skill révoqué après mise en file = job non claimable; après expiration d'une
-  lease, dead letter sans redistribution.
+- Skill révoqué avant claim = job `quarantined`; une lease valide peut finir,
+  mais son expiration mène à la quarantine sans redistribution.
 - Lease expirée/étrangère = `409`, résultat supprimé par le worker.
 - Lecture rejouable expirée = retry borné; autre action = échec sans rejeu.
 - Demande iPhone sans lease active, sans grant ou avec digest différent = `409`.

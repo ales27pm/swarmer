@@ -3,21 +3,27 @@
 Date: 2026-09-08
 Statut: Draft build-ready
 
-> **Portée:** architecture cible et frontières du slice `0.10.0`. Son contrat
+> **Portée:** architecture cible et frontières du slice `0.11.0`. Son contrat
 > exécutable est décrit par l'OpenAPI. `docs/21-acceptance-criteria.md` conserve
 > les preuves et limites du slice `0.7`; il n'est pas présenté comme validation
-> de `0.10.0`. Le runtime livre REST authentifié, cache SQLite mobile lié à
+> de `0.11.0`. Le runtime livre REST authentifié, cache SQLite mobile lié à
 > l'origine, WebSocket à ticket unique, exécution
 > locale vérifiée, jobs distants à lease et transport de capabilities iPhone à
 > grant unique. Le message board SQLite reste le défaut; un adaptateur Redis
 > Streams optionnel transporte les mêmes événements sans devenir autoritatif.
 > Les claims de publication de l'outbox, l'identité des processus, les leases de
-> maintenance, les consumers de confiance, l'outbox mobile sûre, trois workers
-> bornés, les cartes/politiques agent, le scheduler/scoring v2 et une projection
-> FAISS reconstruisible sont **IMPLEMENTED**. La qualification multi-hôte de
-> production, Postgres, NATS, le raccordement opérationnel de consumers Redis et
-> la validation iPhone physique restent respectivement **PLANNED** ou
+> maintenance renouvelées et fenced en continu, les consumers de confiance,
+> l'outbox mobile sûre, trois workers bornés, la quarantaine des skills révoqués,
+> les cartes/politiques agent, le scheduler/scoring v2 et une projection FAISS
+> reconstruisible et durcie sont **IMPLEMENTED**. Redis authentifié réel et le
+> failover worker de protocole ont une preuve bornée **QUALIFIED**.
+> Active-active SQLite inter-hôtes demeure **UNSUPPORTED**; TLS Redis, deux
+> machines worker physiques, Postgres, NATS et les consumers Redis opérationnels
+> restent **EXPERIMENTAL** ou **PLANNED**. La validation iPhone physique reste
 > **MANUAL VALIDATION REQUIRED**.
+
+Le registre de qualification opérationnelle v0.11 et ses limites est maintenu
+dans `docs/27-production-qualification.md`.
 
 ## 1. Résumé
 
@@ -77,6 +83,14 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
 - Expo app avec écran Chat, Tasks, Approvals, Memory, Settings.
 - FastAPI backend local.
 - Auth device pairing.
+- Ticket WebSocket à usage unique émis seulement après revalidation atomique du
+  bearer; un re-pair invalide tickets et sockets déjà établis de l'ancienne
+  lignée de session. Un slot de connexion durable par appareil clôt les sockets
+  concurrentes entre processus, et toute entrée/sortie sous le verrou de
+  bascule est bornée. Un journal SQLite de projections métadonnées et des
+  checkpoints par instance assurent la livraison live inter-processus;
+  l'expiration d'un checkpoint force une reconstruction REST, jamais le rejeu
+  d'un effet.
 - SQLite local iPhone.
 - State Service Ubuntu.
 - WebSocket live updates.
@@ -100,14 +114,40 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
 - **IMPLEMENTED:** identité aléatoire par boot du control plane, heartbeats,
   leases singleton SQLite pour les boucles de maintenance et fondation de
   consumer de confiance avec ack après succès, retry borné et dead letter.
+- **IMPLEMENTED:** `MaintenanceLeaseRunner` renouvelle avant 50 % du TTL,
+  annule le travail dès qu'un renouvellement échoue et exige le propriétaire et
+  la génération courants avant chaque lot de mutation autoritative. Une reprise
+  en génération `N+1` fence donc l'ancien processus à son prochain lot.
 - **IMPLEMENTED:** cartes d'agents validées côté serveur, workers Research et
   Code Review bornés, scheduler/scoring déterministes, cutoff de fraîcheur des
   heartbeats et preuves de sélection. Le timeout est configuré par
   `MONGARS_AGENT_OFFLINE_TIMEOUT_SECONDS` et doit dépasser l'intervalle de
   heartbeat.
-- **PLANNED:** qualification multi-hôte de production, déploiement/monitoring
-  Redis et consumers Redis opérationnels. Les workers restent derrière les API
-  authentifiées et ne consomment pas Redis directement.
+- **IMPLEMENTED:** le Code Review Worker partage un deadline monotone entre
+  snapshot et commandes et borne la copie à 64 MiB, 16 MiB par fichier et 64
+  niveaux. Le Research Worker partage un deadline entre DNS/connexion/TLS/HTTP
+  et limite la résolution DNS à un seul travail en vol.
+- **IMPLEMENTED:** un skill retiré par la politique met les jobs queued en
+  `quarantined`. Une lease déjà active peut finir selon l'autorisation délivrée;
+  si elle expire après révocation, elle est mise en quarantaine sans retry ni
+  redistribution. La projection worker-skill SQLite porte un epoch monotone;
+  le reload capture un epoch attendu avant parsing et le remplace par CAS sous
+  `BEGIN IMMEDIATE`. Registration, mise en file, claim et reaper relisent
+  l'autorité durable dans leur transaction: cache allow/deny et candidat de
+  reload périmés ne peuvent ni autoriser ni restaurer une règle.
+- **QUALIFIED:** un Redis authentifié réel sur `ubuntu-host` via tunnel SSH a
+  exécuté 8 tests de transport. Un smoke test avec deux identités worker a
+  démontré claim, expiration, reprise en génération suivante et rejet du worker
+  périmé contre un unique control plane autoritatif.
+- **EXPERIMENTAL:** ces workers ont été exercés comme deux identités API dans
+  un harness de protocole; deux machines worker physiques n'ont pas encore été
+  exécutées. TLS Redis et certificat invalide ne sont pas qualifiés.
+- **UNSUPPORTED:** plusieurs control planes ne doivent pas écrire le même
+  SQLite via NFS/filesystem réseau. SQLite active-active inter-hôtes n'est pas
+  une topologie supportée.
+- **PLANNED:** monitoring Redis de production et consumers Redis opérationnels.
+  Les workers restent derrière les API authentifiées et ne consomment pas Redis
+  directement.
 - **PLANNED:** NATS JetStream seulement si un besoin concret le justifie.
 
 ### Phase 4 — Native iPhone Bridge
@@ -123,6 +163,12 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
   Service et export JSONL revu.
 - **IMPLEMENTED:** protocole d'index vectoriel et projection FAISS locale
   optionnelle, reconstruisible par commande depuis les embeddings SQLite.
+- **IMPLEMENTED:** validation UID/modes privés/intégrité de la racine, du
+  pointeur et des générations FAISS, rétention bornée et conservation de la
+  génération courante lors d'une interruption ou d'un manque d'espace. Un
+  rebuild nettoie sous lock uniquement ses temporaires privés et possédés
+  (`.tmp-*`, `.CURRENT-*`, `.digest-*`) laissés par un crash; un orphelin non
+  sûr provoque un refus sans suppression.
 - **PLANNED:** raccordement opérationnel de FAISS au chemin de requête, Qdrant,
   eval builder complet et pipeline candidat LoRA.
 
@@ -163,18 +209,22 @@ Embeddings:
 - iPhone: réplica/cache SQLite et outbox de mutations sûres implémentées. Cette
   outbox accepte seulement feedback, épinglage de mémoire et chat sans création
   de tâche; elle refuse les approbations, capabilities, composeurs, processus et
-  toute action sensible.
+  toute action sensible. Les drains sont sérialisés par origine, le timeout est
+  borné, une entrée permanente ou locale invalide est isolée sans bloquer les
+  suivantes, et un changement de jumelage abandonne les entrées antérieures.
 - Ubuntu: SQLite WAL autoritatif au MVP; migration vers Postgres planifiée si
   les besoins opérationnels exigent plusieurs writers.
 - Memory Service: chunking, embeddings, semantic search, metadata filters.
 - Index vectoriel secondaire: FAISS local optionnel peut être reconstruit depuis
   les IDs/embeddings SQLite; SQLite demeure la source de vérité et le fallback
-  lexical reste disponible. Qdrant reste planifié.
+  lexical reste disponible. Les racines, pointeurs et générations exigent le
+  propriétaire UID et des modes privés; leur intégrité et rétention sont
+  vérifiées. Qdrant reste planifié.
 - Event log: append-only pour replay et audit.
 
 ## 7. Message board
 
-### IMPLEMENTED — slice `0.10.0`
+### IMPLEMENTED — slice `0.11.0`
 
 Les transitions métier écrivent leur entrée d'outbox dans la même transaction
 SQLite que l'état. Chaque processus possède un `instance_id` aléatoire et doit
@@ -183,7 +233,17 @@ revendiquer les lignes avant publication avec une lease courte et une
 génération et expiration: un ancien publisher ne peut pas confirmer le travail
 d'un successeur. La livraison reste au moins une fois; `event_id` et
 `dedupe_key` applicatifs rendent sûr un crash après publication mais avant le
-marquage.
+marquage. Une publication externe qui dure plus longtemps que sa lease peut
+être acceptée puis rejouée par la génération suivante; ce doublon est normal
+dans un contrat au moins une fois, neutralisé par la déduplication applicative
+et mesuré avec les expirations de claim et les latences. Le système ne promet
+jamais exactement une fois.
+
+Les cumuls outbox (claims expirés, doublons, latence) et worker (leases
+expirées, retries, dead letters) sont conservés dans des lignes singleton
+SQLite et mis à jour atomiquement avec leurs transitions. `/status` relit ces
+compteurs bornés sans parcourir les historiques append-only; ses jauges d'état
+courant restent calculées depuis les tables autoritatives.
 
 `SQLiteMessageBoard` est le backend par défaut. `RedisStreamsMessageBoard` est
 un adaptateur optionnel de notification avec quatre familles de streams
@@ -197,6 +257,29 @@ de confiance du control plane une identité de consumer, un claim fenced, un ack
 après handler réussi, un retry borné, une dead letter et un checkpoint
 persistant. Cette fondation n'est pas encore un pipeline Redis déployé.
 
+La rétention Redis est bornée. Chaque nouvelle publication non dédupliquée
+applique au stream ciblé un `MAXLEN ~` et un `MINID ~` calculé depuis la fenêtre
+d'âge, puis renouvelle son TTL d'inactivité. Chaque `dedupe_key` possède une clé
+indépendante dont le nom inclut son SHA-256 et dont la valeur expire avec son
+propre TTL `PX`; il n'existe aucun hash ou index global de déduplication à
+conserver. Le trim temporel est
+donc opportuniste à la publication et un stream inactif peut disparaître en
+entier. Une coupure, expiration ou trim ne perd aucune donnée autoritative: un
+consumer périmé doit reconstruire sa projection depuis SQLite/API et ne peut
+jamais supposer un historique Redis infini.
+
+### QUALIFIED — preuve bornée v0.11
+
+Un Redis authentifié réel a été démarré sur `ubuntu-host` et atteint par
+tunnel SSH. Huit tests live ont exercé authentification, indisponibilité/reprise,
+crash logique après `XADD`, déduplication, timeout et trimming/backlog. TLS et le
+rejet d'un certificat invalide n'ont pas été exécutés et restent non qualifiés.
+
+Le harness multi-worker couvre deux identités authentifiées derrière un seul
+control plane SQLite autoritatif. Il démontre la reprise d'une job de lecture
+par une génération suivante et le fencing de l'ancien worker. Il ne démontre ni
+deux hôtes worker physiques ni un SQLite partagé entre machines.
+
 Topics actuellement produits:
 
 - `tasks.inbox`
@@ -207,17 +290,17 @@ Topics actuellement produits:
 
 ### PLANNED
 
-Qualification Redis multi-hôte (topologie, TLS/auth, sauvegarde, monitoring,
-reprise et consumer groups opérationnels), NATS JetStream, partitionnement
+TLS Redis, sauvegarde/monitoring de production, deux hôtes worker physiques,
+consumer groups Redis opérationnels, NATS JetStream, partitionnement
 inter-régions et dead-letter stream externe. Aucun de ces éléments n'est une
-condition cachée du mode SQLite par défaut, et cette release ne revendique pas
-la production multi-hôte.
+condition cachée du mode SQLite par défaut. Plusieurs control planes écrivant
+le même SQLite sur un filesystem réseau restent explicitement non supportés.
 
 ## 8. iPhone Native Bridge
 
 L'iPhone expose des capabilities, pas un accès brut.
 
-### IMPLEMENTED — transport conservé en `0.10.0`
+### IMPLEMENTED — transport conservé en `0.11.0`
 
 - `iphone.location.current`
 - `iphone.contacts.lookup`
@@ -248,7 +331,9 @@ les contrats automatisés sont implémentés.
 
 Les permissions, dialogues, annulations, arrière-plan/reprise, expiration,
 perte réseau après effet et absence de rejeu doivent encore être observés sur
-un iPhone physique selon `docs/26-iphone-physical-device-validation.md`. Aucun
+un iPhone physique selon `docs/26-iphone-physical-device-validation.md`. La
+tentative du 2026-09-08 est `BLOCKED/NOT RUN` faute de transport USB/CoreDevice
+dans le guest QEMU; voir `docs/evidence/iphone-validation-2026-09-08.md`. Aucun
 build, test unitaire ou simulateur n'est présenté comme cette preuve.
 
 Une génération de lease qui a créé une demande de capability n'est jamais
@@ -285,6 +370,16 @@ Ces identifiants historiques ne sont pas des alias exécutables du contrat
 
 ## 9. Tests
 
+### Niveaux de qualification
+
+- **UNIT — REQUIRED:** `scripts/check.sh`.
+- **INTEGRATION — RUNNABLE:** `scripts/check-integration.sh`; Redis live est
+  activé explicitement par `MONGARS_RUN_REDIS_INTEGRATION=1`.
+- **CHAOS — BOUNDED:** `scripts/check-chaos.sh` couvre les courses et pannes
+  injectées sans prétendre reproduire une panne d'infrastructure complète.
+- **PHYSICAL/MANUAL — NOT RUN:** la matrice iPhone physique demeure séparée et
+  aucun skip n'est compté comme une réussite.
+
 Mobile:
 
 - typecheck TypeScript;
@@ -314,6 +409,10 @@ E2E:
 - Android emulator smoke path;
 - WebSocket + task lifecycle;
 - “agent asks for iPhone info” → iPhone prompts → user approves → result returned.
+
+L'audit npm v0.11 recense 13 avis modérés transitifs. Aucun correctif forcé qui
+rétrograderait ou casserait Expo SDK 57 ne fait partie de cette release; chaque
+avis est qualifié dans `docs/security/npm-audit-v011.md`.
 
 ## 10. Definition of Done MVP
 
