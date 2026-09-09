@@ -1,0 +1,87 @@
+name: Runtime qualification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 5 * * 2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: UNIT — required gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/pyproject.toml
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: python -m venv server/.venv
+      - run: server/.venv/bin/python -m pip install --upgrade pip
+      - run: server/.venv/bin/python -m pip install -e './server[dev,redis]'
+      - run: npm ci
+        working-directory: mobile
+      - run: scripts/check.sh
+      - name: Reject high or critical npm advisories
+        run: npm audit --audit-level=high
+        working-directory: mobile
+
+  redis-integration:
+    name: INTEGRATION — live authenticated Redis
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/pyproject.toml
+      - run: python -m venv server/.venv
+      - run: server/.venv/bin/python -m pip install --upgrade pip
+      - run: server/.venv/bin/python -m pip install -e './server[dev,redis]'
+      - name: Run protocol and live Redis qualification
+        run: scripts/check-integration.sh
+        env:
+          MONGARS_RUN_REDIS_INTEGRATION: "1"
+
+  chaos:
+    name: CHAOS — bounded nightly failures
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/pyproject.toml
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: python -m venv server/.venv
+      - run: server/.venv/bin/python -m pip install --upgrade pip
+      - run: server/.venv/bin/python -m pip install -e './server[dev,redis]'
+      - run: npm ci
+        working-directory: mobile
+      - run: scripts/check-chaos.sh
