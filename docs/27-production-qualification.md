@@ -1,9 +1,55 @@
-# 27 — Production Qualification v0.11
+# 27 — Production Qualification v0.11 and v0.12 delta
 
 ## Verdict de portée
 
 La release `0.11.0` qualifie les invariants de panne du runtime; elle ne déclare
 pas une architecture active-active ni une validation iPhone physique.
+
+La release `0.12.0` ajoute le runtime de buts autonomes au-dessus de ces
+invariants. Elle n'étend pas la topologie qualifiée: Ubuntu/SQLite reste
+autoritatif, Redis reste une notification et les workers restent derrière les
+API authentifiées.
+
+## Delta de qualification v0.12
+
+### IMPLEMENTED
+
+- contrats JSON stricts planner/evaluator, DAG acyclique, validation de
+  skill/policy et fingerprints sémantiques;
+- budgets persistés de pas, parallélisme, replans, durée et appels modèle;
+- tâche enfant par nœud worker, callbacks corrélés de claim/résultat/capability,
+  annulation et refus d'un résultat stale par les invariants v0.11;
+- résultat final déterministe depuis des résumés expurgés et provenance SQLite;
+- contextes à limites indépendantes, épisodes résumés, retrieval de stratégies
+  sans copie de plan et exports JSONL revus;
+- réplica mobile de buts/nœuds/résultats et commandes désactivées sur cache
+  hors ligne;
+- scénarios automatisés de plan parallèle, failure, `needs_user`, lease stale,
+  annulation, budget, boucle, mémoire épisodique et preuves contradictoires.
+
+### QUALIFIED — portée automatisée
+
+Les tests v0.12 qualifient les contrats et transitions déterministes dans le
+harness local. Ils ne constituent pas une nouvelle preuve de déploiement
+physique, de charge, de haute disponibilité ou d'effet iOS. Les chiffres du gate
+final v0.12 doivent être consignés par la vérification de release; les chiffres
+ci-dessous restent explicitement ceux de v0.11.
+
+### EXPERIMENTAL / NOT QUALIFIED
+
+- plusieurs Goal Managers actifs traitant le même but au-delà des verrous
+  processus et de la réconciliation au démarrage;
+- endurance/charge de plusieurs buts et modèles locaux simultanés;
+- synthétiseur LLM distinct, routage dynamique par rôle et injection des cartes
+  de contexte dans le payload evaluator;
+- API publique, lifecycle opérateur et index FAISS pour la mémoire épisodique;
+- pipeline de curation, entraînement et comparaison de modèles.
+
+### MANUAL VALIDATION REQUIRED
+
+La matrice iPhone physique reste inchangée: location, contacts, calendrier,
+photo, mail et SMS sont toujours `BLOCKED/NOT RUN` dans l'environnement QEMU.
+La nouvelle UI Swarm n'est pas une preuve de ces effets natifs.
 
 ### SUPPORTED
 

@@ -3,10 +3,13 @@
 Date: 2026-09-08
 Statut: Draft build-ready
 
-> **Portée:** architecture cible et frontières du slice `0.11.0`. Son contrat
+> **Portée:** architecture cible et frontières du slice `0.12.0`. Son contrat
 > exécutable est décrit par l'OpenAPI. `docs/21-acceptance-criteria.md` conserve
 > les preuves et limites du slice `0.7`; il n'est pas présenté comme validation
-> de `0.11.0`. Le runtime livre REST authentifié, cache SQLite mobile lié à
+> de `0.12.0`. Le runtime conserve toutes les garanties qualifiées de v0.11 et
+> ajoute un service de buts/DAG borné, des contrats planner/evaluator stricts,
+> un contexte expurgé à provenance, une mémoire épisodique et des exports
+> d'évaluation par rôle. Il livre REST authentifié, cache SQLite mobile lié à
 > l'origine, WebSocket à ticket unique, exécution
 > locale vérifiée, jobs distants à lease et transport de capabilities iPhone à
 > grant unique. Le message board SQLite reste le défaut; un adaptateur Redis
@@ -16,7 +19,10 @@ Statut: Draft build-ready
 > l'outbox mobile sûre, trois workers bornés, la quarantaine des skills révoqués,
 > les cartes/politiques agent, le scheduler/scoring v2 et une projection FAISS
 > reconstruisible et durcie sont **IMPLEMENTED**. Redis authentifié réel et le
-> failover worker de protocole ont une preuve bornée **QUALIFIED**.
+> failover worker de protocole ont une preuve bornée **QUALIFIED**. Les contrats
+> autonomes v0.12 sont **IMPLEMENTED** et couverts par des tests automatisés;
+> ils n'élargissent ni les permissions des workers ni la portée de la
+> qualification d'infrastructure v0.11.
 > Active-active SQLite inter-hôtes demeure **UNSUPPORTED**; TLS Redis, deux
 > machines worker physiques, Postgres, NATS et les consumers Redis opérationnels
 > restent **EXPERIMENTAL** ou **PLANNED**. La validation iPhone physique reste
@@ -42,7 +48,9 @@ App iPhone Expo
        ↓
 Ubuntu Control Plane
   ├─ API Gateway / Auth
-  ├─ Orchestrator LLM abliterated
+  ├─ Goal Manager + DAG autoritatif
+  ├─ Planner et Evaluator LLM à sorties JSON strictes
+  ├─ Context Builder + Strategy Retrieval
   ├─ Permission Gateway stricte
   ├─ Agent Registry
   ├─ Outbox SQLite autoritative + claims de publication fenced
@@ -50,6 +58,7 @@ Ubuntu Control Plane
   ├─ Consumer checkpoints + maintenance leases SQLite
   ├─ State Service SQLite WAL
   ├─ Memory Service SQLite + embeddings optionnels
+  ├─ Episode Memory résumée
   ├─ Feedback Service
   ├─ Audit Ledger append-only
   └─ Worker Runtime(s)
@@ -150,6 +159,21 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
   directement.
 - **PLANNED:** NATS JetStream seulement si un besoin concret le justifie.
 
+- **IMPLEMENTED v0.12:** `GoalManager` transforme un but explicitement démarré
+  en DAG validé. Chaque nœud worker possède une tâche enfant distincte et reste
+  soumis au même dispatcher, scheduler, lease, policy et gateway que le
+  protocole v0.11. Les dépendances hard/optional, le parallélisme et les états
+  terminaux sont appliqués par SQLite, pas par le modèle.
+- **IMPLEMENTED v0.12:** profils `manual`, `assisted` et `autonomous`. En mode
+  manuel, chaque nouvelle dispatch exige une action explicite; les deux autres
+  profils peuvent poursuivre après le démarrage initial, toujours dans les
+  budgets et permissions persistés. Aucun profil ne confère un privilège.
+- **IMPLEMENTED v0.12:** l'évaluateur peut proposer de continuer, replanifier,
+  conclure, échouer ou poser une question. Sa proposition ne termine un but que
+  si les preuves serveur satisfont aussi les invariants et le contrat du skill;
+  un état sans preuve worker valide ne devient pas un succès. Verdict,
+  fingerprint, model-call et transition autoritative sont commis ensemble.
+
 ### Phase 4 — Native iPhone Bridge
 
 - **IMPLEMENTED:** Location, Contacts, lecture Calendar, picker Photos et
@@ -169,8 +193,15 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
   rebuild nettoie sous lock uniquement ses temporaires privés et possédés
   (`.tmp-*`, `.CURRENT-*`, `.digest-*`) laissés par un crash; un orphelin non
   sûr provoque un refus sans suppression.
-- **PLANNED:** raccordement opérationnel de FAISS au chemin de requête, Qdrant,
-  eval builder complet et pipeline candidat LoRA.
+- **IMPLEMENTED v0.12:** contexte borné et expurgé avec provenance, épisodes
+  terminaux résumés, recherche hybride optionnelle et hints de stratégie qui ne
+  recopient jamais un plan antérieur.
+- **IMPLEMENTED v0.12:** feedback de but et export JSONL distinct pour planner,
+  evaluator, synthesis et routing, avec filtres de revue/succès/score et
+  marquage explicite des seuls candidats de fine-tuning.
+- **PLANNED:** raccordement opérationnel de FAISS au chemin de requête complet,
+  Qdrant, index vectoriel des épisodes, curation/versionnage de datasets et
+  pipeline candidat LoRA.
 
 ### Phase 6 — On-device LLM
 
@@ -178,6 +209,31 @@ Livrables: ce paquet, repo scaffold, choix modèles, contrats API, configs initi
 - Development build Expo.
 - On-device mini-orchestrator/cache agent.
 - Fallback offline.
+
+### Phase 7 — Autonomous swarm runtime v0.12
+
+- **IMPLEMENTED:** API authentifiée de création, lecture, démarrage,
+  annulation, replan, résultat et feedback de buts.
+- **IMPLEMENTED:** `SwarmPlanProposal` et `EvaluationDecision` Pydantic stricts,
+  parsing JSON borné, rejet des clés dupliquées/valeurs non finies, DAG acyclique
+  et validation de skill par politique.
+- **IMPLEMENTED:** budgets persistés (`max_steps`, `max_parallelism`,
+  `max_replans`, `max_runtime_seconds`, `max_model_calls`) et fingerprints de
+  plan/décision/état pour arrêter les boucles sans progrès.
+- **IMPLEMENTED:** résultat mobile construit uniquement depuis des résumés
+  autoritatifs expurgés, plus écrans Expo Swarm/détail et réplica locale liée à
+  l'origine.
+- **IMPLEMENTED:** payloads planner/evaluator expurgés, bornés et persistés
+  exactement tels qu'envoyés; guidance utilisateur et stratégie passent par le
+  même budget avant l'appel modèle.
+- **IMPLEMENTED:** `ModelRouter` fournit des métadonnées immuables par rôle et
+  choisit les IDs de modèle du planner et de l'evaluator. Ces providers partagent
+  encore l'endpoint OpenAI-compatible configuré; les routes summarizer et
+  synthesizer n'ont pas de provider actif. La synthèse est déterministe, pas un
+  troisième appel LLM.
+- **PLANNED:** reprise d'un goal multi-processus avec coordination dédiée au-delà
+  de la réconciliation actuelle, synthèse modèle séparée, API de mémoire
+  épisodique, curation/versionnage de datasets et qualifications de charge.
 
 ## 5. Modèles proposés
 

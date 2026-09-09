@@ -1,6 +1,6 @@
 # monGARS Swarm App — Build Documents
 
-Version: 0.11.0 production qualification and failure hardening
+Version: 0.12.0 autonomous swarm runtime
 Date: 2026-09-08
 Owner: ales27pm / 27PM  
 Target: iPhone Expo app + Ubuntu local AI control plane + distributed autonomous swarm
@@ -226,6 +226,69 @@ modèle et d'exécution:
 Le contrat complet est dans [`api/openapi.yaml`](api/openapi.yaml) et la procédure
 locale dans [`docs/18-dev-setup.md`](docs/18-dev-setup.md).
 
+## Runtime de buts v0.12
+
+### IMPLEMENTED
+
+- Une ressource `goal` distincte des tâches ordinaires porte l'objectif,
+  le profil d'autonomie, les critères de fin et des budgets persistés de pas,
+  parallélisme, replans, durée et appels modèle. Créer un but ne le démarre pas:
+  `start`, `replan` et `cancel` restent des commandes authentifiées explicites.
+- Le planner Ubuntu ou une proposition `iphone_local`/`manual` produit seulement
+  un `SwarmPlanProposal` JSON strict. Le serveur refuse les champs d'état ou de
+  succès, les cycles, dépendances inconnues, skills non autorisés, dépassements
+  de budget et changements de l'objectif autoritatif avant de persister le DAG.
+- Chaque nœud worker crée sa propre tâche enfant et passe par le dispatcher,
+  le scheduler, les leases, la politique de skill et les gateways existants.
+  Les nœuds indépendants peuvent progresser jusqu'au parallélisme autorisé;
+  aucun modèle ne choisit l'éligibilité ni ne contourne une approbation.
+- Un évaluateur Ubuntu séparé reçoit une projection bornée des résultats. Sa
+  décision reste une proposition strictement validée (`continue`, `replan`,
+  `done`, `failed`, `needs_user`). La fin exige des preuves worker observées par
+  le serveur et conformes au contrat du skill. Verdict, fingerprint, fin du
+  model-call et transition sont atomiques; les décisions répétées sans
+  changement d'état et les plans équivalents sont stoppés.
+- Le `ModelRouter` immuable choisit des IDs de modèle configurables et distincts
+  pour le planner et l'évaluateur, sans posséder lui-même de fonction
+  d'inférence ou d'exécution.
+- Le résultat final est reconstruit depuis les résumés SQLite autoritatifs,
+  expurgé et accompagné de provenance; les objets worker bruts ne sont jamais
+  copiés dans la réponse mobile.
+- `ContextBuilder` produit des cartes déterministes, expurgées et bornées avec
+  provenance pour objectif, nœud, dépendances, contraintes, budgets, échecs,
+  mémoire, épisodes et agents. Les limites mémoire/épisodes/agents/upstream et
+  la taille de chaque résultat sont indépendantes du budget global de tokens;
+  le JSON compté/persisté est exactement celui transmis au planner/evaluator.
+- Une trajectoire terminale crée un épisode résumé et ses étapes. La recherche
+  combine pertinence lexicale ou sémantique optionnelle, skill, outcome,
+  récence et feedback utilisateur. `StrategyRetrieval` ne renvoie que de courts
+  enseignements de succès/échec/mémoire, jamais un ancien plan exécutable.
+- Le feedback de but alimente quatre exports JSONL expurgés (`planner`,
+  `evaluator`, `synthesis`, `routing`). Un exemple n'est marqué candidat au
+  fine-tuning que s'il est terminé, revu, suffisamment bien noté et possède une
+  correction humaine adaptée.
+- L'app Expo ajoute une vue Swarm et un détail de but pour créer, démarrer,
+  relancer, annuler, suivre les nœuds/preuves et noter un résultat. La réplica
+  locale conserve buts, nœuds et résultats par origine, mais reste en lecture
+  seule hors ligne pour toutes ces commandes.
+
+Voir [`docs/28-autonomous-swarm-runtime.md`](docs/28-autonomous-swarm-runtime.md),
+[`docs/29-context-engineering.md`](docs/29-context-engineering.md),
+[`docs/30-episodic-memory.md`](docs/30-episodic-memory.md) et
+[`docs/31-swarm-evaluation.md`](docs/31-swarm-evaluation.md).
+
+### EXPERIMENTAL / PLANNED
+
+- Le routage dynamique/failover n'est pas implémenté. Les providers planner et
+  evaluator utilisent encore le même endpoint OpenAI-compatible; les routes
+  `summarizer`/`synthesizer` restent des métadonnées sans provider actif et la
+  synthèse v0.12 est déterministe.
+- La recherche d'épisodes est interne au planner; elle n'a pas encore d'API ou
+  d'écran de gestion. FAISS ne projette pas encore les épisodes; la provenance
+  publique ne contient que les IDs des sources réellement retenues au contexte.
+- Aucun entraînement, changement de prompt ou déploiement de modèle ne se fait
+  automatiquement depuis le feedback.
+
 ## Qualification et frontière de déploiement v0.11
 
 ### QUALIFIED
@@ -310,6 +373,10 @@ mongars-swarm/
 9. `docs/16-code-analysis-quality-gates.md`
 10. `docs/23-implementation-plan.md`
 11. `docs/27-production-qualification.md`
+12. `docs/28-autonomous-swarm-runtime.md`
+13. `docs/29-context-engineering.md`
+14. `docs/30-episodic-memory.md`
+15. `docs/31-swarm-evaluation.md`
 
 ## Mode de build visé
 

@@ -1,6 +1,6 @@
 # 08 — State, Memory and Sync
 
-> **IMPLEMENTED — slice `0.11.0`:** le bootstrap hydrate tâches, approbations, appels d'outils,
+> **IMPLEMENTED — slice `0.12.0`:** le bootstrap hydrate tâches, approbations, appels d'outils,
 > conversations/messages, agents, mémoire épinglée, curseur et compteurs dans
 > la réplica liée à l'origine. Elle demeure un cache et n'autorise aucune action
 > sensible. Une outbox mobile distincte synchronise seulement trois mutations
@@ -29,13 +29,14 @@ Memory Service
   ├─ SQLite embeddings (authoritative metadata)
   ├─ optional rebuildable FAISS projection
   ├─ metadata store
-  └─ retrieval pack builder
+  ├─ episode summaries + optional embeddings
+  └─ bounded context/strategy builder
 
 iPhone Local Replica
   ├─ SQLite app DB
   ├─ safe mutation outbox scoped by origin
   ├─ synced cursors
-  └─ cached resource projections (never capability grants)
+  └─ cached resource projections including goals (never capability grants)
 ```
 
 ## Source de vérité
@@ -108,6 +109,9 @@ Tables principales:
 - `outbox_events`, `message_board_events`, deliveries/checkpoints consumers;
 - `control_plane_instances`, `maintenance_leases`;
 - `memory_items`, `memory_embeddings`;
+- `goal_runs`, `plan_nodes`, `plan_edges`, `goal_evaluations`, `goal_results`,
+  `goal_feedback`, `goal_model_calls` et `goal_contexts`;
+- `episodes`, `episode_steps` et `episode_embeddings`;
 - `feedback_events`, `eval_examples`, `corrections`, `agent_scores`;
 - tables de pairing, demandes/grants/résultats iPhone, reçus d'idempotence et
   `audit_events`.
@@ -152,6 +156,46 @@ les restes d'un crash: il valide puis supprime seulement les répertoires
 `.tmp-*` et fichiers `.CURRENT-*`/`.digest-*` privés, réguliers et appartenant à
 l'UID courant. Un nom inattendu, un mauvais propriétaire/mode ou un lien fait
 échouer le cleanup sans suivre ni effacer l'artefact.
+
+### Goal context — IMPLEMENTED v0.12
+
+`ContextBuilder` lit un snapshot cohérent SQLite et produit uniquement des
+cartes résumées. L'ordre est stable: but, tâche racine, nœud courant,
+contraintes, budgets, échecs, upstream terminés, épisodes antérieurs, mémoires,
+puis cartes d'agents. Le budget global `MONGARS_GOAL_CONTEXT_MAX_TOKENS` est
+complété par des limites indépendantes:
+
+- `MONGARS_GOAL_CONTEXT_MAX_MEMORY_ITEMS`;
+- `MONGARS_GOAL_CONTEXT_MAX_EPISODE_ITEMS`;
+- `MONGARS_GOAL_CONTEXT_MAX_AGENT_CARDS`;
+- `MONGARS_GOAL_CONTEXT_MAX_UPSTREAM_RESULTS`;
+- `MONGARS_GOAL_CONTEXT_MAX_RESULT_CHARS_PER_NODE`.
+
+Chaque valeur textuelle passe par l'expurgation de secrets et chemins protégés
+avant troncature. La ligne `goal_contexts` conserve le JSON déjà expurgé, les
+IDs de provenance, les IDs de cartes et le compte approximatif de tokens. Un
+contexte n'est ni une autorisation ni une preuve d'exécution. Le planner reçoit
+ces cartes; l'évaluateur v0.12 reçoit son contrat d'état strict et associe un
+`context_id` à son appel, mais l'injection de toutes les cartes dans le payload
+evaluator reste **PLANNED**.
+
+### Episodic memory — IMPLEMENTED v0.12
+
+À la terminaison d'un but, `EpisodeMemoryService` écrit une trajectoire résumée
+et ses étapes expurgées. Une seule sémantique d'épisode est autorisée par
+`goal_run_id`: répéter exactement l'enregistrement est idempotent, tandis
+qu'une réécriture divergente est refusée. Si le provider d'embeddings est absent
+ou échoue, l'épisode reste autoritatif et la recherche retombe sur le lexical.
+
+Le classement combine pertinence, chevauchement de skills, outcome préféré,
+récence, score observé et feedback utilisateur. `StrategyRetrieval` fournit au
+planner quelques enseignements compacts de succès, d'échec et de mémoire. Il ne
+lit pas `plan_summary` ni `episode_steps` pour fabriquer ces hints et ne copie
+jamais un ancien plan comme instruction.
+
+La recherche d'épisodes et sa gestion sont internes au runtime en v0.12. Une
+API/opérateur, un index FAISS d'épisodes et une politique complète de
+rétention/suppression restent **PLANNED**.
 
 ### Artifact memory
 
@@ -223,12 +267,14 @@ Retourne:
 - tâches, approbations et appels d'outils;
 - conversations et messages récents;
 - agents et mémoire épinglée;
+- buts, nœuds de plan et résultats agrégés;
 - compteurs et curseur d'audit.
 
 Le client applique le bootstrap uniquement à la partition SQLite correspondant
 à l'origine active. Après reconnexion WebSocket, il effectue ce bootstrap REST
 autoritatif avant de drainer les mutations ordinaires en attente.
-Les événements `task.*`, `message.*` et `approval.*` sont des invalidations
+Les événements `task.*`, `message.*`, `approval.*`, `goal.updated`,
+`plan.node.updated` et `goal.result.updated` sont des invalidations
 minimales avec `refetch_required: true`: ils ne contiennent ni intention/titre
 de tâche, contenu de message, note utilisateur ni snapshot d'action. La réplica
 ne les écrit donc pas comme des ressources complètes; le provider live regroupe

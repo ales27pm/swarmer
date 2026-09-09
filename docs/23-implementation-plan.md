@@ -1,7 +1,7 @@
 # 23 — Implementation Plan
 
 > **Statut:** ordre de construction historique et architecture cible. Le contrat
-> courant est l'OpenAPI `0.11.0`. `docs/21-acceptance-criteria.md` documente
+> courant est l'OpenAPI `0.12.0`. `docs/21-acceptance-criteria.md` documente
 > encore les preuves du slice `0.7` et ne valide pas à lui seul cette release.
 > Redis Streams est un backend optionnel de notification; SQLite reste le
 > défaut et la source de vérité. Le transport Redis authentifié et le failover
@@ -294,6 +294,62 @@ PLANNED:
 - qualification Redis TLS/certificat invalide;
 - preuve avec workers placés sur au moins deux machines physiques;
 - supervision, sauvegarde et procédures d'incident production.
+
+### Step 16 — Autonomous swarm runtime v0.12
+
+IMPLEMENTED:
+
+- contrats stricts versionnés pour `GoalCreateRequest`, `SwarmPlanProposal`,
+  `EvaluationDecision`, résultats publics et feedback;
+- création/démarrage/annulation/replan d'un but authentifié, DAG SQLite et une
+  tâche enfant par nœud worker;
+- validation acyclique, skills/policy, limites de nœuds/parallélisme et refus
+  des champs d'état/exécution dans les propositions modèle;
+- profils `manual`, `assisted`, `autonomous` qui changent seulement le rythme
+  d'avancement, jamais les permissions;
+- budgets persistés de pas, replans, runtime, appels modèle et parallélisme,
+  plus fingerprints de plan/décision/état pour stopper les boucles;
+- planner et evaluator Ubuntu à sortie JSON Schema stricte, avec providers
+  noop/déterministes pour tests; proposition iPhone/manuelle revalidée par le
+  serveur;
+- agrégation finale déterministe et expurgée depuis les résumés autoritatifs;
+- contexte déterministe à limites indépendantes, provenance et expurgation;
+- épisodes/étapes résumés avec embedding optionnel et fallback lexical;
+- hints de stratégie succès/échec/mémoire qui ne recopient jamais un plan;
+- feedback de but et exports JSONL planner/evaluator/synthesis/routing;
+- vues Expo Swarm/détail, réplica buts/nœuds/résultats liée à l'origine et
+  invalidations WebSocket métadonnées seulement;
+- scénarios automatisés pour dépendances parallèles, failure/replan,
+  `needs_user`, lease stale, annulation, budgets, épisodes et preuves
+  contradictoires.
+
+QUALIFIED:
+
+- invariants structurels et de sécurité par tests automatisés ciblés;
+- le transport worker/Redis et ses pannes conservent uniquement la qualification
+  bornée v0.11 décrite dans `docs/27-production-qualification.md`.
+
+EXPERIMENTAL:
+
+- charge et endurance de nombreux buts concurrents;
+- coordination de plusieurs processus Goal Manager au-delà de la
+  réconciliation SQLite au démarrage;
+- routage dynamique/failover: le `ModelRouter` immuable choisit déjà les IDs du
+  planner et de l'evaluator, mais les routes summarizer/synthesizer n'ont pas de
+  provider actif et tous les providers actuels partagent le même endpoint.
+
+PLANNED:
+
+- synthétiseur LLM séparé et contexte de cartes injecté au payload evaluator;
+- API/écran de mémoire épisodique et branchement FAISS pour ces vecteurs;
+- curation/versionnage/revue de lots, eval avant/après et pipeline LoRA;
+- qualification de charge, sauvegarde/reprise et observabilité de buts en
+  production.
+
+MANUAL VALIDATION REQUIRED:
+
+- les six capabilities iPhone physiques restent `BLOCKED/NOT RUN`; v0.12 ne
+  transforme pas les tests de contrat en preuve d'effet natif réel.
 
 ## Implementation notes
 

@@ -1,9 +1,11 @@
 # 11 — Feedback and Training Pipeline
 
-> **Statut:** le slice `0.8` stocke les corrections revues et exporte du JSONL
-> expurgé avec entrée de tâche, proposition disponible, résultat, feedback et
-> comportement corrigé. Les tables d'exemples, corrections et scores existent;
-> leur alimentation/scoring automatique et l'entraînement restent roadmap.
+> **IMPLEMENTED — slice `0.12.0`:** le pipeline historique de corrections de
+> tâches demeure disponible. Les buts ajoutent feedback terminal, mise à jour du
+> score d'épisode et quatre exports JSONL expurgés par rôle: `planner`,
+> `evaluator`, `synthesis` et `routing`. **PLANNED:** curation/versionnage des
+> jeux, benchmark modèle externe, préférence pairwise et entraînement LoRA. Il
+> n'existe aucun auto-entraînement live.
 
 ## Objectif
 
@@ -114,6 +116,58 @@ Conditions avant entraînement:
 - eval avant/après;
 - rollback.
 
+## Goal datasets v0.12 — IMPLEMENTED
+
+Un appareil jumelé peut noter seulement un but terminal via
+`POST /goals/{goal_id}/feedback`. La requête stricte contient:
+
+- un score entre 0 et 5;
+- une note optionnelle;
+- une correction optionnelle de réponse finale;
+- une correction optionnelle de plan;
+- le marqueur explicite `reviewed`.
+
+Les textes passent par le sanitizer partagé avant persistance. La ligne de
+feedback et son audit sont atomiques. Après commit, le score est projeté dans
+l'épisode correspondant quand celui-ci existe; l'échec de cette projection
+reconstruisible ne transforme pas un feedback déjà accepté en faux échec.
+
+`FeedbackDatasetService.export_goal_jsonl()` produit un objet JSONL borné par
+feedback. Ses filtres indépendants sont `minimum_score`, `successful_only`,
+`reviewed_only` et `planner_source`. Les variantes contiennent:
+
+| `dataset_type` | Trajectoire incluse |
+|---|---|
+| `planner` | critères, nœuds validés et métadonnées d'appels planner |
+| `evaluator` | décisions d'évaluation, outcomes de nœuds et appels evaluator |
+| `synthesis` | outcomes, résultat agrégé sûr et appels de synthèse disponibles |
+| `routing` | affectations worker et preuves expurgées du scheduler |
+
+Chaque record contient objectif, source du planner, profil d'autonomie, outcome,
+compteurs, review et provenance/fingerprints. Les charges sont sanitizées
+récursivement; secrets, credentials et chemins protégés ne doivent pas entrer
+dans l'export. Les résultats bruts de worker ne sont pas des cibles.
+
+`fine_tune_candidate` n'est vrai que si les quatre conditions sont simultanées:
+
+1. le feedback a été marqué `reviewed`;
+2. le score est au moins 4;
+3. le but est `completed`;
+4. une correction humaine adaptée au type de dataset est présente.
+
+Le filtrage d'export n'accorde pas automatiquement ce statut. Un record peut
+être exporté à des fins d'eval sans devenir une cible d'entraînement.
+
+### EXPERIMENTAL / PLANNED
+
+- La variante `synthesis` sait exporter une cible corrigée, mais la synthèse
+  active v0.12 est déterministe et `summarizer_model` n'est pas routé dans la
+  boucle de but.
+- Aucun split train/validation, manifeste de version, validation humaine de lot,
+  entraînement, comparaison avant/après ou rollback modèle n'est automatisé.
+- Les exports JSONL sont une matière première d'eval/curation, pas une preuve de
+  qualité du modèle ni une autorisation de déploiement.
+
 ## Feedback loop
 
 ```mermaid
@@ -141,6 +195,12 @@ Chaque agent reçoit métriques:
 - user correction rate;
 - memory usefulness;
 - test pass rate.
+
+Le score scheduler v0.11 reste séparé du score d'épisode v0.12. Le premier est
+calculé depuis les résultats/leases/feedback observés par le serveur. Le second
+sert au retrieval de trajectoires et combine outcome, score enregistré et note
+utilisateur. Un worker ou un modèle ne peut pas améliorer seul l'une de ces
+mesures.
 
 ## Improvement actions
 

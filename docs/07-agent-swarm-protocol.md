@@ -1,12 +1,14 @@
 # 07 — Agent Swarm Protocol
 
-> **IMPLEMENTED — slice `0.11.0`:** registre authentifié, Agent Cards validées
+> **IMPLEMENTED — slice `0.12.0`:** registre authentifié, Agent Cards validées
 > par le serveur, capacité déclarée,
 > ordonnanceur déterministe, une seule job active par tâche, leases opaques
 > expirables avec génération de fencing, heartbeat, résultats terminaux
 > idempotents, reaper borné, claims de publication d'outbox fenced, board SQLite
 > par défaut et adaptateur Redis Streams optionnel. Trois workers étroits sont
-> fournis: Files, Research et Code Review. **QUALIFIED:** Redis authentifié a
+> fournis: Files, Research et Code Review. v0.12 ajoute un runtime de buts/DAG
+> qui crée une tâche enfant par nœud worker sans modifier le protocole de lease
+> ni la Gateway. **QUALIFIED:** Redis authentifié a
 > été exercé par huit tests live sur `ubuntu-host` via tunnel SSH, et le harness
 > automatisé exerce deux identités worker contre un seul control plane
 > autoritatif. **EXPERIMENTAL:** Redis TLS/invalid-certificat et workers sur deux
@@ -74,7 +76,9 @@ pas une extension libre contrôlée par le worker:
 
 ### Task
 
-Un travail assigné à un agent.
+Un travail assigné à un agent. Dans un but v0.12, chaque nœud worker reçoit une
+tâche enfant distincte; le but parent n'est jamais terminalisé directement par
+une seule job.
 
 ### Event
 
@@ -325,6 +329,65 @@ stale et panne du fabric. Il qualifie le protocole/processus, pas deux machines
 worker physiques distinctes. Ce dernier smoke reste **EXPERIMENTAL / NOT RUN**.
 Plusieurs control planes écrivant un même SQLite via NFS ou un filesystem réseau,
 et l'active-active SQLite inter-hôtes, sont **UNSUPPORTED**.
+
+## Orchestration DAG v0.12 — IMPLEMENTED
+
+`GoalManager` est la seule couche qui traduit un plan validé en tâches enfants.
+Le modèle ne publie pas directement une job et ne choisit pas son agent. Le
+flux autoritatif est:
+
+1. un appareil jumelé crée un but avec critères et budgets;
+2. une commande `start` explicite demande une proposition au planner Ubuntu,
+   ou soumet une proposition `iphone_local`/`manual`;
+3. le serveur valide le JSON strict, l'objectif exact, les dépendances, le
+   graphe acyclique, les skills et le parallélisme;
+4. chaque nœud worker prêt crée une tâche enfant puis une job via
+   `AgentDispatcher`;
+5. claim, heartbeat et résultat suivent sans changement le protocole de lease
+   v0.11;
+6. le résultat terminal observé par le serveur met à jour le nœud, débloque ses
+   dépendants et peut déclencher une évaluation;
+7. seul l'état SQLite, jamais le texte du modèle, termine le but parent.
+
+Les nœuds de synthèse v0.12 concatènent de manière déterministe les résumés
+expurgés de leurs dépendances dans une limite bornée. Ils ne constituent ni un
+outil ni un appel LLM. Les skills que le runtime peut matérialiser en payload
+sont plus étroits que les skills globalement enregistrables: list directory,
+research query et les trois opérations Code Review sont générées avec des
+arguments fixes/bornés. Une compétence nécessitant des paramètres sensibles ou
+non déterminés est bloquée avant dispatch.
+
+Le profil `manual` limite l'avancement à un nœud lors d'une commande utilisateur
+et ne poursuit pas automatiquement au prochain nœud. `assisted` et `autonomous`
+peuvent avancer les nœuds prêts après les callbacks worker/evaluator, mais les
+deux restent soumis aux mêmes budgets, policy, permissions, capacités et
+leases. Le profil ne change aucune autorisation.
+
+Le parallélisme du but est borné à trois et ne dépasse jamais son budget
+persisté. Les états d'un nœud sont projetés depuis les preuves du dispatcher:
+`dispatched`, `running`, `waiting_capability`, puis terminal. Une annulation
+utilisateur ferme les tâches enfants actives et fence leurs résultats tardifs.
+
+### Evaluator et replan
+
+L'évaluateur reçoit un `GoalEvaluationContext` borné: critères, états/résumés
+des nœuds, budgets restants, temps écoulé et fingerprint d'état. Il peut
+proposer `continue`, `replan`, `done`, `failed` ou `needs_user`. Les nœuds
+suggérés repassent par le même validateur de DAG et de policy. `done` sans
+preuve worker complétée est rejeté; une décision identique sans changement
+d'état termine le but en échec plutôt que de boucler. Un replan équivalent au
+plan précédent est également arrêté.
+
+### Limites de qualification
+
+- **IMPLEMENTED:** contrats, persistance, callbacks worker/capability,
+  budgets, annulation, agrégation sûre, API et projections WebSocket.
+- **QUALIFIED:** les invariants worker/Redis restent ceux documentés par la
+  campagne v0.11; les scénarios v0.12 ont des tests automatisés de protocole.
+- **EXPERIMENTAL:** performance avec plusieurs buts longs et reprise concurrente
+  de plusieurs processus Goal Manager.
+- **PLANNED:** affectation push, nœuds mutateurs avec idempotence explicite,
+  synthétiseur LLM séparé et agents métier supplémentaires.
 
 ## Remote worker boot
 

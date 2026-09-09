@@ -5,7 +5,7 @@
 Le schéma implémenté est SQLite WAL et son marqueur exécutable autoritatif est
 `SCHEMA_VERSION` dans `server/app/services/state_service.py`; la documentation
 ne duplique pas ce numéro interne, qui est distinct de la version API/release
-`0.11.0`. Les migrations sont additives et rejouables au démarrage. Postgres,
+`0.12.0`. Les migrations sont additives et rejouables au démarrage. Postgres,
 NATS et le câblage de base de données du prototype Vibecode ne sont pas branchés
 au MVP. Redis Streams est un transport de notification optionnel, pas une base
 autoritative et ne remplace aucune table ci-dessous.
@@ -17,6 +17,11 @@ reçus d'idempotence, les cartes/scores du scheduler, les compteurs
 opérationnels persistants et la politique worker à epoch. Il ne s'agit pas d'un
 déplacement de l'autorité: outbox, state, leases et receipts restent dans
 SQLite.
+
+La migration v0.12 ajoute les buts, DAG, appels/évaluations de modèle, résultats
+agrégés, contextes, feedback et épisodes. Ces tables restent dans le même SQLite
+autoritatif; elles ne transforment ni Redis ni un index vectoriel en source de
+vérité.
 
 Le fichier SQLite et la politique d'exécution doivent rester hors du workspace
 monté en écriture dans Bubblewrap.
@@ -225,6 +230,69 @@ la même clé avec une autre opération ou un autre payload est refusée. La sur
 est limitée à feedback, champ `pinned` de mémoire et message de chat avec
 `start_task: false`; aucune action sensible n'utilise cette table.
 
+### `goal_runs`
+
+Un but lie une tâche racine unique à l'objectif autoritatif, au profil
+`manual`/`assisted`/`autonomous`, à la source du planner et à ses critères de
+fin. Les budgets persistés couvrent pas, parallélisme, replans, durée et appels
+modèle; leurs compteurs ne peuvent pas devenir négatifs. Les phases, timestamps,
+résumé evaluator et fingerprints de plan/décision/état permettent une reprise
+explicable et l'arrêt des boucles. Les états terminaux sont `completed`,
+`failed`, `cancelled` et `budget_exhausted`; aucun n'est réouvert.
+
+Créer un but crée sa tâche racine `planned` dans la même transaction. Cela ne
+démarre ni modèle ni worker. La commande `start` valide ensuite une proposition
+avant le passage à `running`.
+
+### `plan_nodes` et `plan_edges`
+
+Chaque nœud appartient à un but et porte type (`worker` ou `synthesis`), objectif,
+skill éventuel, priorité, dépendances, sortie attendue, état, tâche/job/agent
+corrélés et uniquement des résumés de résultat/erreur. Un nœud worker possède
+une tâche enfant distincte; l'index unique de `task_id`/`worker_job_id` empêche
+une association ambiguë. Les nœuds terminaux ne sont pas ressuscités.
+
+`plan_edges` matérialise les dépendances `hard` ou `optional`, interdit une
+auto-arête et cascade avec le but. Le validateur rejette les cycles et IDs
+inconnus avant insertion. Une dépendance hard échouée bloque son descendant;
+une dépendance optional terminale n'impose pas ce blocage.
+
+### `goal_model_calls`, `goal_evaluations`, `goal_contexts` et `goal_results`
+
+- `goal_model_calls` journalise rôle, provider, modèle éventuel, contexte,
+  digests d'entrée/sortie, état et latence/erreur sans stocker un bearer. Un but
+  n'accepte qu'un appel `started` à la fois et le compteur de budget est réservé
+  avant le transport modèle.
+- `goal_evaluations` conserve l'ordre, la décision JSON strictement validée et
+  les fingerprints d'état/décision. Répéter la même décision sans changement
+  d'état est détectable et arrêté.
+- `goal_contexts` contient uniquement les cartes déjà expurgées/bornées, leurs
+  IDs de provenance/cartes et un compte approximatif de tokens. La ligne ne
+  constitue aucune permission.
+- `goal_results` conserve une projection déterministe construite depuis les
+  résumés SQLite. Le JSON contient comptes, nœuds sûrs et provenance; l'objet
+  worker brut n'y est jamais recopié.
+
+### `goal_feedback`
+
+Feedback d'un but terminal: score 0–5, note, corrections optionnelles de réponse
+et plan, marqueur de revue et timestamp. Les corrections sont expurgées avant
+écriture. L'export peut filtrer ces lignes, mais `reviewed` et un score élevé ne
+suffisent pas seuls à créer une cible: une correction humaine adaptée est aussi
+requise.
+
+### `episodes`, `episode_steps` et `episode_embeddings`
+
+`episodes` conserve une trajectoire résumée unique par `goal_run_id`: objectif,
+résumé de plan, outcome, score, durée, familles de workers, tags d'échec,
+feedback utilisateur et dates. `episode_steps` ordonne des résumés d'entrée/
+sortie expurgés avec type de nœud, skill, agent, état et latence optionnelle.
+
+`episode_embeddings` est une projection optionnelle par épisode/provider avec
+dimensions et vecteur JSON. Un échec d'embedding ne supprime ni ne fait échouer
+l'épisode déjà autoritatif. La recherche lexicale reste disponible. Cette table
+n'est pas encore projetée dans FAISS ni exposée par une API publique.
+
 ### `iphone_capability_requests`, `iphone_capability_grants` et `iphone_capability_results`
 
 Une demande conserve tâche, job, agent, génération de lease, device ciblé,
@@ -331,6 +399,8 @@ origine; un changement de jumelage les abandonne.
   fingerprint tant que l'état n'est pas terminal;
 - grant et résultat uniques par demande.
 - snapshots de score par score/agent et décisions du scheduler par job/date.
+- buts par état/date, nœuds par but/état/priorité, arêtes par but/destination,
+  évaluations/appels/contextes/feedback par but et épisodes par outcome/date.
 
 ## Rétention et limites
 
@@ -343,7 +413,8 @@ origine; un changement de jumelage les abandonne.
   définir selon leur sensibilité;
 - sauvegarde/restauration et purge ne sont pas encore qualifiées en production.
 
-Les migrations `0.8 → 0.11`, `0.9 → 0.11` et `0.10 → 0.11` sont additives:
+Les migrations `0.8 → 0.12`, `0.9 → 0.12`, `0.10 → 0.12` et `0.11 → 0.12`
+sont additives:
 aucune table autoritative n'est recréée ou supprimée. Les colonnes anciennes
 sont complétées, les anciens IDs d'événements reçoivent une identité stable et
 les invariants de jobs/capabilities restent réconciliés avant la hausse de
