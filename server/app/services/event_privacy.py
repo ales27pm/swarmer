@@ -107,6 +107,27 @@ _APPROVAL_NOTIFICATION_FIELDS = (
     "expires_at",
     "decided_at",
 )
+_GOAL_NOTIFICATION_FIELDS = (
+    "id",
+    "root_task_id",
+    "status",
+    "current_phase",
+    "updated_at",
+    "completed_at",
+)
+_PLAN_NODE_NOTIFICATION_FIELDS = (
+    "id",
+    "goal_run_id",
+    "status",
+    "updated_at",
+    "completed_at",
+)
+_GOAL_RESULT_NOTIFICATION_FIELDS = (
+    "goal_run_id",
+    "root_task_id",
+    "status",
+    "completed_at",
+)
 _CONFUSABLES = str.maketrans(
     {
         # Common Cyrillic and Greek homoglyphs used to evade ASCII key checks.
@@ -333,6 +354,12 @@ def safe_websocket_event(event: dict[str, Any]) -> dict[str, Any]:
         projected = _refetch_notification(payload, _ORCHESTRATOR_NOTIFICATION_FIELDS)
     elif event_type.startswith("approval."):
         projected = _refetch_notification(payload, _APPROVAL_NOTIFICATION_FIELDS)
+    elif event_type == "goal.updated":
+        projected = _refetch_notification(payload, _GOAL_NOTIFICATION_FIELDS)
+    elif event_type == "plan.node.updated":
+        projected = _refetch_notification(payload, _PLAN_NODE_NOTIFICATION_FIELDS)
+    elif event_type == "goal.result.updated":
+        projected = _refetch_notification(payload, _GOAL_RESULT_NOTIFICATION_FIELDS)
     else:
         projected = dict(payload)
 

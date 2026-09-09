@@ -21,6 +21,7 @@ from app.services.distributed_state import (
     DistributedStateConflict,
     TaskStateMachine,
 )
+from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
@@ -115,7 +116,12 @@ class AgentDispatcher:
         }
 
     async def queue_job(
-        self, task_id: str, required_skill: str, payload: dict[str, Any]
+        self,
+        task_id: str,
+        required_skill: str,
+        payload: dict[str, Any],
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> dict[str, Any]:
         try:
             payload = validate_remote_job(required_skill, payload)
@@ -136,6 +142,8 @@ class AgentDispatcher:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             now = self._now().isoformat()
             try:
                 policy_snapshot = await self.worker_skill_policy.load_locked(db, now=now)
@@ -225,6 +233,8 @@ class AgentDispatcher:
                 dedupe_key=f"agent-job:{job_id}:queued",
                 created_at=now,
             )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
         await self._drain_outbox()
         record = await self.get_job(job_id)

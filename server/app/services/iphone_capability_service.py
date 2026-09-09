@@ -304,6 +304,18 @@ class IPhoneCapabilityService:
             ).fetchone()
         return str(row[0]) if row else None
 
+    async def job_for_request(self, request_id: str) -> str | None:
+        """Return only the authoritative owning job identifier for local coordination."""
+
+        async with aiosqlite.connect(self.db_path) as db:
+            row = await (
+                await db.execute(
+                    "SELECT requesting_job_id FROM iphone_capability_requests WHERE id=?",
+                    (request_id,),
+                )
+            ).fetchone()
+        return str(row[0]) if row else None
+
     async def authorize(
         self,
         request_id: str,

@@ -32,6 +32,22 @@ class Settings(BaseSettings):
     maintenance_lease_seconds: int = Field(default=45, ge=10, le=900)
     llm_base_url: str = "http://127.0.0.1:8711/v1"
     orchestrator_model: str = "Hermes-3-Llama-3.2-3B-abliterated"
+    planner_model: str | None = None
+    evaluator_model: str | None = None
+    summarizer_model: str | None = None
+    synthesizer_model: str | None = None
+    goal_max_steps: int = Field(default=20, ge=1, le=20)
+    goal_max_replans: int = Field(default=3, ge=0, le=10)
+    goal_max_parallelism: int = Field(default=3, ge=1, le=3)
+    goal_max_runtime_seconds: int = Field(default=1_800, ge=30, le=86_400)
+    goal_max_model_calls: int = Field(default=30, ge=1, le=100)
+    goal_model_call_lease_seconds: int = Field(default=120, ge=30, le=900)
+    goal_context_max_tokens: int = Field(default=2_048, ge=64, le=32_768)
+    goal_context_max_memory_items: int = Field(default=6, ge=0, le=100)
+    goal_context_max_episode_items: int = Field(default=4, ge=0, le=100)
+    goal_context_max_agent_cards: int = Field(default=6, ge=0, le=64)
+    goal_context_max_upstream_results: int = Field(default=8, ge=0, le=20)
+    goal_context_max_result_chars_per_node: int = Field(default=2_000, ge=0, le=100_000)
     embedding_base_url: str | None = None
     embedding_model: str | None = None
     permissions_path: Path = DEFAULT_PERMISSIONS_PATH

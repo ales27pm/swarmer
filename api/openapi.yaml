@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.11.0
+  version: 0.12.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -39,6 +39,7 @@ tags:
   - name: System
   - name: Pairing
   - name: Tasks
+  - name: Goals
   - name: Chat
   - name: Approvals
   - name: Memory
@@ -147,6 +148,202 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/PairFinalizeResponse'}
         '401': {description: 'Pairing candidate is missing, invalid, or expired'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals:
+    get:
+      tags: [Goals]
+      summary: List authoritative goal runs
+      description: Returns public goal projections only; model traces and chain-of-thought are excluded.
+      parameters:
+        - $ref: '#/components/parameters/GoalLimit'
+      responses:
+        '200':
+          description: Goal runs ordered by most recent authoritative update
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/GoalRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      tags: [Goals]
+      summary: Create a bounded goal run
+      description: |
+        Creates the authoritative root task and planning-state goal. This does
+        not start worker execution; call the explicit start endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalCreateRequest'}
+      responses:
+        '201':
+          description: Goal created in planning state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    get:
+      tags: [Goals]
+      summary: Get an authoritative goal, plan graph, and public result
+      responses:
+        '200':
+          description: Current public goal projection
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/start:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Goals]
+      summary: Explicitly start or advance a goal
+      description: |
+        An optional iPhone-local or manual plan remains only a proposal. The
+        Ubuntu control plane validates it before dispatch and remains authoritative.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalStartRequest'}
+      responses:
+        '200':
+          description: Authoritative goal state after the start attempt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '503': {description: Planner is unavailable and the goal remains recoverable}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Goals]
+      summary: Cancel an active goal without replaying side effects
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalCancelRequest'}
+      responses:
+        '200':
+          description: Authoritative cancelled goal state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/replan:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Goals]
+      summary: Explicitly request a bounded replan
+      description: |
+        Replanning is rejected while worker jobs are active and never bypasses
+        plan validation, budget limits, the scheduler, or the Permission Gateway.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalReplanRequest'}
+      responses:
+        '200':
+          description: Authoritative replanned goal state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '503': {description: Planner is unavailable and the goal remains recoverable}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/nodes:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    get:
+      tags: [Goals]
+      summary: List the public nodes in a goal plan
+      responses:
+        '200':
+          description: Priority-ordered public plan-node projections
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/PlanNode'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/result:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    get:
+      tags: [Goals]
+      summary: Get the safe aggregated result for a goal
+      description: Returns null until an authoritative terminal result has been stored.
+      responses:
+        '200':
+          description: Public result, or null while no result exists
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/GoalResult'
+                  - type: 'null'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/feedback:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Goals]
+      summary: Store bounded feedback for a terminal goal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalFeedbackRequest'}
+      responses:
+        '201':
+          description: Goal feedback stored
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalFeedbackRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1020,6 +1217,29 @@ paths:
     get:
       tags: [Feedback]
       summary: Export reviewed training and evaluation examples as JSONL
+      parameters:
+        - name: dataset
+          in: query
+          schema:
+            type: string
+            enum: [task, planner, evaluator, synthesis, routing]
+            default: task
+        - name: minimum_score
+          in: query
+          schema: {type: number, minimum: 0, maximum: 5, default: 0}
+        - name: successful_only
+          in: query
+          schema: {type: boolean, default: false}
+        - name: reviewed_only
+          in: query
+          schema: {type: boolean, default: false}
+        - name: planner_source
+          in: query
+          schema:
+            anyOf:
+              - type: string
+                enum: [iphone_local, ubuntu_local, manual, test]
+              - type: 'null'
       responses:
         '200': {description: Redacted JSONL envelope, content: {application/json: {schema: {$ref: '#/components/schemas/DatasetExport'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1067,6 +1287,9 @@ x-websocket-endpoints:
       - agent.job.failed
       - iphone.capability.requested
       - iphone.capability.updated
+      - goal.updated
+      - plan.node.updated
+      - goal.result.updated
     iphoneCapabilityPayloads:
       iphone.capability.requested:
         type: object
@@ -1088,11 +1311,17 @@ x-websocket-endpoints:
         required: [request_id]
         properties:
           request_id: {type: string}
+    goalPayloads:
+      goal.updated: {$ref: '#/components/schemas/GoalUpdatedNotification'}
+      plan.node.updated: {$ref: '#/components/schemas/PlanNodeUpdatedNotification'}
+      goal.result.updated: {$ref: '#/components/schemas/GoalResultUpdatedNotification'}
     privacy: >-
       iPhone capability events are device-targeted. Requested events expose only
       the request id, capability name, expiry, and an arguments-redacted marker;
-      updated events expose only the request id. Neither event carries arguments,
-      native results, bearer credentials, or grants.
+      updated events expose only the request id. Goal events are metadata-only
+      invalidations and require an authenticated REST refetch; they do not carry
+      objectives, expected outputs, worker summaries, or synthesized answers.
+      No event carries native results, bearer credentials, grants, or leases.
 
 components:
   securitySchemes:
@@ -1123,6 +1352,11 @@ components:
       in: path
       required: true
       schema: {type: string}
+    GoalId:
+      name: goal_id
+      in: path
+      required: true
+      schema: {type: string}
     AgentId:
       name: agent_id
       in: path
@@ -1146,6 +1380,10 @@ components:
       name: status
       in: query
       schema: {$ref: '#/components/schemas/TaskStatus'}
+    GoalLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 100}
 
   responses:
     Unauthorized:
@@ -1238,9 +1476,18 @@ components:
         - pending_capability_requests
         - vector_backend
         - vector_generation_age_seconds
+        - active_goal_runs
+        - completed_goal_runs
+        - failed_goal_runs
+        - average_goal_steps
+        - replans
+        - budget_exhaustions
+        - evaluator_needs_user
+        - loop_stops
+        - episode_retrieval_hits
       properties:
         status: {type: string, const: ok}
-        version: {const: 0.11.0}
+        version: {const: 0.12.0}
         instance_id:
           type: string
           pattern: '^cp_[0-9a-f]{32}$'
@@ -1284,6 +1531,384 @@ components:
           type: [number, 'null']
           minimum: 0
           description: Age of the active rebuildable FAISS projection generation, if configured.
+        active_goal_runs: {type: integer, minimum: 0}
+        completed_goal_runs: {type: integer, minimum: 0}
+        failed_goal_runs: {type: integer, minimum: 0}
+        average_goal_steps: {type: number, minimum: 0}
+        replans: {type: integer, minimum: 0}
+        budget_exhaustions: {type: integer, minimum: 0}
+        evaluator_needs_user: {type: integer, minimum: 0}
+        loop_stops: {type: integer, minimum: 0}
+        episode_retrieval_hits: {type: integer, minimum: 0}
+    GoalRunStatus:
+      type: string
+      enum: [planning, running, waiting_permission, completed, failed, cancelled, budget_exhausted]
+    PlanNodeStatus:
+      type: string
+      enum: [planned, ready, dispatched, running, waiting_permission, waiting_capability, completed, failed, blocked, cancelled, skipped]
+    PlanNodeType:
+      type: string
+      enum: [worker, synthesis]
+    AutonomyProfile:
+      type: string
+      enum: [manual, assisted, autonomous]
+    PlannerSource:
+      type: string
+      enum: [iphone_local, ubuntu_local, manual, test]
+    EvaluationStatus:
+      type: string
+      enum: [continue, replan, done, failed, needs_user]
+    GoalUpdatedNotification:
+      type: object
+      additionalProperties: false
+      description: Metadata-only goal invalidation; refetch the authoritative goal over REST.
+      required: [id, root_task_id, status, current_phase, updated_at, completed_at, refetch_required]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        root_task_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        status: {$ref: '#/components/schemas/GoalRunStatus'}
+        current_phase: {type: string, minLength: 1, maxLength: 128}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        refetch_required: {type: boolean, const: true}
+    PlanNodeUpdatedNotification:
+      type: object
+      additionalProperties: false
+      description: Metadata-only plan-node invalidation; refetch the authoritative goal over REST.
+      required: [id, goal_run_id, status, updated_at, completed_at, refetch_required]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        goal_run_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        status: {$ref: '#/components/schemas/PlanNodeStatus'}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        refetch_required: {type: boolean, const: true}
+    GoalResultUpdatedNotification:
+      type: object
+      additionalProperties: false
+      description: Metadata-only goal-result invalidation; refetch the authoritative result over REST.
+      required: [goal_run_id, root_task_id, status, completed_at, refetch_required]
+      properties:
+        goal_run_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        root_task_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        status: {$ref: '#/components/schemas/GoalRunStatus'}
+        completed_at: {type: string, format: date-time}
+        refetch_required: {type: boolean, const: true}
+    GoalRecord:
+      type: object
+      additionalProperties: false
+      description: Public authoritative goal projection; internal prompts and model traces are excluded.
+      required:
+        - id
+        - root_task_id
+        - objective
+        - status
+        - autonomy_profile
+        - planner_source
+        - max_steps
+        - max_parallelism
+        - max_replans
+        - max_runtime_seconds
+        - max_model_calls
+        - step_count
+        - replan_count
+        - model_call_count
+        - completion_criteria
+        - current_phase
+        - evaluator_status
+        - evaluator_summary
+        - created_at
+        - updated_at
+        - started_at
+        - completed_at
+        - failure_reason
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        root_task_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        objective: {type: string, minLength: 1, maxLength: 4000}
+        status: {$ref: '#/components/schemas/GoalRunStatus'}
+        autonomy_profile: {$ref: '#/components/schemas/AutonomyProfile'}
+        planner_source: {$ref: '#/components/schemas/PlannerSource'}
+        max_steps: {type: integer, minimum: 1, maximum: 20}
+        max_parallelism: {type: integer, minimum: 1, maximum: 3}
+        max_replans: {type: integer, minimum: 0, maximum: 10}
+        max_runtime_seconds: {type: integer, minimum: 30, maximum: 86400}
+        max_model_calls: {type: integer, minimum: 1, maximum: 100}
+        step_count: {type: integer, minimum: 0}
+        replan_count: {type: integer, minimum: 0}
+        model_call_count: {type: integer, minimum: 0}
+        completion_criteria:
+          type: array
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 500}
+        current_phase: {type: string, minLength: 1, maxLength: 128}
+        evaluator_status:
+          anyOf:
+            - $ref: '#/components/schemas/EvaluationStatus'
+            - type: 'null'
+        evaluator_summary: {type: [string, 'null'], maxLength: 4000}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        started_at: {type: [string, 'null'], format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        failure_reason: {type: [string, 'null'], maxLength: 4000}
+    PlanNode:
+      type: object
+      additionalProperties: false
+      description: Safe public plan-node projection without planner metadata or hidden reasoning.
+      required:
+        - id
+        - goal_run_id
+        - parent_node_id
+        - node_type
+        - title
+        - objective
+        - required_skill
+        - status
+        - priority
+        - depends_on
+        - assigned_agent_id
+        - worker_job_id
+        - task_id
+        - expected_output
+        - result_summary
+        - error_summary
+        - created_at
+        - updated_at
+        - completed_at
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        goal_run_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        parent_node_id: {type: [string, 'null'], maxLength: 128}
+        node_type: {$ref: '#/components/schemas/PlanNodeType'}
+        title: {type: string, minLength: 1, maxLength: 500}
+        objective: {type: string, minLength: 1, maxLength: 4000}
+        required_skill: {type: [string, 'null'], maxLength: 128}
+        status: {$ref: '#/components/schemas/PlanNodeStatus'}
+        priority: {type: integer, minimum: 0, maximum: 100}
+        depends_on:
+          type: array
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 128}
+        assigned_agent_id: {type: [string, 'null'], maxLength: 128}
+        worker_job_id: {type: [string, 'null'], maxLength: 128}
+        task_id: {type: [string, 'null'], maxLength: 128}
+        expected_output: {type: string, minLength: 1, maxLength: 4000}
+        result_summary: {type: [string, 'null'], maxLength: 4000}
+        error_summary: {type: [string, 'null'], maxLength: 4000}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+    GoalResult:
+      type: object
+      additionalProperties: false
+      description: Safe aggregated answer and bounded provenance; no chain-of-thought or raw worker trace.
+      required: [goal_run_id, root_task_id, status, answer, completed_nodes, failed_nodes, agents_used, memory_ids, episode_ids, started_at, completed_at, limitations]
+      properties:
+        goal_run_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        root_task_id: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        status: {$ref: '#/components/schemas/GoalRunStatus'}
+        answer: {type: string, maxLength: 32000}
+        completed_nodes:
+          type: array
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 128}
+        failed_nodes:
+          type: array
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 128}
+        agents_used:
+          type: array
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 128}
+        memory_ids:
+          type: array
+          maxItems: 100
+          items: {type: string, minLength: 1, maxLength: 128}
+        episode_ids:
+          type: array
+          maxItems: 100
+          items: {type: string, minLength: 1, maxLength: 128}
+        started_at: {type: string, format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        limitations:
+          type: array
+          maxItems: 20
+          items: {type: string, maxLength: 4000}
+    GoalDetail:
+      type: object
+      additionalProperties: false
+      required: [goal, nodes, result]
+      properties:
+        goal: {$ref: '#/components/schemas/GoalRecord'}
+        nodes:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/PlanNode'}
+        result:
+          anyOf:
+            - $ref: '#/components/schemas/GoalResult'
+            - type: 'null'
+    GoalCreateRequest:
+      type: object
+      additionalProperties: false
+      description: User-owned goal limits; none of these fields grant execution authority.
+      required: [objective]
+      properties:
+        objective: {type: string, minLength: 1, maxLength: 4000}
+        autonomy_profile:
+          allOf:
+            - $ref: '#/components/schemas/AutonomyProfile'
+          default: assisted
+        completion_criteria:
+          type: array
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 500}
+        max_steps: {type: [integer, 'null'], minimum: 1, maximum: 20}
+        max_parallelism: {type: [integer, 'null'], minimum: 1, maximum: 3}
+        max_replans: {type: [integer, 'null'], minimum: 0, maximum: 10}
+        max_runtime_seconds: {type: [integer, 'null'], minimum: 30, maximum: 86400}
+        max_model_calls: {type: [integer, 'null'], minimum: 1, maximum: 100}
+    GoalStartRequest:
+      type: object
+      additionalProperties: false
+      description: An optional phone/manual proposal still requires full server validation.
+      anyOf:
+        - properties:
+            plan_proposal: {type: 'null'}
+            planner_source: {type: 'null'}
+        - required: [plan_proposal, planner_source]
+          properties:
+            plan_proposal: {$ref: '#/components/schemas/SwarmPlanProposal'}
+            planner_source: {type: string, enum: [iphone_local, manual]}
+      properties:
+        plan_proposal:
+          anyOf:
+            - $ref: '#/components/schemas/SwarmPlanProposal'
+            - type: 'null'
+        planner_source:
+          type: [string, 'null']
+          enum: [iphone_local, manual, null]
+    GoalReplanRequest:
+      type: object
+      additionalProperties: false
+      anyOf:
+        - properties:
+            plan_proposal: {type: 'null'}
+            planner_source: {type: 'null'}
+        - required: [plan_proposal, planner_source]
+          properties:
+            plan_proposal: {$ref: '#/components/schemas/SwarmPlanProposal'}
+            planner_source: {type: string, enum: [iphone_local, manual]}
+      properties:
+        reason: {type: [string, 'null'], minLength: 1, maxLength: 500}
+        plan_proposal:
+          anyOf:
+            - $ref: '#/components/schemas/SwarmPlanProposal'
+            - type: 'null'
+        planner_source:
+          type: [string, 'null']
+          enum: [iphone_local, manual, null]
+    GoalCancelRequest:
+      type: object
+      additionalProperties: false
+      properties: {}
+    GoalFeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [score]
+      properties:
+        score: {type: number, minimum: 0, maximum: 5}
+        note: {type: [string, 'null'], maxLength: 4000}
+        corrected_final_answer: {type: [string, 'null'], maxLength: 32000}
+        corrected_plan_summary: {type: [string, 'null'], maxLength: 16000}
+        reviewed: {type: boolean, default: false}
+    PreferredAgentConstraints:
+      type: object
+      additionalProperties: false
+      description: Advisory scheduling hints which never override server eligibility.
+      anyOf:
+        - required: [agent_ids]
+          properties:
+            agent_ids: {minItems: 1}
+        - required: [model_ids]
+          properties:
+            model_ids: {minItems: 1}
+        - required: [runtime]
+          properties:
+            runtime: {const: python}
+      properties:
+        agent_ids:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        model_ids:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 500, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$'}
+        runtime: {type: [string, 'null'], enum: [python, null]}
+    SwarmPlanNodeProposal:
+      type: object
+      additionalProperties: false
+      description: Model-proposed node without execution or completion authority.
+      required: [temporary_id, node_type, title, objective, required_skill, dependencies, expected_output, priority]
+      properties:
+        temporary_id: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_-]*$'}
+        node_type: {$ref: '#/components/schemas/PlanNodeType'}
+        title: {type: string, minLength: 1, maxLength: 500}
+        objective: {type: string, minLength: 1, maxLength: 4000}
+        required_skill: {type: [string, 'null'], minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        dependencies:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_-]*$'}
+        optional_dependencies:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          default: []
+          items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_-]*$'}
+        expected_output: {type: string, minLength: 1, maxLength: 4000}
+        priority: {type: integer, minimum: 0, maximum: 100}
+        preferred_agent_constraints:
+          anyOf:
+            - $ref: '#/components/schemas/PreferredAgentConstraints'
+            - type: 'null'
+    SwarmPlanProposal:
+      type: object
+      additionalProperties: false
+      required: [schema_version, objective, rationale_summary, nodes, completion_criteria, max_parallelism]
+      properties:
+        schema_version: {type: string, const: '1.0'}
+        objective: {type: string, minLength: 1, maxLength: 4000}
+        rationale_summary: {type: string, minLength: 1, maxLength: 4000}
+        nodes:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {$ref: '#/components/schemas/SwarmPlanNodeProposal'}
+        completion_criteria:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 500}
+        max_parallelism: {type: integer, minimum: 1, maximum: 3}
+    GoalFeedbackRecord:
+      type: object
+      additionalProperties: false
+      required: [id, goal_run_id, score, note, corrected_final_answer, corrected_plan_summary, reviewed, created_at]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        goal_run_id: {type: string, minLength: 1, maxLength: 128}
+        score: {type: number, minimum: 0, maximum: 5}
+        note: {type: [string, 'null'], maxLength: 4000}
+        corrected_final_answer: {type: [string, 'null'], maxLength: 32000}
+        corrected_plan_summary: {type: [string, 'null'], maxLength: 16000}
+        reviewed: {type: boolean}
+        created_at: {type: string, format: date-time}
     PairingCode:
       type: object
       required: [code, expires_in_seconds]
@@ -1876,7 +2501,7 @@ components:
           type: string
           const: mongars-worker-v0.9
           default: mongars-worker-v0.9
-          description: Worker protocol v0.9 remains the compatible protocol carried by API v0.11.
+          description: Worker protocol v0.9 remains the compatible protocol carried by API v0.12.
     AgentCard:
       type: object
       additionalProperties: false
@@ -2119,7 +2744,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.11.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.12.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2133,7 +2758,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.11.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.12.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2174,7 +2799,7 @@ components:
       additionalProperties: false
       required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.11.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.12.0.}
         grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
         request_id: {type: string}
         task_id: {type: string}
@@ -2413,9 +3038,10 @@ components:
     DatasetExport:
       type: object
       additionalProperties: false
-      required: [format, data]
+      required: [format, dataset, data]
       properties:
         format: {const: jsonl}
+        dataset: {type: string, enum: [task, planner, evaluator, synthesis, routing]}
         data: {type: string}
     FeedbackRecord:
       type: object
@@ -2434,7 +3060,7 @@ components:
 
     Bootstrap:
       type: object
-      required: [server_time, tasks, approvals, tool_calls, conversations, messages, agents, pinned_memory, counts, cursor]
+      required: [server_time, tasks, approvals, tool_calls, conversations, messages, agents, pinned_memory, goals, plan_nodes, goal_results, counts, cursor]
       properties:
         server_time: {type: string, format: date-time}
         tasks: {type: array, items: {$ref: '#/components/schemas/TaskRecord'}}
@@ -2444,9 +3070,12 @@ components:
         messages: {type: array, items: {$ref: '#/components/schemas/Message'}}
         agents: {type: array, items: {$ref: '#/components/schemas/Agent'}}
         pinned_memory: {type: array, items: {$ref: '#/components/schemas/MemoryItem'}}
+        goals: {type: array, items: {$ref: '#/components/schemas/GoalRecord'}}
+        plan_nodes: {type: array, items: {$ref: '#/components/schemas/PlanNode'}}
+        goal_results: {type: array, items: {$ref: '#/components/schemas/GoalResult'}}
         counts:
           type: object
-          required: [tasks, messages, agents, memory_items, audit_events, approvals_pending]
+          required: [tasks, messages, agents, memory_items, audit_events, approvals_pending, goals]
           properties:
             tasks: {type: integer}
             messages: {type: integer}
@@ -2454,6 +3083,7 @@ components:
             memory_items: {type: integer}
             audit_events: {type: integer}
             approvals_pending: {type: integer}
+            goals: {type: integer}
         cursor: {type: string}
     WebSocketTicket:
       type: object

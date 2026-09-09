@@ -58,8 +58,11 @@ from app.services.approval_binding import (
 )
 from app.services.approval_gateway import ApprovalConflict, ApprovalGateway
 from app.services.auth_service import AuthService, PairingConflict, PairingRateLimited
+from app.services.context_builder import ContextBuilder
 from app.services.control_plane_instance import ControlPlaneInstanceService
 from app.services.embedding_service import HttpEmbeddingService
+from app.services.episode_memory import EpisodeMemoryService
+from app.services.evaluator_provider import UbuntuEvaluatorProvider
 from app.services.event_privacy import safe_websocket_event
 from app.services.execution_engine import (
     AuthenticatedRequester,
@@ -69,6 +72,7 @@ from app.services.execution_engine import (
     ExecutionOutcomeUncertain,
 )
 from app.services.feedback_dataset import FeedbackDatasetService
+from app.services.goal_manager import GoalManager, GoalManagerConflict
 from app.services.idempotency import (
     IdempotencyConflict,
     IdempotencyService,
@@ -89,16 +93,34 @@ from app.services.message_board import (
     SQLiteMessageBoard,
 )
 from app.services.message_consumer import ConsumerCheckpointStore
+from app.services.model_router import ModelRouter
 from app.services.orchestrator_service import OrchestratorError, OrchestratorService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
-from app.services.planner_provider import UbuntuLLMPlannerProvider
+from app.services.planner_provider import UbuntuLLMPlannerProvider, UbuntuSwarmPlannerProvider
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
+from app.services.result_aggregator import ResultAggregator
 from app.services.state_service import StateConflict, StateService
+from app.services.strategy_retrieval import StrategyRetrieval
+from app.services.swarm_contracts import (
+    GoalCancelRequest,
+    GoalCreateRequest,
+    GoalDetail,
+    GoalFeedbackRecord,
+    GoalFeedbackRequest,
+    GoalRecord,
+    GoalReplanRequest,
+    GoalResult,
+    GoalStartRequest,
+    ModelRole,
+    ModelRoleConfig,
+    PlannerSource,
+    PlanNode,
+)
 from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.11.0"
+API_VERSION = "0.12.0"
 logger = logging.getLogger(__name__)
 
 _MAINTENANCE_OPERATION_ERRORS = (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error)
@@ -284,6 +306,69 @@ def create_app(config: Settings | None = None) -> FastAPI:
         outbox_publication_lease_seconds=settings.outbox_publication_lease_seconds,
     )
     feedback_dataset = FeedbackDatasetService(settings.db_path)
+    context_builder = ContextBuilder(
+        settings.db_path,
+        max_tokens=settings.goal_context_max_tokens,
+        max_memory_items=settings.goal_context_max_memory_items,
+        max_episode_items=settings.goal_context_max_episode_items,
+        max_agent_cards=settings.goal_context_max_agent_cards,
+        max_upstream_results=settings.goal_context_max_upstream_results,
+        max_result_chars_per_node=settings.goal_context_max_result_chars_per_node,
+    )
+    episode_memory = EpisodeMemoryService(settings.db_path, embedding_service)
+    strategy_retrieval = StrategyRetrieval(settings.db_path, episode_memory)
+    model_router = ModelRouter(
+        [
+            ModelRoleConfig(
+                role=ModelRole.PLANNER,
+                source=PlannerSource.UBUNTU_LOCAL,
+                model_id=settings.planner_model or settings.orchestrator_model,
+            ),
+            ModelRoleConfig(
+                role=ModelRole.EVALUATOR,
+                source=PlannerSource.UBUNTU_LOCAL,
+                model_id=settings.evaluator_model or settings.orchestrator_model,
+            ),
+            ModelRoleConfig(
+                role=ModelRole.SUMMARIZER,
+                source=PlannerSource.UBUNTU_LOCAL,
+                model_id=settings.summarizer_model or settings.orchestrator_model,
+            ),
+            ModelRoleConfig(
+                role=ModelRole.SYNTHESIZER,
+                source=PlannerSource.UBUNTU_LOCAL,
+                model_id=settings.synthesizer_model or settings.orchestrator_model,
+            ),
+        ]
+    )
+    swarm_planner = UbuntuSwarmPlannerProvider(
+        base_url=settings.llm_base_url,
+        model=model_router.route_for(ModelRole.PLANNER).model_id,
+    )
+    evaluator = UbuntuEvaluatorProvider(
+        base_url=settings.llm_base_url,
+        model=model_router.route_for(ModelRole.EVALUATOR).model_id,
+        policy=permission_policy,
+    )
+    goal_manager = GoalManager(
+        settings.db_path,
+        state_service=state_service,
+        agent_dispatcher=agent_dispatcher,
+        planner=swarm_planner,
+        evaluator=evaluator,
+        permission_policy=permission_policy,
+        context_builder=context_builder,
+        strategy_retrieval=strategy_retrieval,
+        episode_memory=episode_memory,
+        result_aggregator=ResultAggregator(settings.db_path),
+        default_max_steps=settings.goal_max_steps,
+        default_max_parallelism=settings.goal_max_parallelism,
+        default_max_replans=settings.goal_max_replans,
+        default_max_runtime_seconds=settings.goal_max_runtime_seconds,
+        default_max_model_calls=settings.goal_max_model_calls,
+        instance_id=control_plane_instance.instance_id,
+        model_call_lease_seconds=settings.goal_model_call_lease_seconds,
+    )
     idempotency_service = IdempotencyService(settings.db_path)
     consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)
     agent_scoring = AgentScoringService(
@@ -329,6 +414,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
             stale_instance_seconds=settings.websocket_notification_instance_stale_seconds
         )
 
+    async def reconcile_goal_runs(guard: MaintenanceLeaseGuard) -> int:
+        return await goal_manager.reconcile(maintenance_guard=guard)
+
     async def run_distributed_runtime_maintenance_cycle(*, refresh_scores: bool) -> bool:
         """Run one recurring cycle; a known failure cannot starve independent work."""
 
@@ -360,6 +448,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "outbox-drain",
             lambda: maintenance_runner.run("outbox-maintenance", run_outbox_drain),
         )
+        await _run_isolated_maintenance_operation(
+            "goal-runtime",
+            lambda: maintenance_runner.run("goal-runtime", reconcile_goal_runs),
+        )
         if not refresh_scores:
             return False
         return await _run_isolated_maintenance_operation(
@@ -374,6 +466,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         instance_started = False
         try:
             await state_service.initialize()
+            await goal_manager.initialize()
             await consumer_checkpoints.initialize()
             await agent_scoring.initialize()
             await control_plane_instance.start()
@@ -390,6 +483,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             await maintenance_runner.run("outbox-maintenance", run_outbox_recovery)
             await maintenance_runner.run("outbox-maintenance", run_outbox_drain)
             await maintenance_runner.run("feedback-maintenance", run_agent_scoring)
+            await maintenance_runner.run("goal-runtime", reconcile_goal_runs)
 
             async def maintain_distributed_runtime() -> None:
                 last_score_refresh = asyncio.get_running_loop().time()
@@ -460,6 +554,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.idempotency_service = idempotency_service
     app.state.consumer_checkpoints = consumer_checkpoints
     app.state.agent_scoring = agent_scoring
+    app.state.feedback_dataset = feedback_dataset
+    app.state.context_builder = context_builder
+    app.state.episode_memory = episode_memory
+    app.state.strategy_retrieval = strategy_retrieval
+    app.state.model_router = model_router
+    app.state.swarm_planner = swarm_planner
+    app.state.evaluator = evaluator
+    app.state.goal_manager = goal_manager
     app.state.vector_projection = vector_projection
     app.state.websocket_notifications = websocket_notifications
     app.state.run_maintenance_cycle = run_distributed_runtime_maintenance_cycle
@@ -762,6 +864,41 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 "last_failure_reason",
             )
         }
+
+    async def broadcast_goal_detail(detail: dict[str, Any]) -> None:
+        """Broadcast safe projections as invalidation/state hints for the phone replica."""
+
+        goal = detail.get("goal")
+        if isinstance(goal, dict):
+            await broadcast({"type": "goal.updated", "payload": goal})
+        nodes = detail.get("nodes")
+        if isinstance(nodes, list):
+            for node in nodes:
+                if isinstance(node, dict):
+                    await broadcast({"type": "plan.node.updated", "payload": node})
+        result = detail.get("result")
+        if isinstance(result, dict):
+            await broadcast({"type": "goal.result.updated", "payload": result})
+
+    def goal_conflict_http_exception(exc: GoalManagerConflict) -> HTTPException:
+        detail = str(exc)
+        if detail == "goal not found":
+            return HTTPException(status_code=404, detail=detail)
+        if "unavailable" in detail:
+            return HTTPException(status_code=503, detail=detail)
+        return HTTPException(status_code=409, detail=detail)
+
+    async def run_goal_hook(
+        name: str,
+        operation: Callable[[], Awaitable[dict[str, Any] | None]],
+    ) -> dict[str, Any] | None:
+        """Keep post-commit goal projections recoverable without falsifying worker outcomes."""
+
+        try:
+            return await operation()
+        except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
+            logger.exception("goal coordination hook failed: %s", name)
+            return None
 
     async def snapshot_tool_and_task(
         tool_call_id: str, task_id: str
@@ -1115,7 +1252,130 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "pending_capability_requests": await iphone_capability_service.pending_count(),
             "vector_backend": settings.vector_backend,
             "vector_generation_age_seconds": vector_generation_age_seconds,
+            **(await goal_manager.status_counts()),
         }
+
+    @app.post(
+        "/goals",
+        status_code=status.HTTP_201_CREATED,
+        response_model=GoalDetail,
+    )
+    async def create_goal(
+        request: GoalCreateRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        goal = await goal_manager.create_goal(request, actor_id=str(principal["id"]))
+        detail = await goal_manager.get_goal(str(goal["id"]))
+        if detail is None:
+            raise HTTPException(status_code=500, detail="created goal is unavailable")
+        await broadcast_goal_detail(detail)
+        return detail
+
+    @app.get("/goals", response_model=list[GoalRecord])
+    async def list_goals(
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    ) -> list[dict[str, Any]]:
+        del principal
+        return await goal_manager.list_goals(limit=limit)
+
+    @app.get("/goals/{goal_id}", response_model=GoalDetail)
+    async def get_goal(
+        goal_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        detail = await goal_manager.get_goal(goal_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        return detail
+
+    @app.post("/goals/{goal_id}/start", response_model=GoalDetail)
+    async def start_goal(
+        goal_id: str,
+        request: GoalStartRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            detail = await goal_manager.start_goal(goal_id, request)
+        except GoalManagerConflict as exc:
+            raise goal_conflict_http_exception(exc) from exc
+        await broadcast_goal_detail(detail)
+        return detail
+
+    @app.post("/goals/{goal_id}/cancel", response_model=GoalDetail)
+    async def cancel_goal(
+        goal_id: str,
+        request: GoalCancelRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del request
+        try:
+            detail = await goal_manager.cancel_goal(goal_id, actor_id=str(principal["id"]))
+        except GoalManagerConflict as exc:
+            raise goal_conflict_http_exception(exc) from exc
+        await broadcast_goal_detail(detail)
+        return detail
+
+    @app.post("/goals/{goal_id}/replan", response_model=GoalDetail)
+    async def replan_goal(
+        goal_id: str,
+        request: GoalReplanRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            detail = await goal_manager.replan_goal(goal_id, request)
+        except GoalManagerConflict as exc:
+            raise goal_conflict_http_exception(exc) from exc
+        await broadcast_goal_detail(detail)
+        return detail
+
+    @app.get("/goals/{goal_id}/nodes", response_model=list[PlanNode])
+    async def list_goal_nodes(
+        goal_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> list[dict[str, Any]]:
+        del principal
+        detail = await goal_manager.get_goal(goal_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        nodes = detail["nodes"]
+        if not isinstance(nodes, list):
+            raise HTTPException(status_code=500, detail="goal node projection is invalid")
+        return nodes
+
+    @app.get("/goals/{goal_id}/result", response_model=GoalResult | None)
+    async def get_goal_result(
+        goal_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any] | None:
+        del principal
+        detail = await goal_manager.get_goal(goal_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        result = detail["result"]
+        return result if isinstance(result, dict) else None
+
+    @app.post(
+        "/goals/{goal_id}/feedback",
+        status_code=status.HTTP_201_CREATED,
+        response_model=GoalFeedbackRecord,
+    )
+    async def create_goal_feedback(
+        goal_id: str,
+        request: GoalFeedbackRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            return await goal_manager.add_feedback(
+                goal_id,
+                request,
+                actor_id=str(principal["id"]),
+            )
+        except GoalManagerConflict as exc:
+            raise goal_conflict_http_exception(exc) from exc
 
     @app.post("/pairing/code", dependencies=[Depends(require_pairing_operator)])
     async def pairing_code() -> dict[str, Any]:
@@ -1484,6 +1744,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if job:
             await broadcast({"type": "agent.job.claimed", "payload": public_job_event(job)})
+            goal_detail = await run_goal_hook(
+                "job-claimed", lambda: goal_manager.on_job_claimed(job)
+            )
+            if goal_detail is not None:
+                await broadcast_goal_detail(goal_detail)
         return job
 
     @app.post("/agents/{agent_id}/jobs/{job_id}/heartbeat")
@@ -1533,6 +1798,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
             task = await state_service.get_task(str(job["task_id"]))
             if task:
                 await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+            goal_detail = await run_goal_hook("job-result", lambda: goal_manager.on_job_result(job))
+            if goal_detail is not None:
+                await broadcast_goal_detail(goal_detail)
         return {**job, "idempotent_replay": not changed}
 
     @app.get("/agents/{agent_id}/jobs")
@@ -1567,6 +1835,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
             )
         except IPhoneCapabilityConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        goal_detail = await run_goal_hook(
+            "capability-requested", lambda: goal_manager.on_capability_requested(job_id)
+        )
+        if goal_detail is not None:
+            await broadcast_goal_detail(goal_detail)
         device_id = await iphone_capability_service.device_for_request(str(record["request_id"]))
         if device_id is not None:
             await broadcast(
@@ -1669,6 +1942,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: IPhoneCapabilityResultSubmit,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
+        job_id = await iphone_capability_service.job_for_request(request_id)
         try:
             receipt = await iphone_capability_service.submit_result(
                 request_id,
@@ -1689,6 +1963,12 @@ def create_app(config: Settings | None = None) -> FastAPI:
             },
             device_id=str(principal["id"]),
         )
+        if job_id is not None:
+            goal_detail = await run_goal_hook(
+                "capability-resolved", lambda: goal_manager.on_capability_resolved(job_id)
+            )
+            if goal_detail is not None:
+                await broadcast_goal_detail(goal_detail)
         return receipt
 
     @app.get("/audit")
@@ -1758,9 +2038,24 @@ def create_app(config: Settings | None = None) -> FastAPI:
     @app.get("/feedback/dataset/export")
     async def export_feedback_dataset(
         principal: Annotated[DevicePrincipal, Depends(require_device)],
+        dataset: Literal["task", "planner", "evaluator", "synthesis", "routing"] = "task",
+        minimum_score: Annotated[float, Query(ge=0, le=5)] = 0,
+        successful_only: bool = False,
+        reviewed_only: bool = False,
+        planner_source: Literal["iphone_local", "ubuntu_local", "manual", "test"] | None = None,
     ) -> dict[str, str]:
         del principal
-        return {"format": "jsonl", "data": await feedback_dataset.export_jsonl()}
+        if dataset == "task":
+            data = await feedback_dataset.export_jsonl()
+        else:
+            data = await feedback_dataset.export_goal_jsonl(
+                dataset_type=dataset,
+                minimum_score=minimum_score,
+                successful_only=successful_only,
+                reviewed_only=reviewed_only,
+                planner_source=planner_source,
+            )
+        return {"format": "jsonl", "dataset": dataset, "data": data}
 
     @app.post("/ws/ticket")
     async def websocket_ticket(

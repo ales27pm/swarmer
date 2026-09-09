@@ -37,15 +37,17 @@ from app.services.distributed_state import (
     TaskStateMachine,
 )
 from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
+from app.services.goal_state import public_goal, public_goal_result, public_plan_node
 from app.services.iphone_capability_binding import (
     CapabilityRequestBindingError,
     canonical_capability_request_fingerprint,
 )
+from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -488,6 +490,210 @@ CREATE TABLE IF NOT EXISTS scheduler_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduler_decisions_job
     ON scheduler_decisions(job_id, created_at);
+CREATE TABLE IF NOT EXISTS goal_runs (
+    id TEXT PRIMARY KEY,
+    root_task_id TEXT NOT NULL UNIQUE,
+    objective TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'planning','running','waiting_permission','completed','failed',
+        'cancelled','budget_exhausted'
+    )),
+    autonomy_profile TEXT NOT NULL CHECK(autonomy_profile IN (
+        'manual','assisted','autonomous'
+    )),
+    planner_source TEXT NOT NULL CHECK(planner_source IN (
+        'iphone_local','ubuntu_local','manual','test'
+    )),
+    max_steps INTEGER NOT NULL CHECK(max_steps > 0),
+    max_parallelism INTEGER NOT NULL CHECK(max_parallelism > 0),
+    max_replans INTEGER NOT NULL CHECK(max_replans >= 0),
+    max_runtime_seconds INTEGER NOT NULL CHECK(max_runtime_seconds > 0),
+    max_model_calls INTEGER NOT NULL CHECK(max_model_calls > 0),
+    step_count INTEGER NOT NULL DEFAULT 0 CHECK(step_count >= 0),
+    replan_count INTEGER NOT NULL DEFAULT 0 CHECK(replan_count >= 0),
+    model_call_count INTEGER NOT NULL DEFAULT 0 CHECK(model_call_count >= 0),
+    completion_criteria_json TEXT NOT NULL DEFAULT '[]',
+    current_phase TEXT NOT NULL DEFAULT 'planning',
+    evaluator_status TEXT,
+    evaluator_summary TEXT,
+    plan_fingerprint TEXT,
+    evaluation_fingerprint TEXT,
+    last_state_fingerprint TEXT,
+    repeated_evaluation_count INTEGER NOT NULL DEFAULT 0
+        CHECK(repeated_evaluation_count >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    failure_reason TEXT,
+    FOREIGN KEY(root_task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_runs_status
+    ON goal_runs(status, updated_at, id);
+CREATE TABLE IF NOT EXISTS plan_nodes (
+    id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL,
+    parent_node_id TEXT,
+    task_id TEXT UNIQUE,
+    node_type TEXT NOT NULL CHECK(node_type IN ('worker','synthesis')),
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    required_skill TEXT,
+    status TEXT NOT NULL CHECK(status IN (
+        'planned','ready','dispatched','running','waiting_permission',
+        'waiting_capability','completed','failed','blocked','cancelled','skipped'
+    )),
+    priority INTEGER NOT NULL DEFAULT 0,
+    depends_on_json TEXT NOT NULL DEFAULT '[]',
+    assigned_agent_id TEXT,
+    worker_job_id TEXT UNIQUE,
+    expected_output TEXT NOT NULL,
+    result_summary TEXT,
+    error_summary TEXT,
+    planner_metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY(parent_node_id) REFERENCES plan_nodes(id),
+    FOREIGN KEY(task_id) REFERENCES tasks(id),
+    FOREIGN KEY(assigned_agent_id) REFERENCES agents(id),
+    FOREIGN KEY(worker_job_id) REFERENCES agent_jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_nodes_goal_status
+    ON plan_nodes(goal_run_id, status, priority DESC, created_at, id);
+CREATE TABLE IF NOT EXISTS plan_edges (
+    goal_run_id TEXT NOT NULL,
+    from_node_id TEXT NOT NULL,
+    to_node_id TEXT NOT NULL,
+    dependency_type TEXT NOT NULL CHECK(dependency_type IN ('hard','optional')),
+    PRIMARY KEY(from_node_id, to_node_id),
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY(from_node_id) REFERENCES plan_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY(to_node_id) REFERENCES plan_nodes(id) ON DELETE CASCADE,
+    CHECK(from_node_id <> to_node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_edges_goal_to
+    ON plan_edges(goal_run_id, to_node_id);
+CREATE TABLE IF NOT EXISTS goal_evaluations (
+    id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence >= 1),
+    status TEXT NOT NULL CHECK(status IN ('continue','replan','done','failed','needs_user')),
+    reason_summary TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    state_fingerprint TEXT NOT NULL,
+    decision_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(goal_run_id, sequence),
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_goal_evaluations_goal
+    ON goal_evaluations(goal_run_id, sequence);
+CREATE TABLE IF NOT EXISTS goal_results (
+    goal_run_id TEXT PRIMARY KEY,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS goal_feedback (
+    id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL,
+    score REAL NOT NULL CHECK(score >= 0 AND score <= 5),
+    note TEXT,
+    corrected_final_answer TEXT,
+    corrected_plan_summary TEXT,
+    reviewed INTEGER NOT NULL DEFAULT 0 CHECK(reviewed IN (0,1)),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_goal_feedback_goal
+    ON goal_feedback(goal_run_id, created_at);
+CREATE TABLE IF NOT EXISTS goal_model_calls (
+    id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL,
+    node_id TEXT,
+    role TEXT NOT NULL CHECK(role IN ('planner','evaluator','summarizer','synthesizer')),
+    provider_source TEXT NOT NULL,
+    model_id TEXT,
+    context_id TEXT,
+    input_digest TEXT NOT NULL,
+    output_digest TEXT,
+    status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+    latency_ms INTEGER CHECK(latency_ms IS NULL OR latency_ms >= 0),
+    error_category TEXT,
+    owner_instance_id TEXT,
+    lease_expires_at TEXT,
+    lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation >= 0),
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY(node_id) REFERENCES plan_nodes(id),
+    FOREIGN KEY(context_id) REFERENCES goal_contexts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_model_calls_goal
+    ON goal_model_calls(goal_run_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_goal_model_calls_one_active
+    ON goal_model_calls(goal_run_id) WHERE status='started';
+CREATE TABLE IF NOT EXISTS goal_contexts (
+    id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL,
+    root_task_id TEXT NOT NULL,
+    node_id TEXT,
+    purpose TEXT NOT NULL,
+    context_json TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    approx_token_count INTEGER NOT NULL CHECK(approx_token_count >= 0),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY(root_task_id) REFERENCES tasks(id),
+    FOREIGN KEY(node_id) REFERENCES plan_nodes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_contexts_goal
+    ON goal_contexts(goal_run_id, created_at);
+CREATE TABLE IF NOT EXISTS episodes (
+    id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL UNIQUE,
+    root_task_id TEXT NOT NULL,
+    objective_summary TEXT NOT NULL,
+    plan_summary TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    score REAL,
+    duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0),
+    worker_types_json TEXT NOT NULL,
+    failure_tags_json TEXT NOT NULL,
+    user_feedback_score REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY(root_task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS idx_episodes_outcome_created
+    ON episodes(outcome, created_at, id);
+CREATE TABLE IF NOT EXISTS episode_steps (
+    id TEXT PRIMARY KEY,
+    episode_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence >= 1),
+    node_type TEXT NOT NULL,
+    skill TEXT,
+    agent_id TEXT,
+    input_summary TEXT NOT NULL,
+    output_summary TEXT NOT NULL,
+    result_status TEXT NOT NULL,
+    latency_ms INTEGER CHECK(latency_ms IS NULL OR latency_ms >= 0),
+    UNIQUE(episode_id, sequence),
+    FOREIGN KEY(episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS episode_embeddings (
+    episode_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+    vector_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(episode_id, provider),
+    FOREIGN KEY(episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT,
@@ -792,6 +998,11 @@ class StateService:
                 "max_attempts": "INTEGER NOT NULL DEFAULT 3",
                 "last_agent_id": "TEXT",
                 "last_failure_reason": "TEXT",
+            },
+            "goal_model_calls": {
+                "owner_instance_id": "TEXT",
+                "lease_expires_at": "TEXT",
+                "lease_generation": "INTEGER NOT NULL DEFAULT 0",
             },
             "iphone_capability_requests": {
                 "request_audit_id": "INTEGER",
@@ -1547,12 +1758,20 @@ class StateService:
             await db.commit()
         return await self.get_task(task_id)
 
-    async def cancel_task(self, task_id: str, *, actor_id: str) -> TaskRecord | None:
+    async def cancel_task(
+        self,
+        task_id: str,
+        *,
+        actor_id: str,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> TaskRecord | None:
         now = datetime.now(UTC).isoformat()
         ordinarily_cancellable = {"created", "planned", "waiting_permission", "queued", "blocked"}
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             row = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
             ).fetchone()
@@ -1716,6 +1935,8 @@ class StateService:
                 trace_id=task_id,
                 created_at=now,
             )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
         return await self.get_task(task_id)
 
@@ -2455,6 +2676,31 @@ class StateService:
                 raw_result = call.pop("result_json")
                 call["result"] = json.loads(raw_result) if raw_result else None
             calls = [public_tool_call(call) for call in calls]
+            goal_rows = await (
+                await db.execute(
+                    "SELECT * FROM goal_runs ORDER BY updated_at DESC,id ASC LIMIT 500"
+                )
+            ).fetchall()
+            decoded_goals = [self._decode_goal_row(row) for row in goal_rows]
+            goals = [public_goal(goal) for goal in decoded_goals]
+            goal_by_id = {str(goal["id"]): goal for goal in decoded_goals}
+            node_rows = await (
+                await db.execute(
+                    "SELECT * FROM plan_nodes ORDER BY updated_at DESC,id ASC LIMIT 1000"
+                )
+            ).fetchall()
+            plan_nodes = [public_plan_node(self._decode_plan_node_row(row)) for row in node_rows]
+            result_rows = await (
+                await db.execute(
+                    "SELECT goal_run_id,result_json FROM goal_results ORDER BY updated_at DESC LIMIT 500"
+                )
+            ).fetchall()
+            goal_results: list[dict[str, Any]] = []
+            for result_row in result_rows:
+                goal = goal_by_id.get(str(result_row["goal_run_id"]))
+                decoded = json.loads(str(result_row["result_json"]))
+                if goal is not None and isinstance(decoded, dict):
+                    goal_results.append(public_goal_result(decoded, goal=goal))
             cursor_row = await (
                 await db.execute("SELECT COALESCE(MAX(id), 0) FROM audit_events")
             ).fetchone()
@@ -2468,6 +2714,7 @@ class StateService:
                 "memory_items": "SELECT COUNT(*) FROM memory_items",
                 "audit_events": "SELECT COUNT(*) FROM audit_events",
                 "approvals_pending": "SELECT COUNT(*) FROM approvals WHERE status='pending'",
+                "goals": "SELECT COUNT(*) FROM goal_runs",
             }
             for name, query in count_queries.items():
                 count_row = await (await db.execute(query)).fetchone()
@@ -2483,9 +2730,25 @@ class StateService:
             "messages": await self.list_recent_messages(500),
             "agents": await self.list_agents(),
             "pinned_memory": [item for item in await self.list_memory(200) if item["pinned"]],
+            "goals": goals,
+            "plan_nodes": plan_nodes,
+            "goal_results": goal_results,
             "counts": counts,
             "cursor": str(cursor_row[0]),
         }
+
+    @staticmethod
+    def _decode_goal_row(row: aiosqlite.Row) -> dict[str, Any]:
+        record = dict(row)
+        record["completion_criteria"] = json.loads(str(record.pop("completion_criteria_json")))
+        return record
+
+    @staticmethod
+    def _decode_plan_node_row(row: aiosqlite.Row) -> dict[str, Any]:
+        record = dict(row)
+        record["depends_on"] = json.loads(str(record.pop("depends_on_json")))
+        record.pop("planner_metadata_json", None)
+        return record
 
     @staticmethod
     def _decode_json_fields(value: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
