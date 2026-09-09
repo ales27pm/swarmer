@@ -685,6 +685,17 @@ async def test_v010_upgrade_is_additive_restart_safe_and_preserves_state(
             "idempotency_receipts",
             "agent_score_snapshots",
             "scheduler_decisions",
+            "goal_runs",
+            "plan_nodes",
+            "plan_edges",
+            "goal_evaluations",
+            "goal_results",
+            "goal_feedback",
+            "goal_model_calls",
+            "goal_contexts",
+            "episodes",
+            "episode_steps",
+            "episode_embeddings",
         }.issubset(tables)
 
         assert {

@@ -420,6 +420,86 @@ def test_approval_websocket_event_is_notification_metadata_only(event_type: str)
 
 
 @pytest.mark.parametrize(
+    ("event_type", "payload", "expected_payload"),
+    (
+        (
+            "goal.updated",
+            {
+                "id": "goal_private",
+                "root_task_id": "tsk_private",
+                "status": "running",
+                "current_phase": "evaluation",
+                "updated_at": "2030-01-01T00:01:00+00:00",
+                "completed_at": None,
+                "objective": "Private launch objective",
+                "completion_criteria": ["Reveal private customer evidence"],
+                "evaluator_summary": {"nested": ["Private evaluator result"]},
+            },
+            {
+                "id": "goal_private",
+                "root_task_id": "tsk_private",
+                "status": "running",
+                "current_phase": "evaluation",
+                "updated_at": "2030-01-01T00:01:00+00:00",
+                "completed_at": None,
+                "refetch_required": True,
+            },
+        ),
+        (
+            "plan.node.updated",
+            {
+                "id": "node_private",
+                "goal_run_id": "goal_private",
+                "status": "completed",
+                "updated_at": "2030-01-01T00:02:00+00:00",
+                "completed_at": "2030-01-01T00:02:00+00:00",
+                "objective": "Read /protected/customer-secrets.txt",
+                "expected_output": "Private contact details",
+                "result_summary": {"nested": ["Private worker result"]},
+            },
+            {
+                "id": "node_private",
+                "goal_run_id": "goal_private",
+                "status": "completed",
+                "updated_at": "2030-01-01T00:02:00+00:00",
+                "completed_at": "2030-01-01T00:02:00+00:00",
+                "refetch_required": True,
+            },
+        ),
+        (
+            "goal.result.updated",
+            {
+                "goal_run_id": "goal_private",
+                "root_task_id": "tsk_private",
+                "status": "completed",
+                "completed_at": "2030-01-01T00:03:00+00:00",
+                "answer": "Private synthesized answer",
+                "limitations": [{"nested": ["Private result detail"]}],
+            },
+            {
+                "goal_run_id": "goal_private",
+                "root_task_id": "tsk_private",
+                "status": "completed",
+                "completed_at": "2030-01-01T00:03:00+00:00",
+                "refetch_required": True,
+            },
+        ),
+    ),
+)
+def test_goal_websocket_events_are_metadata_only_refetch_notifications(
+    event_type: str,
+    payload: dict[str, object],
+    expected_payload: dict[str, object],
+) -> None:
+    event = safe_websocket_event({"type": event_type, "payload": payload})
+
+    assert event == {"type": event_type, "payload": expected_payload}
+    encoded = json.dumps(event)
+    assert "Private" not in encoded
+    assert "/protected/customer-secrets.txt" not in encoded
+
+
+@pytest.mark.parametrize(
     "field",
     (
         "content",

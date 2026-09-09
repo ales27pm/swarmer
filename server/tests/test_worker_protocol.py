@@ -101,6 +101,15 @@ def test_distributed_runtime_status_is_authenticated_and_payload_free(
         "pending_capability_requests",
         "vector_backend",
         "vector_generation_age_seconds",
+        "active_goal_runs",
+        "completed_goal_runs",
+        "failed_goal_runs",
+        "average_goal_steps",
+        "replans",
+        "loop_stops",
+        "budget_exhaustions",
+        "evaluator_needs_user",
+        "episode_retrieval_hits",
     }
     assert response.json()["status"] == "ok"
     assert response.json()["message_board_backend"] == "sqlite"

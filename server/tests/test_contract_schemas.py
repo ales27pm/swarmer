@@ -11,6 +11,7 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from app.services.approval_binding import public_tool_arguments
+from app.services.event_privacy import safe_websocket_event
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_URI = "https://27pm.org/openapi.yaml"
@@ -325,10 +326,10 @@ def test_all_committed_json_schemas_are_valid_and_roadmap_is_explicit() -> None:
 
 def test_openapi_covers_runtime_transport_statuses_and_response_credentials() -> None:
     document = yaml.safe_load((REPO_ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
-    assert document["info"]["version"] == "0.11.0"
+    assert document["info"]["version"] == "0.12.0"
     runtime_status = document["components"]["schemas"]["RuntimeStatus"]
     assert runtime_status["additionalProperties"] is False
-    assert runtime_status["properties"]["version"] == {"const": "0.11.0"}
+    assert runtime_status["properties"]["version"] == {"const": "0.12.0"}
     assert {
         "redis_reconnect_count",
         "redis_last_error_category",
@@ -391,6 +392,176 @@ def test_openapi_covers_runtime_transport_statuses_and_response_credentials() ->
     assert document["components"]["schemas"]["AgentRegistration"]["allOf"][1]["properties"][
         "credential"
     ] == {"type": "string", "readOnly": True}
+
+
+def test_goal_openapi_contract_is_strict_and_accepts_live_public_projection(
+    client: TestClient,
+    paired_headers: dict[str, str],
+) -> None:
+    document = yaml.safe_load((REPO_ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
+    created = client.post(
+        "/goals",
+        headers=paired_headers,
+        json={
+            "objective": "Verify the public goal contract",
+            "autonomy_profile": "assisted",
+            "completion_criteria": ["The public response validates"],
+        },
+    )
+
+    assert created.status_code == 201
+    validate_openapi_component("GoalDetail", created.json())
+    validate_openapi_component("GoalStartRequest", {})
+    with pytest.raises(ValidationError):
+        validate_openapi_component("GoalStartRequest", {"planner_source": "manual"})
+    with pytest.raises(ValidationError):
+        validate_openapi_component(
+            "GoalCreateRequest",
+            {"objective": "No hidden autonomy", "unknown_authority": True},
+        )
+
+    expected_operations = {
+        ("/goals", "get"),
+        ("/goals", "post"),
+        ("/goals/{goal_id}", "get"),
+        ("/goals/{goal_id}/start", "post"),
+        ("/goals/{goal_id}/cancel", "post"),
+        ("/goals/{goal_id}/replan", "post"),
+        ("/goals/{goal_id}/nodes", "get"),
+        ("/goals/{goal_id}/result", "get"),
+        ("/goals/{goal_id}/feedback", "post"),
+    }
+    assert expected_operations.issubset(
+        {
+            (path, method)
+            for path, item in document["paths"].items()
+            for method in item
+            if method in {"get", "post"}
+        }
+    )
+    for name in (
+        "GoalRecord",
+        "PlanNode",
+        "GoalResult",
+        "GoalDetail",
+        "GoalCreateRequest",
+        "GoalStartRequest",
+        "GoalReplanRequest",
+        "GoalCancelRequest",
+        "GoalFeedbackRequest",
+        "GoalFeedbackRecord",
+    ):
+        assert document["components"]["schemas"][name]["additionalProperties"] is False
+
+
+def test_live_goal_response_models_are_closed_at_every_public_boundary(test_app) -> None:
+    """FastAPI must enforce the strict records, not only the checked-in spec."""
+
+    document = test_app.openapi()
+    schemas = document["components"]["schemas"]
+    for name in (
+        "GoalRecord",
+        "PlanNode",
+        "GoalResult",
+        "GoalDetail",
+        "GoalFeedbackRecord",
+    ):
+        assert schemas[name]["additionalProperties"] is False
+
+    assert schemas["GoalDetail"]["properties"]["goal"] == {
+        "$ref": "#/components/schemas/GoalRecord"
+    }
+    assert schemas["GoalDetail"]["properties"]["nodes"]["items"] == {
+        "$ref": "#/components/schemas/PlanNode"
+    }
+    assert {
+        variant.get("$ref") for variant in schemas["GoalDetail"]["properties"]["result"]["anyOf"]
+    } == {"#/components/schemas/GoalResult", None}
+
+    paths = document["paths"]
+    detail_operations = (
+        ("/goals", "post", "201"),
+        ("/goals/{goal_id}", "get", "200"),
+        ("/goals/{goal_id}/start", "post", "200"),
+        ("/goals/{goal_id}/cancel", "post", "200"),
+        ("/goals/{goal_id}/replan", "post", "200"),
+    )
+    for path, method, status_code in detail_operations:
+        response_schema = paths[path][method]["responses"][status_code]["content"][
+            "application/json"
+        ]["schema"]
+        assert response_schema == {"$ref": "#/components/schemas/GoalDetail"}
+
+    listed_schema = paths["/goals"]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
+    assert listed_schema["items"] == {"$ref": "#/components/schemas/GoalRecord"}
+    node_schema = paths["/goals/{goal_id}/nodes"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert node_schema["items"] == {"$ref": "#/components/schemas/PlanNode"}
+    feedback_schema = paths["/goals/{goal_id}/feedback"]["post"]["responses"]["201"]["content"][
+        "application/json"
+    ]["schema"]
+    assert feedback_schema == {"$ref": "#/components/schemas/GoalFeedbackRecord"}
+
+    result_variants = paths["/goals/{goal_id}/result"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["anyOf"]
+    assert {variant.get("$ref") for variant in result_variants} == {
+        "#/components/schemas/GoalResult",
+        None,
+    }
+
+
+def test_goal_websocket_openapi_contract_describes_refetch_invalidations() -> None:
+    document = yaml.safe_load((REPO_ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
+    payloads = document["x-websocket-endpoints"]["/ws"]["goalPayloads"]
+    cases = (
+        (
+            "goal.updated",
+            "GoalUpdatedNotification",
+            {
+                "id": "goal_contract",
+                "root_task_id": "tsk_contract",
+                "status": "running",
+                "current_phase": "evaluation",
+                "updated_at": "2030-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "objective": "must remain behind authenticated REST",
+            },
+        ),
+        (
+            "plan.node.updated",
+            "PlanNodeUpdatedNotification",
+            {
+                "id": "node_contract",
+                "goal_run_id": "goal_contract",
+                "status": "completed",
+                "updated_at": "2030-01-01T00:01:00+00:00",
+                "completed_at": "2030-01-01T00:01:00+00:00",
+                "result_summary": "must remain behind authenticated REST",
+            },
+        ),
+        (
+            "goal.result.updated",
+            "GoalResultUpdatedNotification",
+            {
+                "goal_run_id": "goal_contract",
+                "root_task_id": "tsk_contract",
+                "status": "completed",
+                "completed_at": "2030-01-01T00:02:00+00:00",
+                "answer": "must remain behind authenticated REST",
+            },
+        ),
+    )
+
+    for event_type, component, source_payload in cases:
+        assert payloads[event_type] == {"$ref": f"#/components/schemas/{component}"}
+        projected = safe_websocket_event({"type": event_type, "payload": source_payload})
+        validate_openapi_component(component, projected["payload"])
+        assert projected["payload"]["refetch_required"] is True
+        assert "must remain behind authenticated REST" not in json.dumps(projected)
 
 
 def test_agent_endpoint_openapi_boundaries_match_fastapi(
