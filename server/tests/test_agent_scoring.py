@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,7 +8,14 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.services.agent_scoring import AgentScoringService
+from app.services.agent_scoring import AgentScoreSnapshot, AgentScoringService
+from app.services.control_plane_instance import ControlPlaneInstanceService
+from app.services.maintenance_lease import (
+    MaintenanceLeaseGuard,
+    MaintenanceLeaseLost,
+    MaintenanceLeaseRunner,
+    MaintenanceLeaseService,
+)
 from app.services.state_service import StateService
 
 FIXED_NOW = datetime(2026, 9, 8, 18, 0, tzinfo=UTC)
@@ -325,3 +333,154 @@ async def test_rebuild_replaces_stale_projection_without_touching_source_state(
             await db.execute("SELECT status FROM agent_jobs WHERE id='job-a'")
         ).fetchone()
     assert source == ("failed",)
+
+
+@pytest.mark.asyncio
+async def test_slow_large_read_keeps_maintenance_lease_renewable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "state.db"
+    await StateService(database).initialize()
+    instance = ControlPlaneInstanceService(
+        database,
+        version="0.11.0",
+        instance_id="cp_scoring_test",
+        hostname="ubuntu-test",
+    )
+    await instance.start()
+    leases = MaintenanceLeaseService(database, lease_seconds=2)
+    runner = MaintenanceLeaseRunner(
+        leases,
+        owner_instance_id=instance.instance_id,
+        renewal_interval_seconds=0.05,
+    )
+    service = AgentScoringService(
+        database,
+        maintenance_leases=leases,
+        owner_instance_id=instance.instance_id,
+    )
+    await service.initialize()
+    now = FIXED_NOW.isoformat()
+    async with aiosqlite.connect(database) as db:
+        await db.executemany(
+            """
+            INSERT INTO agents(
+                id,name,version,endpoint,status,skills_json,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            [
+                (
+                    f"agent-{index:04d}",
+                    f"agent-{index:04d}",
+                    "1.0.0",
+                    "http://127.0.0.1:9000",
+                    "online",
+                    "[]",
+                    now,
+                    now,
+                )
+                for index in range(512)
+            ],
+        )
+        await db.commit()
+
+    read_is_slow = asyncio.Event()
+    finish_read = asyncio.Event()
+    original_agent_ids = service._agent_ids_locked
+
+    async def slow_agent_ids(db: aiosqlite.Connection) -> set[str]:
+        agent_ids = await original_agent_ids(db)
+        read_is_slow.set()
+        await finish_read.wait()
+        return agent_ids
+
+    monkeypatch.setattr(service, "_agent_ids_locked", slow_agent_ids)
+
+    async def rebuild(guard: MaintenanceLeaseGuard) -> list[AgentScoreSnapshot]:
+        return await service.rebuild(maintenance_guard=guard)
+
+    running = asyncio.create_task(runner.run("feedback-maintenance", rebuild))
+    await asyncio.wait_for(read_is_slow.wait(), timeout=1)
+    initial = await leases.get("feedback-maintenance")
+    assert initial is not None
+
+    renewed = None
+    for _ in range(40):
+        candidate = await leases.get("feedback-maintenance")
+        if candidate is not None and candidate.renewed_at > initial.renewed_at:
+            renewed = candidate
+            break
+        await asyncio.sleep(0.025)
+
+    finish_read.set()
+    snapshots = await asyncio.wait_for(running, timeout=2)
+
+    assert renewed is not None
+    assert renewed.generation == initial.generation
+    assert snapshots is not None and len(snapshots) == 512
+
+
+@pytest.mark.asyncio
+async def test_stale_scoring_generation_cannot_replace_projection_after_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "state.db"
+    initial_service = await initialize(database)
+    async with aiosqlite.connect(database) as db:
+        await insert_agent(db, "agent-old")
+        await db.commit()
+    await initial_service.rebuild()
+
+    current_time = [datetime(2026, 9, 8, 19, 0, tzinfo=UTC)]
+
+    def clock() -> datetime:
+        return current_time[0]
+
+    for instance_id in ("cp_scoring_a", "cp_scoring_b"):
+        await ControlPlaneInstanceService(
+            database,
+            version="0.11.0",
+            instance_id=instance_id,
+            hostname="ubuntu-test",
+            clock=clock,
+        ).start()
+    leases = MaintenanceLeaseService(database, lease_seconds=2, clock=clock)
+    service = AgentScoringService(
+        database,
+        maintenance_leases=leases,
+        owner_instance_id="cp_scoring_a",
+        clock=clock,
+    )
+    lease = await leases.acquire("feedback-maintenance", "cp_scoring_a")
+    assert lease is not None
+    guard = MaintenanceLeaseGuard(leases, lease)
+
+    async with aiosqlite.connect(database) as db:
+        await db.execute("DELETE FROM agents WHERE id='agent-old'")
+        await insert_agent(db, "agent-new")
+        await db.commit()
+
+    read_is_slow = asyncio.Event()
+    finish_read = asyncio.Event()
+    original_agent_ids = service._agent_ids_locked
+
+    async def slow_agent_ids(db: aiosqlite.Connection) -> set[str]:
+        agent_ids = await original_agent_ids(db)
+        read_is_slow.set()
+        await finish_read.wait()
+        return agent_ids
+
+    monkeypatch.setattr(service, "_agent_ids_locked", slow_agent_ids)
+    running = asyncio.create_task(service.rebuild(maintenance_guard=guard))
+    await asyncio.wait_for(read_is_slow.wait(), timeout=1)
+    current_time[0] += timedelta(seconds=3)
+    takeover = await leases.acquire("feedback-maintenance", "cp_scoring_b")
+    assert takeover is not None and takeover.generation == lease.generation + 1
+    finish_read.set()
+
+    with pytest.raises(MaintenanceLeaseLost):
+        await asyncio.wait_for(running, timeout=1)
+    assert await initial_service.get("agent-old") is not None
+    assert await initial_service.get("agent-new") is None

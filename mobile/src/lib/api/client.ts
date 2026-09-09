@@ -71,6 +71,9 @@ const DEFAULT_SERVER_URL = "http://127.0.0.1:8710";
 
 let latestBootstrapGeneration = 0;
 let bootstrapReplicaApplyTail: Promise<void> = Promise.resolve();
+let latestPairingAttemptGeneration = 0;
+let connectionStorageGeneration = 0;
+let connectionStorageTail: Promise<void> = Promise.resolve();
 
 type StoredConnection = {
   baseUrl: string;
@@ -83,9 +86,14 @@ type PendingConnection = StoredConnection & {
   replacedOrigins?: string[];
 };
 
+type PendingConnectionSnapshot = PendingConnection & {
+  serialized: string;
+  storageGeneration: number;
+};
+
 type ResolvedConnection =
   | (StoredConnection & { source: "active" })
-  | (PendingConnection & { source: "pending" })
+  | (PendingConnectionSnapshot & { source: "pending" })
   | { baseUrl: string; source: "default"; token: null };
 
 export type PairingResult = {
@@ -107,7 +115,10 @@ export type MutationSyncReceipt = {
 export type MutationOutboxApiSession = {
   origin: string;
   drain: (limit?: number) => Promise<MutationDrainResult>;
-  send: (mutation: MutationDelivery) => Promise<MutationSyncReceipt>;
+  send: (
+    mutation: MutationDelivery,
+    signal?: AbortSignal,
+  ) => Promise<MutationSyncReceipt>;
 };
 
 export class ApiError extends Error {
@@ -118,6 +129,26 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+async function withConnectionStorageLock<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = connectionStorageTail;
+  let release = (): void => undefined;
+  connectionStorageTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+function connectionChangedDuringRecovery(): Error {
+  return new Error("La connexion jumelée a changé pendant la reprise; réessaie l’action.");
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -225,7 +256,7 @@ function parsePendingConnection(value: string): PendingConnection {
   };
 }
 
-async function readActiveConnection(): Promise<StoredConnection | null> {
+async function readActiveConnectionLocked(): Promise<StoredConnection | null> {
   const stored = await SecureStore.getItemAsync(CONNECTION_KEY);
   if (!stored) return null;
   try {
@@ -235,42 +266,52 @@ async function readActiveConnection(): Promise<StoredConnection | null> {
   }
 }
 
-async function readPendingConnection(): Promise<PendingConnection | null> {
+async function readPendingConnectionLocked(): Promise<PendingConnectionSnapshot | null> {
   const stored = await SecureStore.getItemAsync(PENDING_CONNECTION_KEY);
   if (!stored) return null;
   try {
-    return parsePendingConnection(stored);
+    return {
+      ...parsePendingConnection(stored),
+      serialized: stored,
+      storageGeneration: connectionStorageGeneration,
+    };
   } catch {
-    await SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY).catch(() => undefined);
+    const deleted = await SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY).then(
+      () => true,
+      () => false,
+    );
+    if (deleted) connectionStorageGeneration += 1;
     return null;
   }
 }
 
 async function getConnection(): Promise<ResolvedConnection> {
-  const pending = await readPendingConnection();
-  if (pending) return { ...pending, source: "pending" };
+  return withConnectionStorageLock(async () => {
+    const pending = await readPendingConnectionLocked();
+    if (pending) return { ...pending, source: "pending" };
 
-  const active = await readActiveConnection();
-  if (active) return { ...active, source: "active" };
+    const active = await readActiveConnectionLocked();
+    if (active) return { ...active, source: "active" };
 
-  // Legacy releases stored the origin and token independently, so a failed
-  // re-pair could leave a new origin beside an old bearer. Never recombine
-  // those values: the only safe migration is a fresh pairing that creates the
-  // atomically bound connection record above.
-  const [legacyUrl, legacyToken] = await Promise.all([
-    SecureStore.getItemAsync(LEGACY_SERVER_URL_KEY),
-    SecureStore.getItemAsync(LEGACY_TOKEN_KEY),
-  ]);
-  if (legacyUrl || legacyToken) {
-    throw new Error(
-      "Une ancienne connexion non liée a été détectée. Recommence le jumelage.",
-    );
-  }
-  return {
-    baseUrl: DEFAULT_SERVER_URL,
-    source: "default",
-    token: null,
-  };
+    // Legacy releases stored the origin and token independently, so a failed
+    // re-pair could leave a new origin beside an old bearer. Never recombine
+    // those values: the only safe migration is a fresh pairing that creates the
+    // atomically bound connection record above.
+    const [legacyUrl, legacyToken] = await Promise.all([
+      SecureStore.getItemAsync(LEGACY_SERVER_URL_KEY),
+      SecureStore.getItemAsync(LEGACY_TOKEN_KEY),
+    ]);
+    if (legacyUrl || legacyToken) {
+      throw new Error(
+        "Une ancienne connexion non liée a été détectée. Recommence le jumelage.",
+      );
+    }
+    return {
+      baseUrl: DEFAULT_SERVER_URL,
+      source: "default",
+      token: null,
+    };
+  });
 }
 
 async function resolveRequestConnection(): Promise<{ baseUrl: string; token: string | null }> {
@@ -331,7 +372,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function resolvePendingConnection(
-  pending: PendingConnection,
+  pending: PendingConnectionSnapshot,
 ): Promise<StoredConnection> {
   try {
     const bootstrap = await requestAt<unknown>(
@@ -343,22 +384,46 @@ async function resolvePendingConnection(
     if (!isBootstrapEnvelope(bootstrap)) {
       throw new Error("Le candidat n’a pas retourné un bootstrap de reprise valide.");
     }
-    await abandonReplacedMutationOrigins(pending);
-    if (await promotePendingConnection(pending)) notifyConnectionChanged();
+    const outcome = await promotePendingConnection(pending);
+    if (outcome === "stale") throw connectionChangedDuringRecovery();
+    if (outcome === "promoted") notifyConnectionChanged();
     return pending;
   } catch (cause) {
     if (!(cause instanceof ApiError) || cause.status !== 401) throw cause;
-    await SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY).catch(() => undefined);
-    const active = await readActiveConnection();
+    const recovery = await discardPendingConnection(pending);
+    if (recovery.stale) throw connectionChangedDuringRecovery();
+    const active = recovery.active;
     if (!active) throw cause;
     return active;
   }
 }
 
-async function abandonReplacedMutationOrigins(pending: PendingConnection): Promise<void> {
+async function isPendingConnectionCurrentLocked(
+  pending: PendingConnectionSnapshot,
+): Promise<boolean> {
+  if (pending.storageGeneration !== connectionStorageGeneration) return false;
+  return (await SecureStore.getItemAsync(PENDING_CONNECTION_KEY)) === pending.serialized;
+}
+
+async function discardPendingConnection(
+  pending: PendingConnectionSnapshot,
+): Promise<{ active: StoredConnection | null; stale: boolean }> {
+  return withConnectionStorageLock(async () => {
+    if (!(await isPendingConnectionCurrentLocked(pending))) {
+      return { active: null, stale: true };
+    }
+    await SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY);
+    connectionStorageGeneration += 1;
+    return { active: await readActiveConnectionLocked(), stale: false };
+  });
+}
+
+async function abandonReplacedMutationOriginsLocked(
+  pending: PendingConnection,
+): Promise<void> {
   let origins = pending.replacedOrigins;
   if (origins === undefined) {
-    const active = await readActiveConnection();
+    const active = await readActiveConnectionLocked();
     origins = active && !sameConnection(active, pending) ? [active.baseUrl] : [];
   }
   for (const origin of origins) {
@@ -366,22 +431,36 @@ async function abandonReplacedMutationOrigins(pending: PendingConnection): Promi
   }
 }
 
-async function promotePendingConnection(connection: StoredConnection): Promise<boolean> {
-  try {
-    await SecureStore.setItemAsync(
-      CONNECTION_KEY,
-      JSON.stringify({ baseUrl: connection.baseUrl, token: connection.token } satisfies StoredConnection),
-    );
-  } catch {
-    // The pending record remains a durable, origin-bound recovery credential.
-    return false;
-  }
-  await Promise.allSettled([
-    SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY),
-    SecureStore.deleteItemAsync(LEGACY_SERVER_URL_KEY),
-    SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY),
-  ]);
-  return true;
+type PendingPromotionOutcome = "promoted" | "retained" | "stale";
+
+async function promotePendingConnection(
+  pending: PendingConnectionSnapshot,
+  beforePromotion?: () => Promise<void>,
+): Promise<PendingPromotionOutcome> {
+  return withConnectionStorageLock(async () => {
+    if (!(await isPendingConnectionCurrentLocked(pending))) return "stale";
+    if (beforePromotion) await beforePromotion();
+    await abandonReplacedMutationOriginsLocked(pending);
+    try {
+      await SecureStore.setItemAsync(
+        CONNECTION_KEY,
+        JSON.stringify({
+          baseUrl: pending.baseUrl,
+          token: pending.token,
+        } satisfies StoredConnection),
+      );
+    } catch {
+      // The pending record remains a durable, origin-bound recovery credential.
+      return "retained";
+    }
+    connectionStorageGeneration += 1;
+    await Promise.allSettled([
+      SecureStore.deleteItemAsync(PENDING_CONNECTION_KEY),
+      SecureStore.deleteItemAsync(LEGACY_SERVER_URL_KEY),
+      SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY),
+    ]);
+    return "promoted";
+  });
 }
 
 async function requestAt<T>(
@@ -515,12 +594,50 @@ function assertPairingFinalization(value: unknown, candidate: PairingCandidate):
   }
 }
 
+async function stagePendingConnection(
+  target: string,
+  candidate: PairingCandidate,
+  pairingAttemptGeneration: number,
+): Promise<PendingConnectionSnapshot> {
+  return withConnectionStorageLock(async () => {
+    if (pairingAttemptGeneration !== latestPairingAttemptGeneration) {
+      throw connectionChangedDuringRecovery();
+    }
+    const priorPending = await readPendingConnectionLocked();
+    const priorActive = await readActiveConnectionLocked();
+    const replacedOrigins = [...new Set(
+      [priorPending, priorActive]
+        .filter((connection): connection is StoredConnection => (
+          connection !== null
+          && (connection.baseUrl !== target || connection.token !== candidate.candidateToken)
+        ))
+        .map((connection) => connection.baseUrl),
+    )];
+    const pending = {
+      baseUrl: target,
+      token: candidate.candidateToken,
+      pairingId: candidate.pairingId,
+      deviceId: candidate.deviceId,
+      ...(replacedOrigins.length ? { replacedOrigins } : {}),
+    } satisfies PendingConnection;
+    const serialized = JSON.stringify(pending);
+    await SecureStore.setItemAsync(PENDING_CONNECTION_KEY, serialized);
+    connectionStorageGeneration += 1;
+    return {
+      ...pending,
+      serialized,
+      storageGeneration: connectionStorageGeneration,
+    };
+  });
+}
+
 export async function pairDevice(
   code: string,
   deviceId: string,
   name = "iPhone",
   serverUrl?: string,
 ): Promise<PairingResult> {
+  const pairingAttemptGeneration = ++latestPairingAttemptGeneration;
   const target = normalizeServerUrl(serverUrl ?? (await getServerUrl()));
   const response = await requestAt<unknown>(
     target,
@@ -551,31 +668,7 @@ export async function pairDevice(
     candidate.candidateToken,
   );
   assertPairingFinalization(finalized, candidate);
-
-  const [priorPending, priorActive] = await Promise.all([
-    readPendingConnection(),
-    readActiveConnection(),
-  ]);
-  const replacedOrigins = [...new Set(
-    [priorPending, priorActive]
-      .filter((connection): connection is StoredConnection => (
-        connection !== null &&
-        (connection.baseUrl !== target || connection.token !== candidate.candidateToken)
-      ))
-      .map((connection) => connection.baseUrl),
-  )];
-
-  const pending = {
-    baseUrl: target,
-    token: candidate.candidateToken,
-    pairingId: candidate.pairingId,
-    deviceId: candidate.deviceId,
-    ...(replacedOrigins.length ? { replacedOrigins } : {}),
-  } satisfies PendingConnection;
-  await SecureStore.setItemAsync(
-    PENDING_CONNECTION_KEY,
-    JSON.stringify(pending),
-  );
+  const pending = await stagePendingConnection(target, candidate, pairingAttemptGeneration);
 
   // This second authenticated read is the protocol cutover, not a duplicate
   // verification. The server promotes the ready bearer only after its recovery
@@ -589,9 +682,11 @@ export async function pairDevice(
   if (!isBootstrapEnvelope(activeBootstrap)) {
     throw new Error("Le serveur activé n’a pas retourné un bootstrap authentifié valide.");
   }
-  await applyBootstrap(activeBootstrap, target);
-  await abandonReplacedMutationOrigins(pending);
-  await promotePendingConnection(pending);
+  const outcome = await promotePendingConnection(
+    pending,
+    () => applyBootstrap(activeBootstrap, target),
+  );
+  if (outcome === "stale") throw connectionChangedDuringRecovery();
   notifyConnectionChanged();
   return { bootstrap: activeBootstrap, serverUrl: target };
 }
@@ -606,7 +701,10 @@ async function requireMutationConnection(): Promise<StoredConnection> {
 
 export async function createMutationOutboxApiSession(): Promise<MutationOutboxApiSession> {
   const connection = await requireMutationConnection();
-  const send = async (mutation: MutationDelivery): Promise<MutationSyncReceipt> => {
+  const send = async (
+    mutation: MutationDelivery,
+    signal?: AbortSignal,
+  ): Promise<MutationSyncReceipt> => {
     if (mutation.origin !== connection.baseUrl) {
       throw new Error("La mutation locale appartient à un autre control plane.");
     }
@@ -619,6 +717,7 @@ export async function createMutationOutboxApiSession(): Promise<MutationOutboxAp
       "/sync/mutations",
       {
         method: "POST",
+        ...(signal ? { signal } : {}),
         headers: { "Idempotency-Key": mutation.idempotencyKey },
         body: JSON.stringify({
           operation: mutation.operation,
@@ -693,8 +792,27 @@ export function sendChat(
   });
 }
 
-export function listMessages(conversationId: string): Promise<Message[]> {
-  return request<Message[]>(`/conversations/${resourceId(conversationId)}/messages`);
+export async function listMessages(
+  conversationId: string,
+  shouldAccept: () => boolean = () => true,
+): Promise<Message[]> {
+  const connection = await resolveRequestConnection();
+  if (!shouldAccept()) throw new Error("La lecture de conversation n’est plus actuelle.");
+  const messages = await requestAt<Message[]>(
+    connection.baseUrl,
+    `/conversations/${resourceId(conversationId)}/messages`,
+    undefined,
+    connection.token,
+  );
+  const current = await resolveRequestConnection();
+  if (
+    !shouldAccept()
+    || current.baseUrl !== connection.baseUrl
+    || current.token !== connection.token
+  ) {
+    throw new Error("La connexion jumelée a changé pendant la lecture de conversation.");
+  }
+  return messages;
 }
 
 export async function bootstrapSync(

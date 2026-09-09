@@ -10,6 +10,7 @@ import {
   createEventStreamTicket,
   createTask,
   getIPhoneCapabilityRequest,
+  listMessages,
   listIPhoneCapabilityRequests,
   pairDevice,
   submitIPhoneCapabilityResult,
@@ -102,19 +103,23 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
-function candidateResponse(token = "new-device-token", deviceId = "iphone_test") {
+function candidateResponse(
+  token = "new-device-token",
+  deviceId = "iphone_test",
+  pairingId = PAIRING_ID,
+) {
   return {
     candidate_token: token,
-    pairing_id: PAIRING_ID,
+    pairing_id: pairingId,
     device_id: deviceId,
     expires_in_seconds: 120,
   };
 }
 
-function readyResponse(deviceId = "iphone_test") {
+function readyResponse(deviceId = "iphone_test", pairingId = PAIRING_ID) {
   return {
     status: "ready",
-    pairing_id: PAIRING_ID,
+    pairing_id: pairingId,
     device_id: deviceId,
     already_finalized: false,
   };
@@ -129,13 +134,45 @@ function pendingConnection(
   token: string,
   deviceId = "iphone_test",
   replacedOrigins?: string[],
+  pairingId = PAIRING_ID,
 ) {
   return JSON.stringify({
     baseUrl,
     token,
-    pairingId: PAIRING_ID,
+    pairingId,
     deviceId,
     ...(replacedOrigins?.length ? { replacedOrigins } : {}),
+  });
+}
+
+function mutableConnectionStore(initial: Record<string, string | null>): Map<string, string> {
+  const values = new Map(
+    Object.entries(initial).filter(
+      (entry): entry is [string, string] => entry[1] !== null,
+    ),
+  );
+  getItem.mockImplementation(async (key: string) => values.get(key) ?? null);
+  setItem.mockImplementation(async (key: string, value: string) => {
+    values.set(key, value);
+  });
+  deleteItem.mockImplementation(async (key: string) => {
+    values.delete(key);
+  });
+  return values;
+}
+
+function authenticatedRoute(endpoint: string, token: string): string {
+  return `${endpoint}\nBearer ${token}`;
+}
+
+function mockRequestRoutes(entries: [string, () => unknown][]): void {
+  const routes = new Map(entries);
+  request.mockImplementation((url, init) => {
+    const endpoint = String(url);
+    const authorization = (init?.headers as Record<string, string> | undefined)?.Authorization;
+    const handler = routes.get(`${endpoint}\n${authorization ?? ""}`) ?? routes.get(endpoint);
+    if (!handler) throw new Error(`unexpected request: ${endpoint}`);
+    return handler() as never;
   });
 }
 
@@ -181,7 +218,7 @@ function approvedCapability(): MailCapabilityEnvelope {
 }
 
 function mockConnections(values: Record<string, string | null>) {
-  getItem.mockImplementation(async (key: string) => values[key] ?? null);
+  mutableConnectionStore(values);
 }
 
 async function expectConnectionRaceBlocked(
@@ -214,9 +251,7 @@ async function expectConnectionRaceBlocked(
 describe("control-plane connection storage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    getItem.mockResolvedValue(null);
-    deleteItem.mockResolvedValue();
-    setItem.mockResolvedValue();
+    mockConnections({});
     mockAbandonPending.mockResolvedValue(0);
   });
 
@@ -568,14 +603,18 @@ describe("control-plane connection storage", () => {
   });
 
   it("uses the durable pending origin for the replica when active storage fails", async () => {
+    const store = mutableConnectionStore({});
     request
       .mockResolvedValueOnce(successfulJson(candidateResponse()))
       .mockResolvedValueOnce(successfulJson(verifiedBootstrap))
       .mockResolvedValueOnce(successfulJson(readyResponse()))
       .mockResolvedValueOnce(successfulJson(verifiedBootstrap));
-    setItem
-      .mockResolvedValueOnce()
-      .mockRejectedValueOnce(new Error("active connection storage unavailable"));
+    setItem.mockImplementation(async (key: string, value: string) => {
+      if (key === CONNECTION_KEY) {
+        throw new Error("active connection storage unavailable");
+      }
+      store.set(key, value);
+    });
 
     await expect(
       pairDevice("123456", "iphone_test", "Test iPhone", "https://new.example"),
@@ -669,6 +708,185 @@ describe("control-plane connection storage", () => {
         url === "https://new.example/tasks" && init?.method === "POST"),
     ).toHaveLength(0);
     expect(deleteItem).toHaveBeenCalledWith(PENDING_CONNECTION_KEY);
+  });
+
+  it("does not let an older successful recovery overwrite a newer completed pairing", async () => {
+    const pairingA = `pair_${"b".repeat(32)}`;
+    const pairingB = `pair_${"c".repeat(32)}`;
+    const tokenA = "pending-device-token-a";
+    const tokenB = "pending-device-token-b";
+    const store = mutableConnectionStore({
+      [PENDING_CONNECTION_KEY]: pendingConnection(
+        "https://a.example",
+        tokenA,
+        "iphone_test",
+        ["https://old.example"],
+        pairingA,
+      ),
+      [CONNECTION_KEY]: storedConnection("https://old.example", "old-device-token"),
+    });
+    const recoveryStarted = deferred<void>();
+    const recoveryResponse = deferred<never>();
+    mockRequestRoutes([
+      [authenticatedRoute("https://a.example/sync/bootstrap", tokenA), () => {
+        recoveryStarted.resolve();
+        return recoveryResponse.promise;
+      }],
+      ["https://b.example/pairing/complete", () => (
+        successfulJson(candidateResponse(tokenB, "iphone_test", pairingB))
+      )],
+      ["https://b.example/pairing/finalize", () => (
+        successfulJson(readyResponse("iphone_test", pairingB))
+      )],
+      [authenticatedRoute("https://b.example/sync/bootstrap", tokenB), () => (
+        successfulJson(verifiedBootstrap)
+      )],
+      [authenticatedRoute("https://a.example/tasks", tokenA), () => (
+        successfulJson({ id: "tsk_race" }, 201)
+      )],
+    ]);
+
+    const staleRecovery = createTask("must not use pairing A", "normal");
+    await recoveryStarted.promise;
+    await pairDevice("123456", "iphone_test", "Test iPhone", "https://b.example");
+
+    recoveryResponse.resolve(successfulJson(verifiedBootstrap));
+    await expect(staleRecovery).rejects.toThrow("connexion jumelée a changé");
+
+    expect(store.get(CONNECTION_KEY)).toBe(storedConnection("https://b.example", tokenB));
+    expect(store.has(PENDING_CONNECTION_KEY)).toBe(false);
+    expect(
+      request.mock.calls.filter(([url]) => String(url) === "https://a.example/tasks"),
+    ).toHaveLength(0);
+  });
+
+  it("does not let an older pairing attempt stage after a newer pairing commits", async () => {
+    const pairingA = `pair_${"f".repeat(32)}`;
+    const pairingB = `pair_${"1".repeat(32)}`;
+    const tokenA = "candidate-device-token-a";
+    const tokenB = "candidate-device-token-b";
+    const store = mutableConnectionStore({
+      [CONNECTION_KEY]: storedConnection("https://old.example", "old-device-token"),
+    });
+    const finalizationAStarted = deferred<void>();
+    const finalizationAResponse = deferred<never>();
+    mockRequestRoutes([
+      ["https://a.example/pairing/complete", () => (
+        successfulJson(candidateResponse(tokenA, "iphone_test", pairingA))
+      )],
+      ["https://a.example/pairing/finalize", () => {
+        finalizationAStarted.resolve();
+        return finalizationAResponse.promise;
+      }],
+      [authenticatedRoute("https://a.example/sync/bootstrap", tokenA), () => (
+        successfulJson(verifiedBootstrap)
+      )],
+      ["https://b.example/pairing/complete", () => (
+        successfulJson(candidateResponse(tokenB, "iphone_test", pairingB))
+      )],
+      ["https://b.example/pairing/finalize", () => (
+        successfulJson(readyResponse("iphone_test", pairingB))
+      )],
+      [authenticatedRoute("https://b.example/sync/bootstrap", tokenB), () => (
+        successfulJson(verifiedBootstrap)
+      )],
+    ]);
+
+    const olderPairing = pairDevice(
+      "111111",
+      "iphone_test",
+      "Test iPhone",
+      "https://a.example",
+    );
+    await finalizationAStarted.promise;
+    await pairDevice("222222", "iphone_test", "Test iPhone", "https://b.example");
+
+    finalizationAResponse.resolve(successfulJson(readyResponse("iphone_test", pairingA)));
+    await expect(olderPairing).rejects.toThrow("connexion jumelée a changé");
+    expect(store.get(CONNECTION_KEY)).toBe(storedConnection("https://b.example", tokenB));
+    expect(store.has(PENDING_CONNECTION_KEY)).toBe(false);
+    expect(
+      setItem.mock.calls.filter(([, value]) => value.includes(tokenA)),
+    ).toHaveLength(0);
+  });
+
+  it("does not let an older 401 recovery delete a newer pending pairing", async () => {
+    const pairingA = `pair_${"d".repeat(32)}`;
+    const pairingB = `pair_${"e".repeat(32)}`;
+    const tokenA = "expired-device-token-a";
+    const tokenB = "pending-device-token-b";
+    const store = mutableConnectionStore({
+      [PENDING_CONNECTION_KEY]: pendingConnection(
+        "https://a.example",
+        tokenA,
+        "iphone_test",
+        ["https://old.example"],
+        pairingA,
+      ),
+      [CONNECTION_KEY]: storedConnection("https://old.example", "old-device-token"),
+    });
+    const recoveryStarted = deferred<void>();
+    const recoveryResponse = deferred<never>();
+    const cutoverStarted = deferred<void>();
+    const cutoverResponse = deferred<never>();
+    let bootstrapBCalls = 0;
+    mockRequestRoutes([
+      [authenticatedRoute("https://a.example/sync/bootstrap", tokenA), () => {
+        recoveryStarted.resolve();
+        return recoveryResponse.promise;
+      }],
+      ["https://b.example/pairing/complete", () => (
+        successfulJson(candidateResponse(tokenB, "iphone_test", pairingB))
+      )],
+      ["https://b.example/pairing/finalize", () => (
+        successfulJson(readyResponse("iphone_test", pairingB))
+      )],
+      [authenticatedRoute("https://b.example/sync/bootstrap", tokenB), () => {
+        bootstrapBCalls += 1;
+        if (bootstrapBCalls === 1) return successfulJson(verifiedBootstrap);
+        cutoverStarted.resolve();
+        return cutoverResponse.promise;
+      }],
+      [authenticatedRoute("https://old.example/tasks", "old-device-token"), () => (
+        successfulJson({ id: "tsk_wrong_origin" }, 201)
+      )],
+    ]);
+
+    const staleRecovery = createTask("must not fall back during re-pair", "normal");
+    await recoveryStarted.promise;
+    const newerPairing = pairDevice(
+      "123456",
+      "iphone_test",
+      "Test iPhone",
+      "https://b.example",
+    );
+    await cutoverStarted.promise;
+
+    recoveryResponse.resolve({
+      ok: false,
+      status: 401,
+      json: async () => ({ detail: "invalid device token" }),
+    } as never);
+    await expect(staleRecovery).rejects.toThrow("connexion jumelée a changé");
+    expect(store.get(PENDING_CONNECTION_KEY)).toBe(
+      pendingConnection(
+        "https://b.example",
+        tokenB,
+        "iphone_test",
+        ["https://a.example", "https://old.example"],
+        pairingB,
+      ),
+    );
+    expect(
+      request.mock.calls.filter(([url]) => String(url).endsWith("/tasks")),
+    ).toHaveLength(0);
+
+    cutoverResponse.resolve(successfulJson(verifiedBootstrap));
+    await expect(newerPairing).resolves.toEqual({
+      bootstrap: verifiedBootstrap,
+      serverUrl: "https://b.example",
+    });
+    expect(store.get(CONNECTION_KEY)).toBe(storedConnection("https://b.example", tokenB));
   });
 
   it("exchanges the bearer for a short websocket ticket without putting it in the URL", async () => {
@@ -944,5 +1162,54 @@ describe("bootstrap replica commit ordering", () => {
     request.mockResolvedValueOnce(successfulJson([capabilityDetail()]));
 
     await expect(listIPhoneCapabilityRequests()).rejects.toThrow("invalid shape");
+  });
+});
+
+describe("conversation read fencing", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("rejects a message response when the paired connection changes in flight", async () => {
+    const response = deferred<never>();
+    const requestStarted = deferred<void>();
+    let activeConnection = storedConnection("https://old.example", "old-device-token");
+    mockConnections({ [CONNECTION_KEY]: activeConnection });
+    getItem.mockImplementation(async (key: string) => {
+      if (key === PENDING_CONNECTION_KEY) return null;
+      if (key === CONNECTION_KEY) return activeConnection;
+      return null;
+    });
+    request.mockImplementationOnce(() => {
+      requestStarted.resolve();
+      return response.promise;
+    });
+
+    const pending = listMessages("conv_test");
+    await requestStarted.promise;
+    activeConnection = storedConnection("https://new.example", "new-device-token");
+    response.resolve(successfulJson([]));
+
+    await expect(pending).rejects.toThrow("connexion jumelée a changé");
+  });
+
+  it("rejects a message response after its caller is fenced", async () => {
+    const response = deferred<never>();
+    const requestStarted = deferred<void>();
+    let isCurrent = true;
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
+    });
+    request.mockImplementationOnce(() => {
+      requestStarted.resolve();
+      return response.promise;
+    });
+
+    const pending = listMessages("conv_test", () => isCurrent);
+    await requestStarted.promise;
+    isCurrent = false;
+    response.resolve(successfulJson([]));
+
+    await expect(pending).rejects.toThrow("connexion jumelée a changé");
   });
 });

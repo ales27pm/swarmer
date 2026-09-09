@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import hmac
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import aiosqlite
 import pytest
@@ -8,7 +10,46 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from app.services.auth_service import AuthService
+from app.services.state_service import StateService
+
 OPERATOR_TOKEN = "test-operator-token-with-sufficient-entropy"
+
+
+class MutableClock:
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+
+    def __call__(self) -> datetime:
+        return self.value
+
+
+async def release_auth_writer_after_clock_advance(
+    blocker: aiosqlite.Connection,
+    blocked_operation: asyncio.Task[object],
+    clock: MutableClock,
+    advanced_to: datetime,
+) -> None:
+    for _ in range(20):
+        if blocked_operation.done():
+            break
+        await asyncio.sleep(0.005)
+    was_blocked = not blocked_operation.done()
+    clock.value = advanced_to
+    await blocker.commit()
+    await blocker.close()
+    assert was_blocked
+
+
+async def create_auth_service(database: Path, clock: MutableClock) -> AuthService:
+    await StateService(database).initialize()
+    return AuthService(
+        database,
+        pairing_ttl_seconds=60,
+        pairing_candidate_ttl_seconds=30,
+        pairing_pepper=OPERATOR_TOKEN,
+        clock=clock,
+    )
 
 
 def issue_code(client: TestClient) -> str:
@@ -135,6 +176,24 @@ def test_websocket_ticket_is_one_use(client: TestClient, paired_headers: dict[st
     else:
         accepted_twice = True
     assert accepted_twice is False
+
+
+def test_new_websocket_ticket_invalidates_prior_unconsumed_ticket(
+    client: TestClient,
+    paired_headers: dict[str, str],
+) -> None:
+    first = client.post("/ws/ticket", headers=paired_headers).json()["ticket"]
+    second = client.post("/ws/ticket", headers=paired_headers).json()["ticket"]
+
+    with (
+        pytest.raises(WebSocketDisconnect) as rejected,
+        client.websocket_connect(f"/ws?ticket={first}") as websocket,
+    ):
+        websocket.receive_json()
+    assert rejected.value.code == 4401
+
+    with client.websocket_connect(f"/ws?ticket={second}") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
 
 
 @pytest.mark.asyncio
@@ -340,3 +399,189 @@ def test_remote_plain_http_cannot_verify_or_finalize_candidate(
         assert remote.get("/sync/bootstrap", headers=headers).status_code == 426
         assert remote.post("/pairing/finalize", headers=headers, json=body).status_code == 426
     assert client.get("/sync/bootstrap", headers=headers).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_pairing_code_ttl_starts_after_waiting_for_writer_lock(tmp_path: Path) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    advanced = started + timedelta(seconds=20)
+    database = tmp_path / "state.db"
+    clock = MutableClock(started)
+    service = await create_auth_service(database, clock)
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(service.create_pairing_code())
+    await release_auth_writer_after_clock_advance(blocker, operation, clock, advanced)
+    await operation
+
+    async with aiosqlite.connect(database) as db:
+        created_at, expires_at = await (
+            await db.execute("SELECT created_at,expires_at FROM pairing_codes")
+        ).fetchone()
+    assert created_at == advanced.isoformat()
+    assert expires_at == (advanced + timedelta(seconds=60)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_pairing_rechecks_code_expiry_after_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "state.db"
+    clock = MutableClock(started)
+    service = await create_auth_service(database, clock)
+    code = await service.create_pairing_code()
+    clock.value = started + timedelta(seconds=59)
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(service.complete_pairing(code, "late-phone", "Late Phone"))
+    await release_auth_writer_after_clock_advance(
+        blocker,
+        operation,
+        clock,
+        started + timedelta(seconds=61),
+    )
+
+    assert await operation is None
+
+
+@pytest.mark.asyncio
+async def test_pairing_rechecks_candidate_expiry_after_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "state.db"
+    clock = MutableClock(started)
+    service = await create_auth_service(database, clock)
+    code = await service.create_pairing_code()
+    candidate = await service.complete_pairing(code, "late-phone", "Late Phone")
+    assert candidate is not None
+    clock.value = started + timedelta(seconds=29)
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(
+        service.finalize_pairing(candidate.token, candidate.pairing_id, candidate.device_id)
+    )
+    await release_auth_writer_after_clock_advance(
+        blocker,
+        operation,
+        clock,
+        started + timedelta(seconds=31),
+    )
+
+    assert await operation is None
+
+
+@pytest.mark.asyncio
+async def test_websocket_ticket_rechecks_expiry_after_waiting_for_writer_lock(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "state.db"
+    clock = MutableClock(started)
+    service = await create_auth_service(database, clock)
+    code = await service.create_pairing_code()
+    candidate = await service.complete_pairing(code, "ticket-phone", "Ticket Phone")
+    assert candidate is not None
+    finalized = await service.finalize_pairing(
+        candidate.token,
+        candidate.pairing_id,
+        candidate.device_id,
+    )
+    assert finalized is not None
+    assert await service.authenticate_token(candidate.token) is not None
+    ticket = await service.create_websocket_ticket(candidate.token)
+    assert ticket is not None
+    clock.value = started + timedelta(seconds=29)
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(service.consume_websocket_ticket(ticket))
+    await release_auth_writer_after_clock_advance(
+        blocker,
+        operation,
+        clock,
+        started + timedelta(seconds=31),
+    )
+
+    assert await operation is None
+
+
+@pytest.mark.asyncio
+async def test_websocket_ticket_cannot_survive_token_replacement_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "state.db"
+    clock = MutableClock(started)
+    service = await create_auth_service(database, clock)
+
+    old_code = await service.create_pairing_code()
+    old = await service.complete_pairing(old_code, "race-phone", "Old Phone")
+    assert old is not None
+    assert await service.finalize_pairing(old.token, old.pairing_id, old.device_id) is not None
+    assert await service.authenticate_token(old.token) is not None
+
+    new_code = await service.create_pairing_code()
+    replacement = await service.complete_pairing(new_code, "race-phone", "New Phone")
+    assert replacement is not None
+    assert (
+        await service.finalize_pairing(
+            replacement.token,
+            replacement.pairing_id,
+            replacement.device_id,
+        )
+        is not None
+    )
+
+    validated = asyncio.Event()
+    resume_split_transaction = asyncio.Event()
+    authenticate_token = service.authenticate_token
+
+    async def pause_after_public_authentication(token: str):
+        principal = await authenticate_token(token)
+        validated.set()
+        await resume_split_transaction.wait()
+        return principal
+
+    monkeypatch.setattr(service, "authenticate_token", pause_after_public_authentication)
+    replacement_service = AuthService(
+        database,
+        pairing_ttl_seconds=60,
+        pairing_candidate_ttl_seconds=30,
+        pairing_pepper=OPERATOR_TOKEN,
+        clock=clock,
+    )
+
+    ticket_task = asyncio.create_task(service.create_websocket_ticket(old.token))
+    validation_task = asyncio.create_task(validated.wait())
+    done, _ = await asyncio.wait(
+        {ticket_task, validation_task},
+        timeout=2,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    assert done
+
+    if validation_task in done:
+        # This is the vulnerable split-transaction schedule: rotate the token after
+        # the first authorization commit and before the ticket-insert transaction.
+        assert await replacement_service.authenticate_token(replacement.token) is not None
+        resume_split_transaction.set()
+    else:
+        # Atomic issuance may serialize first; replacement must then invalidate the
+        # ticket in the same transaction that activates the new device credential.
+        await ticket_task
+        assert await replacement_service.authenticate_token(replacement.token) is not None
+
+    resume_split_transaction.set()
+    ticket = await ticket_task
+    if not validation_task.done():
+        validation_task.cancel()
+        await asyncio.gather(validation_task, return_exceptions=True)
+
+    assert ticket is not None
+    assert await replacement_service.consume_websocket_ticket(ticket) is None

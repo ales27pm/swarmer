@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import stat
+from errno import ENOSPC
 from pathlib import Path
 from typing import Any
 
@@ -194,6 +196,9 @@ class _FakeFaissIndex:
 
 
 class _FakeFaiss:
+    def __init__(self) -> None:
+        self.read_calls = 0
+
     def IndexFlatIP(self, dimensions: int) -> _FakeFaissIndex:
         return _FakeFaissIndex(dimensions)
 
@@ -210,6 +215,7 @@ class _FakeFaiss:
         )
 
     def read_index(self, path: str) -> _FakeFaissIndex:
+        self.read_calls += 1
         value = json.loads(Path(path).read_text(encoding="utf-8"))
         return _FakeFaissIndex(value["dimensions"], value["vectors"])
 
@@ -292,6 +298,209 @@ async def test_faiss_projection_files_are_private(
             assert stat.S_IMODE(path.stat().st_mode) == 0o700
         else:
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_faiss_rejects_group_or_world_access_before_native_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection)
+    await index.rebuild([VectorDocument("mem-a", (1.0, 0.0))])
+    pointer = json.loads((projection / "CURRENT.json").read_text(encoding="utf-8"))
+    index_path = projection / pointer["generation"] / "index.faiss"
+    index_path.chmod(0o640)
+
+    with pytest.raises(VectorIndexError, match="permissions"):
+        await index.search([1.0, 0.0])
+    assert fake_faiss.read_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_faiss_rejects_projection_owned_by_another_uid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projection = tmp_path / "projection"
+    projection.mkdir(mode=0o700)
+    monkeypatch.setattr(vector_module, "_current_uid", lambda: os.geteuid() + 1)
+
+    with pytest.raises(VectorIndexError, match="owner"):
+        await FaissVectorIndex(projection).rebuild([])
+
+
+@pytest.mark.asyncio
+async def test_faiss_generation_retention_keeps_current_and_one_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection, generations_to_keep=2)
+
+    for number in range(4):
+        await index.rebuild([VectorDocument(f"mem-{number}", (1.0, 0.0))])
+
+    generations = sorted(path.name for path in projection.glob("generation-*"))
+    assert len(generations) == 2
+    pointer = json.loads((projection / "CURRENT.json").read_text(encoding="utf-8"))
+    assert pointer["generation"] in generations
+    assert not list(projection.glob(".tmp-*"))
+    assert not list(projection.glob(".CURRENT-*"))
+
+
+@pytest.mark.asyncio
+async def test_faiss_rebuild_removes_private_orphans_from_crashed_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection)
+    await index.rebuild([VectorDocument("old", (1.0, 0.0))])
+
+    orphan = projection / ".tmp-crashed"
+    orphan.mkdir(mode=0o700)
+    (orphan / "index.faiss").write_bytes(b"orphan")
+    (orphan / "index.faiss").chmod(0o600)
+    pointer_orphan = projection / ".CURRENT-crashed.json"
+    pointer_orphan.write_text("{}", encoding="utf-8")
+    pointer_orphan.chmod(0o600)
+    digest_orphan = projection / ".digest-crashed"
+    digest_orphan.write_bytes(b"x" * 5_000)
+    digest_orphan.chmod(0o600)
+    read_orphan = projection / ".read-crashed.faiss"
+    read_orphan.write_bytes(b"x" * 5_000)
+    read_orphan.chmod(0o600)
+
+    await index.rebuild([VectorDocument("new", (0.0, 1.0))])
+
+    assert not orphan.exists()
+    assert not pointer_orphan.exists()
+    assert not digest_orphan.exists()
+    assert not read_orphan.exists()
+    assert [hit.memory_id for hit in await index.search([0.0, 1.0])] == ["new"]
+
+
+@pytest.mark.asyncio
+async def test_faiss_rebuild_refuses_unsafe_crash_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection)
+    await index.rebuild([VectorDocument("old", (1.0, 0.0))])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    unsafe = projection / ".tmp-crashed"
+    unsafe.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(VectorIndexError, match="generation is invalid"):
+        await index.rebuild([VectorDocument("new", (0.0, 1.0))])
+
+    assert unsafe.is_symlink()
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_faiss_rebuild_removes_oversized_sparse_crash_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection)
+    await index.rebuild([VectorDocument("old", (1.0, 0.0))])
+    orphan = projection / ".tmp-crashed"
+    orphan.mkdir(mode=0o700)
+    oversized = orphan / "index.faiss"
+    with oversized.open("wb") as output:
+        output.truncate(vector_module.MAX_INDEX_BYTES + 1)
+    oversized.chmod(0o600)
+
+    await index.rebuild([])
+
+    assert not orphan.exists()
+    assert (await index.health()).ready is True
+
+
+@pytest.mark.asyncio
+async def test_faiss_pointer_swap_failure_preserves_previous_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection)
+    await index.rebuild([VectorDocument("old", (1.0, 0.0))])
+    old_pointer = (projection / "CURRENT.json").read_bytes()
+    real_replace = vector_module.os.replace
+
+    def fail_pointer_swap(source: object, destination: object) -> None:
+        if Path(destination).name == "CURRENT.json":
+            raise OSError("simulated disk failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(vector_module.os, "replace", fail_pointer_swap)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        await index.rebuild([VectorDocument("new", (0.0, 1.0))])
+
+    assert (projection / "CURRENT.json").read_bytes() == old_pointer
+    assert not list(projection.glob(".tmp-*"))
+    assert not list(projection.glob(".CURRENT-*"))
+    assert len(list(projection.glob("generation-*"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_faiss_disk_space_failure_preserves_previous_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "projection"
+    index = FaissVectorIndex(projection)
+    await index.rebuild([VectorDocument("old", (1.0, 0.0))])
+    old_pointer = (projection / "CURRENT.json").read_bytes()
+    real_write = vector_module._write_private_bytes
+
+    def fail_metadata_write(path: Path, value: bytes) -> None:
+        if path.name == "metadata.json":
+            raise OSError(ENOSPC, "simulated disk full")
+        real_write(path, value)
+
+    monkeypatch.setattr(vector_module, "_write_private_bytes", fail_metadata_write)
+    with pytest.raises(OSError, match="simulated disk full"):
+        await index.rebuild([VectorDocument("new", (0.0, 1.0))])
+
+    assert (projection / "CURRENT.json").read_bytes() == old_pointer
+    assert not list(projection.glob(".tmp-*"))
+    assert not list(projection.glob(".CURRENT-*"))
+    assert len(list(projection.glob("generation-*"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_faiss_health_does_not_create_an_unbuilt_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_faiss = _FakeFaiss()
+    fake_numpy = _FakeNumpy()
+    monkeypatch.setattr(vector_module, "_load_faiss_runtime", lambda: (fake_faiss, fake_numpy))
+    projection = tmp_path / "missing-projection"
+
+    health = await FaissVectorIndex(projection).health()
+
+    assert health.ready is False
+    assert health.detail == "not_built_or_invalid"
+    assert not projection.exists()
 
 
 def test_rebuild_command_reports_safe_success_metadata(

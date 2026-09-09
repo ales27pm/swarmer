@@ -10,6 +10,15 @@ URL, headers, credentials, or transport options. Redirects are rejected, the
 adapter credential comes only from the environment, and control-plane and
 adapter responses have hard byte and time limits.
 
+The built-in adapter transport canonicalizes its credential-free HTTPS URL,
+does not consult proxy environment variables, resolves the hostname exactly
+once, and rejects the complete DNS answer set if any IPv4 or IPv6 address is
+not globally routable. It connects directly to a validated numeric answer,
+checks the peer before and after TLS, and verifies the certificate for the
+configured hostname. One absolute monotonic deadline covers DNS, connect, TLS,
+request, headers, and response reads. Both compressed wire bytes and expanded
+JSON are capped at 256 KiB; unsupported or malformed compression fails closed.
+
 ## Job contract
 
 Skill: `research.query`

@@ -22,8 +22,11 @@ class Settings(BaseSettings):
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     redis_stream_prefix: str = Field(default="mongars", min_length=1, max_length=100)
     redis_operation_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    redis_stream_maxlen: int = Field(default=10_000, ge=1, le=10_000_000)
+    redis_stream_retention_seconds: int = Field(default=604_800, ge=60, le=31_536_000)
     vector_backend: Literal["sqlite", "faiss"] = "sqlite"
     vector_index_path: Path = Path("./data/vector-index")
+    vector_index_generations_to_keep: int = Field(default=2, ge=1, le=50)
     outbox_publication_lease_seconds: int = Field(default=30, ge=5, le=900)
     control_plane_heartbeat_seconds: int = Field(default=10, ge=2, le=300)
     maintenance_lease_seconds: int = Field(default=45, ge=10, le=900)
@@ -36,6 +39,9 @@ class Settings(BaseSettings):
     pairing_code_ttl_seconds: int = 600
     pairing_candidate_ttl_seconds: int = 120
     pairing_max_attempts: int = 10
+    websocket_io_timeout_seconds: float = Field(default=5.0, ge=0.1, le=30)
+    websocket_notification_poll_seconds: float = Field(default=0.1, ge=0.01, le=5)
+    websocket_notification_instance_stale_seconds: int = Field(default=60, ge=10, le=3600)
     allow_insecure_remote_http: bool = False
     agent_lease_seconds: int = Field(default=60, ge=15, le=900)
     agent_heartbeat_seconds: int = Field(default=20, ge=5, le=300)
@@ -69,8 +75,19 @@ class Settings(BaseSettings):
             raise ValueError("agent heartbeat interval must be shorter than the offline timeout")
         if self.control_plane_heartbeat_seconds >= self.maintenance_lease_seconds:
             raise ValueError("control-plane heartbeat must be shorter than the maintenance lease")
+        if (
+            self.control_plane_heartbeat_seconds
+            >= self.websocket_notification_instance_stale_seconds
+        ):
+            raise ValueError(
+                "control-plane heartbeat must be shorter than WebSocket instance staleness"
+            )
         if self.message_board_backend == "redis":
             _validate_redis_transport_url(self.redis_url.get_secret_value())
+            if self.redis_operation_timeout_seconds >= self.outbox_publication_lease_seconds:
+                raise ValueError(
+                    "Redis operation timeout must be shorter than the outbox publication lease"
+                )
         return self
 
 

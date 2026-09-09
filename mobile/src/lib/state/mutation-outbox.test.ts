@@ -31,6 +31,9 @@ class MemoryDatabase {
     if (sql.startsWith("UPDATE mutation_outbox SET completed_at=?, last_error=?")) {
       return this.abandonOrigin(params);
     }
+    if (sql.startsWith("UPDATE mutation_outbox SET completed_at=?,last_error=?")) {
+      return this.completeMutationWithError(params);
+    }
     if (sql.startsWith("UPDATE mutation_outbox SET completed_at=?")) {
       return this.completeMutation(params);
     }
@@ -106,6 +109,15 @@ class MemoryDatabase {
     return { changes: 1, lastInsertRowId: 0 };
   }
 
+  private completeMutationWithError(params: unknown[]): SQLiteRunResult {
+    const [completedAt, reason, id, origin] = params as [string, string, string, string];
+    const row = this.pendingRow(id, origin);
+    if (!row) return { changes: 0, lastInsertRowId: 0 };
+    row.completed_at = completedAt;
+    row.last_error = reason;
+    return { changes: 1, lastInsertRowId: 0 };
+  }
+
   private failMutation(params: unknown[]): SQLiteRunResult {
     const [lastError, id, origin] = params as [string, string, string];
     const row = this.pendingRow(id, origin);
@@ -152,6 +164,18 @@ function makeOutbox(database: MemoryDatabase, ids = ["mut_aaaaaaaaaaaaaaaaaaaa"]
     createId: () => ids[index++] ?? `mut_fallback_${index}`,
     now: () => "2030-01-01T12:00:00.000Z",
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(iterations = 8): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) await Promise.resolve();
 }
 
 describe("mobile mutation outbox", () => {
@@ -218,6 +242,249 @@ describe("mobile mutation outbox", () => {
     expect(stored.last_error).toBeNull();
     expect(stored.completed_at).not.toBeNull();
     expect(JSON.stringify(stored)).not.toContain("bearer secret");
+  });
+
+  it("serializes independent drainers so one local row is never sent concurrently twice", async () => {
+    const database = new MemoryDatabase();
+    const firstRuntime = makeOutbox(database);
+    const secondRuntime = makeOutbox(database, ["mut_bbbbbbbbbbbbbbbbbbbb"]);
+    await firstRuntime.enqueue({
+      origin: "https://control.example",
+      operation: "feedback.create",
+      payload: { score: 4 },
+      idempotencyKey: "mut_feedback_concurrent_1234567890123",
+    });
+    const release = deferred<void>();
+    const sender = jest.fn(async () => release.promise);
+
+    const firstDrain = firstRuntime.drain("https://control.example", sender);
+    const secondDrain = secondRuntime.drain("https://control.example", sender);
+    await flushMicrotasks();
+
+    expect(sender).toHaveBeenCalledTimes(1);
+    release.resolve();
+    await expect(Promise.all([firstDrain, secondDrain])).resolves.toEqual([
+      { attempted: 1, completed: 1, failed: 0, remaining: 0 },
+      { attempted: 0, completed: 0, failed: 0, remaining: 0 },
+    ]);
+  });
+
+  it("quarantines malformed local rows and continues with later safe work", async () => {
+    const database = new MemoryDatabase();
+    const outbox = makeOutbox(database, [
+      "mut_aaaaaaaaaaaaaaaaaaaa",
+      "mut_bbbbbbbbbbbbbbbbbbbb",
+    ]);
+    const poisoned = await outbox.enqueue({
+      origin: "https://control.example",
+      operation: "feedback.create",
+      payload: { score: 1 },
+      idempotencyKey: "mut_poisoned_12345678901234567890",
+    });
+    await outbox.enqueue({
+      origin: "https://control.example",
+      operation: "feedback.create",
+      payload: { score: 5 },
+      idempotencyKey: "mut_healthy_123456789012345678901",
+    });
+    const poisonedRow = database.rows.get(poisoned.id);
+    if (!poisonedRow) throw new Error("test mutation disappeared");
+    poisonedRow.payload_json = "{not-json";
+    const sender = jest.fn(async () => undefined);
+
+    await expect(outbox.drain("https://control.example", sender)).resolves.toEqual({
+      attempted: 1,
+      completed: 1,
+      failed: 1,
+      remaining: 0,
+    });
+
+    expect(sender).toHaveBeenCalledTimes(1);
+    expect(poisonedRow.completed_at).not.toBeNull();
+    expect(poisonedRow.last_error).toBe("invalid local mutation; delivery blocked");
+  });
+
+  it("isolates a permanent server rejection and continues with the next row", async () => {
+    const database = new MemoryDatabase();
+    const outbox = makeOutbox(database, [
+      "mut_aaaaaaaaaaaaaaaaaaaa",
+      "mut_bbbbbbbbbbbbbbbbbbbb",
+    ]);
+    const rejected = await outbox.enqueue({
+      origin: "https://control.example",
+      operation: "memory.metadata.update",
+      resourceId: "mem_missing",
+      payload: { pinned: true },
+      idempotencyKey: "mut_rejected_12345678901234567890",
+    });
+    await outbox.enqueue({
+      origin: "https://control.example",
+      operation: "feedback.create",
+      payload: { score: 5 },
+      idempotencyKey: "mut_followup_12345678901234567890",
+    });
+    const sender = jest
+      .fn<(mutation: { operation: string }) => Promise<void>>()
+      .mockRejectedValueOnce(Object.assign(new Error("do not persist this detail"), { status: 404 }))
+      .mockResolvedValueOnce();
+
+    await expect(outbox.drain("https://control.example", sender)).resolves.toEqual({
+      attempted: 2,
+      completed: 1,
+      failed: 1,
+      remaining: 0,
+    });
+
+    expect(sender).toHaveBeenCalledTimes(2);
+    expect(database.rows.get(rejected.id)?.completed_at).not.toBeNull();
+    expect(database.rows.get(rejected.id)?.last_error).toBe(
+      "server rejected mutation permanently; automatic replay disabled",
+    );
+    expect(JSON.stringify([...database.rows.values()])).not.toContain("do not persist this detail");
+  });
+
+  it("stops the batch on a transient delivery failure and preserves later rows", async () => {
+    const database = new MemoryDatabase();
+    const outbox = makeOutbox(database, [
+      "mut_aaaaaaaaaaaaaaaaaaaa",
+      "mut_bbbbbbbbbbbbbbbbbbbb",
+    ]);
+    await outbox.enqueue({
+      origin: "https://control.example",
+      operation: "feedback.create",
+      payload: { score: 3 },
+      idempotencyKey: "mut_transient_1234567890123456789",
+    });
+    await outbox.enqueue({
+      origin: "https://control.example",
+      operation: "feedback.create",
+      payload: { score: 4 },
+      idempotencyKey: "mut_later_12345678901234567890123",
+    });
+    const sender = jest.fn(async () => {
+      throw Object.assign(new Error("temporary upstream detail"), { status: 503 });
+    });
+
+    await expect(outbox.drain("https://control.example", sender)).resolves.toEqual({
+      attempted: 1,
+      completed: 0,
+      failed: 1,
+      remaining: 2,
+    });
+
+    expect(sender).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify([...database.rows.values()])).not.toContain("temporary upstream detail");
+  });
+
+  it("aborts a hung transport and retries without overlapping or changing idempotency", async () => {
+    jest.useFakeTimers();
+    try {
+      const database = new MemoryDatabase();
+      const outbox = new MutationOutbox({
+        openDatabase: async () => database as unknown as SQLiteDatabase,
+        createId: () => "mut_aaaaaaaaaaaaaaaaaaaa",
+        now: () => "2030-01-01T12:00:00.000Z",
+        sendTimeoutMs: 1_000,
+      });
+      await outbox.enqueue({
+        origin: "https://timeout.example",
+        operation: "feedback.create",
+        payload: { score: 2 },
+        idempotencyKey: "mut_timeout_12345678901234567890",
+      });
+      const idempotencyKeys: string[] = [];
+      let activeSends = 0;
+      let maximumActiveSends = 0;
+      let attempt = 0;
+      const sender = jest.fn(async (mutation: { idempotencyKey: string }, signal: AbortSignal) => {
+        attempt += 1;
+        activeSends += 1;
+        maximumActiveSends = Math.max(maximumActiveSends, activeSends);
+        idempotencyKeys.push(mutation.idempotencyKey);
+        try {
+          if (attempt > 1) return;
+          await new Promise<void>((_resolve, reject) => {
+            const rejectAbort = () => {
+              reject(Object.assign(new Error("transport aborted"), { name: "AbortError" }));
+            };
+            if (signal.aborted) rejectAbort();
+            else signal.addEventListener("abort", rejectAbort, { once: true });
+          });
+        } finally {
+          activeSends -= 1;
+        }
+      });
+
+      const draining = outbox.drain("https://timeout.example", sender);
+      await flushMicrotasks();
+      expect(sender).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1_000);
+
+      await expect(draining).resolves.toEqual({
+        attempted: 1,
+        completed: 0,
+        failed: 1,
+        remaining: 1,
+      });
+      const stored = [...database.rows.values()][0];
+      expect(stored.idempotency_key).toBe("mut_timeout_12345678901234567890");
+      expect(stored.attempts).toBe(1);
+      expect(stored.last_error).toBe(
+        "delivery timed out; retry requires the same idempotency key",
+      );
+      await expect(outbox.drain("https://timeout.example", sender)).resolves.toEqual({
+        attempted: 1,
+        completed: 1,
+        failed: 0,
+        remaining: 0,
+      });
+      expect(sender).toHaveBeenCalledTimes(2);
+      expect(sender.mock.calls[0]?.[1].aborted).toBe(true);
+      expect(maximumActiveSends).toBe(1);
+      expect(idempotencyKeys).toEqual([
+        "mut_timeout_12345678901234567890",
+        "mut_timeout_12345678901234567890",
+      ]);
+      expect(stored.attempts).toBe(2);
+      await expect(outbox.pendingCount("https://timeout.example")).resolves.toBe(0);
+      expect(stored.completed_at).not.toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("does not start another old-origin send when re-pair abandonment races a drain", async () => {
+    const database = new MemoryDatabase();
+    const outbox = makeOutbox(database, [
+      "mut_aaaaaaaaaaaaaaaaaaaa",
+      "mut_bbbbbbbbbbbbbbbbbbbb",
+    ]);
+    for (const [idempotencyKey, score] of [
+      ["mut_repair_first_12345678901234567", 1],
+      ["mut_repair_second_1234567890123456", 2],
+    ] as const) {
+      await outbox.enqueue({
+        origin: "https://old.example",
+        operation: "feedback.create",
+        payload: { score },
+        idempotencyKey,
+      });
+    }
+    const release = deferred<void>();
+    const sender = jest.fn(async () => release.promise);
+    const draining = outbox.drain("https://old.example", sender);
+    await flushMicrotasks();
+    expect(sender).toHaveBeenCalledTimes(1);
+
+    await expect(outbox.abandonPending("https://old.example")).resolves.toBe(2);
+    release.resolve();
+    await expect(draining).resolves.toEqual({
+      attempted: 1,
+      completed: 0,
+      failed: 0,
+      remaining: 0,
+    });
+    expect(sender).toHaveBeenCalledTimes(1);
   });
 
   it("deduplicates enqueue by origin and rejects idempotency-key payload drift", async () => {

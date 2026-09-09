@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -19,12 +20,14 @@ from app.services.iphone_capability_binding import (
     CapabilityRequestBindingError,
     canonical_capability_request_fingerprint,
 )
-from app.services.maintenance_lease import MaintenanceLeaseService
+from app.services.maintenance_lease import MaintenanceLeaseGuard, MaintenanceLeaseService
 from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 
 TERMINAL_CAPABILITY_STATUSES = frozenset({"completed", "denied", "failed", "cancelled", "expired"})
+_EXPIRY_BATCH_SIZE = 25
+_MAX_EXPIRATIONS_PER_INVOCATION = 250
 
 
 class IPhoneCapabilityConflict(RuntimeError):
@@ -121,12 +124,12 @@ class IPhoneCapabilityService:
         if len(arguments_json.encode("utf-8")) > 64_000:
             raise IPhoneCapabilityConflict("capability arguments are too large")
 
-        created = self._now()
-        now = created.isoformat()
-        expires_at = (created + timedelta(seconds=rule.approval_ttl_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            created = self._now()
+            now = created.isoformat()
+            expires_at = (created + timedelta(seconds=rule.approval_ttl_seconds)).isoformat()
             job = await self._require_active_lease_locked(
                 db,
                 agent_id=agent_id,
@@ -239,6 +242,42 @@ class IPhoneCapabilityService:
             )
         return [self._public_request(row) for row in rows]
 
+    async def pending_delivery_previews(
+        self,
+        device_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return safe reconnect hints without replaying a consumed native effect."""
+
+        now = self._now().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = list(
+                await (
+                    await db.execute(
+                        """
+                        SELECT id,capability_name,expires_at
+                        FROM iphone_capability_requests
+                        WHERE device_id=?
+                          AND status IN ('waiting_approval','approved')
+                          AND expires_at>?
+                        ORDER BY created_at ASC,id ASC LIMIT ?
+                        """,
+                        (device_id, now, max(1, min(limit, 200))),
+                    )
+                ).fetchall()
+            )
+        return [
+            {
+                "request_id": str(row["id"]),
+                "capability_name": str(row["capability_name"]),
+                "expires_at": str(row["expires_at"]),
+                "preview": {"arguments_redacted": True},
+            }
+            for row in rows
+        ]
+
     async def get_request_for_device(
         self, request_id: str, device_id: str, *, include_arguments: bool = True
     ) -> dict[str, Any] | None:
@@ -275,11 +314,11 @@ class IPhoneCapabilityService:
     ) -> dict[str, Any]:
         if decision not in {"approve", "deny"}:
             raise IPhoneCapabilityConflict("invalid capability decision")
-        issued = self._now()
-        now = issued.isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            issued = self._now()
+            now = issued.isoformat()
             row = await (
                 await db.execute(
                     "SELECT * FROM iphone_capability_requests WHERE id=? AND device_id=?",
@@ -444,11 +483,11 @@ class IPhoneCapabilityService:
         grant_id: str,
         action_digest: str,
     ) -> dict[str, Any]:
-        now = self._now().isoformat()
         token_hash = self._grant_hash(grant_id)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
             row = await (
                 await db.execute(
                     """
@@ -538,7 +577,6 @@ class IPhoneCapabilityService:
         action_digest: str,
         result: dict[str, Any],
     ) -> dict[str, Any]:
-        now = self._now().isoformat()
         try:
             result_json = json.dumps(
                 result,
@@ -555,6 +593,7 @@ class IPhoneCapabilityService:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
             row = await (
                 await db.execute(
                     """
@@ -666,11 +705,11 @@ class IPhoneCapabilityService:
         lease_id: str,
         lease_generation: int,
     ) -> dict[str, Any]:
-        now = self._now().isoformat()
         await self.expire_requests()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
             await self._require_active_lease_locked(
                 db,
                 agent_id=agent_id,
@@ -705,8 +744,23 @@ class IPhoneCapabilityService:
             "completed_at": str(row["completed_at"]) if row["completed_at"] else None,
         }
 
-    async def expire_requests(self, *, maintenance_generation: int | None = None) -> int:
-        effective_generation = maintenance_generation
+    async def expire_requests(
+        self,
+        *,
+        maintenance_generation: int | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> int:
+        effective_generation = (
+            maintenance_guard.generation
+            if maintenance_guard is not None
+            else maintenance_generation
+        )
+        if (
+            maintenance_guard is not None
+            and maintenance_generation is not None
+            and maintenance_guard.generation != maintenance_generation
+        ):
+            raise RuntimeError("capability expiry received mismatched maintenance fencing")
         if self.maintenance_leases is not None and effective_generation is None:
             if self.owner_instance_id is None:
                 raise RuntimeError("capability expiry maintenance owner is not configured")
@@ -717,39 +771,86 @@ class IPhoneCapabilityService:
                 return 0
             effective_generation = lease.generation
         now = self._now().isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            await db.execute("BEGIN IMMEDIATE")
-            if self.maintenance_leases is not None:
-                if self.owner_instance_id is None or effective_generation is None:
-                    await db.rollback()
-                    raise RuntimeError("capability expiry requires a current maintenance lease")
-                await self.maintenance_leases.require_current_locked(
-                    db,
-                    "capability-expirer",
-                    self.owner_instance_id,
-                    effective_generation,
-                )
-            rows = list(
-                await (
-                    await db.execute(
-                        """
-                        SELECT r.* FROM iphone_capability_requests AS r
-                        LEFT JOIN iphone_capability_grants AS g ON g.request_id=r.id
-                        WHERE (r.status='waiting_approval' AND r.expires_at<=?)
-                           OR (r.status='approved' AND COALESCE(g.expires_at,r.expires_at)<=?)
-                           OR (r.status='consumed' AND r.expires_at<=?)
-                        """,
-                        (now, now, now),
-                    )
-                ).fetchall()
+        expired_count = 0
+        while expired_count < _MAX_EXPIRATIONS_PER_INVOCATION:
+            if maintenance_guard is not None:
+                await maintenance_guard.renew_now()
+            batch_limit = min(
+                _EXPIRY_BATCH_SIZE,
+                _MAX_EXPIRATIONS_PER_INVOCATION - expired_count,
             )
-            for row in rows:
-                await self._expire_locked(db, row, now)
-            await db.commit()
-        if rows:
-            await self._drain_outbox()
-        return len(rows)
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                try:
+                    if maintenance_guard is not None:
+                        await maintenance_guard.require_current_locked(db)
+                    elif self.maintenance_leases is not None:
+                        if self.owner_instance_id is None or effective_generation is None:
+                            raise RuntimeError(
+                                "capability expiry requires a current maintenance lease"
+                            )
+                        await self.maintenance_leases.require_current_locked(
+                            db,
+                            "capability-expirer",
+                            self.owner_instance_id,
+                            effective_generation,
+                        )
+                    batch_started = asyncio.get_running_loop().time()
+                    rows = list(
+                        await (
+                            await db.execute(
+                                """
+                                SELECT r.* FROM iphone_capability_requests AS r
+                                LEFT JOIN iphone_capability_grants AS g ON g.request_id=r.id
+                                WHERE (r.status='waiting_approval' AND r.expires_at<=?)
+                                   OR (r.status='approved' AND
+                                       COALESCE(g.expires_at,r.expires_at)<=?)
+                                   OR (r.status='consumed' AND r.expires_at<=?)
+                                ORDER BY r.expires_at ASC,r.id ASC
+                                LIMIT ?
+                                """,
+                                (now, now, now, batch_limit),
+                            )
+                        ).fetchall()
+                    )
+                    batch_examined = 0
+                    for row in rows:
+                        if (
+                            batch_examined > 0
+                            and maintenance_guard is not None
+                            and asyncio.get_running_loop().time() - batch_started
+                            >= maintenance_guard.mutation_batch_budget_seconds
+                        ):
+                            break
+                        batch_examined += 1
+                        await self._expire_locked(db, row, now)
+                    if maintenance_guard is not None:
+                        await maintenance_guard.require_current_locked(db)
+                    elif self.maintenance_leases is not None:
+                        if self.owner_instance_id is None or effective_generation is None:
+                            raise RuntimeError(
+                                "capability expiry lost its maintenance fencing context"
+                            )
+                        await self.maintenance_leases.require_current_locked(
+                            db,
+                            "capability-expirer",
+                            self.owner_instance_id,
+                            effective_generation,
+                        )
+                    await db.commit()
+                except BaseException:
+                    await db.rollback()
+                    raise
+            expired_count += batch_examined
+            if not rows or (batch_examined == len(rows) and len(rows) < batch_limit):
+                break
+            # Release SQLite's writer lock between batches so the runner can
+            # renew and other authoritative work can proceed.
+            await asyncio.sleep(0)
+        if expired_count:
+            await self.outbox.drain(maintenance_guard=maintenance_guard)
+        return expired_count
 
     async def pending_count(self) -> int:
         async with aiosqlite.connect(self.db_path) as db:

@@ -58,12 +58,17 @@ class TaskStateMachine:
 
 class AgentJobStateMachine:
     ALLOWED: ClassVar[dict[str, frozenset[str]]] = {
-        "queued": frozenset({"claimed", "cancelled", "failed"}),
-        "claimed": frozenset({"running", "queued", "completed", "failed", "cancelled"}),
-        "running": frozenset({"running", "queued", "completed", "failed", "cancelled"}),
+        "queued": frozenset({"claimed", "cancelled", "failed", "quarantined"}),
+        "claimed": frozenset(
+            {"running", "queued", "completed", "failed", "cancelled", "quarantined"}
+        ),
+        "running": frozenset(
+            {"running", "queued", "completed", "failed", "cancelled", "quarantined"}
+        ),
         "completed": frozenset(),
         "failed": frozenset(),
         "cancelled": frozenset(),
+        "quarantined": frozenset(),
     }
     UPDATE_COLUMNS = frozenset(
         {

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import importlib.util
 import json
+import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -192,6 +195,26 @@ def test_adapter_uses_only_configured_endpoint_and_marks_results_untrusted() -> 
         "http://research-adapter.example/v1/query",
         "https://user:pass@research-adapter.example/v1/query",
         "https://research-adapter.example/v1/query#fragment",
+        "https://research-adapter.example/v1/query?redirect=https://internal.invalid",
+        " https://research-adapter.example/v1/query",
+        "https://research-adapter.example\\@attacker.invalid/v1/query",
+        "https://research-adapter.example:/v1/query",
+        "https://research-adapter.example:0/v1/query",
+        "https://localhost/v1/query",
+        "https://127.0.0.1/v1/query",
+        "https://10.0.0.1/v1/query",
+        "https://169.254.169.254/v1/query",
+        "https://0.0.0.0/v1/query",
+        "https://224.0.0.1/v1/query",
+        "https://192.0.2.1/v1/query",
+        "https://[::1]/v1/query",
+        "https://[fc00::1]/v1/query",
+        "https://[fe80::1]/v1/query",
+        "https://[ff02::1]/v1/query",
+        "https://[::]/v1/query",
+        "https://[::ffff:127.0.0.1]/v1/query",
+        "https://[fe80::1%25en0]/v1/query",
+        "https://[2001:db8::1]/v1/query",
         "file:///tmp/adapter",
         "not-a-url",
     ],
@@ -200,6 +223,408 @@ def test_adapter_endpoint_requires_fixed_credential_free_https(endpoint: str) ->
     worker = load_worker()
     with pytest.raises(ValueError, match="research adapter endpoint"):
         worker.ResearchAdapterClient(endpoint, "adapter-secret")
+
+
+def test_adapter_endpoint_is_canonicalized_before_injected_transport() -> None:
+    worker = load_worker()
+    calls: list[str] = []
+
+    def transport(endpoint: str, *_: Any) -> dict[str, list[Any]]:
+        calls.append(endpoint)
+        return {"results": []}
+
+    adapter = worker.ResearchAdapterClient(
+        "HTTPS://Research-Adapter.Example:443/v1/query",
+        "adapter-secret",
+        transport=transport,
+    )
+
+    assert adapter.query(worker.ResearchQuery("query", 1))["results"] == []
+    assert calls == ["https://research-adapter.example/v1/query"]
+
+
+def test_adapter_resolution_is_single_pass_and_rejects_any_non_global_answer() -> None:
+    worker = load_worker()
+    calls = 0
+
+    def mixed_resolver(*_: Any, **__: Any) -> list[tuple[Any, ...]]:
+        nonlocal calls
+        calls += 1
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", 443),
+            ),
+        ]
+
+    with pytest.raises(worker.ResearchAdapterError, match="non-global"):
+        worker._resolve_global_addresses(
+            "research-adapter.example",
+            443,
+            time.monotonic() + 1,
+            resolver=mixed_resolver,
+        )
+    assert calls == 1
+
+    def public_resolver(*_: Any, **__: Any) -> list[tuple[Any, ...]]:
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            ),
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("2606:4700:4700::1111", 443, 0, 0),
+            ),
+        ]
+
+    addresses = worker._resolve_global_addresses(
+        "research-adapter.example",
+        443,
+        time.monotonic() + 1,
+        resolver=public_resolver,
+    )
+    assert [address.sockaddr[0] for address in addresses] == [
+        "93.184.216.34",
+        "2606:4700:4700::1111",
+    ]
+
+
+def test_adapter_resolution_obeys_absolute_deadline() -> None:
+    worker = load_worker()
+
+    def slow_resolver(*_: Any, **__: Any) -> list[Any]:
+        time.sleep(0.05)
+        return []
+
+    with pytest.raises(worker.ResearchAdapterError, match="deadline"):
+        worker._resolve_global_addresses(
+            "research-adapter.example",
+            443,
+            time.monotonic() + 0.005,
+            resolver=slow_resolver,
+        )
+
+
+def test_adapter_resolution_timeouts_keep_at_most_one_resolver_in_flight() -> None:
+    worker = load_worker()
+    baseline_threads = {
+        thread.ident
+        for thread in threading.enumerate()
+        if thread.name == "research-adapter-dns" and thread.is_alive()
+    }
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def blocked_resolver(*_: Any, **__: Any) -> list[tuple[Any, ...]]:
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=2)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ]
+
+    with pytest.raises(worker.ResearchAdapterError, match="deadline"):
+        worker._resolve_global_addresses(
+            "research-adapter.example",
+            443,
+            time.monotonic() + 0.005,
+            resolver=blocked_resolver,
+        )
+    assert started.wait(timeout=1)
+
+    for _ in range(10):
+        with pytest.raises(worker.ResearchAdapterError, match="deadline"):
+            worker._resolve_global_addresses(
+                "research-adapter.example",
+                443,
+                time.monotonic() + 0.005,
+                resolver=blocked_resolver,
+            )
+
+    assert calls == 1
+    active = {
+        thread.ident
+        for thread in threading.enumerate()
+        if thread.name == "research-adapter-dns" and thread.is_alive()
+    }
+    assert len(active - baseline_threads) == 1
+
+    release.set()
+
+    addresses = worker._resolve_global_addresses(
+        "research-adapter.example",
+        443,
+        time.monotonic() + 1,
+        resolver=lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 443),
+            )
+        ],
+    )
+    assert [address.sockaddr[0] for address in addresses] == ["93.184.216.34"]
+    assert calls == 1
+
+
+def test_default_adapter_transport_pins_address_and_ignores_proxy_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    address = worker.ResolvedAddress(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        ("93.184.216.34", 443),
+    )
+    observed: dict[str, Any] = {}
+
+    class FakeSocket:
+        def settimeout(self, value: float) -> None:
+            assert value > 0
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self) -> None:
+            self._chunks = [b'{"results":[]}', b""]
+
+        def getheader(self, name: str) -> str | None:
+            return None
+
+        def read1(self, _: int) -> bytes:
+            return self._chunks.pop(0)
+
+    class FakeConnection:
+        def __init__(
+            self,
+            hostname: str,
+            port: int,
+            resolved: Any,
+            deadline: float,
+        ) -> None:
+            observed["connection"] = (hostname, port, resolved, deadline)
+            self.sock = FakeSocket()
+
+        def connect(self) -> None:
+            observed["connected"] = True
+
+        def request(self, method: str, path: str, *, body: bytes, headers: dict[str, str]) -> None:
+            observed["request"] = (method, path, body, headers)
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            observed["closed"] = True
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *_: pytest.fail("adapter transport must not consult urllib proxy handlers"),
+    )
+    monkeypatch.setattr(worker, "_resolve_global_addresses", lambda *_args, **_kwargs: [address])
+    monkeypatch.setattr(worker, "_PinnedHTTPSConnection", FakeConnection)
+
+    result = worker.research_adapter_request(
+        "https://research-adapter.example/v1/query",
+        "adapter-secret",
+        {"query": "bounded", "max_results": 1},
+        5,
+    )
+
+    assert result == {"results": []}
+    assert observed["connection"][0:3] == (
+        "research-adapter.example",
+        443,
+        address,
+    )
+    assert observed["request"][0:2] == ("POST", "/v1/query")
+    assert observed["request"][3]["Authorization"] == "Bearer adapter-secret"
+    assert observed["connected"] is True
+    assert observed["closed"] is True
+
+
+def test_adapter_response_has_absolute_deadline_and_bounded_decompression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    real_monotonic = time.monotonic
+
+    class FakeSocket:
+        def settimeout(self, value: float) -> None:
+            assert value > 0
+
+    class FakeConnection:
+        sock = FakeSocket()
+
+    class SlowResponse:
+        status = 200
+
+        def getheader(self, name: str) -> str | None:
+            return None
+
+        def read1(self, _: int) -> bytes:
+            return b"{"
+
+    moments = iter((0.0, 0.6, 1.2))
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(moments))
+    with pytest.raises(worker.ResearchAdapterError, match="deadline"):
+        worker._read_bounded_adapter_json(SlowResponse(), FakeConnection(), 1.0)
+
+    class CompressedResponse:
+        status = 200
+
+        def __init__(self, payload: bytes) -> None:
+            self._chunks = [payload, b""]
+
+        def getheader(self, name: str) -> str | None:
+            return "gzip" if name.casefold() == "content-encoding" else None
+
+        def read1(self, _: int) -> bytes:
+            return self._chunks.pop(0)
+
+    monkeypatch.setattr(worker.time, "monotonic", real_monotonic)
+    valid = gzip.compress(b'{"results":[]}')
+    assert worker._read_bounded_adapter_json(
+        CompressedResponse(valid), FakeConnection(), real_monotonic() + 1
+    ) == {"results": []}
+    bomb = gzip.compress(b"x" * (worker.MAX_ADAPTER_RESPONSE_BYTES + 1))
+    with pytest.raises(worker.ResearchAdapterError, match="size limit"):
+        worker._read_bounded_adapter_json(
+            CompressedResponse(bomb), FakeConnection(), real_monotonic() + 1
+        )
+
+
+def test_adapter_peer_pin_and_redirects_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    address = worker.ResolvedAddress(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        ("93.184.216.34", 443),
+    )
+
+    class WrongPeer:
+        def getpeername(self) -> tuple[str, int]:
+            return "127.0.0.1", 443
+
+    with pytest.raises(worker.ResearchAdapterError, match="pinned address"):
+        worker._verify_pinned_peer(WrongPeer(), address)
+
+    class FakeSocket:
+        def settimeout(self, value: float) -> None:
+            assert value > 0
+
+    class RedirectResponse:
+        status = 302
+
+    class FakeConnection:
+        def __init__(self, *_: Any) -> None:
+            self.sock = FakeSocket()
+
+        def connect(self) -> None:
+            return None
+
+        def request(self, *_: Any, **__: Any) -> None:
+            return None
+
+        def getresponse(self) -> RedirectResponse:
+            return RedirectResponse()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(worker, "_resolve_global_addresses", lambda *_args, **_kwargs: [address])
+    monkeypatch.setattr(worker, "_PinnedHTTPSConnection", FakeConnection)
+    with pytest.raises(worker.ResearchAdapterError, match="redirects are not allowed"):
+        worker.research_adapter_request(
+            "https://research-adapter.example/v1/query",
+            "adapter-secret",
+            {"query": "bounded", "max_results": 1},
+            5,
+        )
+
+
+def test_adapter_header_drip_cannot_outlive_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    address = worker.ResolvedAddress(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        ("93.184.216.34", 443),
+    )
+    closed = threading.Event()
+
+    class FakeSocket:
+        def settimeout(self, value: float) -> None:
+            assert value > 0
+
+        def shutdown(self, _: int) -> None:
+            closed.set()
+
+    class FakeConnection:
+        def __init__(self, *_: Any) -> None:
+            self.sock = FakeSocket()
+
+        def connect(self) -> None:
+            return None
+
+        def request(self, *_: Any, **__: Any) -> None:
+            return None
+
+        def getresponse(self) -> None:
+            closed.wait(timeout=1)
+
+        def close(self) -> None:
+            closed.set()
+
+    monkeypatch.setattr(worker, "_resolve_global_addresses", lambda *_args, **_kwargs: [address])
+    monkeypatch.setattr(worker, "_PinnedHTTPSConnection", FakeConnection)
+
+    started = time.monotonic()
+    with pytest.raises(worker.ResearchAdapterError, match="deadline"):
+        worker.research_adapter_request(
+            "https://research-adapter.example/v1/query",
+            "adapter-secret",
+            {"query": "bounded", "max_results": 1},
+            0.01,
+        )
+    assert time.monotonic() - started < 0.5
+    assert closed.is_set()
 
 
 def test_adapter_response_contract_rejects_oversized_or_ambiguous_data() -> None:
@@ -295,6 +720,38 @@ def test_run_once_renews_lease_and_submits_only_bounded_untrusted_result() -> No
         },
     }
     assert "agent-secret" not in json.dumps(result_call[3])
+
+
+def test_lease_heartbeat_stop_is_bounded_when_request_does_not_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    blocked = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    class BlockingClient:
+        def heartbeat_job(self, _job_id: str, _lease: Any) -> None:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                blocked.set()
+                release.wait(timeout=1)
+
+    monkeypatch.setattr(worker, "HEARTBEAT_JOIN_TIMEOUT_SECONDS", 0.01)
+    lease = worker.LeaseProof("claim", "lease", 1)
+    heartbeat = worker.LeaseHeartbeat(BlockingClient(), "job", lease, 0.001)
+    heartbeat.start()
+    assert blocked.wait(timeout=1)
+
+    started = time.monotonic()
+    heartbeat.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert heartbeat._thread is not None and heartbeat._thread.is_alive()
+    release.set()
+    heartbeat._thread.join(timeout=1)
 
 
 def test_run_once_discards_result_after_lease_loss() -> None:

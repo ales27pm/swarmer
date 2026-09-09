@@ -3,12 +3,16 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 import aiosqlite
+
+from app.services.device_session_coordinator import DeviceSessionCoordinator
 
 
 class PairingRateLimited(RuntimeError):
@@ -44,12 +48,16 @@ class AuthService:
         pairing_max_attempts: int = 10,
         pairing_candidate_ttl_seconds: int = 120,
         pairing_pepper: str,
+        clock: Callable[[], datetime] | None = None,
+        session_coordinator: DeviceSessionCoordinator | None = None,
     ) -> None:
         self.db_path = db_path
         self.pairing_ttl_seconds = min(max(pairing_ttl_seconds, 60), 900)
         self.pairing_max_attempts = min(max(pairing_max_attempts, 1), 20)
         self.pairing_candidate_ttl_seconds = min(max(pairing_candidate_ttl_seconds, 30), 300)
         self._pairing_pepper = pairing_pepper.encode("utf-8")
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self._session_coordinator = session_coordinator or DeviceSessionCoordinator(db_path)
 
     @staticmethod
     def _digest(value: str) -> str:
@@ -64,10 +72,10 @@ class AuthService:
 
     async def create_pairing_code(self) -> str:
         code = f"{secrets.randbelow(1_000_000):06d}"
-        now = datetime.now(UTC)
-        expires = (now + timedelta(seconds=self.pairing_ttl_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now()
+            expires = (now + timedelta(seconds=self.pairing_ttl_seconds)).isoformat()
             await db.execute("DELETE FROM pairing_codes")
             await db.execute(
                 """
@@ -82,12 +90,12 @@ class AuthService:
     async def complete_pairing(
         self, code: str, device_id: str, name: str
     ) -> PairingCandidate | None:
-        now_value = datetime.now(UTC)
-        now = now_value.isoformat()
         candidate = self._pairing_digest(code)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now_value = self._now()
+            now = now_value.isoformat()
             row = await (
                 await db.execute(
                     """
@@ -163,10 +171,10 @@ class AuthService:
     async def authenticate_pairing_candidate(self, token: str) -> dict[str, Any] | None:
         if not token:
             return None
-        now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
             await db.execute("DELETE FROM pairing_candidates WHERE expires_at<=?", (now,))
             row = await (
                 await db.execute(
@@ -188,12 +196,12 @@ class AuthService:
     ) -> PairingFinalization | None:
         if not token:
             return None
-        now_value = datetime.now(UTC)
-        now = now_value.isoformat()
         token_hash = self._stored_token(token)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now_value = self._now()
+            now = now_value.isoformat()
             await db.execute("DELETE FROM pairing_candidates WHERE expires_at<=?", (now,))
 
             active = await (
@@ -256,88 +264,120 @@ class AuthService:
     async def authenticate_token(self, token: str) -> dict[str, Any] | None:
         if not token:
             return None
-        now = datetime.now(UTC).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        token_hash = self._stored_token(token)
+        candidate_device_id = await self._candidate_device_id(token_hash)
+        async with (
+            self._serialize_candidate_promotion(candidate_device_id),
+            aiosqlite.connect(self.db_path) as db,
+        ):
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
-            await db.execute("DELETE FROM pairing_candidates WHERE expires_at<=?", (now,))
-            token_hash = self._stored_token(token)
-            row = await (
-                await db.execute(
-                    """
-                    SELECT id,name,created_at,'active' AS credential_state
-                    FROM devices WHERE token=?
-                    """,
-                    (token_hash,),
-                )
-            ).fetchone()
-            if row is None:
-                ready = await (
-                    await db.execute(
-                        """
-                        SELECT pairing_id,device_id,name,created_at
-                        FROM pairing_candidates
-                        WHERE token_hash=? AND status='finalized' AND expires_at>?
-                        """,
-                        (token_hash, now),
-                    )
-                ).fetchone()
-                if ready is not None:
-                    await db.execute(
-                        """
-                        INSERT INTO devices(id,name,token,created_at,last_seen_at,last_pairing_id)
-                        VALUES(?,?,?,?,?,?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            name=excluded.name,
-                            token=excluded.token,
-                            last_seen_at=excluded.last_seen_at,
-                            last_pairing_id=excluded.last_pairing_id
-                        """,
-                        (
-                            str(ready["device_id"]),
-                            str(ready["name"]),
-                            token_hash,
-                            str(ready["created_at"]),
-                            now,
-                            str(ready["pairing_id"]),
-                        ),
-                    )
-                    await db.execute(
-                        "DELETE FROM pairing_candidates WHERE device_id=?",
-                        (str(ready["device_id"]),),
-                    )
-                    await db.execute(
-                        "DELETE FROM websocket_tickets WHERE device_id=?",
-                        (str(ready["device_id"]),),
-                    )
-                    row = await (
-                        await db.execute(
-                            """
-                            SELECT id,name,created_at,'active' AS credential_state
-                            FROM devices WHERE id=? AND token=?
-                            """,
-                            (str(ready["device_id"]), token_hash),
-                        )
-                    ).fetchone()
+            now = self._now().isoformat()
+            row = await self._authenticate_token_locked(db, token_hash, now)
             if not row:
                 await db.commit()
                 return None
-            await db.execute("UPDATE devices SET last_seen_at=? WHERE id=?", (now, row["id"]))
             await db.commit()
         return {**dict(row), "last_seen_at": now}
+
+    async def _authenticate_token_locked(
+        self,
+        db: aiosqlite.Connection,
+        token_hash: str,
+        now: str,
+    ) -> aiosqlite.Row | None:
+        """Authenticate or atomically promote a device credential under a writer lock."""
+
+        await db.execute("DELETE FROM pairing_candidates WHERE expires_at<=?", (now,))
+        row = await (
+            await db.execute(
+                """
+                SELECT id,name,created_at,last_pairing_id AS session_id,
+                       'active' AS credential_state
+                FROM devices WHERE token=?
+                """,
+                (token_hash,),
+            )
+        ).fetchone()
+        if row is None:
+            ready = await (
+                await db.execute(
+                    """
+                    SELECT pairing_id,device_id,name,created_at
+                    FROM pairing_candidates
+                    WHERE token_hash=? AND status='finalized' AND expires_at>?
+                    """,
+                    (token_hash, now),
+                )
+            ).fetchone()
+            if ready is not None:
+                await db.execute(
+                    """
+                    INSERT INTO devices(id,name,token,created_at,last_seen_at,last_pairing_id)
+                    VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name=excluded.name,
+                        token=excluded.token,
+                        last_seen_at=excluded.last_seen_at,
+                        last_pairing_id=excluded.last_pairing_id,
+                        websocket_connection_id=NULL
+                    """,
+                    (
+                        str(ready["device_id"]),
+                        str(ready["name"]),
+                        token_hash,
+                        str(ready["created_at"]),
+                        now,
+                        str(ready["pairing_id"]),
+                    ),
+                )
+                await db.execute(
+                    "DELETE FROM pairing_candidates WHERE device_id=?",
+                    (str(ready["device_id"]),),
+                )
+                await db.execute(
+                    "DELETE FROM websocket_tickets WHERE device_id=?",
+                    (str(ready["device_id"]),),
+                )
+                row = await (
+                    await db.execute(
+                        """
+                        SELECT id,name,created_at,last_pairing_id AS session_id,
+                               'active' AS credential_state
+                        FROM devices WHERE id=? AND token=?
+                        """,
+                        (str(ready["device_id"]), token_hash),
+                    )
+                ).fetchone()
+        if row is not None:
+            await db.execute("UPDATE devices SET last_seen_at=? WHERE id=?", (now, row["id"]))
+        return row
 
     async def validate_token(self, token: str) -> bool:
         return await self.authenticate_token(token) is not None
 
     async def create_websocket_ticket(self, token: str) -> str | None:
-        principal = await self.authenticate_token(token)
-        if not principal:
+        if not token:
             return None
-        ticket = secrets.token_urlsafe(32)
-        expires = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        token_hash = self._stored_token(token)
+        candidate_device_id = await self._candidate_device_id(token_hash)
+        async with (
+            self._serialize_candidate_promotion(candidate_device_id),
+            aiosqlite.connect(self.db_path) as db,
+        ):
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            now = self._now()
+            principal = await self._authenticate_token_locked(db, token_hash, now.isoformat())
+            if principal is None:
+                await db.commit()
+                return None
+            ticket = secrets.token_urlsafe(32)
+            expires = (now + timedelta(seconds=30)).isoformat()
+            await db.execute("DELETE FROM websocket_tickets WHERE expires_at<?", (now.isoformat(),))
             await db.execute(
-                "DELETE FROM websocket_tickets WHERE expires_at<?", (datetime.now(UTC).isoformat(),)
+                "DELETE FROM websocket_tickets WHERE device_id=?",
+                (principal["id"],),
             )
             await db.execute(
                 "INSERT INTO websocket_tickets(ticket_hash,device_id,expires_at) VALUES(?,?,?)",
@@ -346,17 +386,53 @@ class AuthService:
             await db.commit()
         return ticket
 
+    async def _candidate_device_id(self, token_hash: str) -> str | None:
+        """Resolve a possible cutover target; the writer transaction revalidates it."""
+
+        async with aiosqlite.connect(self.db_path) as db:
+            now = self._now().isoformat()
+            row = await (
+                await db.execute(
+                    """
+                    SELECT device_id FROM pairing_candidates
+                    WHERE token_hash=? AND expires_at>?
+                    """,
+                    (token_hash, now),
+                )
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    @asynccontextmanager
+    async def _serialize_candidate_promotion(
+        self, candidate_device_id: str | None
+    ) -> AsyncIterator[None]:
+        if candidate_device_id is None:
+            yield
+            return
+        async with self.serialize_device_session(candidate_device_id):
+            yield
+
+    @asynccontextmanager
+    async def serialize_device_session(self, device_id: str) -> AsyncIterator[None]:
+        """Linearize one device's credential cutover and WebSocket delivery."""
+
+        async with self._session_coordinator.hold(device_id):
+            yield
+
     async def consume_websocket_ticket(self, ticket: str) -> dict[str, str] | None:
-        now = datetime.now(UTC).isoformat()
         digest = self._digest(ticket)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
             row = await (
                 await db.execute(
                     """
-                    SELECT ticket_hash,device_id FROM websocket_tickets
-                    WHERE ticket_hash=? AND expires_at>=?
+                    SELECT ticket.ticket_hash,ticket.device_id,device.last_pairing_id
+                    FROM websocket_tickets AS ticket
+                    JOIN devices AS device ON device.id=ticket.device_id
+                    WHERE ticket.ticket_hash=? AND ticket.expires_at>=?
+                      AND device.last_pairing_id IS NOT NULL
                     """,
                     (digest, now),
                 )
@@ -364,4 +440,112 @@ class AuthService:
             await db.execute("DELETE FROM websocket_tickets WHERE ticket_hash=?", (digest,))
             await db.execute("DELETE FROM websocket_tickets WHERE expires_at<?", (now,))
             await db.commit()
-        return {"device_id": str(row["device_id"])} if row else None
+        return (
+            {
+                "device_id": str(row["device_id"]),
+                "session_id": str(row["last_pairing_id"]),
+            }
+            if row
+            else None
+        )
+
+    async def is_device_session_current(self, device_id: str, session_id: str) -> bool:
+        """Check that a live transport still belongs to the active pairing generation."""
+
+        if not device_id or not session_id:
+            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            row = await (
+                await db.execute(
+                    """
+                    SELECT 1 FROM devices
+                    WHERE id=? AND last_pairing_id=?
+                    """,
+                    (device_id, session_id),
+                )
+            ).fetchone()
+        return row is not None
+
+    async def activate_websocket_connection(
+        self,
+        device_id: str,
+        session_id: str,
+        connection_id: str,
+    ) -> bool:
+        """Install the sole authoritative WebSocket delivery owner for a device."""
+
+        if not device_id or not session_id or not connection_id:
+            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
+            updated = await db.execute(
+                """
+                UPDATE devices SET websocket_connection_id=?
+                WHERE id=? AND last_pairing_id=?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM pairing_candidates AS candidate
+                    WHERE candidate.device_id=devices.id
+                      AND candidate.status='finalized'
+                      AND candidate.expires_at>?
+                  )
+                """,
+                (connection_id, device_id, session_id, now),
+            )
+            await db.commit()
+        return updated.rowcount == 1
+
+    async def is_websocket_connection_current(
+        self,
+        device_id: str,
+        session_id: str,
+        connection_id: str,
+    ) -> bool:
+        if not device_id or not session_id or not connection_id:
+            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            now = self._now().isoformat()
+            row = await (
+                await db.execute(
+                    """
+                    SELECT 1 FROM devices AS device
+                    WHERE device.id=? AND device.last_pairing_id=?
+                      AND device.websocket_connection_id=?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM pairing_candidates AS candidate
+                        WHERE candidate.device_id=device.id
+                          AND candidate.status='finalized'
+                          AND candidate.expires_at>?
+                      )
+                    """,
+                    (device_id, session_id, connection_id, now),
+                )
+            ).fetchone()
+        return row is not None
+
+    async def clear_websocket_connection(
+        self,
+        device_id: str,
+        session_id: str,
+        connection_id: str,
+    ) -> None:
+        """Clear a connection only while it still owns the durable device slot."""
+
+        if not device_id or not session_id or not connection_id:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                UPDATE devices SET websocket_connection_id=NULL
+                WHERE id=? AND last_pairing_id=? AND websocket_connection_id=?
+                """,
+                (device_id, session_id, connection_id),
+            )
+            await db.commit()
+
+    def _now(self) -> datetime:
+        current = self.clock()
+        if current.tzinfo is None:
+            raise RuntimeError("authentication clock must be timezone-aware")
+        return current.astimezone(UTC)

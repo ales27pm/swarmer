@@ -203,6 +203,38 @@ def test_repeats_lease_heartbeat_during_execution_and_submits_proof(
     }
 
 
+def test_lease_heartbeat_stop_is_bounded_when_request_does_not_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    blocked = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    class BlockingClient:
+        def heartbeat_job(self, _job_id: str, _lease: Any) -> None:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                blocked.set()
+                release.wait(timeout=1)
+
+    monkeypatch.setattr(worker, "HEARTBEAT_JOIN_TIMEOUT_SECONDS", 0.01)
+    lease = worker.LeaseProof("claim", "lease", 1)
+    heartbeat = worker.LeaseHeartbeat(BlockingClient(), "job", lease, 0.001)
+    heartbeat.start()
+    assert blocked.wait(timeout=1)
+
+    started = time.monotonic()
+    heartbeat.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert heartbeat._thread is not None and heartbeat._thread.is_alive()
+    release.set()
+    heartbeat._thread.join(timeout=1)
+
+
 def test_stale_lease_discards_local_result(tmp_path: Path) -> None:
     worker = load_worker()
     calls: list[str] = []

@@ -325,6 +325,52 @@ def test_all_committed_json_schemas_are_valid_and_roadmap_is_explicit() -> None:
 
 def test_openapi_covers_runtime_transport_statuses_and_response_credentials() -> None:
     document = yaml.safe_load((REPO_ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
+    assert document["info"]["version"] == "0.11.0"
+    runtime_status = document["components"]["schemas"]["RuntimeStatus"]
+    assert runtime_status["additionalProperties"] is False
+    assert runtime_status["properties"]["version"] == {"const": "0.11.0"}
+    assert {
+        "redis_reconnect_count",
+        "redis_last_error_category",
+        "outbox_duplicate_publications",
+        "outbox_claim_expirations",
+        "outbox_publish_latency_ms_count",
+        "outbox_publish_latency_ms_total",
+        "outbox_publish_latency_ms_max",
+        "quarantined_jobs",
+        "maintenance_lease_renewal_failures",
+        "vector_generation_age_seconds",
+    }.issubset(runtime_status["required"])
+    assert runtime_status["properties"]["redis_last_error_category"]["type"] == [
+        "string",
+        "null",
+    ]
+    assert set(runtime_status["properties"]["redis_last_error_category"]["enum"]) == {
+        "timeout",
+        "connection",
+        "authentication",
+        "tls",
+        "publication",
+        "dedupe_conflict",
+        "protocol",
+        None,
+    }
+    assert runtime_status["properties"]["vector_generation_age_seconds"]["type"] == [
+        "number",
+        "null",
+    ]
+    assert (
+        "quarantined"
+        in document["components"]["schemas"]["AgentJob"]["properties"]["status"]["enum"]
+    )
+    assert not {
+        "redis_url",
+        "password",
+        "credential",
+        "bearer_token",
+        "grant_token",
+        "lease_token",
+    }.intersection(runtime_status["properties"])
     for path, path_item in document["paths"].items():
         for method, operation in path_item.items():
             if method not in {"delete", "get", "patch", "post", "put"}:

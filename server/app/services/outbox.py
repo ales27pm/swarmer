@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiosqlite
 
+if TYPE_CHECKING:
+    from app.services.maintenance_lease import MaintenanceLeaseGuard
+
+from app.services.audit_log import append_audit_event
 from app.services.event_privacy import assert_safe_shared_payload
 from app.services.message_board import (
     EVENT_SCHEMA_VERSION,
@@ -17,6 +23,11 @@ from app.services.message_board import (
     MessageBoard,
     MessageBoardUnavailableError,
 )
+
+_CLAIM_EXPIRED_AUDIT_EVENT = "outbox.publication.claim_expired"
+_PUBLICATION_ACK_AUDIT_EVENT = "outbox.publication.acknowledged"
+_RECOVERY_BATCH_SIZE = 50
+_MAX_RECOVERIES_PER_INVOCATION = 500
 
 
 class OutboxService:
@@ -156,21 +167,29 @@ class OutboxService:
         *,
         limit: int = 100,
         now: datetime | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> list[dict[str, Any]]:
         bounded_limit = max(1, min(limit, 500))
-        claimed_at = self._utc(now)
-        claimed_at_text = claimed_at.isoformat()
-        lease_expires_at = (
-            claimed_at + timedelta(seconds=self.publication_lease_seconds)
-        ).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            # Preserve an explicit timestamp for deterministic recovery tests,
+            # but never age an implicit publication lease while waiting for
+            # SQLite's writer lock.
+            claimed_at = self._utc(now)
+            claimed_at_text = claimed_at.isoformat()
+            lease_expires_at = (
+                claimed_at + timedelta(seconds=self.publication_lease_seconds)
+            ).isoformat()
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             candidates = list(
                 await (
                     await db.execute(
                         """
-                        SELECT id,publish_generation FROM outbox_events
+                        SELECT id,event_id,task_id,publishing_owner,
+                               publishing_lease_expires_at,publish_generation
+                        FROM outbox_events
                         WHERE published_at IS NULL AND (
                             publishing_owner IS NULL
                             OR publishing_lease_expires_at IS NULL
@@ -208,6 +227,19 @@ class OutboxService:
                 )
                 if cursor.rowcount == 1:
                     claimed_ids.append(outbox_id)
+                    if candidate["publishing_owner"] is not None:
+                        await self._record_claim_expired_locked(
+                            db,
+                            outbox_id=outbox_id,
+                            event_id=str(candidate["event_id"]),
+                            task_id=(
+                                str(candidate["task_id"])
+                                if candidate["task_id"] is not None
+                                else None
+                            ),
+                            expired_generation=generation,
+                            detected_at=claimed_at_text,
+                        )
             rows: list[aiosqlite.Row] = []
             for outbox_id in claimed_ids:
                 row = await (
@@ -216,10 +248,17 @@ class OutboxService:
                 if row is None:
                     raise RuntimeError("claimed outbox event disappeared")
                 rows.append(row)
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
         return [dict(row) for row in rows]
 
-    async def publish_claimed(self, row: Mapping[str, Any]) -> dict[str, Any]:
+    async def publish_claimed(
+        self,
+        row: Mapping[str, Any],
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> dict[str, Any]:
         if row.get("publishing_owner") != self.instance_id:
             raise ValueError("outbox event is not owned by this publisher")
         payload = json.loads(str(row["payload_json"]))
@@ -238,30 +277,52 @@ class OutboxService:
             payload=payload,
             created_at=str(row["created_at"]),
         )
-        return await self.board.publish(event)
+        if maintenance_guard is not None:
+            maintenance_guard.raise_if_lost()
+        started_ns = time.monotonic_ns()
+        acknowledgement = await self.board.publish(event)
+        latency_ms = max(0, (time.monotonic_ns() - started_ns) // 1_000_000)
+        if maintenance_guard is not None:
+            maintenance_guard.raise_if_lost()
+        await self._record_publication_acknowledgement(
+            row,
+            duplicate=acknowledgement.get("duplicate") is True,
+            latency_ms=latency_ms,
+            maintenance_guard=maintenance_guard,
+        )
+        return acknowledgement
 
-    async def drain(self, *, limit: int = 100) -> dict[str, int]:
-        rows = await self.claim_batch(limit=limit)
+    async def drain(
+        self,
+        *,
+        limit: int = 100,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> dict[str, int]:
+        rows = await self.claim_batch(limit=limit, maintenance_guard=maintenance_guard)
         published = 0
         failed = 0
         for index, row in enumerate(rows):
             outbox_id = int(row["id"])
             generation = int(row["publish_generation"])
             try:
-                await self.publish_claimed(row)
+                await self.publish_claimed(row, maintenance_guard=maintenance_guard)
                 changed = await self.mark_published(
                     outbox_id,
                     owner_instance_id=self.instance_id,
                     publish_generation=generation,
+                    maintenance_guard=maintenance_guard,
                 )
                 if changed:
                     published += 1
             except MessageBoardUnavailableError as exc:
+                if maintenance_guard is not None:
+                    maintenance_guard.raise_if_lost()
                 changed = await self.release_or_fail(
                     outbox_id,
                     owner_instance_id=self.instance_id,
                     publish_generation=generation,
                     error=exc,
+                    maintenance_guard=maintenance_guard,
                 )
                 if changed:
                     failed += 1
@@ -270,17 +331,21 @@ class OutboxService:
                         int(unattempted["id"]),
                         owner_instance_id=self.instance_id,
                         publish_generation=int(unattempted["publish_generation"]),
+                        maintenance_guard=maintenance_guard,
                     )
                 break
             # A swappable board adapter may expose its own exception hierarchy.
             # Cancellation remains a BaseException, while every publication error
             # must leave this durable row pending for a later drain.
             except Exception as exc:  # noqa: BLE001
+                if maintenance_guard is not None:
+                    maintenance_guard.raise_if_lost()
                 changed = await self.release_or_fail(
                     outbox_id,
                     owner_instance_id=self.instance_id,
                     publish_generation=generation,
                     error=exc,
+                    maintenance_guard=maintenance_guard,
                 )
                 if changed:
                     failed += 1
@@ -297,10 +362,14 @@ class OutboxService:
         *,
         owner_instance_id: str,
         publish_generation: int,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> bool:
         """Release an unattempted fenced claim without recording a false failure."""
 
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             cursor = await db.execute(
                 """UPDATE outbox_events
                 SET publishing_owner=NULL,publishing_started_at=NULL,
@@ -309,6 +378,8 @@ class OutboxService:
                   AND publish_generation=?""",
                 (outbox_id, owner_instance_id, publish_generation),
             )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
         return cursor.rowcount == 1
 
@@ -318,12 +389,19 @@ class OutboxService:
         owner_instance_id: str | None = None,
         publish_generation: int | None = None,
         now: datetime | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> bool:
         owner = owner_instance_id or self.instance_id
         if publish_generation is None:
             return False
-        published_at = self._utc(now).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            # An implicit acknowledgement time must reflect when this fenced
+            # write actually owns SQLite, not when it began waiting behind a
+            # different writer. Explicit times remain deterministic for tests.
+            published_at = self._utc(now).isoformat()
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             cursor = await db.execute(
                 """
                 UPDATE outbox_events
@@ -334,6 +412,8 @@ class OutboxService:
                 """,
                 (published_at, outbox_id, owner, publish_generation, published_at),
             )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
         return cursor.rowcount == 1
 
@@ -345,10 +425,14 @@ class OutboxService:
         publish_generation: int,
         error: BaseException,
         now: datetime | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> bool:
         self._utc(now)
         safe_error = f"{type(error).__name__}: publication failed"
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             cursor = await db.execute(
                 """
                 UPDATE outbox_events
@@ -359,6 +443,8 @@ class OutboxService:
                 """,
                 (safe_error, outbox_id, owner_instance_id, publish_generation),
             )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
         return cursor.rowcount == 1
 
@@ -384,21 +470,93 @@ class OutboxService:
             error=error,
         )
 
-    async def recover_expired_claims(self, *, now: datetime | None = None) -> int:
+    async def recover_expired_claims(
+        self,
+        *,
+        now: datetime | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> int:
         current = self._utc(now).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                """
-                UPDATE outbox_events
-                SET publishing_owner=NULL,publishing_started_at=NULL,
-                    publishing_lease_expires_at=NULL
-                WHERE published_at IS NULL AND publishing_owner IS NOT NULL
-                  AND (publishing_lease_expires_at IS NULL OR publishing_lease_expires_at<=?)
-                """,
-                (current,),
+        recovered = 0
+        while recovered < _MAX_RECOVERIES_PER_INVOCATION:
+            if maintenance_guard is not None:
+                await maintenance_guard.renew_now()
+            batch_limit = min(
+                _RECOVERY_BATCH_SIZE,
+                _MAX_RECOVERIES_PER_INVOCATION - recovered,
             )
-            await db.commit()
-        return cursor.rowcount
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                try:
+                    if maintenance_guard is not None:
+                        await maintenance_guard.require_current_locked(db)
+                    batch_started_ns = time.monotonic_ns()
+                    expired = list(
+                        await (
+                            await db.execute(
+                                """
+                                SELECT id,event_id,task_id,publish_generation
+                                FROM outbox_events
+                                WHERE published_at IS NULL AND publishing_owner IS NOT NULL
+                                  AND (publishing_lease_expires_at IS NULL
+                                       OR publishing_lease_expires_at<=?)
+                                ORDER BY id ASC
+                                LIMIT ?
+                                """,
+                                (current, batch_limit),
+                            )
+                        ).fetchall()
+                    )
+                    batch_recovered = 0
+                    batch_examined = 0
+                    for row in expired:
+                        if (
+                            batch_examined > 0
+                            and maintenance_guard is not None
+                            and (time.monotonic_ns() - batch_started_ns) / 1_000_000_000
+                            >= maintenance_guard.mutation_batch_budget_seconds
+                        ):
+                            break
+                        batch_examined += 1
+                        cursor = await db.execute(
+                            """
+                            UPDATE outbox_events
+                            SET publishing_owner=NULL,publishing_started_at=NULL,
+                                publishing_lease_expires_at=NULL
+                            WHERE id=? AND published_at IS NULL
+                              AND publishing_owner IS NOT NULL
+                              AND publish_generation=? AND (
+                                publishing_lease_expires_at IS NULL
+                                OR publishing_lease_expires_at<=?
+                              )
+                            """,
+                            (int(row["id"]), int(row["publish_generation"]), current),
+                        )
+                        if cursor.rowcount != 1:
+                            continue
+                        batch_recovered += 1
+                        await self._record_claim_expired_locked(
+                            db,
+                            outbox_id=int(row["id"]),
+                            event_id=str(row["event_id"]),
+                            task_id=(str(row["task_id"]) if row["task_id"] is not None else None),
+                            expired_generation=int(row["publish_generation"]),
+                            detected_at=current,
+                        )
+                    if maintenance_guard is not None:
+                        await maintenance_guard.require_current_locked(db)
+                    await db.commit()
+                except BaseException:
+                    await db.rollback()
+                    raise
+            recovered += batch_recovered
+            if not expired or (batch_examined == len(expired) and len(expired) < batch_limit):
+                break
+            # Give the lease renewal task and ordinary SQLite writers a chance
+            # between bounded write transactions.
+            await asyncio.sleep(0)
+        return recovered
 
     async def pending_count(self) -> int:
         async with aiosqlite.connect(self.db_path) as db:
@@ -417,18 +575,132 @@ class OutboxService:
                 await db.execute(
                     """
                     SELECT
-                      SUM(CASE WHEN published_at IS NULL THEN 1 ELSE 0 END),
-                      SUM(CASE WHEN published_at IS NULL AND publishing_owner IS NOT NULL
-                               THEN 1 ELSE 0 END),
-                      SUM(CASE WHEN published_at IS NULL AND attempts > 0 THEN 1 ELSE 0 END)
+                      COUNT(*),
+                      SUM(CASE WHEN publishing_owner IS NOT NULL THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN attempts > 0 THEN 1 ELSE 0 END)
                     FROM outbox_events
+                    WHERE published_at IS NULL
+                    """
+                )
+            ).fetchone()
+            operational = await (
+                await db.execute(
+                    """
+                    SELECT claim_expirations,duplicate_publications,
+                           publish_latency_ms_count,publish_latency_ms_total,
+                           publish_latency_ms_max
+                    FROM outbox_operational_metrics WHERE singleton_id=1
                     """
                 )
             ).fetchone()
         if row is None:
             raise RuntimeError("SQLite did not return outbox metrics")
+        if operational is None:
+            raise RuntimeError("SQLite did not return outbox operational metrics")
         return {
             "outbox_pending": int(row[0] or 0),
             "outbox_publishing": int(row[1] or 0),
             "outbox_failed": int(row[2] or 0),
+            "outbox_duplicate_publications": int(operational[1]),
+            "outbox_claim_expirations": int(operational[0]),
+            "outbox_publish_latency_ms_count": int(operational[2]),
+            "outbox_publish_latency_ms_total": int(operational[3]),
+            "outbox_publish_latency_ms_max": int(operational[4]),
         }
+
+    async def _record_publication_acknowledgement(
+        self,
+        row: Mapping[str, Any],
+        *,
+        duplicate: bool,
+        latency_ms: int,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> None:
+        """Persist payload-free publication telemetry across process restarts."""
+
+        outbox_id = int(row["id"])
+        generation = int(row["publish_generation"])
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            persisted = await (
+                await db.execute(
+                    """
+                    SELECT 1 FROM outbox_events
+                    WHERE id=? AND event_id=? AND dedupe_key=?
+                    """,
+                    (outbox_id, str(row["event_id"]), str(row["dedupe_key"])),
+                )
+            ).fetchone()
+            if persisted is None:
+                await db.rollback()
+                raise RuntimeError("acknowledged outbox event disappeared")
+            await append_audit_event(
+                db,
+                _PUBLICATION_ACK_AUDIT_EVENT,
+                {
+                    "outbox_id": outbox_id,
+                    "event_id": str(row["event_id"]),
+                    "publish_generation": generation,
+                    "duplicate": duplicate,
+                    "latency_ms": latency_ms,
+                },
+                actor_type="control-plane",
+                actor_id=self.instance_id,
+                task_id=str(row["task_id"]) if row["task_id"] is not None else None,
+                trace_id=f"outbox:{outbox_id}:publication:{generation}",
+            )
+            await db.execute(
+                """
+                UPDATE outbox_operational_metrics
+                SET duplicate_publications=duplicate_publications+?,
+                    publish_latency_ms_count=publish_latency_ms_count+1,
+                    publish_latency_ms_total=publish_latency_ms_total+?,
+                    publish_latency_ms_max=MAX(publish_latency_ms_max,?),
+                    updated_at=?
+                WHERE singleton_id=1
+                """,
+                (
+                    1 if duplicate else 0,
+                    latency_ms,
+                    latency_ms,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+
+    async def _record_claim_expired_locked(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        outbox_id: int,
+        event_id: str,
+        task_id: str | None,
+        expired_generation: int,
+        detected_at: str,
+    ) -> None:
+        await append_audit_event(
+            db,
+            _CLAIM_EXPIRED_AUDIT_EVENT,
+            {
+                "outbox_id": outbox_id,
+                "event_id": event_id,
+                "expired_generation": expired_generation,
+            },
+            actor_type="control-plane",
+            actor_id=self.instance_id,
+            task_id=task_id,
+            trace_id=f"outbox:{outbox_id}:claim-expired:{expired_generation}",
+            created_at=detected_at,
+        )
+        await db.execute(
+            """
+            UPDATE outbox_operational_metrics
+            SET claim_expirations=claim_expirations+1,updated_at=?
+            WHERE singleton_id=1
+            """,
+            (detected_at,),
+        )

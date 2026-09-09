@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from collections.abc import Callable
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from app.services.maintenance_lease import MaintenanceLeaseService
+from app.services.maintenance_lease import MaintenanceLeaseGuard, MaintenanceLeaseService
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class AgentScoringService:
     """
 
     FORMULA_VERSION = "server-observed-v1"
+    READ_BATCH_SIZE = 256
 
     def __init__(
         self,
@@ -93,11 +95,24 @@ class AgentScoringService:
             await db.commit()
 
     async def rebuild(
-        self, *, maintenance_generation: int | None = None
+        self,
+        *,
+        maintenance_generation: int | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> list[AgentScoreSnapshot]:
         """Atomically replace the rebuildable projection from authoritative rows."""
 
-        effective_generation = maintenance_generation
+        effective_generation = (
+            maintenance_guard.generation
+            if maintenance_guard is not None
+            else maintenance_generation
+        )
+        if (
+            maintenance_guard is not None
+            and maintenance_generation is not None
+            and maintenance_guard.generation != maintenance_generation
+        ):
+            raise RuntimeError("agent scoring received mismatched maintenance fencing")
         if self.maintenance_leases is not None and effective_generation is None:
             if self.owner_instance_id is None:
                 raise RuntimeError("agent scoring maintenance owner is not configured")
@@ -107,102 +122,184 @@ class AgentScoringService:
             if lease is None:
                 return await self.list_ranked()
             effective_generation = lease.generation
+        if maintenance_guard is not None:
+            maintenance_guard.raise_if_lost()
         rebuilt_at = self._now()
+        snapshots = await self._read_snapshots(
+            rebuilt_at,
+            maintenance_guard=maintenance_guard,
+        )
+        snapshot_values: list[tuple[object, ...]] = []
+        for index, snapshot in enumerate(snapshots, start=1):
+            snapshot_values.append(self._snapshot_values(snapshot))
+            if index % self.READ_BATCH_SIZE == 0:
+                await self._yield_read_batch(maintenance_guard)
+        if maintenance_guard is not None:
+            maintenance_guard.raise_if_lost()
+
+        # Only the disposable projection replacement takes SQLite's write
+        # lock. Authoritative history scanning and score calculation happen in
+        # a read transaction above, where WAL writers (including the lease
+        # runner's renewal) can continue to make progress.
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
-            if self.maintenance_leases is not None:
-                if self.owner_instance_id is None or effective_generation is None:
-                    await db.rollback()
-                    raise RuntimeError("agent scoring requires a current maintenance lease")
-                await self.maintenance_leases.require_current_locked(
+            try:
+                await self._require_current_locked(
                     db,
-                    "feedback-maintenance",
-                    self.owner_instance_id,
-                    effective_generation,
+                    maintenance_guard=maintenance_guard,
+                    maintenance_generation=effective_generation,
                 )
-            agent_ids = await self._agent_ids_locked(db)
-            jobs = await (
-                await db.execute(
+                # This table is a disposable projection. Replacing it in one
+                # short SQLite transaction cannot expose an empty intermediate
+                # view to readers.
+                await db.execute("DELETE FROM agent_score_snapshots")
+                await db.executemany(
                     """
-                    SELECT status,claimed_by,last_agent_id,claimed_at,completed_at
-                    FROM agent_jobs WHERE status IN ('completed','failed')
-                    """
-                )
-            ).fetchall()
-            feedback_rows = await (
-                await db.execute(
-                    """
-                    SELECT agent_id,score FROM feedback_events
-                    WHERE agent_id IS NOT NULL AND agent_id<>'' AND score IS NOT NULL
-                    """
-                )
-            ).fetchall()
-            lease_rows = await (
-                await db.execute(
-                    """
-                    SELECT payload_json FROM audit_events
-                    WHERE event_type='agent.job.lease_expired'
-                    """
-                )
-            ).fetchall()
-
-            job_counts: dict[str, dict[str, int]] = defaultdict(
-                lambda: {"completed": 0, "failed": 0}
-            )
-            latencies: dict[str, list[float]] = defaultdict(list)
-            for row in jobs:
-                agent_id = self._job_agent_id(row)
-                if agent_id is None:
-                    continue
-                agent_ids.add(agent_id)
-                status = str(row["status"])
-                job_counts[agent_id][status] += 1
-                latency = self._latency_seconds(row["claimed_at"], row["completed_at"])
-                if latency is not None:
-                    latencies[agent_id].append(latency)
-
-            feedback_scores: dict[str, list[float]] = defaultdict(list)
-            for row in feedback_rows:
-                agent_id = str(row["agent_id"])
-                agent_ids.add(agent_id)
-                feedback_scores[agent_id].append(self._bounded(float(row["score"]), 0.0, 5.0))
-
-            lease_expiries: dict[str, int] = defaultdict(int)
-            for row in lease_rows:
-                agent_id = self._audit_agent_id(row["payload_json"])
-                if agent_id is None:
-                    continue
-                agent_ids.add(agent_id)
-                lease_expiries[agent_id] += 1
-
-            snapshots = [
-                self._snapshot(
-                    agent_id,
-                    job_counts[agent_id],
-                    lease_expiries[agent_id],
-                    feedback_scores[agent_id],
-                    latencies[agent_id],
-                    rebuilt_at,
-                )
-                for agent_id in sorted(agent_ids)
-            ]
-            # This table is a disposable projection. Replacing it in one SQLite
-            # transaction cannot expose an empty intermediate view to readers.
-            await db.execute("DELETE FROM agent_score_snapshots")
-            await db.executemany(
-                """
-                INSERT INTO agent_score_snapshots(
-                    agent_id,completed_jobs,failed_jobs,terminal_jobs,
-                    lease_expiry_count,observed_outcomes,completion_rate,failure_rate,
+                    INSERT INTO agent_score_snapshots(
+                        agent_id,completed_jobs,failed_jobs,terminal_jobs,
+                        lease_expiry_count,observed_outcomes,completion_rate,failure_rate,
                     timeout_rate,feedback_count,feedback_average,average_latency_seconds,
                     composite_score,formula_version,rebuilt_at
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                [self._snapshot_values(snapshot) for snapshot in snapshots],
-            )
-            await db.commit()
+                    snapshot_values,
+                )
+                await self._require_current_locked(
+                    db,
+                    maintenance_guard=maintenance_guard,
+                    maintenance_generation=effective_generation,
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
         return snapshots
+
+    async def _read_snapshots(
+        self,
+        rebuilt_at: str,
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None,
+    ) -> list[AgentScoreSnapshot]:
+        """Read one coherent authoritative snapshot without a write lock."""
+
+        job_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"completed": 0, "failed": 0})
+        latency_totals: dict[str, float] = defaultdict(float)
+        latency_counts: dict[str, int] = defaultdict(int)
+        feedback_totals: dict[str, float] = defaultdict(float)
+        feedback_counts: dict[str, int] = defaultdict(int)
+        lease_expiries: dict[str, int] = defaultdict(int)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA query_only=ON")
+            await db.execute("BEGIN")
+            try:
+                agent_ids = await self._agent_ids_locked(db)
+                await self._yield_read_batch(maintenance_guard)
+
+                async with db.execute(
+                    """
+                    SELECT status,claimed_by,last_agent_id,claimed_at,completed_at
+                    FROM agent_jobs WHERE status IN ('completed','failed')
+                    """
+                ) as cursor:
+                    while rows := await cursor.fetchmany(self.READ_BATCH_SIZE):
+                        for row in rows:
+                            agent_id = self._job_agent_id(row)
+                            if agent_id is None:
+                                continue
+                            agent_ids.add(agent_id)
+                            status = str(row["status"])
+                            job_counts[agent_id][status] += 1
+                            latency = self._latency_seconds(row["claimed_at"], row["completed_at"])
+                            if latency is not None:
+                                latency_totals[agent_id] += latency
+                                latency_counts[agent_id] += 1
+                        await self._yield_read_batch(maintenance_guard)
+
+                async with db.execute(
+                    """
+                    SELECT agent_id,score FROM feedback_events
+                    WHERE agent_id IS NOT NULL AND agent_id<>'' AND score IS NOT NULL
+                    """
+                ) as cursor:
+                    while rows := await cursor.fetchmany(self.READ_BATCH_SIZE):
+                        for row in rows:
+                            agent_id = str(row["agent_id"])
+                            agent_ids.add(agent_id)
+                            feedback_totals[agent_id] += self._bounded(
+                                float(row["score"]), 0.0, 5.0
+                            )
+                            feedback_counts[agent_id] += 1
+                        await self._yield_read_batch(maintenance_guard)
+
+                async with db.execute(
+                    """
+                    SELECT payload_json FROM audit_events
+                    WHERE event_type='agent.job.lease_expired'
+                    """
+                ) as cursor:
+                    while rows := await cursor.fetchmany(self.READ_BATCH_SIZE):
+                        for row in rows:
+                            agent_id = self._audit_agent_id(row["payload_json"])
+                            if agent_id is None:
+                                continue
+                            agent_ids.add(agent_id)
+                            lease_expiries[agent_id] += 1
+                        await self._yield_read_batch(maintenance_guard)
+            finally:
+                await db.rollback()
+
+        snapshots: list[AgentScoreSnapshot] = []
+        for index, agent_id in enumerate(sorted(agent_ids), start=1):
+            snapshots.append(
+                self._snapshot(
+                    agent_id,
+                    job_counts[agent_id],
+                    lease_expiries[agent_id],
+                    feedback_total=feedback_totals[agent_id],
+                    feedback_count=feedback_counts[agent_id],
+                    latency_total=latency_totals[agent_id],
+                    latency_count=latency_counts[agent_id],
+                    rebuilt_at=rebuilt_at,
+                )
+            )
+            if index % self.READ_BATCH_SIZE == 0:
+                await self._yield_read_batch(maintenance_guard)
+        return snapshots
+
+    @staticmethod
+    async def _yield_read_batch(
+        maintenance_guard: MaintenanceLeaseGuard | None,
+    ) -> None:
+        if maintenance_guard is not None:
+            maintenance_guard.raise_if_lost()
+        # Large histories must not monopolize the event loop and starve the
+        # independent MaintenanceLeaseRunner renewal task.
+        await asyncio.sleep(0)
+
+    async def _require_current_locked(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None,
+        maintenance_generation: int | None,
+    ) -> None:
+        if maintenance_guard is not None:
+            await maintenance_guard.require_current_locked(db)
+            return
+        if self.maintenance_leases is None:
+            return
+        if self.owner_instance_id is None or maintenance_generation is None:
+            raise RuntimeError("agent scoring requires a current maintenance lease")
+        await self.maintenance_leases.require_current_locked(
+            db,
+            "feedback-maintenance",
+            self.owner_instance_id,
+            maintenance_generation,
+        )
 
     async def get(self, agent_id: str) -> AgentScoreSnapshot | None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -228,18 +325,24 @@ class AgentScoringService:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    @staticmethod
-    async def _agent_ids_locked(db: aiosqlite.Connection) -> set[str]:
-        rows = await (await db.execute("SELECT id FROM agents")).fetchall()
-        return {str(row[0]) for row in rows}
+    async def _agent_ids_locked(self, db: aiosqlite.Connection) -> set[str]:
+        agent_ids: set[str] = set()
+        async with db.execute("SELECT id FROM agents") as cursor:
+            while rows := await cursor.fetchmany(self.READ_BATCH_SIZE):
+                agent_ids.update(str(row[0]) for row in rows)
+                await asyncio.sleep(0)
+        return agent_ids
 
     def _snapshot(
         self,
         agent_id: str,
         jobs: dict[str, int],
         lease_expiry_count: int,
-        feedback: list[float],
-        latencies: list[float],
+        *,
+        feedback_total: float,
+        feedback_count: int,
+        latency_total: float,
+        latency_count: int,
         rebuilt_at: str,
     ) -> AgentScoreSnapshot:
         completed_jobs = jobs["completed"]
@@ -249,9 +352,8 @@ class AgentScoringService:
         failure_rate = failed_jobs / terminal_jobs if terminal_jobs else 0.0
         observed_outcomes = terminal_jobs + lease_expiry_count
         timeout_rate = lease_expiry_count / observed_outcomes if observed_outcomes else 0.0
-        feedback_count = len(feedback)
-        feedback_average = sum(feedback) / feedback_count if feedback_count else None
-        average_latency = sum(latencies) / len(latencies) if latencies else None
+        feedback_average = feedback_total / feedback_count if feedback_count else None
+        average_latency = latency_total / latency_count if latency_count else None
 
         completion_component = completion_rate if terminal_jobs else 0.5
         timeout_component = 1.0 - timeout_rate if observed_outcomes else 0.5

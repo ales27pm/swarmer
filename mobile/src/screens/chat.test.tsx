@@ -201,6 +201,35 @@ describe("ChatScreen", () => {
     expect(screen.getByText("Temps réel connecté")).toBeOnTheScreen();
   });
 
+  it("refreshes the rendered conversation after a live message invalidation", async () => {
+    const pushedMessage: Message = {
+      ...proposalOnlyMessage,
+      id: "msg_live",
+      content: "Nouvelle réponse reçue en temps réel",
+    };
+    const user = userEvent.setup();
+    const rendered = await render(
+      <LiveSyncContextProvider value={{ error: null, revision: 0, state: "connected" }}>
+        <ChatScreen />
+      </LiveSyncContextProvider>,
+    );
+    await screen.findByText("Control plane authentifié");
+    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    await waitFor(() => expect(mockListMessages).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(pushedMessage.content)).not.toBeOnTheScreen();
+
+    mockListMessages.mockResolvedValue([message, pushedMessage]);
+    await rendered.rerender(
+      <LiveSyncContextProvider value={{ error: null, revision: 1, state: "connected" }}>
+        <ChatScreen />
+      </LiveSyncContextProvider>,
+    );
+
+    expect(await screen.findByText(pushedMessage.content)).toBeOnTheScreen();
+    expect(mockListMessages).toHaveBeenLastCalledWith("conv_test", expect.any(Function));
+  });
+
   it("refreshes authentication when Chat regains focus after pairing", async () => {
     mockBootstrap.mockRejectedValueOnce(new Error("Non jumelé"));
     const user = userEvent.setup();

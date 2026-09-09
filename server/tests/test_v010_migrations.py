@@ -280,6 +280,7 @@ async def test_future_schema_is_rejected_before_any_authoritative_mutation(
 
 NOW = "2026-07-01T12:00:00+00:00"
 LATER = "2026-07-01T12:10:00+00:00"
+V010_SCHEMA_VERSION = 14
 
 
 async def _create_v08_database(path: Path) -> None:
@@ -674,8 +675,11 @@ async def test_v010_upgrade_is_additive_restart_safe_and_preserves_state(
         tables = await _table_names(db)
         assert {
             "outbox_events",
+            "outbox_operational_metrics",
+            "agent_job_operational_metrics",
             "control_plane_instances",
             "maintenance_leases",
+            "worker_skill_policy_state",
             "message_consumer_deliveries",
             "message_consumer_checkpoints",
             "idempotency_receipts",
@@ -715,7 +719,6 @@ async def test_v010_upgrade_is_additive_restart_safe_and_preserves_state(
         assert await (await db.execute("SELECT COUNT(*) FROM pairing_candidates")).fetchone() == (
             0,
         )
-
         if historic_version == "0.9":
             outbox = await (
                 await db.execute(
@@ -768,6 +771,7 @@ async def test_v010_upgrade_is_additive_restart_safe_and_preserves_state(
         for table in (
             "control_plane_instances",
             "maintenance_leases",
+            "worker_skill_policy_state",
             "message_consumer_deliveries",
             "message_consumer_checkpoints",
             "idempotency_receipts",
@@ -776,6 +780,143 @@ async def test_v010_upgrade_is_additive_restart_safe_and_preserves_state(
         ):
             count = await (await db.execute(f"SELECT COUNT(*) FROM {table}")).fetchone()
             assert count == (0,), json.dumps({"unexpected_rows_in": table})
+
+
+@pytest.mark.asyncio
+async def test_v011_upgrade_adds_bounded_outbox_metrics_restart_safely(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v010-state.db"
+    state = StateService(path)
+    await state.initialize()
+    async with aiosqlite.connect(path) as db:
+        await db.execute("DROP TABLE outbox_operational_metrics")
+        await db.execute(f"PRAGMA user_version={V010_SCHEMA_VERSION}")
+        await db.commit()
+
+    await state.initialize()
+    await state.initialize()
+
+    async with aiosqlite.connect(path) as db:
+        version = await (await db.execute("PRAGMA user_version")).fetchone()
+        metrics = await (
+            await db.execute(
+                """
+                SELECT claim_expirations,duplicate_publications,
+                       publish_latency_ms_count,publish_latency_ms_total,
+                       publish_latency_ms_max
+                FROM outbox_operational_metrics WHERE singleton_id=1
+                """
+            )
+        ).fetchone()
+    assert version == (SCHEMA_VERSION,)
+    assert metrics == (0, 0, 0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_v011_upgrade_seeds_bounded_agent_job_metrics_once(tmp_path: Path) -> None:
+    path = tmp_path / "v010-agent-metrics.db"
+    state = StateService(path)
+    await state.initialize()
+    async with aiosqlite.connect(path) as db:
+        await db.execute("DROP TABLE agent_job_operational_metrics")
+        await db.executemany(
+            """
+            INSERT INTO audit_events(event_type,payload_json,created_at)
+            VALUES(?,?,?)
+            """,
+            [
+                ("agent.job.lease_expired", "{}", "2026-01-01T00:00:00+00:00"),
+                ("agent.job.requeued", "{}", "2026-01-01T00:00:01+00:00"),
+                ("agent.job.dead_lettered", "{}", "2026-01-01T00:00:02+00:00"),
+            ],
+        )
+        await db.execute(f"PRAGMA user_version={V010_SCHEMA_VERSION}")
+        await db.commit()
+
+    await state.initialize()
+    async with aiosqlite.connect(path) as db:
+        first = await (
+            await db.execute(
+                """
+                SELECT lease_expirations,retries,dead_letter_events
+                FROM agent_job_operational_metrics WHERE singleton_id=1
+                """
+            )
+        ).fetchone()
+        await db.execute(
+            """
+            INSERT INTO audit_events(event_type,payload_json,created_at)
+            VALUES('agent.job.lease_expired','{}','2026-01-01T00:00:03+00:00')
+            """
+        )
+        await db.commit()
+
+    await state.initialize()
+    async with aiosqlite.connect(path) as db:
+        second = await (
+            await db.execute(
+                """
+                SELECT lease_expirations,retries,dead_letter_events
+                FROM agent_job_operational_metrics WHERE singleton_id=1
+                """
+            )
+        ).fetchone()
+
+    assert first == (1, 1, 1)
+    assert second == first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historic_version", ["0.8", "0.9"])
+async def test_agent_job_metrics_include_events_emitted_during_legacy_reconciliation(
+    tmp_path: Path,
+    historic_version: str,
+) -> None:
+    path = tmp_path / f"historic-active-lease-{historic_version}.db"
+    await _create_v08_database(path)
+    if historic_version == "0.9":
+        await _upgrade_fixture_to_v09(path)
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "UPDATE tasks SET status='running',completed_at=NULL WHERE id='tsk_historic'"
+        )
+        await db.execute(
+            """
+            UPDATE agent_jobs
+            SET status='claimed',claim_token='legacy-plaintext-token',result_json=NULL,
+                error=NULL,completed_at=NULL,claimed_at=?,heartbeat_at=?
+            WHERE id='job_historic'
+            """,
+            (NOW, NOW),
+        )
+        await db.commit()
+
+    state = StateService(path)
+    await state.initialize()
+    await state.initialize()
+
+    async with aiosqlite.connect(path) as db:
+        job = await (
+            await db.execute("SELECT status,claim_token FROM agent_jobs WHERE id='job_historic'")
+        ).fetchone()
+        metrics = await (
+            await db.execute(
+                """
+                SELECT lease_expirations,retries,dead_letter_events
+                FROM agent_job_operational_metrics WHERE singleton_id=1
+                """
+            )
+        ).fetchone()
+        requeues = await (
+            await db.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE event_type='agent.job.requeued'"
+            )
+        ).fetchone()
+
+    assert job == ("queued", None)
+    assert requeues == (1,)
+    assert metrics == (0, 1, 0)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -24,8 +25,9 @@ from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
+from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "quarantined"})
 DISPATCHABLE_TASK_STATUSES = frozenset({"created", "planned"})
 
 
@@ -34,6 +36,10 @@ class AgentDispatchConflict(RuntimeError):
 
 
 class AgentDispatcher:
+    QUARANTINE_BATCH_SIZE = 32
+    CLAIM_QUARANTINE_BATCH_SIZE = 1
+    CLAIM_CANDIDATE_LIMIT = 64
+
     def __init__(
         self,
         db_path: Path,
@@ -58,6 +64,7 @@ class AgentDispatcher:
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.permission_policy = permission_policy
+        self.worker_skill_policy = WorkerSkillPolicyStore(db_path, permission_policy)
         self.clock = clock or (lambda: datetime.now(UTC))
         self.scheduler = SchedulerService(
             db_path,
@@ -114,13 +121,6 @@ class AgentDispatcher:
             payload = validate_remote_job(required_skill, payload)
         except RemoteJobPolicyError as exc:
             raise AgentDispatchConflict(str(exc)) from exc
-        if self.permission_policy is not None:
-            try:
-                worker_rule = self.permission_policy.evaluate_worker_skill(required_skill)
-            except PermissionPolicyError as exc:
-                raise AgentDispatchConflict("remote worker skill is not covered by policy") from exc
-            if worker_rule.decision != "allow":
-                raise AgentDispatchConflict("remote worker skill is denied by policy")
         try:
             encoded_payload = json.dumps(
                 payload,
@@ -132,11 +132,21 @@ class AgentDispatcher:
             raise AgentDispatchConflict("job payload must be canonical JSON") from exc
         if len(encoded_payload.encode("utf-8")) > 1_000_000:
             raise AgentDispatchConflict("job payload is too large")
-        now = self._now().isoformat()
         job_id = f"job_{uuid4().hex}"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
+            try:
+                policy_snapshot = await self.worker_skill_policy.load_locked(db, now=now)
+            except PermissionPolicyError as exc:
+                await db.rollback()
+                raise AgentDispatchConflict(
+                    "authoritative remote worker policy is unavailable"
+                ) from exc
+            if policy_snapshot is not None and not policy_snapshot.is_allowed(required_skill):
+                await db.rollback()
+                raise AgentDispatchConflict("remote worker skill is denied by policy")
             task = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
             ).fetchone()
@@ -222,16 +232,165 @@ class AgentDispatcher:
             raise RuntimeError("queued job disappeared")
         return record
 
+    async def install_worker_skill_policy(self, candidate: PermissionPolicy) -> bool:
+        """Persist one validated worker policy epoch and quarantine revoked queues."""
+
+        _, changed = await self.worker_skill_policy.replace(candidate)
+        await self.quarantine_revoked_jobs()
+        return changed
+
+    async def reload_worker_skill_policy(self, path: Path) -> bool:
+        """Validate and persist the worker policy, retaining the last valid epoch on error."""
+
+        _, changed = await self.worker_skill_policy.reload_from_path(path)
+        await self.quarantine_revoked_jobs()
+        return changed
+
+    async def _quarantine_denied_queued_locked(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        now: str,
+        denied_skills: tuple[str, ...],
+        limit: int,
+    ) -> int:
+        """Terminally quarantine one bounded batch of denied queued jobs."""
+
+        if not denied_skills:
+            return 0
+        if limit < 1:
+            raise ValueError("quarantine batch limit must be positive")
+        placeholders = ",".join("?" for _ in denied_skills)
+        rows = await (
+            await db.execute(
+                f"""
+                SELECT j.id,j.task_id,j.required_skill,t.status AS task_status
+                FROM agent_jobs AS j JOIN tasks AS t ON t.id=j.task_id
+                WHERE j.status='queued' AND j.required_skill IN ({placeholders})
+                ORDER BY j.created_at ASC,j.id ASC
+                LIMIT ?
+                """,  # nosec B608 - placeholders derive only from bounded policy rules
+                (*denied_skills, limit),
+            )
+        ).fetchall()
+        quarantined = 0
+        reason = "remote worker skill revoked by current policy"
+        for row in rows:
+            skill = str(row["required_skill"])
+            task_id = str(row["task_id"])
+            job_id = str(row["id"])
+            try:
+                await AgentJobStateMachine.transition_locked(
+                    db,
+                    job_id=job_id,
+                    current="queued",
+                    target="quarantined",
+                    now=now,
+                    updates={
+                        "completed_at": now,
+                        "last_failure_reason": reason,
+                        "error": reason,
+                    },
+                )
+                if str(row["task_status"]) == "queued":
+                    await TaskStateMachine.transition_locked(
+                        db,
+                        task_id=task_id,
+                        current="queued",
+                        target="failed",
+                        now=now,
+                        error=reason,
+                    )
+            except DistributedStateConflict as exc:
+                raise AgentDispatchConflict("job changed during policy quarantine") from exc
+            for event_type in ("agent.job.skill_revoked", "agent.job.quarantined"):
+                await append_audit_event(
+                    db,
+                    event_type,
+                    {"job_id": job_id, "required_skill": skill, "reason": reason},
+                    actor_type="control-plane",
+                    actor_id="dispatcher",
+                    task_id=task_id,
+                    trace_id=task_id,
+                    created_at=now,
+                )
+            await self.outbox.enqueue_locked(
+                db,
+                aggregate_type="agent_job",
+                aggregate_id=job_id,
+                topic="tasks.status",
+                event_type="quarantined",
+                payload={"job_id": job_id, "status": "quarantined"},
+                task_id=task_id,
+                message_id=job_id,
+                dedupe_key=f"agent-job:{job_id}:skill-revoked",
+                created_at=now,
+            )
+            quarantined += 1
+        return quarantined
+
+    @staticmethod
+    async def _yield_quarantine_batch() -> None:
+        # Give unrelated authoritative writers a scheduling opportunity after
+        # every committed batch in a large revoked backlog.
+        await asyncio.sleep(0)
+
+    async def quarantine_revoked_jobs(self) -> int:
+        """Quarantine revoked queued work in short, writer-friendly batches."""
+
+        total_quarantined = 0
+        while True:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                try:
+                    now = self._now().isoformat()
+                    policy_snapshot = await self.worker_skill_policy.load_locked(db, now=now)
+                    denied_skills = (
+                        policy_snapshot.denied_skills if policy_snapshot is not None else ()
+                    )
+                    quarantined = await self._quarantine_denied_queued_locked(
+                        db,
+                        now=now,
+                        denied_skills=denied_skills,
+                        limit=self.QUARANTINE_BATCH_SIZE,
+                    )
+                    await db.commit()
+                except BaseException:
+                    await db.rollback()
+                    raise
+            total_quarantined += quarantined
+            if quarantined == 0:
+                break
+            await self._yield_quarantine_batch()
+            if quarantined < self.QUARANTINE_BATCH_SIZE:
+                break
+        if total_quarantined:
+            await self._drain_outbox()
+        return total_quarantined
+
     async def claim(self, agent_id: str) -> dict[str, Any] | None:
-        claimed_at = self._now()
-        now = claimed_at.isoformat()
         lease_id = f"lease_{uuid4().hex}"
         lease_token = secrets.token_urlsafe(32)
         token_hash = lease_token_hash(lease_token)
-        lease_expires_at = (claimed_at + timedelta(seconds=self.lease_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            # Writer contention may have delayed this transaction beyond an
+            # entire lease TTL. Authoritative claim/expiry timestamps must be
+            # derived only after the write lock is actually held.
+            claimed_at = self._now()
+            now = claimed_at.isoformat()
+            lease_expires_at = (claimed_at + timedelta(seconds=self.lease_seconds)).isoformat()
+            try:
+                policy_snapshot = await self.worker_skill_policy.load_locked(db, now=now)
+            except PermissionPolicyError as exc:
+                await db.rollback()
+                raise AgentDispatchConflict(
+                    "authoritative remote worker policy is unavailable"
+                ) from exc
+            allowed_skills = policy_snapshot.allowed_skills if policy_snapshot is not None else None
+            denied_skills = policy_snapshot.denied_skills if policy_snapshot is not None else ()
             agent = await self.scheduler.agent_state_locked(db, agent_id)
             if agent is None:
                 await db.rollback()
@@ -241,30 +400,57 @@ class AgentDispatcher:
             ):
                 await db.rollback()
                 raise AgentDispatchConflict("agent is not online and eligible for new work")
+            quarantined = await self._quarantine_denied_queued_locked(
+                db,
+                now=now,
+                denied_skills=denied_skills,
+                limit=self.CLAIM_QUARANTINE_BATCH_SIZE,
+            )
             if int(agent["active_jobs"]) >= int(agent["max_concurrency"]):
-                await db.rollback()
+                if quarantined:
+                    await db.commit()
+                else:
+                    await db.rollback()
                 return None
             skills = agent["skills"]
             if not isinstance(skills, list) or not skills:
-                await db.rollback()
+                if quarantined:
+                    await db.commit()
+                else:
+                    await db.rollback()
+                return None
+            if allowed_skills is not None:
+                skills = [skill for skill in skills if skill in allowed_skills]
+            if not skills:
+                if quarantined:
+                    await db.commit()
+                else:
+                    await db.rollback()
                 return None
             placeholders = ",".join("?" for _ in skills)
             rows = await (
                 await db.execute(
                     f"""
-                    SELECT j.* FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
-                    WHERE j.status='queued' AND j.required_skill IN ({placeholders})
-                      AND j.attempt_count<j.max_attempts AND t.status='queued'
-                    ORDER BY t.priority DESC,j.created_at ASC,j.id ASC
+                    WITH ranked_candidates AS (
+                        SELECT j.*,t.priority AS scheduler_task_priority,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY j.required_skill
+                                   ORDER BY t.priority DESC,j.created_at ASC,j.id ASC
+                               ) AS scheduler_skill_rank
+                        FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
+                        WHERE j.status='queued' AND j.required_skill IN ({placeholders})
+                          AND j.attempt_count<j.max_attempts AND t.status='queued'
+                    )
+                    SELECT * FROM ranked_candidates
+                    WHERE scheduler_skill_rank<=?
+                    ORDER BY scheduler_task_priority DESC,created_at ASC,id ASC
                     """,  # nosec B608 - placeholders derive only from the list length
-                    skills,
+                    (*skills, self.CLAIM_CANDIDATE_LIMIT),
                 )
             ).fetchall()
             row: aiosqlite.Row | None = None
             selection = None
             for candidate in rows:
-                if not self.scheduler.skill_is_allowed(str(candidate["required_skill"])):
-                    continue
                 candidate_selection = await self.scheduler.select_for_job_locked(
                     db, str(candidate["id"]), now=claimed_at
                 )
@@ -276,7 +462,10 @@ class AgentDispatcher:
                     selection = candidate_selection
                     break
             if row is None:
-                await db.rollback()
+                if quarantined:
+                    await db.commit()
+                else:
+                    await db.rollback()
                 return None
             if selection is None:  # pragma: no cover - row and selection are assigned together
                 await db.rollback()
@@ -389,12 +578,12 @@ class AgentDispatcher:
         lease_id: str,
         lease_generation: int,
     ) -> dict[str, Any]:
-        heartbeat_at = self._now()
-        now = heartbeat_at.isoformat()
-        renewed_until = (heartbeat_at + timedelta(seconds=self.lease_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            heartbeat_at = self._now()
+            now = heartbeat_at.isoformat()
+            renewed_until = (heartbeat_at + timedelta(seconds=self.lease_seconds)).isoformat()
             row = await (
                 await db.execute("SELECT * FROM agent_jobs WHERE id=?", (job_id,))
             ).fetchone()
@@ -489,11 +678,11 @@ class AgentDispatcher:
             raise AgentDispatchConflict("job result must be canonical JSON") from exc
         if result_json is not None and len(result_json.encode("utf-8")) > 1_000_000:
             raise AgentDispatchConflict("job result is too large")
-        now = self._now().isoformat()
         public_error = "remote worker reported failure" if status == "failed" else None
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = self._now().isoformat()
             row = await (
                 await db.execute("SELECT * FROM agent_jobs WHERE id=?", (job_id,))
             ).fetchone()

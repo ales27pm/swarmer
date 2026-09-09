@@ -274,6 +274,20 @@ class PermissionPolicy:
                 f"remote worker skill is not covered by policy: {skill}"
             ) from exc
 
+    def reload_worker_skill_rules(self, path: Path) -> bool:
+        """Atomically install worker rules from a complete, valid policy file.
+
+        Long-lived worker leases intentionally retain the authorization under
+        which they were issued. New claims and expired-lease redistribution see
+        this new immutable mapping immediately. Invalid reloads raise and leave
+        the last known-valid mapping installed.
+        """
+
+        candidate = type(self).from_yaml(path)
+        changed = dict(candidate.worker_skill_rules) != dict(self.worker_skill_rules)
+        self.worker_skill_rules = candidate.worker_skill_rules
+        return changed
+
     @staticmethod
     def _parse_process_policy(raw: dict[str, Any]) -> ProcessPolicy:
         backend = raw.get("backend")

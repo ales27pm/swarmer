@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -116,6 +117,7 @@ async def test_expired_lease_is_requeued_and_old_holder_is_fenced(tmp_path: Path
         "requeued": 1,
         "dead_lettered": 0,
         "cancelled": 0,
+        "quarantined": 0,
     }
     reclaimed = await dispatcher.claim(second["id"])
     assert reclaimed is not None
@@ -151,6 +153,77 @@ async def test_heartbeat_prevents_expiry(tmp_path: Path) -> None:
     )
     clock.advance(30)
     assert (await reaper.reap_expired())["expired"] == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_rechecks_lease_expiry_after_writer_lock_wait(tmp_path: Path) -> None:
+    clock = MutableClock(datetime(2026, 1, 1, tzinfo=UTC))
+    state, dispatcher, _, agent, _ = await setup_runtime(tmp_path / "state.db", clock)
+    claimed = await dispatcher.claim(agent["id"])
+    assert claimed is not None
+
+    blocker = await aiosqlite.connect(state.db_path)
+    await blocker.execute("BEGIN IMMEDIATE")
+    running = asyncio.create_task(
+        dispatcher.heartbeat(
+            agent["id"],
+            claimed["id"],
+            claimed["claim_token"],
+            lease_id=claimed["lease_id"],
+            lease_generation=claimed["lease_generation"],
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not running.done()
+        clock.advance(61)
+        await blocker.commit()
+    finally:
+        await blocker.close()
+
+    with pytest.raises(AgentDispatchConflict, match="stale"):
+        await asyncio.wait_for(running, timeout=1)
+    persisted = await dispatcher.get_job(claimed["id"])
+    assert persisted is not None
+    assert persisted["heartbeat_at"] == claimed["heartbeat_at"]
+    assert persisted["lease_expires_at"] == claimed["lease_expires_at"]
+
+
+@pytest.mark.asyncio
+async def test_result_rechecks_lease_expiry_after_writer_lock_wait(tmp_path: Path) -> None:
+    clock = MutableClock(datetime(2026, 1, 1, tzinfo=UTC))
+    state, dispatcher, _, agent, task_id = await setup_runtime(tmp_path / "state.db", clock)
+    claimed = await dispatcher.claim(agent["id"])
+    assert claimed is not None
+
+    blocker = await aiosqlite.connect(state.db_path)
+    await blocker.execute("BEGIN IMMEDIATE")
+    running = asyncio.create_task(
+        dispatcher.submit_result(
+            agent["id"],
+            claimed["id"],
+            claimed["claim_token"],
+            lease_id=claimed["lease_id"],
+            lease_generation=claimed["lease_generation"],
+            status="completed",
+            result={"entries": []},
+            error=None,
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not running.done()
+        clock.advance(61)
+        await blocker.commit()
+    finally:
+        await blocker.close()
+
+    with pytest.raises(AgentDispatchConflict, match="stale"):
+        await asyncio.wait_for(running, timeout=1)
+    persisted = await dispatcher.get_job(claimed["id"])
+    task = await state.get_task(task_id)
+    assert persisted is not None and persisted["status"] == "claimed"
+    assert task is not None and task.status.value == "running"
 
 
 @pytest.mark.asyncio

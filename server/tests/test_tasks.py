@@ -78,6 +78,53 @@ def test_conversation_message_does_not_create_or_plan_a_task(
     test_app.state.orchestrator_service.chat.assert_awaited_once()
 
 
+def test_websocket_task_and_message_notifications_never_broadcast_natural_language(
+    client: TestClient, paired_headers: dict[str, str], test_app
+) -> None:
+    private_task_input = "Inspect the private acquisition workspace"
+    private_user_message = "Discuss the confidential medical appointment"
+    private_assistant_message = "I can discuss that confidential appointment."
+    test_app.state.orchestrator_service.chat = AsyncMock(return_value=private_assistant_message)
+    ticket = client.post("/ws/ticket", headers=paired_headers).json()["ticket"]
+
+    with client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+
+        task_response = client.post(
+            "/tasks",
+            headers=paired_headers,
+            json={"input": private_task_input},
+        )
+        assert task_response.status_code == 201
+        task_event = websocket.receive_json()
+
+        chat_response = client.post(
+            "/chat",
+            headers=paired_headers,
+            json={"content": private_user_message},
+        )
+        assert chat_response.status_code == 201
+        message_events = [websocket.receive_json(), websocket.receive_json()]
+
+    assert task_response.json()["input"] == private_task_input
+    assert chat_response.json()["message"]["content"] == private_assistant_message
+    assert task_event["type"] == "task.updated"
+    assert task_event["payload"]["refetch_required"] is True
+    assert [event["type"] for event in message_events] == [
+        "message.created",
+        "message.created",
+    ]
+    assert all(event["payload"]["refetch_required"] is True for event in message_events)
+
+    encoded_notifications = json.dumps([task_event, *message_events])
+    for private_text in (
+        private_task_input,
+        private_user_message,
+        private_assistant_message,
+    ):
+        assert private_text not in encoded_notifications
+
+
 def test_tool_proposal_requires_exact_structured_fields(
     client: TestClient, paired_headers: dict[str, str]
 ) -> None:
@@ -145,6 +192,41 @@ def test_model_none_proposal_remains_planned_and_truthfully_labeled(
     assert detail["tool_calls"] == []
     assert detail["messages"][-1]["content"] == proposal_text
     assert detail["messages"][-1]["metadata"]["verified_status"] == "proposal_only"
+
+
+def test_model_none_summary_remains_rest_scoped_and_never_enters_websocket(
+    client: TestClient, paired_headers: dict[str, str], test_app
+) -> None:
+    private_summary = (
+        "Medical contact Alice is at +1-555-0100; use the private SMS body near "
+        "coordinates 45.5,-73.5."
+    )
+    test_app.state.orchestrator_service.plan = AsyncMock(
+        return_value={"tool_name": "none", "arguments": {}, "summary": private_summary}
+    )
+    task = client.post(
+        "/tasks",
+        headers=paired_headers,
+        json={"input": "Ask a sensitive question without executing a tool"},
+    ).json()
+    ticket = client.post("/ws/ticket", headers=paired_headers).json()["ticket"]
+
+    with client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        response = client.post(f"/tasks/{task['id']}/plan", headers=paired_headers)
+        event = websocket.receive_json()
+
+    assert response.status_code == 200
+    assert response.json()["proposal"]["summary"] == private_summary
+    assert event == {
+        "type": "orchestrator.proposed",
+        "payload": {
+            "task_id": task["id"],
+            "planner_source": "ubuntu_local",
+            "refetch_required": True,
+        },
+    }
+    assert private_summary not in json.dumps(event)
 
 
 def test_shipped_french_root_intent_executes_against_the_configured_workspace(

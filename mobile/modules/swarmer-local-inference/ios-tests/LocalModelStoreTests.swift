@@ -40,6 +40,39 @@ private struct TestWorkspace {
   }
 }
 
+private actor ImportCheckpointGate {
+  private var reached = false
+  private var released = false
+  private var reachedWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+  func pauseAfterStagingCreation() async {
+    reached = true
+    for waiter in reachedWaiters {
+      waiter.resume()
+    }
+    reachedWaiters.removeAll()
+
+    guard !released else { return }
+    await withCheckedContinuation { continuation in
+      releaseWaiter = continuation
+    }
+  }
+
+  func waitUntilReached() async {
+    guard !reached else { return }
+    await withCheckedContinuation { continuation in
+      reachedWaiters.append(continuation)
+    }
+  }
+
+  func release() {
+    released = true
+    releaseWaiter?.resume()
+    releaseWaiter = nil
+  }
+}
+
 @main
 private struct LocalModelStoreTests {
   private typealias Test = @Sendable () async throws -> Void
@@ -272,14 +305,15 @@ private struct LocalModelStoreTests {
     let workspace = try TestWorkspace(name: "cancellation")
     defer { workspace.remove() }
     let source = workspace.source.appendingPathComponent("large.gguf", isDirectory: false)
-    guard FileManager.default.createFile(atPath: source.path, contents: nil) else {
-      throw TestFailure("could not create cancellation fixture")
-    }
-    let handle = try FileHandle(forWritingTo: source)
-    try handle.truncate(atOffset: 256 * 1_024 * 1_024)
-    try handle.close()
+    try Data([0x47, 0x47, 0x55, 0x46]).write(to: source)
 
-    let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let checkpoint = ImportCheckpointGate()
+    let store = LocalModelStore(
+      applicationSupportURL: workspace.applicationSupport,
+      importDidCreateStaging: {
+        await checkpoint.pauseAfterStagingCreation()
+      }
+    )
     let importTask = Task {
       try await store.importModel(
         runtime: .llamaCpp,
@@ -288,21 +322,14 @@ private struct LocalModelStoreTests {
       )
     }
 
-    var observedStaging = false
-    for _ in 0..<2_000 {
-      let names = (try? FileManager.default.contentsOfDirectory(atPath: workspace.models.path)) ?? []
-      if names.contains(where: { $0.hasPrefix(".import-") }) {
-        observedStaging = true
-        importTask.cancel()
-        break
-      }
-      try await Task.sleep(for: .milliseconds(1))
-    }
-    guard observedStaging else {
-      importTask.cancel()
-      _ = try? await importTask.value
-      throw TestFailure("could not observe an in-progress staged import")
-    }
+    await checkpoint.waitUntilReached()
+    let stagedModels = try ownedModelDirectories(in: workspace.models)
+    try expect(
+      stagedModels.count == 1 && stagedModels[0].hasPrefix(".import-"),
+      "import checkpoint was reached without owned staging data"
+    )
+    importTask.cancel()
+    await checkpoint.release()
 
     do {
       _ = try await importTask.value

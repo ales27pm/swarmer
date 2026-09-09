@@ -42,8 +42,10 @@ from app.services.iphone_capability_binding import (
     canonical_capability_request_fingerprint,
 )
 from app.services.outbox import OutboxService
+from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
+from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 19
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -122,7 +124,8 @@ CREATE TABLE IF NOT EXISTS devices (
     token TEXT UNIQUE NOT NULL,
     created_at TEXT NOT NULL,
     last_seen_at TEXT,
-    last_pairing_id TEXT
+    last_pairing_id TEXT,
+    websocket_connection_id TEXT
 );
 CREATE TABLE IF NOT EXISTS pairing_candidates (
     pairing_id TEXT PRIMARY KEY,
@@ -140,6 +143,21 @@ CREATE TABLE IF NOT EXISTS websocket_tickets (
     ticket_hash TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS websocket_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    device_id TEXT,
+    event_type TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_websocket_notifications_id
+    ON websocket_notifications(id);
+CREATE TABLE IF NOT EXISTS websocket_notification_checkpoints (
+    instance_id TEXT PRIMARY KEY,
+    last_notification_id INTEGER NOT NULL CHECK(last_notification_id >= 0),
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -257,6 +275,22 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
     ON outbox_events(published_at, id);
+CREATE TABLE IF NOT EXISTS outbox_operational_metrics (
+    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+    claim_expirations INTEGER NOT NULL DEFAULT 0 CHECK(claim_expirations >= 0),
+    duplicate_publications INTEGER NOT NULL DEFAULT 0 CHECK(duplicate_publications >= 0),
+    publish_latency_ms_count INTEGER NOT NULL DEFAULT 0 CHECK(publish_latency_ms_count >= 0),
+    publish_latency_ms_total INTEGER NOT NULL DEFAULT 0 CHECK(publish_latency_ms_total >= 0),
+    publish_latency_ms_max INTEGER NOT NULL DEFAULT 0 CHECK(publish_latency_ms_max >= 0),
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_job_operational_metrics (
+    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+    lease_expirations INTEGER NOT NULL DEFAULT 0 CHECK(lease_expirations >= 0),
+    retries INTEGER NOT NULL DEFAULT 0 CHECK(retries >= 0),
+    dead_letter_events INTEGER NOT NULL DEFAULT 0 CHECK(dead_letter_events >= 0),
+    updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS control_plane_instances (
     instance_id TEXT PRIMARY KEY,
     hostname_label TEXT NOT NULL,
@@ -278,6 +312,13 @@ CREATE TABLE IF NOT EXISTS maintenance_leases (
 );
 CREATE INDEX IF NOT EXISTS idx_maintenance_leases_expiry
     ON maintenance_leases(expires_at, name);
+CREATE TABLE IF NOT EXISTS worker_skill_policy_state (
+    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+    epoch INTEGER NOT NULL CHECK(epoch >= 1),
+    rules_json TEXT NOT NULL,
+    rules_digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS message_consumer_deliveries (
     consumer_group TEXT NOT NULL,
     event_id TEXT NOT NULL,
@@ -469,9 +510,16 @@ class StateConflict(RuntimeError):
 class StateService:
     """Authoritative domain state and additive migrations for the local database."""
 
-    def __init__(self, db_path: Path, embedding_service: EmbeddingService | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        embedding_service: EmbeddingService | None = None,
+        *,
+        permission_policy: PermissionPolicy | None = None,
+    ) -> None:
         self.db_path = db_path
         self.embedding_service = embedding_service
+        self.worker_skill_policy = WorkerSkillPolicyStore(db_path, permission_policy)
 
     async def initialize(self) -> None:
         parent_existed = self.db_path.parent.exists()
@@ -503,6 +551,26 @@ class StateService:
             await db.executescript(SCHEMA)
             await db.execute("BEGIN IMMEDIATE")
             await self._migrate_legacy_schema(db)
+            await db.execute(
+                "INSERT OR IGNORE INTO outbox_operational_metrics(singleton_id) VALUES(1)"
+            )
+            agent_metrics = await (
+                await db.execute("SELECT 1 FROM agent_job_operational_metrics WHERE singleton_id=1")
+            ).fetchone()
+            seed_agent_metrics = agent_metrics is None
+            if seed_agent_metrics:
+                # Install the singleton before reconciliation so any future
+                # migration helper that uses the normal counter update path can
+                # do so safely. Exact historical totals are seeded after all
+                # reconciliation below, in this same writer transaction.
+                await db.execute(
+                    """
+                    INSERT INTO agent_job_operational_metrics(
+                        singleton_id,lease_expirations,retries,dead_letter_events,updated_at
+                    ) VALUES(1,0,0,0,?)
+                    """,
+                    (datetime.now(UTC).isoformat(),),
+                )
             await db.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_outbox_claimable
@@ -639,6 +707,37 @@ class StateService:
             # agent-job pass. Reconcile again in the same transaction so no
             # queued or leased remote job survives for that terminal parent.
             await self._reconcile_agent_jobs_locked(db)
+            if seed_agent_metrics:
+                # This unbounded migration scan is paid exactly once. It runs
+                # after reconciliation because migration can itself append
+                # requeue/dead-letter events. Normal /status reads only this
+                # singleton and never scans the audit history.
+                historical = await (
+                    await db.execute(
+                        """
+                        SELECT
+                          SUM(CASE WHEN event_type='agent.job.lease_expired' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN event_type='agent.job.requeued' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN event_type='agent.job.dead_lettered' THEN 1 ELSE 0 END)
+                        FROM audit_events
+                        """
+                    )
+                ).fetchone()
+                updated = await db.execute(
+                    """
+                    UPDATE agent_job_operational_metrics
+                    SET lease_expirations=?,retries=?,dead_letter_events=?,updated_at=?
+                    WHERE singleton_id=1
+                    """,
+                    (
+                        int(historical[0] or 0) if historical else 0,
+                        int(historical[1] or 0) if historical else 0,
+                        int(historical[2] or 0) if historical else 0,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("agent job operational metrics are unavailable")
             await db.commit()
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
@@ -664,7 +763,11 @@ class StateService:
                 "attempts_remaining": "INTEGER NOT NULL DEFAULT 10",
                 "created_at": "TEXT",
             },
-            "devices": {"last_seen_at": "TEXT", "last_pairing_id": "TEXT"},
+            "devices": {
+                "last_seen_at": "TEXT",
+                "last_pairing_id": "TEXT",
+                "websocket_connection_id": "TEXT",
+            },
             "agents": {"auth_token_hash": "TEXT"},  # nosec B105 - SQLite column type
             "message_board_events": {
                 "schema_version": "TEXT",
@@ -2104,12 +2207,23 @@ class StateService:
 
     async def register_agent(self, request: AgentCreate, actor_id: str) -> dict[str, Any]:
         policy = validate_agent_registration(request)
-        now = datetime.now(UTC).isoformat()
         agent_id = f"agt_{uuid4().hex}"
         credential = secrets.token_urlsafe(32)
         credential_hash = f"sha256:{hashlib.sha256(credential.encode('utf-8')).hexdigest()}"
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            now = datetime.now(UTC).isoformat()
+            try:
+                policy_snapshot = await self.worker_skill_policy.load_locked(db, now=now)
+            except PermissionPolicyError:
+                await db.rollback()
+                raise
+            if policy_snapshot is not None and any(
+                not policy_snapshot.is_allowed(skill) for skill in policy.skills
+            ):
+                await db.rollback()
+                raise PermissionPolicyError("remote worker skill is denied by policy")
             await db.execute(
                 """
                 INSERT INTO agents(

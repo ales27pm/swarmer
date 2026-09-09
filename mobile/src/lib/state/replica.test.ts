@@ -140,6 +140,37 @@ describe("SQLite bootstrap replica", () => {
     expect(runAsync).toHaveBeenCalledTimes(3);
   });
 
+  it("does not replace full cached content with metadata-only refetch notifications", async () => {
+    await upsertEvent("https://control.example", "task.updated", {
+      id: "tsk_1",
+      status: "running",
+      updated_at: "2030-01-01T00:00:00.000Z",
+      refetch_required: true,
+    });
+    await upsertEvent("https://control.example", "message.created", {
+      id: "msg_1",
+      conversation_id: "cnv_1",
+      created_at: "2030-01-01T00:00:00.000Z",
+      refetch_required: true,
+    });
+
+    expect(runAsync).not.toHaveBeenCalled();
+  });
+
+  it.each(["approval.requested", "approval.decided"])(
+    "preserves a full cached approval when %s is only an invalidation",
+    async (eventType) => {
+      await upsertEvent("https://control.example", eventType, {
+        id: "apr_1",
+        status: eventType === "approval.decided" ? "approved" : "pending",
+        updated_at: "2030-01-01T00:00:00.000Z",
+        refetch_required: true,
+      });
+
+      expect(runAsync).not.toHaveBeenCalled();
+    },
+  );
+
   it("exposes scoped queries and never authorizes sensitive actions from cached state", async () => {
     await localToolCalls("https://control.example");
     await localAgents("https://control.example");

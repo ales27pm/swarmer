@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from app.services.message_board import DurableEvent
@@ -22,6 +23,25 @@ class MutableClock:
 
     def __call__(self) -> datetime:
         return self.value
+
+
+async def release_writer_after_clock_advance(
+    blocker: aiosqlite.Connection,
+    blocked_operation: asyncio.Task[object],
+    clock: MutableClock,
+    advanced_to: datetime,
+) -> None:
+    """Advance a controllable clock while another writer is waiting for SQLite."""
+
+    for _ in range(20):
+        if blocked_operation.done():
+            break
+        await asyncio.sleep(0.005)
+    was_blocked = not blocked_operation.done()
+    clock.value = advanced_to
+    await blocker.commit()
+    await blocker.close()
+    assert was_blocked
 
 
 def durable_event(
@@ -194,6 +214,105 @@ async def test_concurrent_consumers_cannot_claim_the_same_delivery(tmp_path: Pat
     claimed = (claimed_a or claimed_b)[0]
     assert claimed.claim_generation == 1
     assert claimed.attempt == 1
+
+
+@pytest.mark.asyncio
+async def test_default_claim_lease_starts_after_waiting_for_writer_lock(tmp_path: Path) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    advanced = started + timedelta(seconds=20)
+    database = tmp_path / "consumer.db"
+    clock = MutableClock(started)
+    store = ConsumerCheckpointStore(database, claim_lease_seconds=10, clock=clock)
+    await store.initialize()
+    await store.enqueue("projection", durable_event())
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(store.claim_batch("projection", "cp_a:projection"))
+    await release_writer_after_clock_advance(blocker, operation, clock, advanced)
+
+    delivery = (await operation)[0]
+    assert delivery.claim_expires_at == (advanced + timedelta(seconds=10)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_explicit_claim_time_remains_fixed_while_writer_is_blocked(tmp_path: Path) -> None:
+    explicit = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "consumer.db"
+    clock = MutableClock(explicit + timedelta(hours=1))
+    store = ConsumerCheckpointStore(database, claim_lease_seconds=10, clock=clock)
+    await store.initialize()
+    await store.enqueue("projection", durable_event())
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(
+        store.claim_batch("projection", "cp_a:projection", now=explicit)
+    )
+    await release_writer_after_clock_advance(
+        blocker,
+        operation,
+        clock,
+        explicit + timedelta(hours=2),
+    )
+
+    delivery = (await operation)[0]
+    assert delivery.claim_expires_at == (explicit + timedelta(seconds=10)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_default_acknowledgement_rechecks_expiry_after_writer_lock(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "consumer.db"
+    clock = MutableClock(started + timedelta(seconds=9))
+    store = ConsumerCheckpointStore(database, claim_lease_seconds=10, clock=clock)
+    await store.initialize()
+    await store.enqueue("projection", durable_event())
+    delivery = (await store.claim_batch("projection", "cp_a:projection", now=started))[0]
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(store.acknowledge(delivery))
+    await release_writer_after_clock_advance(
+        blocker,
+        operation,
+        clock,
+        started + timedelta(seconds=11),
+    )
+
+    assert await operation is False
+    assert await store.get_checkpoint("projection") is None
+
+
+@pytest.mark.asyncio
+async def test_default_failure_rechecks_expiry_after_writer_lock(tmp_path: Path) -> None:
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    database = tmp_path / "consumer.db"
+    clock = MutableClock(started + timedelta(seconds=9))
+    store = ConsumerCheckpointStore(database, claim_lease_seconds=10, clock=clock)
+    await store.initialize()
+    await store.enqueue("projection", durable_event())
+    delivery = (await store.claim_batch("projection", "cp_a:projection", now=started))[0]
+
+    blocker = await aiosqlite.connect(database)
+    await blocker.execute("BEGIN IMMEDIATE")
+    operation = asyncio.create_task(store.fail(delivery, RuntimeError("late failure")))
+    await release_writer_after_clock_advance(
+        blocker,
+        operation,
+        clock,
+        started + timedelta(seconds=11),
+    )
+
+    assert await operation is None
+    assert await store.status_counts("projection") == {
+        "pending": 0,
+        "processing": 1,
+        "completed": 0,
+        "dead_letter": 0,
+    }
 
 
 @pytest.mark.asyncio

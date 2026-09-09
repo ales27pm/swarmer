@@ -3,7 +3,7 @@ import ipaddress
 import logging
 import secrets
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,7 +78,11 @@ from app.services.iphone_capability_service import (
     IPhoneCapabilityConflict,
     IPhoneCapabilityService,
 )
-from app.services.maintenance_lease import MaintenanceLeaseService
+from app.services.maintenance_lease import (
+    MaintenanceLeaseGuard,
+    MaintenanceLeaseRunner,
+    MaintenanceLeaseService,
+)
 from app.services.message_board import (
     MessageBoard,
     RedisStreamsMessageBoard,
@@ -90,10 +94,28 @@ from app.services.permission_policy import PermissionPolicy, PermissionPolicyErr
 from app.services.planner_provider import UbuntuLLMPlannerProvider
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.state_service import StateConflict, StateService
+from app.services.vector_index import FaissVectorIndex, VectorIndexError
+from app.services.websocket_notifications import WebSocketNotificationService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.10.0"
+API_VERSION = "0.11.0"
 logger = logging.getLogger(__name__)
+
+_MAINTENANCE_OPERATION_ERRORS = (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error)
+
+
+async def _run_isolated_maintenance_operation(
+    name: str,
+    operation: Callable[[], Awaitable[Any]],
+) -> bool:
+    """Run one recurring maintenance unit without coupling unrelated units to it."""
+
+    try:
+        await operation()
+    except _MAINTENANCE_OPERATION_ERRORS:
+        logger.exception("distributed runtime maintenance operation failed: %s", name)
+        return False
+    return True
 
 
 class PairComplete(BaseModel):
@@ -172,6 +194,7 @@ def _validate_runtime_boundaries(settings: Settings) -> None:
     for name, protected in {
         "db_path": settings.db_path,
         "permissions_path": settings.permissions_path,
+        "vector_index_path": settings.vector_index_path,
     }.items():
         resolved = protected.resolve()
         if resolved == workspace or workspace in resolved.parents:
@@ -186,7 +209,12 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if settings.embedding_base_url and settings.embedding_model
         else None
     )
-    state_service = StateService(settings.db_path, embedding_service)
+    permission_policy = PermissionPolicy.from_yaml(settings.permissions_path)
+    state_service = StateService(
+        settings.db_path,
+        embedding_service,
+        permission_policy=permission_policy,
+    )
     configured_pairing_secret = settings.pairing_bootstrap_token
     auth_service = AuthService(
         settings.db_path,
@@ -200,7 +228,6 @@ def create_app(config: Settings | None = None) -> FastAPI:
         ),
     )
     approval_gateway = ApprovalGateway(settings.db_path)
-    permission_policy = PermissionPolicy.from_yaml(settings.permissions_path)
     execution_engine = ExecutionEngine(settings.db_path, settings.workspace_root, permission_policy)
     orchestrator_service = OrchestratorService(settings.llm_base_url, settings.orchestrator_model)
     planner_provider = UbuntuLLMPlannerProvider(orchestrator_service)
@@ -210,6 +237,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
             redis_url=settings.redis_url.get_secret_value(),
             stream_prefix=settings.redis_stream_prefix,
             operation_timeout_seconds=settings.redis_operation_timeout_seconds,
+            stream_max_length=settings.redis_stream_maxlen,
+            stream_retention_seconds=settings.redis_stream_retention_seconds,
         )
     else:
         message_board = SQLiteMessageBoard(settings.db_path)
@@ -220,6 +249,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
     maintenance_leases = MaintenanceLeaseService(
         settings.db_path,
         lease_seconds=settings.maintenance_lease_seconds,
+    )
+    maintenance_runner = MaintenanceLeaseRunner(
+        maintenance_leases,
+        owner_instance_id=control_plane_instance.instance_id,
     )
     agent_dispatcher = AgentDispatcher(
         settings.db_path,
@@ -258,62 +291,155 @@ def create_app(config: Settings | None = None) -> FastAPI:
         maintenance_leases=maintenance_leases,
         owner_instance_id=control_plane_instance.instance_id,
     )
-    websockets: dict[WebSocket, str] = {}
+    vector_projection = (
+        FaissVectorIndex(
+            settings.vector_index_path,
+            generations_to_keep=settings.vector_index_generations_to_keep,
+        )
+        if settings.vector_backend == "faiss"
+        else None
+    )
+    websocket_notifications = WebSocketNotificationService(
+        settings.db_path,
+        instance_id=control_plane_instance.instance_id,
+    )
+    websockets: dict[str, tuple[WebSocket, str, str]] = {}
+    pending_websocket_attempts: dict[str, str] = {}
+
+    async def run_agent_lease_reaper(guard: MaintenanceLeaseGuard) -> dict[str, int]:
+        return await agent_lease_reaper.reap_expired(maintenance_guard=guard)
+
+    async def run_capability_expirer(guard: MaintenanceLeaseGuard) -> int:
+        return await iphone_capability_service.expire_requests(maintenance_guard=guard)
+
+    async def run_outbox_recovery(guard: MaintenanceLeaseGuard) -> int:
+        return await agent_dispatcher.outbox.recover_expired_claims(maintenance_guard=guard)
+
+    async def run_outbox_drain(guard: MaintenanceLeaseGuard) -> dict[str, int]:
+        return await agent_dispatcher.outbox.drain(maintenance_guard=guard)
+
+    async def run_agent_scoring(guard: MaintenanceLeaseGuard) -> list[Any]:
+        return await agent_scoring.rebuild(maintenance_guard=guard)
+
+    async def reload_policy_and_quarantine() -> None:
+        await agent_dispatcher.reload_worker_skill_policy(settings.permissions_path)
+
+    async def cleanup_websocket_notifications() -> dict[str, int]:
+        return await websocket_notifications.cleanup(
+            stale_instance_seconds=settings.websocket_notification_instance_stale_seconds
+        )
+
+    async def run_distributed_runtime_maintenance_cycle(*, refresh_scores: bool) -> bool:
+        """Run one recurring cycle; a known failure cannot starve independent work."""
+
+        await _run_isolated_maintenance_operation(
+            "control-plane-heartbeat",
+            control_plane_instance.heartbeat,
+        )
+        await _run_isolated_maintenance_operation(
+            "worker-policy-reload",
+            reload_policy_and_quarantine,
+        )
+        await _run_isolated_maintenance_operation(
+            "websocket-notification-cleanup",
+            cleanup_websocket_notifications,
+        )
+        await _run_isolated_maintenance_operation(
+            "agent-lease-reaper",
+            lambda: maintenance_runner.run("agent-lease-reaper", run_agent_lease_reaper),
+        )
+        await _run_isolated_maintenance_operation(
+            "capability-expirer",
+            lambda: maintenance_runner.run("capability-expirer", run_capability_expirer),
+        )
+        await _run_isolated_maintenance_operation(
+            "outbox-recovery",
+            lambda: maintenance_runner.run("outbox-maintenance", run_outbox_recovery),
+        )
+        await _run_isolated_maintenance_operation(
+            "outbox-drain",
+            lambda: maintenance_runner.run("outbox-maintenance", run_outbox_drain),
+        )
+        if not refresh_scores:
+            return False
+        return await _run_isolated_maintenance_operation(
+            "agent-scoring",
+            lambda: maintenance_runner.run("feedback-maintenance", run_agent_scoring),
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        await state_service.initialize()
-        await consumer_checkpoints.initialize()
-        await agent_scoring.initialize()
-        await control_plane_instance.start()
-        settings.workspace_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        await agent_lease_reaper.reap_expired()
-        await iphone_capability_service.expire_requests()
-        startup_outbox_lease = await maintenance_leases.acquire(
-            "outbox-maintenance", control_plane_instance.instance_id
-        )
-        if startup_outbox_lease is not None:
-            await agent_dispatcher.outbox.recover_expired_claims()
-            await agent_dispatcher.outbox.drain()
-        await agent_scoring.rebuild()
-
-        async def maintain_distributed_runtime() -> None:
-            last_score_refresh = asyncio.get_running_loop().time()
-            while True:
-                await asyncio.sleep(
-                    min(
-                        settings.agent_heartbeat_seconds,
-                        settings.control_plane_heartbeat_seconds,
-                    )
-                )
-                try:
-                    await control_plane_instance.heartbeat()
-                    await agent_lease_reaper.reap_expired()
-                    await iphone_capability_service.expire_requests()
-                    outbox_lease = await maintenance_leases.acquire(
-                        "outbox-maintenance", control_plane_instance.instance_id
-                    )
-                    if outbox_lease is not None:
-                        await agent_dispatcher.outbox.recover_expired_claims()
-                        await agent_dispatcher.outbox.drain()
-                    current_time = asyncio.get_running_loop().time()
-                    if current_time - last_score_refresh >= settings.agent_score_refresh_seconds:
-                        await agent_scoring.rebuild()
-                        last_score_refresh = current_time
-                except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
-                    logger.exception("distributed runtime maintenance failed")
-
-        maintenance = asyncio.create_task(
-            maintain_distributed_runtime(), name="mongars-distributed-runtime-maintenance"
-        )
+        maintenance: asyncio.Task[None] | None = None
+        websocket_notification_pump: asyncio.Task[None] | None = None
+        instance_started = False
         try:
+            await state_service.initialize()
+            await consumer_checkpoints.initialize()
+            await agent_scoring.initialize()
+            await control_plane_instance.start()
+            instance_started = True
+            await websocket_notifications.initialize()
+            await cleanup_websocket_notifications()
+            settings.workspace_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            await agent_dispatcher.reload_worker_skill_policy(settings.permissions_path)
+            await maintenance_runner.run(
+                "agent-lease-reaper",
+                run_agent_lease_reaper,
+            )
+            await maintenance_runner.run("capability-expirer", run_capability_expirer)
+            await maintenance_runner.run("outbox-maintenance", run_outbox_recovery)
+            await maintenance_runner.run("outbox-maintenance", run_outbox_drain)
+            await maintenance_runner.run("feedback-maintenance", run_agent_scoring)
+
+            async def maintain_distributed_runtime() -> None:
+                last_score_refresh = asyncio.get_running_loop().time()
+                while True:
+                    await asyncio.sleep(
+                        min(
+                            settings.agent_heartbeat_seconds,
+                            settings.control_plane_heartbeat_seconds,
+                        )
+                    )
+                    current_time = asyncio.get_running_loop().time()
+                    refresh_scores = (
+                        current_time - last_score_refresh >= settings.agent_score_refresh_seconds
+                    )
+                    if await run_distributed_runtime_maintenance_cycle(
+                        refresh_scores=refresh_scores
+                    ):
+                        last_score_refresh = current_time
+
+            maintenance = asyncio.create_task(
+                maintain_distributed_runtime(), name="mongars-distributed-runtime-maintenance"
+            )
+
+            async def pump_websocket_notifications() -> None:
+                while True:
+                    await _run_isolated_maintenance_operation(
+                        "websocket-notification-pump",
+                        drain_websocket_notifications,
+                    )
+                    await asyncio.sleep(settings.websocket_notification_poll_seconds)
+
+            websocket_notification_pump = asyncio.create_task(
+                pump_websocket_notifications(),
+                name="mongars-websocket-notification-pump",
+            )
             yield
         finally:
-            maintenance.cancel()
-            with suppress(asyncio.CancelledError):
-                await maintenance
-            with suppress(OSError, RuntimeError, sqlite3.Error):
-                await control_plane_instance.stop()
+            if websocket_notification_pump is not None:
+                websocket_notification_pump.cancel()
+                with suppress(asyncio.CancelledError):
+                    await websocket_notification_pump
+            if maintenance is not None:
+                maintenance.cancel()
+                with suppress(asyncio.CancelledError):
+                    await maintenance
+            await websocket_notifications.close()
+            await maintenance_runner.close()
+            if instance_started:
+                with suppress(OSError, RuntimeError, sqlite3.Error):
+                    await control_plane_instance.stop()
             await message_board.close()
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
@@ -330,9 +456,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.iphone_capability_service = iphone_capability_service
     app.state.control_plane_instance = control_plane_instance
     app.state.maintenance_leases = maintenance_leases
+    app.state.maintenance_lease_runner = maintenance_runner
     app.state.idempotency_service = idempotency_service
     app.state.consumer_checkpoints = consumer_checkpoints
     app.state.agent_scoring = agent_scoring
+    app.state.vector_projection = vector_projection
+    app.state.websocket_notifications = websocket_notifications
+    app.state.run_maintenance_cycle = run_distributed_runtime_maintenance_cycle
+    app.state.websockets = websockets
 
     async def require_secure_transport(request: Request) -> None:
         if settings.allow_insecure_remote_http:
@@ -396,18 +527,218 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if not secrets.compare_digest(configured.get_secret_value(), supplied):
             raise HTTPException(status_code=403, detail="operator authentication required")
 
+    async def close_websocket_bounded(websocket: WebSocket, *, code: int) -> None:
+        try:
+            await asyncio.wait_for(
+                websocket.close(code=code),
+                timeout=settings.websocket_io_timeout_seconds,
+            )
+        except (TimeoutError, OSError, RuntimeError, WebSocketDisconnect):
+            # Registry eviction is authoritative. Closing a broken peer remains
+            # best-effort and must never hold credential cutover indefinitely.
+            return
+
+    async def clear_websocket_owner(
+        device_id: str,
+        session_id: str,
+        connection_id: str,
+    ) -> None:
+        async with auth_service.serialize_device_session(device_id):
+            await auth_service.clear_websocket_connection(
+                device_id,
+                session_id,
+                connection_id,
+            )
+
+    def begin_websocket_attempt(device_id: str) -> str:
+        attempt_id = secrets.token_urlsafe(18)
+        pending_websocket_attempts[device_id] = attempt_id
+        return attempt_id
+
+    async def install_websocket(
+        websocket: WebSocket,
+        *,
+        device_id: str,
+        session_id: str,
+        attempt_id: str,
+    ) -> bool:
+        close_after: list[tuple[WebSocket, int]] = []
+        installed = False
+        try:
+            async with auth_service.serialize_device_session(device_id):
+                if pending_websocket_attempts.get(device_id) != attempt_id:
+                    close_after.append((websocket, 4401))
+                else:
+                    pending_websocket_attempts.pop(device_id, None)
+                    if not await auth_service.activate_websocket_connection(
+                        device_id,
+                        session_id,
+                        attempt_id,
+                    ):
+                        close_after.append((websocket, 4401))
+                    else:
+                        previous = websockets.get(device_id)
+                        if previous is not None and previous[0] is not websocket:
+                            close_after.append((previous[0], 1000))
+                        websockets[device_id] = (websocket, session_id, attempt_id)
+                        try:
+                            await asyncio.wait_for(
+                                websocket.send_json(
+                                    {
+                                        "type": "connected",
+                                        "payload": {
+                                            "version": API_VERSION,
+                                            "device_id": device_id,
+                                        },
+                                    }
+                                ),
+                                timeout=settings.websocket_io_timeout_seconds,
+                            )
+                            pending_capabilities = (
+                                await iphone_capability_service.pending_delivery_previews(device_id)
+                            )
+                            for preview in pending_capabilities:
+                                await asyncio.wait_for(
+                                    websocket.send_json(
+                                        safe_websocket_event(
+                                            {
+                                                "type": "iphone.capability.requested",
+                                                "payload": preview,
+                                            }
+                                        )
+                                    ),
+                                    timeout=settings.websocket_io_timeout_seconds,
+                                )
+                        except (
+                            TimeoutError,
+                            OSError,
+                            RuntimeError,
+                            sqlite3.Error,
+                            WebSocketDisconnect,
+                        ):
+                            await auth_service.clear_websocket_connection(
+                                device_id,
+                                session_id,
+                                attempt_id,
+                            )
+                            if websockets.get(device_id) == (
+                                websocket,
+                                session_id,
+                                attempt_id,
+                            ):
+                                websockets.pop(device_id, None)
+                            close_after.append((websocket, 1011))
+                        else:
+                            installed = True
+        except (OSError, RuntimeError, sqlite3.Error):
+            if pending_websocket_attempts.get(device_id) == attempt_id:
+                pending_websocket_attempts.pop(device_id, None)
+            close_after.append((websocket, 1011))
+
+        if close_after:
+            await asyncio.gather(
+                *(close_websocket_bounded(peer, code=code) for peer, code in close_after)
+            )
+        return installed
+
+    app.state.begin_websocket_attempt = begin_websocket_attempt
+    app.state.install_websocket = install_websocket
+
+    async def deliver_websocket_notification_to_device(
+        connected_device_id: str,
+        websocket: WebSocket,
+        connected_session_id: str,
+        connected_connection_id: str,
+        safe_event: dict[str, Any],
+    ) -> None:
+        expected = (websocket, connected_session_id, connected_connection_id)
+        close_code: int | None = None
+        try:
+            async with auth_service.serialize_device_session(connected_device_id):
+                if websockets.get(connected_device_id) != expected:
+                    return
+                if not await auth_service.is_websocket_connection_current(
+                    connected_device_id,
+                    connected_session_id,
+                    connected_connection_id,
+                ):
+                    close_code = 4401
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_json(safe_event),
+                            timeout=settings.websocket_io_timeout_seconds,
+                        )
+                    except (TimeoutError, OSError, RuntimeError, WebSocketDisconnect):
+                        close_code = 1011
+                if close_code is not None and websockets.get(connected_device_id) == expected:
+                    websockets.pop(connected_device_id, None)
+                    await auth_service.clear_websocket_connection(
+                        connected_device_id,
+                        connected_session_id,
+                        connected_connection_id,
+                    )
+        except (OSError, RuntimeError):
+            close_code = 1011
+            if websockets.get(connected_device_id) == expected:
+                websockets.pop(connected_device_id, None)
+            with suppress(OSError, RuntimeError, sqlite3.Error):
+                await clear_websocket_owner(
+                    connected_device_id,
+                    connected_session_id,
+                    connected_connection_id,
+                )
+        if close_code is not None:
+            await close_websocket_bounded(websocket, code=close_code)
+
+    async def deliver_websocket_notification_locally(
+        safe_event: dict[str, Any],
+        device_id: str | None,
+    ) -> None:
+        deliveries = [
+            deliver_websocket_notification_to_device(
+                connected_device_id,
+                websocket,
+                connected_session_id,
+                connected_connection_id,
+                safe_event,
+            )
+            for connected_device_id, (
+                websocket,
+                connected_session_id,
+                connected_connection_id,
+            ) in list(websockets.items())
+            if device_id is None or connected_device_id == device_id
+        ]
+        if deliveries:
+            # Each device has an independent cross-process lock and I/O timeout.
+            # Concurrent fan-out makes one stalled phone cost one timeout rather
+            # than serially delaying every other connected phone.
+            await asyncio.gather(*deliveries)
+
+    async def drain_websocket_notifications() -> int:
+        return await websocket_notifications.drain(deliver_websocket_notification_locally)
+
     async def broadcast(event: dict[str, Any], *, device_id: str | None = None) -> None:
         safe_event = safe_websocket_event(event)
-        dead: list[WebSocket] = []
-        for websocket, connected_device_id in list(websockets.items()):
-            if device_id is not None and connected_device_id != device_id:
-                continue
-            try:
-                await websocket.send_json(safe_event)
-            except (OSError, RuntimeError, WebSocketDisconnect):
-                dead.append(websocket)
-        for websocket in dead:
-            websockets.pop(websocket, None)
+        try:
+            await websocket_notifications.publish(safe_event, device_id=device_id)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            # WebSocket delivery is an invalidation hint, never authoritative
+            # state. Preserve the endpoint's post-commit response and attempt
+            # same-process delivery when the notification log is unavailable.
+            logger.exception("could not persist WebSocket invalidation")
+            await deliver_websocket_notification_locally(safe_event, device_id)
+            return
+        try:
+            await drain_websocket_notifications()
+        except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
+            # The committed notification remains after this instance's
+            # checkpoint. The local/background pump will retry it at least once.
+            logger.exception("could not drain WebSocket invalidations")
+
+    app.state.broadcast = broadcast
+    app.state.drain_websocket_notifications = drain_websocket_notifications
 
     def public_job_event(job: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -757,6 +1088,15 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 timeout_seconds=settings.agent_offline_timeout_seconds,
             )
         )
+        vector_generation_age_seconds: float | None = None
+        active_vector_projection = app.state.vector_projection
+        if active_vector_projection is not None:
+            try:
+                vector_generation_age_seconds = await asyncio.to_thread(
+                    active_vector_projection.generation_age_seconds
+                )
+            except (OSError, VectorIndexError):
+                vector_generation_age_seconds = None
         return {
             "status": "ok",
             "version": API_VERSION,
@@ -764,13 +1104,17 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "message_board_backend": str(board_health.get("backend", "unknown")),
             "message_board_health": str(board_health.get("status", "degraded")),
             "last_successful_publication": board_health.get("last_successful_publication"),
+            "redis_reconnect_count": int(board_health.get("reconnect_count", 0)),
+            "redis_last_error_category": board_health.get("last_error_category"),
             **outbox_metrics,
             **job_metrics,
+            **maintenance_runner.metrics,
             "active_agents": active_agents,
             "offline_agents": len(agents) - active_agents,
             "maintenance_lease_owner": await maintenance_leases.current_owners(),
             "pending_capability_requests": await iphone_capability_service.pending_count(),
             "vector_backend": settings.vector_backend,
+            "vector_generation_age_seconds": vector_generation_age_seconds,
         }
 
     @app.post("/pairing/code", dependencies=[Depends(require_pairing_operator)])
@@ -1067,21 +1411,15 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise HTTPException(status_code=422, detail="agent endpoint must be an http(s) URL")
         try:
-            validated_card = validate_agent_registration(request)
+            validate_agent_registration(request)
         except AgentCardPolicyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
-            denied = any(
-                permission_policy.evaluate_worker_skill(skill).decision != "allow"
-                for skill in validated_card.skills
-            )
+            return await state_service.register_agent(request, str(principal["id"]))
         except PermissionPolicyError as exc:
             raise HTTPException(
                 status_code=403, detail="remote worker skill is denied by policy"
             ) from exc
-        if denied:
-            raise HTTPException(status_code=403, detail="remote worker skill is denied by policy")
-        return await state_service.register_agent(request, str(principal["id"]))
 
     @app.post("/agents/{agent_id}/heartbeat")
     async def heartbeat_agent(
@@ -1106,7 +1444,6 @@ def create_app(config: Settings | None = None) -> FastAPI:
         del principal
         try:
             validated_payload = validate_remote_job(request.required_skill, request.payload)
-            rule = permission_policy.evaluate_worker_skill(request.required_skill)
             if request.required_skill in {"workspace.list_dir", "workspace.read_text"}:
                 execution_engine.validate_arguments(
                     request.required_skill,
@@ -1116,14 +1453,17 @@ def create_app(config: Settings | None = None) -> FastAPI:
                     raise RemoteJobPolicyError("workspace worker skill is not allowed by policy")
         except (ExecutionError, RemoteJobPolicyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail="invalid remote worker payload") from exc
-        if rule.decision != "allow":
-            raise HTTPException(status_code=403, detail="remote worker skill is denied by policy")
         try:
             job = await agent_dispatcher.queue_job(
                 task_id, request.required_skill, validated_payload
             )
         except AgentDispatchConflict as exc:
-            code = 404 if str(exc) == "task not found" else 409
+            if str(exc) == "task not found":
+                code = 404
+            elif str(exc) == "remote worker skill is denied by policy":
+                code = 403
+            else:
+                code = 409
             raise HTTPException(status_code=code, detail=str(exc)) from exc
         await broadcast({"type": "agent.job.queued", "payload": public_job_event(job)})
         task = await state_service.get_task(task_id)
@@ -1451,19 +1791,56 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if not principal:
             await websocket.close(code=4401)
             return
-        await websocket.accept()
-        websockets[websocket] = str(principal["device_id"])
+        connected_device_id = str(principal["device_id"])
+        connected_session_id = str(principal["session_id"])
+        attempt_id = begin_websocket_attempt(connected_device_id)
         try:
-            await websocket.send_json(
-                {
-                    "type": "connected",
-                    "payload": {"version": API_VERSION, "device_id": principal["device_id"]},
-                }
-            )
+            await websocket.accept()
+            if not await install_websocket(
+                websocket,
+                device_id=connected_device_id,
+                session_id=connected_session_id,
+                attempt_id=attempt_id,
+            ):
+                return
             while True:
                 await websocket.receive_text()
-        except WebSocketDisconnect:
-            websockets.pop(websocket, None)
+                async with auth_service.serialize_device_session(connected_device_id):
+                    connection_is_current = await auth_service.is_websocket_connection_current(
+                        connected_device_id,
+                        connected_session_id,
+                        attempt_id,
+                    )
+                if not connection_is_current:
+                    if websockets.get(connected_device_id) == (
+                        websocket,
+                        connected_session_id,
+                        attempt_id,
+                    ):
+                        websockets.pop(connected_device_id, None)
+                    await clear_websocket_owner(
+                        connected_device_id,
+                        connected_session_id,
+                        attempt_id,
+                    )
+                    await close_websocket_bounded(websocket, code=4401)
+                    break
+        except (TimeoutError, OSError, RuntimeError, WebSocketDisconnect):
+            if websockets.get(connected_device_id) == (
+                websocket,
+                connected_session_id,
+                attempt_id,
+            ):
+                websockets.pop(connected_device_id, None)
+            await clear_websocket_owner(
+                connected_device_id,
+                connected_session_id,
+                attempt_id,
+            )
+            await close_websocket_bounded(websocket, code=1011)
+        finally:
+            if pending_websocket_attempts.get(connected_device_id) == attempt_id:
+                pending_websocket_attempts.pop(connected_device_id, None)
 
     return app
 

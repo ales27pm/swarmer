@@ -55,6 +55,14 @@ function delivery(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 describe("mutation outbox API binding", () => {
   let activeToken: string;
 
@@ -126,6 +134,30 @@ describe("mutation outbox API binding", () => {
     );
   });
 
+  it("forwards cancellation to a never-settling mutation fetch", async () => {
+    const session = await createMutationOutboxApiSession();
+    const started = deferred<void>();
+    request.mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+      const rejectAbort = () => {
+        reject(Object.assign(new Error("transport aborted"), { name: "AbortError" }));
+      };
+      if (init?.signal?.aborted) rejectAbort();
+      else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+      started.resolve();
+    }));
+    const controller = new AbortController();
+
+    const sending = session.send(delivery(), controller.signal);
+    await started.promise;
+    controller.abort();
+
+    await expect(sending).rejects.toMatchObject({ name: "AbortError" });
+    expect(request).toHaveBeenCalledWith(
+      "https://control.example/sync/mutations",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
   it("rejects another origin and a same-origin credential replacement before fetch", async () => {
     const session = await createMutationOutboxApiSession();
 
@@ -148,7 +180,7 @@ describe("mutation outbox API binding", () => {
         idempotent_replay: true,
         result: { id: "fb_1" },
       }));
-      await sender(delivery({ attempt: 2 }));
+      await sender(delivery({ attempt: 2 }), new AbortController().signal);
       return expected;
     });
 

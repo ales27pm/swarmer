@@ -23,9 +23,28 @@ diffs, text conversion, and lazy object fetching are disabled. Ruff runs with
 Python files.
 
 Subprocesses receive a minimal environment that excludes the agent credential.
-All commands have hard time and output limits. Protected credential-like paths
-and symbolic links are rejected or omitted. For defense in depth, mount
-`MONGARS_REVIEW_ROOT` read-only at the operating-system/container boundary.
+Git pathspecs are always literal, replacement objects are disabled, and `HEAD`
+is resolved to one full object ID before a multi-command show or staged diff.
+The index and selected worktree files are descriptor-checked and copied into a
+private snapshot before diffing; Ruff receives only private descriptor-copied
+files. A bounded, descriptor-relative pre/post manifest joins sequential file
+copies into one generation and rejects same-inode edits or path swaps during
+capture. Repository-root and `.git` directory identities are revalidated around
+every command. Commit reads use a full immutable object ID, and the complete
+Git metadata/object manifest is fenced around live content-addressed object
+reads.
+
+All commands have hard time and output limits. Protected credential-like paths,
+symbolic links, hard-linked review files, external object stores, grafts, and
+repository-local `filter` or `include` configuration are rejected or omitted.
+This intentionally excludes linked worktrees and repositories that require a
+local Git filter such as LFS. Snapshot files and the index are limited to 16
+MiB each. A hostile process with concurrent write access can still race Git's
+own object/configuration reads and restore state between manifest observations,
+so production deployments must still mount `MONGARS_REVIEW_ROOT` read-only at
+the operating-system/container boundary. The worker detects observed concurrent
+mutation and never returns a known mixed snapshot; it is not a substitute for
+an OS-enforced immutable source mount against a malicious same-UID writer.
 
 ## Job contracts
 

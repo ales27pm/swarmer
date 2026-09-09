@@ -5,11 +5,13 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from app.models import AgentCreate, TaskCreate, TaskRecord
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
+from app.services.maintenance_lease import MaintenanceLeaseLost
 from app.services.message_board import MessageBoardService
 from app.services.permission_policy import PermissionPolicy
 from app.services.state_service import StateService
@@ -43,7 +45,13 @@ async def test_cancelled_parent_prevents_expired_lease_requeue(tmp_path: Path) -
 
     counts = await reaper.reap_expired()
 
-    assert counts == {"expired": 1, "requeued": 0, "dead_lettered": 0, "cancelled": 1}
+    assert counts == {
+        "expired": 1,
+        "requeued": 0,
+        "dead_lettered": 0,
+        "cancelled": 1,
+        "quarantined": 0,
+    }
     assert (await dispatcher.get_job(claimed["id"]))["status"] == "cancelled"
 
 
@@ -74,6 +82,7 @@ async def test_policy_revocation_prevents_expired_read_job_redistribution(
     claimed = await dispatcher.claim(agent["id"])
     assert claimed is not None
     clock.advance(61)
+    await dispatcher.install_worker_skill_policy(denied_worker_policy("workspace.list_dir"))
     revoked_reaper = AgentLeaseReaper(
         state.db_path,
         MessageBoardService(state.db_path),
@@ -83,12 +92,16 @@ async def test_policy_revocation_prevents_expired_read_job_redistribution(
 
     counts = await revoked_reaper.reap_expired()
 
-    assert counts == {"expired": 1, "requeued": 0, "dead_lettered": 1, "cancelled": 0}
+    assert counts == {
+        "expired": 1,
+        "requeued": 0,
+        "dead_lettered": 0,
+        "cancelled": 0,
+        "quarantined": 1,
+    }
     job = await dispatcher.get_job(claimed["id"])
-    assert job is not None and job["status"] == "failed"
-    assert job["last_failure_reason"] == (
-        "remote worker skill denied by current policy; not retried"
-    )
+    assert job is not None and job["status"] == "quarantined"
+    assert job["last_failure_reason"] == "remote worker skill revoked by current policy"
     task = await state.get_task(task_id)
     assert task is not None and task.status.value == "failed"
 
@@ -105,6 +118,90 @@ async def test_restart_preserves_remote_job_for_lease_recovery(tmp_path: Path) -
 
     clock.advance(61)
     assert (await reaper.reap_expired())["requeued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reaper_status_metrics_are_persisted_without_audit_history_scan(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock(datetime(2026, 1, 1, tzinfo=UTC))
+    state, dispatcher, reaper, agent, _ = await setup_runtime(tmp_path / "state.db", clock)
+    claimed = await dispatcher.claim(agent["id"])
+    assert claimed is not None
+    clock.advance(61)
+    assert (await reaper.reap_expired())["requeued"] == 1
+
+    before = await reaper.metrics()
+    assert before["expired_leases"] == 1
+    assert before["retries"] == 1
+    assert before["dead_letter_events"] == 0
+
+    # Operational counters remain available even if audit retention changes;
+    # /status must not depend on walking the append-only audit history.
+    with sqlite3.connect(state.db_path) as db:
+        db.execute("DELETE FROM audit_events")
+    await state.initialize()
+
+    after = await reaper.metrics()
+    assert after["expired_leases"] == 1
+    assert after["retries"] == 1
+    assert after["dead_letter_events"] == 0
+
+    # Prove the operational status query has no hidden dependency on the
+    # historical table at all, rather than merely succeeding when it is empty.
+    with sqlite3.connect(state.db_path) as db:
+        db.execute("ALTER TABLE audit_events RENAME TO archived_audit_events")
+    without_audit_table = await reaper.metrics()
+    assert without_audit_table["expired_leases"] == 1
+    assert without_audit_table["retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reaper_metrics_roll_back_atomically_with_job_and_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = MutableClock(datetime(2026, 1, 1, tzinfo=UTC))
+    state, dispatcher, reaper, agent, _ = await setup_runtime(tmp_path / "state.db", clock)
+    claimed = await dispatcher.claim(agent["id"])
+    assert claimed is not None
+    clock.advance(61)
+
+    record_outcome = reaper._record_outcome_locked
+
+    async def fail_after_recording(
+        db: aiosqlite.Connection,
+        row: aiosqlite.Row,
+        now: str,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        await record_outcome(db, row, now, outcome, reason)
+        raise RuntimeError("injected failure after operational counter update")
+
+    monkeypatch.setattr(reaper, "_record_outcome_locked", fail_after_recording)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        await reaper.reap_expired()
+
+    persisted = await dispatcher.get_job(claimed["id"])
+    assert persisted is not None and persisted["status"] == "claimed"
+    with sqlite3.connect(state.db_path) as db:
+        audit_count = db.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type LIKE 'agent.job.%expired%'"
+        ).fetchone()
+        metrics = db.execute(
+            """
+            SELECT lease_expirations,retries,dead_letter_events
+            FROM agent_job_operational_metrics WHERE singleton_id=1
+            """
+        ).fetchone()
+    assert audit_count == (0,)
+    assert metrics == (0, 0, 0)
+
+    monkeypatch.setattr(reaper, "_record_outcome_locked", record_outcome)
+    assert (await reaper.reap_expired())["requeued"] == 1
+    assert (await reaper.metrics())["expired_leases"] == 1
+    assert (await reaper.metrics())["retries"] == 1
 
 
 @pytest.mark.asyncio
@@ -161,7 +258,10 @@ async def test_expired_mutating_job_is_never_automatically_redistributed(tmp_pat
 
     assert counts["dead_lettered"] == 1
     assert counts["requeued"] == 0
-    assert (await dispatcher.get_job(claimed["id"]))["status"] == "failed"
+    job = await dispatcher.get_job(claimed["id"])
+    assert job is not None and job["status"] == "failed"
+    assert "automatic redistribution disabled by policy" in job["last_failure_reason"]
+    assert "outcome uncertain; not retried" in job["error"]
 
 
 @pytest.mark.parametrize(
@@ -218,7 +318,13 @@ async def test_capability_history_makes_expired_read_job_outcome_uncertain(
 
     counts = await reaper.reap_expired()
 
-    assert counts == {"expired": 1, "requeued": 0, "dead_lettered": 1, "cancelled": 0}
+    assert counts == {
+        "expired": 1,
+        "requeued": 0,
+        "dead_lettered": 1,
+        "cancelled": 0,
+        "quarantined": 0,
+    }
     job = await dispatcher.get_job(claimed["id"])
     assert job is not None
     assert job["status"] == "failed"
@@ -234,3 +340,20 @@ async def test_capability_history_makes_expired_read_job_outcome_uncertain(
         ).fetchone()
     assert request_status == (expected_request_status,)
     assert await dispatcher.claim(agent["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_reaper_does_not_swallow_maintenance_fence_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "state.db"
+    await StateService(database).initialize()
+    reaper = AgentLeaseReaper(database, MessageBoardService(database))
+
+    async def lose_fence(**_: object) -> dict[str, int]:
+        raise MaintenanceLeaseLost("maintenance generation was fenced")
+
+    monkeypatch.setattr(reaper.outbox, "drain", lose_fence)
+
+    with pytest.raises(MaintenanceLeaseLost, match="fenced"):
+        await reaper.reap_expired()

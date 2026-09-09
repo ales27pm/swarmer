@@ -125,10 +125,15 @@ async function refreshBootstrap(
   }
 }
 
-async function refreshConversation(conversationId: string | undefined, dispatch: ChatDispatch) {
-  if (!conversationId) return;
+async function refreshConversation(
+  conversationId: string | undefined,
+  dispatch: ChatDispatch,
+  isCurrent: () => boolean = () => true,
+) {
+  if (!conversationId || !isCurrent()) return;
   try {
-    dispatch({ messages: await listMessages(conversationId) });
+    const messages = await listMessages(conversationId, isCurrent);
+    if (isCurrent()) dispatch({ messages });
   } catch {
     // Keep the rendered conversation while preserving the primary error.
   }
@@ -214,7 +219,12 @@ function useChatController() {
       };
     }, [refreshStatus]),
   );
-  useLiveRefresh(() => refreshStatus(false));
+  useLiveRefresh(async () => {
+    const requestEpoch = ++refreshEpoch.current;
+    const isCurrent = () => requestEpoch === refreshEpoch.current;
+    await refreshBootstrap(dispatch, false, isCurrent);
+    await refreshConversation(state.conversationId, dispatch, isCurrent);
+  });
 
   return {
     ...state,

@@ -483,10 +483,12 @@ def _validate_redis_transport_url(redis_url: str) -> bool:
 
 
 class RedisStreamsMessageBoard:
-    """Optional Redis Streams notification adapter with application-level deduplication."""
+    """Optional bounded Redis notification adapter; authoritative state stays in SQLite."""
 
     _PUBLISH_SCRIPT = """
-local existing = redis.call('HGET', KEYS[1], ARGV[1])
+local server_time = redis.call('TIME')
+local now_ms = (tonumber(server_time[1]) * 1000) + math.floor(tonumber(server_time[2]) / 1000)
+local existing = redis.call('GET', KEYS[1])
 if existing then
   local separator = string.find(existing, '|', 1, true)
   if not separator then
@@ -494,13 +496,18 @@ if existing then
   end
   local stored_digest = string.sub(existing, 1, separator - 1)
   local existing_id = string.sub(existing, separator + 1)
-  if stored_digest ~= ARGV[3] then
+  if stored_digest ~= ARGV[2] then
     return {existing_id, '2'}
   end
   return {existing_id, '1'}
 end
-local broker_id = redis.call('XADD', KEYS[2], '*', 'envelope', ARGV[2])
-redis.call('HSET', KEYS[1], ARGV[1], ARGV[3] .. '|' .. broker_id)
+local broker_id = redis.call(
+  'XADD', KEYS[2], 'MAXLEN', '~', ARGV[3], '*', 'envelope', ARGV[1]
+)
+local minimum_id = tostring(now_ms - tonumber(ARGV[4])) .. '-0'
+redis.call('XTRIM', KEYS[2], 'MINID', '~', minimum_id)
+redis.call('SET', KEYS[1], ARGV[2] .. '|' .. broker_id, 'PX', ARGV[4])
+redis.call('PEXPIRE', KEYS[2], ARGV[4])
 return {broker_id, '0'}
 """
 
@@ -511,6 +518,8 @@ return {broker_id, '0'}
         stream_prefix: str = "mongars",
         redis_client: AsyncRedisClient | None = None,
         operation_timeout_seconds: float = 2.0,
+        stream_max_length: int = 10_000,
+        stream_retention_seconds: int = 604_800,
     ) -> None:
         tls_required = _validate_redis_transport_url(redis_url)
         normalized_prefix = stream_prefix.strip(": ")
@@ -518,10 +527,19 @@ return {broker_id, '0'}
             raise ValueError("Redis stream prefix is invalid")
         if not 0.001 <= operation_timeout_seconds <= 30:
             raise ValueError("Redis operation timeout is invalid")
+        if not 1 <= stream_max_length <= 10_000_000:
+            raise ValueError("Redis stream max length is invalid")
+        if not 60 <= stream_retention_seconds <= 31_536_000:
+            raise ValueError("Redis stream retention is invalid")
         self.stream_prefix = normalized_prefix
         self.operation_timeout_seconds = operation_timeout_seconds
+        self.stream_max_length = stream_max_length
+        self.stream_retention_seconds = stream_retention_seconds
         self._last_successful_publication: str | None = None
-        self._degraded = False
+        self._publication_degraded = False
+        self._connection_healthy = True
+        self._reconnect_count = 0
+        self._last_error_category: str | None = None
         if redis_client is None:
             try:
                 from redis.asyncio import Redis
@@ -554,6 +572,37 @@ return {broker_id, '0'}
         category = head if head in {"tasks", "agents", "iphone"} else "system"
         return f"{self.stream_prefix}:{category}"
 
+    def _dedupe_storage_key(self, dedupe_key: str) -> str:
+        digest = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
+        return f"{self.stream_prefix}:dedupe:{digest}"
+
+    @staticmethod
+    def _error_category(error: BaseException) -> str:
+        if isinstance(error, TimeoutError):
+            return "timeout"
+        name = type(error).__name__.casefold()
+        if "auth" in name or "permission" in name:
+            return "authentication"
+        if "ssl" in name or "tls" in name or "certificate" in name:
+            return "tls"
+        if "connection" in name or isinstance(error, OSError):
+            return "connection"
+        return "publication"
+
+    def _record_failure(self, error: BaseException) -> None:
+        self._publication_degraded = True
+        self._last_error_category = self._error_category(error)
+        if self._last_error_category in {"timeout", "connection", "authentication", "tls"}:
+            self._connection_healthy = False
+
+    def _record_publish_success(self) -> None:
+        if not self._connection_healthy:
+            self._reconnect_count += 1
+        self._connection_healthy = True
+        self._publication_degraded = False
+        self._last_error_category = None
+        self._last_successful_publication = datetime.now(UTC).isoformat()
+
     @staticmethod
     def _decoded(value: object) -> str:
         if isinstance(value, bytes):
@@ -564,35 +613,38 @@ return {broker_id, '0'}
         assert_safe_shared_payload(event.payload)
         envelope = _canonical_json(event.as_dict())
         stream = self._stream_name(event.topic)
+        retention_ms = self.stream_retention_seconds * 1000
         try:
             async with asyncio.timeout(self.operation_timeout_seconds):
                 raw = await self._client.eval(
                     self._PUBLISH_SCRIPT,
                     2,
-                    f"{self.stream_prefix}:dedupe",
+                    self._dedupe_storage_key(event.dedupe_key),
                     stream,
-                    event.dedupe_key,
                     envelope,
                     event.binding_digest,
+                    self.stream_max_length,
+                    retention_ms,
                 )
             if not isinstance(raw, (list, tuple)) or len(raw) != 2:
                 raise RuntimeError("Redis returned an invalid publication acknowledgement")
             broker_id = self._decoded(raw[0])
             outcome = self._decoded(raw[1])
         except Exception as exc:
-            self._degraded = True
+            self._record_failure(exc)
             raise MessageBoardUnavailableError("message board publication unavailable") from exc
         if outcome == "2":
-            self._degraded = False
+            self._publication_degraded = True
+            self._last_error_category = "dedupe_conflict"
             raise MessageBoardDedupeConflict("Redis dedupe key is bound to a different event")
         if outcome not in {"0", "1"}:
-            self._degraded = True
+            self._publication_degraded = True
+            self._last_error_category = "protocol"
             raise MessageBoardUnavailableError(
                 "message board publication returned an invalid dedupe outcome"
             )
         duplicate = outcome == "1"
-        self._degraded = False
-        self._last_successful_publication = datetime.now(UTC).isoformat()
+        self._record_publish_success()
         return {
             "backend": "redis",
             "backend_id": broker_id,
@@ -607,14 +659,20 @@ return {broker_id, '0'}
         try:
             async with asyncio.timeout(self.operation_timeout_seconds):
                 await self._client.ping()
-        except Exception:  # noqa: BLE001 - health never exposes adapter details
-            self._degraded = True
+        except Exception as exc:  # noqa: BLE001 - health never exposes adapter details
+            self._connection_healthy = False
+            self._last_error_category = self._error_category(exc)
         else:
-            self._degraded = False
+            if not self._connection_healthy:
+                self._reconnect_count += 1
+            self._connection_healthy = True
+        degraded = not self._connection_healthy or self._publication_degraded
         return {
             "backend": "redis",
-            "status": "degraded" if self._degraded else "connected",
+            "status": "degraded" if degraded else "connected",
             "last_successful_publication": self._last_successful_publication,
+            "reconnect_count": self._reconnect_count,
+            "last_error_category": self._last_error_category,
         }
 
     async def close(self) -> None:

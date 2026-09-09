@@ -62,9 +62,15 @@ actor LocalModelStore {
   private let rootURL: URL
   private let modelsURL: URL
   private let indexURL: URL
+  private let importDidCreateStaging: (@Sendable () async -> Void)?
 
-  init(fileManager: FileManager = .default, applicationSupportURL: URL? = nil) {
+  init(
+    fileManager: FileManager = .default,
+    applicationSupportURL: URL? = nil,
+    importDidCreateStaging: (@Sendable () async -> Void)? = nil
+  ) {
     self.fileManager = fileManager
+    self.importDidCreateStaging = importDidCreateStaging
     let applicationSupport = applicationSupportURL
       ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     rootURL = applicationSupport.appendingPathComponent("SwarmerLocalInference", isDirectory: true)
@@ -159,6 +165,10 @@ actor LocalModelStore {
     )
 
     do {
+      if let importDidCreateStaging {
+        await importDidCreateStaging()
+        try Task.checkCancellation()
+      }
       let payloadURL = stagingURL.appendingPathComponent("payload", isDirectory: true)
       try fileManager.createDirectory(
         at: payloadURL,

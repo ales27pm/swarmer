@@ -1,6 +1,6 @@
 import * as SQLite from "expo-sqlite";
 
-import type { Agent, Approval, Bootstrap, Conversation, MemoryItem, Message, Task, TaskStatus, ToolCall } from "@/lib/api/types";
+import type { Agent, Approval, Bootstrap, Conversation, MemoryItem, Task, TaskStatus, ToolCall } from "@/lib/api/types";
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 type ReplicaTable = "tasks" | "approvals" | "tool_calls" | "conversations" | "messages" | "agents" | "pinned_memory";
@@ -82,6 +82,18 @@ const EVENT_TABLE: Record<string, ReplicaTable | undefined> = {
 export async function upsertEvent(scope: string, type: string, payload: Record<string, unknown>) {
   const database = await db();
   if (!(await scopeMatches(database, scope))) return;
+  // Content-bearing task/message/approval rows are refreshed from authenticated
+  // REST. Never replace a complete cached record with a metadata-only WebSocket
+  // invalidation projection.
+  if (
+    payload.refetch_required === true
+    && [
+      "task.updated",
+      "message.created",
+      "approval.requested",
+      "approval.decided",
+    ].includes(type)
+  ) return;
   const table = EVENT_TABLE[type];
   if (!table || typeof payload.id !== "string") return;
   if (type === "memory.updated" && payload.pinned === false) {
@@ -126,7 +138,6 @@ export const localToolCalls = (scope: string) => localRows<ToolCall>(scope, "too
 export const localAgents = (scope: string) => localRows<Agent>(scope, "agents");
 export const localMemory = (scope: string) => localRows<MemoryItem>(scope, "pinned_memory");
 export const localConversations = (scope: string) => localRows<Conversation>(scope, "conversations");
-export const localMessages = (scope: string) => localRows<Message>(scope, "messages");
 
 export async function localAuditMeta(scope: string): Promise<{ cursor: string | null; counts: Bootstrap["counts"] | null }> {
   const database = await db();

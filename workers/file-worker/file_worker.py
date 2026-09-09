@@ -21,6 +21,7 @@ PROTECTED_PARTS = frozenset({".env", ".git", ".npmrc", ".pypirc", "id_rsa", "id_
 CAPABILITY_TERMINAL_STATUSES = frozenset({"completed", "denied", "failed", "expired", "cancelled"})
 LOGGER = logging.getLogger("mongars.file_worker")
 MAX_CONTROL_RESPONSE_BYTES = 1_000_000
+HEARTBEAT_JOIN_TIMEOUT_SECONDS = 1.0
 SUPPORTS_DESCRIPTOR_TRAVERSAL = os.open in os.supports_dir_fd
 
 
@@ -366,7 +367,7 @@ class LeaseHeartbeat:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join()
+            self._thread.join(timeout=HEARTBEAT_JOIN_TIMEOUT_SECONDS)
 
 
 def capability_request_from_job(

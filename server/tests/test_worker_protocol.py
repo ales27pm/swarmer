@@ -77,24 +77,37 @@ def test_distributed_runtime_status_is_authenticated_and_payload_free(
         "message_board_backend",
         "message_board_health",
         "last_successful_publication",
+        "redis_reconnect_count",
+        "redis_last_error_category",
         "outbox_pending",
         "outbox_publishing",
         "outbox_failed",
+        "outbox_duplicate_publications",
+        "outbox_claim_expirations",
+        "outbox_publish_latency_ms_count",
+        "outbox_publish_latency_ms_total",
+        "outbox_publish_latency_ms_max",
         "queued_jobs",
         "leased_jobs",
         "dead_letter_jobs",
+        "quarantined_jobs",
         "expired_leases",
         "retries",
         "dead_letter_events",
         "active_agents",
         "offline_agents",
         "maintenance_lease_owner",
+        "maintenance_lease_renewal_failures",
         "pending_capability_requests",
         "vector_backend",
+        "vector_generation_age_seconds",
     }
     assert response.json()["status"] == "ok"
     assert response.json()["message_board_backend"] == "sqlite"
-    assert "redis" not in str(response.json()).casefold()
+    encoded_status = str(response.json()).casefold()
+    assert "redis_url" not in encoded_status
+    assert "6379" not in encoded_status
+    assert "password" not in encoded_status
 
 
 def test_distributed_runtime_status_counts_stale_online_agent_as_offline(

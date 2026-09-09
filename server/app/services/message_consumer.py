@@ -234,12 +234,12 @@ class ConsumerCheckpointStore:
         self._validate_identity(consumer_group, label="consumer group")
         self._validate_identity(consumer_id, label="consumer identity")
         bounded_limit = max(1, min(limit, 100))
-        current = self._utc(now)
-        now_text = current.isoformat()
-        expires_at = (current + timedelta(seconds=self.claim_lease_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            current = self._utc(now)
+            now_text = current.isoformat()
+            expires_at = (current + timedelta(seconds=self.claim_lease_seconds)).isoformat()
             await self._dead_letter_exhausted_locked(db, consumer_group, now_text)
             candidates = await (
                 await db.execute(
@@ -307,9 +307,9 @@ class ConsumerCheckpointStore:
         *,
         now: datetime | None = None,
     ) -> bool:
-        current = self._utc(now).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
+            current = self._utc(now).isoformat()
             cursor = await db.execute(
                 """
                 UPDATE message_consumer_deliveries
@@ -357,11 +357,11 @@ class ConsumerCheckpointStore:
         *,
         now: datetime | None = None,
     ) -> Literal["retry", "dead_letter"] | None:
-        current = self._utc(now).isoformat()
         safe_error = f"{type(error).__name__}: handler failed"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            current = self._utc(now).isoformat()
             row = await (
                 await db.execute(
                     """
@@ -413,9 +413,9 @@ class ConsumerCheckpointStore:
         now: datetime | None = None,
     ) -> dict[str, int]:
         self._validate_identity(consumer_group, label="consumer group")
-        current = self._utc(now).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
+            current = self._utc(now).isoformat()
             dead = await self._dead_letter_exhausted_locked(db, consumer_group, current)
             retry = await db.execute(
                 """

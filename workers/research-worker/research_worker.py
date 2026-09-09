@@ -4,19 +4,26 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import logging
 import os
+import queue
+import socket
+import ssl
 import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 LOGGER = logging.getLogger("mongars.research_worker")
+HEARTBEAT_JOIN_TIMEOUT_SECONDS = 1.0
+_DNS_RESOLVER_SLOT = threading.BoundedSemaphore(value=1)
 
 RESEARCH_SKILL = "research.query"
 MAX_QUERY_CHARACTERS = 2_000
@@ -26,6 +33,8 @@ MAX_URL_CHARACTERS = 2_048
 MAX_SNIPPET_CHARACTERS = 4_000
 MAX_ADAPTER_REQUEST_BYTES = 16_384
 MAX_ADAPTER_RESPONSE_BYTES = 262_144
+MAX_ADAPTER_ENDPOINT_CHARACTERS = 2_048
+ADAPTER_READ_CHUNK_BYTES = 16_384
 MAX_CONTROL_RESPONSE_BYTES = 1_000_000
 MAX_JOB_RESULT_BYTES = 524_288
 
@@ -59,6 +68,24 @@ class ResearchQuery:
     def __init__(self, query: str, max_results: int) -> None:
         self.query = query
         self.max_results = max_results
+
+
+class ResolvedAddress:
+    """One validated numeric destination returned by the single DNS lookup."""
+
+    __slots__ = ("family", "protocol", "sockaddr", "socket_type")
+
+    def __init__(
+        self,
+        family: int,
+        socket_type: int,
+        protocol: int,
+        sockaddr: tuple[Any, ...],
+    ) -> None:
+        self.family = family
+        self.socket_type = socket_type
+        self.protocol = protocol
+        self.sockaddr = sockaddr
 
 
 class LeaseProof:
@@ -291,7 +318,7 @@ class LeaseHeartbeat:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join()
+            self._thread.join(timeout=HEARTBEAT_JOIN_TIMEOUT_SECONDS)
 
 
 def parse_research_job(job: dict[str, Any]) -> ResearchQuery:
@@ -318,18 +345,383 @@ def parse_research_job(job: dict[str, Any]) -> ResearchQuery:
     return ResearchQuery(query, max_results)
 
 
+def _normalized_ip_address(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    address = ipaddress.ip_address(value)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def _is_global_address(value: str) -> bool:
+    try:
+        address = _normalized_ip_address(value)
+    except ValueError:
+        return False
+    return address.is_global and not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
 def validate_adapter_endpoint(endpoint: str) -> str:
-    parsed = urlsplit(endpoint)
+    """Return the canonical, credential-free HTTPS adapter URL."""
+
     if (
-        parsed.scheme != "https"
+        not isinstance(endpoint, str)
+        or not endpoint
+        or len(endpoint) > MAX_ADAPTER_ENDPOINT_CHARACTERS
+        or endpoint != endpoint.strip()
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in endpoint)
+        or "\\" in endpoint
+        or "?" in endpoint
+        or "#" in endpoint
+    ):
+        raise ValueError("research adapter endpoint must be a credential-free HTTPS URL")
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("research adapter endpoint has an invalid authority") from exc
+    if (
+        parsed.scheme.casefold() != "https"
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
+        or parsed.query
         or parsed.fragment
         or not parsed.path
+        or not parsed.path.startswith("/")
+        or parsed.netloc.endswith(":")
     ):
         raise ValueError("research adapter endpoint must be a credential-free HTTPS URL")
-    return endpoint
+    try:
+        hostname = parsed.hostname.encode("idna").decode("ascii").casefold()
+    except UnicodeError as exc:
+        raise ValueError("research adapter endpoint has an invalid hostname") from exc
+    if (
+        not hostname
+        or len(hostname) > 253
+        or hostname == "localhost"
+        or hostname.endswith((".", ".localhost"))
+    ):
+        raise ValueError("research adapter endpoint has an invalid hostname")
+    try:
+        literal_address = _normalized_ip_address(hostname)
+    except ValueError:
+        if all(character in "0123456789." for character in hostname):
+            raise ValueError("research adapter endpoint has an invalid IP address") from None
+        authority_host = hostname
+    else:
+        if not _is_global_address(str(literal_address)):
+            raise ValueError("research adapter endpoint IP address must be globally routable")
+        authority_host = (
+            f"[{literal_address.compressed}]"
+            if isinstance(literal_address, ipaddress.IPv6Address)
+            else literal_address.compressed
+        )
+    selected_port = 443 if port is None else port
+    if selected_port < 1:
+        raise ValueError("research adapter endpoint has an invalid port")
+    authority = authority_host if selected_port == 443 else f"{authority_host}:{selected_port}"
+    return f"https://{authority}{parsed.path}"
+
+
+def _remaining_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ResearchAdapterError("research adapter deadline exceeded")
+    return remaining
+
+
+def _resolve_global_addresses(
+    hostname: str,
+    port: int,
+    deadline: float,
+    *,
+    resolver: Callable[..., Any] = socket.getaddrinfo,
+) -> list[ResolvedAddress]:
+    """Resolve once, then reject the complete answer set if any address is unsafe."""
+
+    if not _DNS_RESOLVER_SLOT.acquire(timeout=_remaining_seconds(deadline)):
+        raise ResearchAdapterError("research adapter deadline exceeded during DNS")
+    result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def resolve() -> None:
+        try:
+            try:
+                answer = resolver(
+                    hostname,
+                    port,
+                    family=socket.AF_UNSPEC,
+                    type=socket.SOCK_STREAM,
+                    proto=socket.IPPROTO_TCP,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                result_queue.put((False, exc))
+            else:
+                result_queue.put((True, answer))
+        finally:
+            _DNS_RESOLVER_SLOT.release()
+
+    resolver_thread = threading.Thread(
+        target=resolve,
+        name="research-adapter-dns",
+        daemon=True,
+    )
+    try:
+        resolver_thread.start()
+    except RuntimeError as exc:
+        _DNS_RESOLVER_SLOT.release()
+        raise ResearchAdapterError("research adapter DNS resolution could not start") from exc
+    try:
+        succeeded, raw_answer = result_queue.get(timeout=_remaining_seconds(deadline))
+    except queue.Empty as exc:
+        raise ResearchAdapterError("research adapter deadline exceeded during DNS") from exc
+    if not succeeded:
+        if isinstance(raw_answer, BaseException):
+            raise ResearchAdapterError("research adapter DNS resolution failed") from raw_answer
+        raise ResearchAdapterError("research adapter DNS resolution failed")
+    if not isinstance(raw_answer, (list, tuple)) or not raw_answer:
+        raise ResearchAdapterError("research adapter DNS resolution returned no addresses")
+
+    addresses: list[ResolvedAddress] = []
+    seen: set[tuple[int, tuple[Any, ...]]] = set()
+    for item in raw_answer:
+        if not isinstance(item, tuple) or len(item) != 5:
+            raise ResearchAdapterError("research adapter DNS resolution was invalid")
+        family, socket_type, protocol, _canonical_name, raw_sockaddr = item
+        if (
+            family not in {socket.AF_INET, socket.AF_INET6}
+            or socket_type != socket.SOCK_STREAM
+            or protocol != socket.IPPROTO_TCP
+            or not isinstance(raw_sockaddr, tuple)
+        ):
+            raise ResearchAdapterError("research adapter DNS resolution was invalid")
+        if family == socket.AF_INET:
+            if len(raw_sockaddr) != 2:
+                raise ResearchAdapterError("research adapter DNS resolution was invalid")
+            address_text, answer_port = raw_sockaddr
+            extra: tuple[int, ...] = ()
+        else:
+            if len(raw_sockaddr) != 4:
+                raise ResearchAdapterError("research adapter DNS resolution was invalid")
+            address_text, answer_port, flow_info, scope_id = raw_sockaddr
+            if (
+                not isinstance(flow_info, int)
+                or not isinstance(scope_id, int)
+                or flow_info != 0
+                or scope_id != 0
+            ):
+                raise ResearchAdapterError("research adapter DNS resolution was invalid")
+            extra = (flow_info, scope_id)
+        if (
+            not isinstance(address_text, str)
+            or not isinstance(answer_port, int)
+            or isinstance(answer_port, bool)
+            or answer_port != port
+            or not _is_global_address(address_text)
+        ):
+            raise ResearchAdapterError(
+                "research adapter DNS resolution included a non-global address"
+            )
+        normalized = _normalized_ip_address(address_text)
+        if family == socket.AF_INET6 and isinstance(normalized, ipaddress.IPv4Address):
+            raise ResearchAdapterError(
+                "research adapter DNS resolution included a non-global address"
+            )
+        sockaddr: tuple[Any, ...] = (normalized.compressed, port, *extra)
+        identity = family, sockaddr
+        if identity in seen:
+            continue
+        seen.add(identity)
+        addresses.append(ResolvedAddress(family, socket_type, protocol, sockaddr))
+    if not addresses:
+        raise ResearchAdapterError("research adapter DNS resolution returned no addresses")
+    return addresses
+
+
+def _verify_pinned_peer(sock: Any, address: ResolvedAddress) -> None:
+    try:
+        peer = sock.getpeername()
+        peer_address = peer[0]
+        expected = _normalized_ip_address(str(address.sockaddr[0]))
+        actual = _normalized_ip_address(str(peer_address))
+    except (AttributeError, IndexError, TypeError, ValueError, OSError) as exc:
+        raise ResearchAdapterError("research adapter peer identity could not be verified") from exc
+    if actual != expected:
+        raise ResearchAdapterError("research adapter peer did not match its pinned address")
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that never re-resolves or consults proxy settings."""
+
+    def __init__(
+        self,
+        hostname: str,
+        port: int,
+        resolved: ResolvedAddress,
+        deadline: float,
+    ) -> None:
+        self._ssl_context = ssl.create_default_context()
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=None,
+            context=self._ssl_context,
+        )
+        self._resolved_address = resolved
+        self._deadline = deadline
+
+    def connect(self) -> None:
+        raw_socket: socket.socket | None = None
+        tls_socket: ssl.SSLSocket | None = None
+        try:
+            raw_socket = socket.socket(
+                self._resolved_address.family,
+                self._resolved_address.socket_type,
+                self._resolved_address.protocol,
+            )
+            raw_socket.settimeout(_remaining_seconds(self._deadline))
+            raw_socket.connect(self._resolved_address.sockaddr)
+            _verify_pinned_peer(raw_socket, self._resolved_address)
+            raw_socket.settimeout(_remaining_seconds(self._deadline))
+            tls_socket = self._ssl_context.wrap_socket(raw_socket, server_hostname=self.host)
+            raw_socket = None
+            _verify_pinned_peer(tls_socket, self._resolved_address)
+            tls_socket.settimeout(_remaining_seconds(self._deadline))
+            self.sock = tls_socket
+            tls_socket = None
+        except Exception:
+            if raw_socket is not None:
+                raw_socket.close()
+            if tls_socket is not None:
+                tls_socket.close()
+            if self.sock is not None:
+                self.sock.close()
+                self.sock = None
+            raise
+
+
+def _set_connection_deadline(connection: Any, deadline: float) -> None:
+    sock = getattr(connection, "sock", None)
+    if sock is None:
+        raise ResearchAdapterError("research adapter connection is unavailable")
+    sock.settimeout(_remaining_seconds(deadline))
+
+
+def _abort_connection(connection: Any) -> None:
+    sock = getattr(connection, "sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except (AttributeError, OSError):
+            pass
+    connection.close()
+
+
+def _connection_operation(
+    operation: Callable[[], Any],
+    connection: Any,
+    deadline: float,
+) -> Any:
+    """Bound a potentially multi-read HTTP operation by the absolute deadline."""
+
+    result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            result = operation()
+        except Exception as exc:  # noqa: BLE001 - marshal transport failures to caller
+            result_queue.put((False, exc))
+        else:
+            result_queue.put((True, result))
+
+    operation_thread = threading.Thread(
+        target=run,
+        name="research-adapter-io",
+        daemon=True,
+    )
+    operation_thread.start()
+    try:
+        succeeded, result = result_queue.get(timeout=_remaining_seconds(deadline))
+    except queue.Empty as exc:
+        _abort_connection(connection)
+        raise ResearchAdapterError("research adapter deadline exceeded") from exc
+    if not succeeded:
+        if isinstance(result, BaseException):
+            raise result
+        raise ResearchAdapterError("research adapter request failed")
+    return result
+
+
+def _read_bounded_adapter_json(response: Any, connection: Any, deadline: float) -> Any:
+    raw_encoding = response.getheader("Content-Encoding")
+    encoding = "identity" if raw_encoding is None else raw_encoding.strip().casefold()
+    if encoding in {"", "identity"}:
+        decompressor: Any = None
+    elif encoding in {"gzip", "x-gzip"}:
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    elif encoding == "deflate":
+        decompressor = zlib.decompressobj()
+    else:
+        raise ResearchAdapterError("research adapter returned an unsupported content encoding")
+
+    raw_length = response.getheader("Content-Length")
+    if raw_length is not None:
+        try:
+            content_length = int(raw_length, 10)
+        except ValueError as exc:
+            raise ResearchAdapterError(
+                "research adapter returned an invalid content length"
+            ) from exc
+        if content_length < 0 or content_length > MAX_ADAPTER_RESPONSE_BYTES:
+            raise ResearchAdapterError("research adapter response exceeded its size limit")
+
+    content = bytearray()
+    wire_bytes = 0
+    reader = getattr(response, "read1", None)
+    if not callable(reader):
+        reader = response.read
+    try:
+        while True:
+            _set_connection_deadline(connection, deadline)
+            chunk = reader(ADAPTER_READ_CHUNK_BYTES)
+            _remaining_seconds(deadline)
+            if not isinstance(chunk, bytes):
+                raise ResearchAdapterError("research adapter returned invalid response bytes")
+            if not chunk:
+                break
+            wire_bytes += len(chunk)
+            if wire_bytes > MAX_ADAPTER_RESPONSE_BYTES:
+                raise ResearchAdapterError("research adapter response exceeded its size limit")
+            if decompressor is None:
+                content.extend(chunk)
+            else:
+                remaining = MAX_ADAPTER_RESPONSE_BYTES - len(content)
+                content.extend(decompressor.decompress(chunk, remaining + 1))
+                if decompressor.unconsumed_tail:
+                    raise ResearchAdapterError("research adapter response exceeded its size limit")
+            if len(content) > MAX_ADAPTER_RESPONSE_BYTES:
+                raise ResearchAdapterError("research adapter response exceeded its size limit")
+        if decompressor is not None:
+            remaining = MAX_ADAPTER_RESPONSE_BYTES - len(content)
+            content.extend(decompressor.flush(remaining + 1))
+            if (
+                len(content) > MAX_ADAPTER_RESPONSE_BYTES
+                or not decompressor.eof
+                or decompressor.unused_data
+            ):
+                raise ResearchAdapterError("research adapter returned invalid compressed data")
+        _remaining_seconds(deadline)
+        return json.loads(content) if content else None
+    except zlib.error as exc:
+        raise ResearchAdapterError("research adapter returned invalid compressed data") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ResearchAdapterError("research adapter returned invalid JSON") from exc
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -351,6 +743,18 @@ def research_adapter_request(
     body: dict[str, Any],
     timeout_seconds: float,
 ) -> Any:
+    if (
+        not isinstance(token, str)
+        or not token
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in token)
+    ):
+        raise ResearchAdapterError("research adapter credential is invalid")
+    if not 0 < timeout_seconds <= 60:
+        raise ResearchAdapterError("research adapter timeout is invalid")
+    try:
+        endpoint = validate_adapter_endpoint(endpoint)
+    except ValueError as exc:
+        raise ResearchAdapterError("research adapter endpoint is invalid") from exc
     encoded = json.dumps(
         body,
         allow_nan=False,
@@ -360,32 +764,69 @@ def research_adapter_request(
     ).encode("utf-8")
     if len(encoded) > MAX_ADAPTER_REQUEST_BYTES:
         raise ResearchAdapterError("research adapter request exceeded its size limit")
-    request = urllib.request.Request(
-        endpoint,
-        data=encoded,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-    opener = urllib.request.build_opener(_RejectRedirects())
+    parsed = urlsplit(endpoint)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ResearchAdapterError("research adapter endpoint is invalid")
+    port = 443 if parsed.port is None else parsed.port
+    deadline = time.monotonic() + timeout_seconds
+    addresses = _resolve_global_addresses(hostname, port, deadline)
+    connection: Any = None
+    last_connect_error: Exception | None = None
     try:
-        # This destination is the validated, operator-configured adapter only.
-        with opener.open(request, timeout=timeout_seconds) as response:  # nosec B310
-            if response.geturl() != endpoint:
-                raise ResearchAdapterError("research adapter redirects are not allowed")
-            return _read_bounded_json(response, MAX_ADAPTER_RESPONSE_BYTES, "research adapter")
+        for address in addresses:
+            candidate = _PinnedHTTPSConnection(hostname, port, address, deadline)
+            try:
+                candidate.connect()
+            except (
+                ResearchAdapterError,
+                http.client.HTTPException,
+                ssl.SSLError,
+                OSError,
+            ) as exc:
+                candidate.close()
+                last_connect_error = exc
+                continue
+            connection = candidate
+            break
+        if connection is None:
+            raise ResearchAdapterError("research adapter connection failed") from last_connect_error
+        _set_connection_deadline(connection, deadline)
+        _connection_operation(
+            lambda: connection.request(
+                "POST",
+                parsed.path,
+                body=encoded,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip, deflate",
+                },
+            ),
+            connection,
+            deadline,
+        )
+        _set_connection_deadline(connection, deadline)
+        response = _connection_operation(connection.getresponse, connection, deadline)
+        _remaining_seconds(deadline)
+        if 300 <= response.status < 400:
+            raise ResearchAdapterError("research adapter redirects are not allowed")
+        if not 200 <= response.status < 300:
+            raise ResearchAdapterError("research adapter request failed")
+        return _read_bounded_adapter_json(response, connection, deadline)
+    except ResearchAdapterError:
+        raise
     except (
-        urllib.error.HTTPError,
-        urllib.error.URLError,
+        http.client.HTTPException,
+        ssl.SSLError,
         TimeoutError,
         OSError,
     ) as exc:
         raise ResearchAdapterError("research adapter request failed") from exc
-    except WorkerProtocolError as exc:
-        raise ResearchAdapterError(str(exc)) from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def normalize_adapter_response(response: Any, max_results: int) -> dict[str, Any]:
@@ -432,7 +873,11 @@ class ResearchAdapterClient:
         timeout_seconds: float = 20,
         transport: ResearchTransport | None = None,
     ) -> None:
-        if not token:
+        if (
+            not isinstance(token, str)
+            or not token
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in token)
+        ):
             raise ValueError("research adapter credential is required")
         if not 0 < timeout_seconds <= 60:
             raise ValueError("research adapter timeout must be between 0 and 60 seconds")

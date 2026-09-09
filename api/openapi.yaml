@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -1214,23 +1214,33 @@ components:
         - message_board_backend
         - message_board_health
         - last_successful_publication
+        - redis_reconnect_count
+        - redis_last_error_category
         - outbox_pending
         - outbox_publishing
         - outbox_failed
+        - outbox_duplicate_publications
+        - outbox_claim_expirations
+        - outbox_publish_latency_ms_count
+        - outbox_publish_latency_ms_total
+        - outbox_publish_latency_ms_max
         - queued_jobs
         - leased_jobs
         - dead_letter_jobs
+        - quarantined_jobs
         - expired_leases
         - retries
         - dead_letter_events
         - active_agents
         - offline_agents
         - maintenance_lease_owner
+        - maintenance_lease_renewal_failures
         - pending_capability_requests
         - vector_backend
+        - vector_generation_age_seconds
       properties:
         status: {type: string, const: ok}
-        version: {const: 0.10.0}
+        version: {const: 0.11.0}
         instance_id:
           type: string
           pattern: '^cp_[0-9a-f]{32}$'
@@ -1238,12 +1248,26 @@ components:
         message_board_backend: {type: string, enum: [sqlite, redis]}
         message_board_health: {type: string, enum: [connected, degraded]}
         last_successful_publication: {type: [string, 'null'], format: date-time}
+        redis_reconnect_count:
+          type: integer
+          minimum: 0
+          description: Process-local Redis reconnect attempts; zero in SQLite mode.
+        redis_last_error_category:
+          type: [string, 'null']
+          enum: [timeout, connection, authentication, tls, publication, dedupe_conflict, protocol, null]
+          description: Safe error class/category only; never a Redis URL, credential, or raw message.
         outbox_pending: {type: integer, minimum: 0}
         outbox_publishing: {type: integer, minimum: 0}
         outbox_failed: {type: integer, minimum: 0}
+        outbox_duplicate_publications: {type: integer, minimum: 0}
+        outbox_claim_expirations: {type: integer, minimum: 0}
+        outbox_publish_latency_ms_count: {type: integer, minimum: 0}
+        outbox_publish_latency_ms_total: {type: integer, minimum: 0}
+        outbox_publish_latency_ms_max: {type: integer, minimum: 0}
         queued_jobs: {type: integer, minimum: 0}
         leased_jobs: {type: integer, minimum: 0}
         dead_letter_jobs: {type: integer, minimum: 0}
+        quarantined_jobs: {type: integer, minimum: 0}
         expired_leases: {type: integer, minimum: 0}
         retries: {type: integer, minimum: 0}
         dead_letter_events: {type: integer, minimum: 0}
@@ -1253,8 +1277,13 @@ components:
           type: object
           description: Named singleton lease to boot-scoped owner identity mapping.
           additionalProperties: {type: string}
+        maintenance_lease_renewal_failures: {type: integer, minimum: 0}
         pending_capability_requests: {type: integer, minimum: 0}
         vector_backend: {type: string, enum: [sqlite, faiss]}
+        vector_generation_age_seconds:
+          type: [number, 'null']
+          minimum: 0
+          description: Age of the active rebuildable FAISS projection generation, if configured.
     PairingCode:
       type: object
       required: [code, expires_in_seconds]
@@ -1847,7 +1876,7 @@ components:
           type: string
           const: mongars-worker-v0.9
           default: mongars-worker-v0.9
-          description: Worker protocol v0.9 remains the compatible protocol carried by API v0.10.
+          description: Worker protocol v0.9 remains the compatible protocol carried by API v0.11.
     AgentCard:
       type: object
       additionalProperties: false
@@ -1945,7 +1974,7 @@ components:
         task_id: {type: string}
         required_skill: {$ref: '#/components/schemas/AgentSkill'}
         payload: {type: object, additionalProperties: true}
-        status: {type: string, enum: [queued, claimed, running, completed, failed, cancelled]}
+        status: {type: string, enum: [queued, claimed, running, completed, failed, cancelled, quarantined]}
         claimed_by: {type: [string, 'null']}
         result: {type: [object, 'null'], additionalProperties: true}
         error: {type: [string, 'null']}
@@ -2090,7 +2119,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.10.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.11.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2104,7 +2133,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.10.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.11.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2145,7 +2174,7 @@ components:
       additionalProperties: false
       required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.10.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.11.0.}
         grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
         request_id: {type: string}
         task_id: {type: string}

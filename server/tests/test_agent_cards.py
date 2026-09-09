@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -20,7 +26,9 @@ from app.services.agent_card import (
     validate_agent_card_manifest,
     validate_agent_registration,
 )
+from app.services.permission_policy import PermissionPolicy
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
+from app.services.worker_skill_policy import WorkerSkillPolicyStore
 from app.settings import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -166,6 +174,214 @@ def test_agent_registration_rejects_a_supported_skill_revoked_by_current_policy(
 
     assert response.status_code == 403
     assert response.json() == {"detail": "remote worker skill is denied by policy"}
+
+
+def _paired_agent_registration_client(
+    tmp_path: Path,
+) -> tuple[TestClient, FastAPI, dict[str, str], str]:
+    operator_token = "agent-policy-fence-test-operator-token"
+    app = create_app(
+        Settings(
+            db_path=tmp_path / "state.db",
+            workspace_root=tmp_path / "workspace",
+            permissions_path=REPO_ROOT / "configs" / "permissions.yaml",
+            pairing_bootstrap_token=SecretStr(operator_token),
+        )
+    )
+    client = TestClient(app, client=("127.0.0.1", 50_000))
+    client.__enter__()
+    code = client.post(
+        "/pairing/code",
+        headers={"X-Mongars-Operator-Token": operator_token},
+    ).json()["code"]
+    candidate = client.post(
+        "/pairing/complete",
+        json={"code": code, "device_id": "policy-fence-phone", "name": "pytest"},
+    ).json()
+    headers = {"Authorization": f"Bearer {candidate['candidate_token']}"}
+    assert (
+        client.post(
+            "/pairing/finalize",
+            headers=headers,
+            json={
+                "pairing_id": candidate["pairing_id"],
+                "device_id": candidate["device_id"],
+            },
+        ).status_code
+        == 200
+    )
+    return client, app, headers, operator_token
+
+
+def test_registration_endpoint_uses_durable_deny_after_waiting_for_writer(
+    tmp_path: Path,
+) -> None:
+    client, app, headers, _ = _paired_agent_registration_client(tmp_path)
+    try:
+        database = app.state.state_service.db_path
+        denied = app.state.agent_dispatcher.permission_policy
+        denied = PermissionPolicy(
+            protected_paths=denied.protected_paths,
+            process=denied.process,
+            tool_rules=denied.tool_rules,
+            capability_rules=denied.capability_rules,
+            worker_skill_rules={
+                **denied.worker_skill_rules,
+                "research.query": replace(
+                    denied.worker_skill_rules["research.query"],
+                    decision="deny",
+                    auto_redistribute=False,
+                ),
+            },
+        )
+        rules_json, rules_digest = WorkerSkillPolicyStore.encode_rules(denied.worker_skill_rules)
+        blocker = sqlite3.connect(database, check_same_thread=False)
+        blocker.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            response_future = executor.submit(
+                client.post,
+                "/agents/register",
+                headers=headers,
+                json=agent_request(name="stale-allow-worker").model_dump(mode="json"),
+            )
+            try:
+                time.sleep(0.05)
+                assert not response_future.done()
+                updated = blocker.execute(
+                    """
+                    UPDATE worker_skill_policy_state
+                    SET epoch=epoch+1,rules_json=?,rules_digest=?,updated_at=?
+                    WHERE singleton_id=1 AND epoch=1
+                    """,
+                    (rules_json, rules_digest, datetime.now(UTC).isoformat()),
+                )
+                assert updated.rowcount == 1
+                blocker.commit()
+            finally:
+                blocker.close()
+            response = response_future.result(timeout=1)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "remote worker skill is denied by policy"}
+
+
+def test_registration_endpoint_ignores_stale_in_memory_deny_after_lock_wait(
+    tmp_path: Path,
+) -> None:
+    client, app, headers, _ = _paired_agent_registration_client(tmp_path)
+    try:
+        database = app.state.state_service.db_path
+        raw_policy = yaml.safe_load(
+            (REPO_ROOT / "configs" / "permissions.yaml").read_text(encoding="utf-8")
+        )
+        raw_policy["worker_skill_rules"]["research.query"].update(
+            decision="deny",
+            auto_redistribute=False,
+        )
+        stale_path = tmp_path / "stale-deny.yaml"
+        stale_path.write_text(yaml.safe_dump(raw_policy), encoding="utf-8")
+        blocker = sqlite3.connect(database, check_same_thread=False)
+        blocker.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            response_future = executor.submit(
+                client.post,
+                "/agents/register",
+                headers=headers,
+                json=agent_request(name="durably-allowed-worker").model_dump(mode="json"),
+            )
+            try:
+                time.sleep(0.05)
+                assert not response_future.done()
+                app.state.agent_dispatcher.permission_policy.reload_worker_skill_rules(stale_path)
+                blocker.commit()
+            finally:
+                blocker.close()
+            response = response_future.result(timeout=1)
+    finally:
+        client.__exit__(None, None, None)
+
+    assert response.status_code == 201
+    assert response.json()["skills"] == ["research.query"]
+
+
+def test_dispatch_endpoint_uses_durable_worker_policy_not_stale_cache(tmp_path: Path) -> None:
+    client, app, headers, _ = _paired_agent_registration_client(tmp_path)
+    try:
+        task = client.post("/tasks", headers=headers, json={"input": "research safely"})
+        assert task.status_code == 201
+        allowed = app.state.agent_dispatcher.permission_policy
+        denied = PermissionPolicy(
+            protected_paths=allowed.protected_paths,
+            process=allowed.process,
+            tool_rules=allowed.tool_rules,
+            capability_rules=allowed.capability_rules,
+            worker_skill_rules={
+                **allowed.worker_skill_rules,
+                "research.query": replace(
+                    allowed.worker_skill_rules["research.query"],
+                    decision="deny",
+                    auto_redistribute=False,
+                ),
+            },
+        )
+        rules_json, rules_digest = WorkerSkillPolicyStore.encode_rules(denied.worker_skill_rules)
+        with sqlite3.connect(app.state.state_service.db_path) as db:
+            updated = db.execute(
+                """
+                UPDATE worker_skill_policy_state
+                SET epoch=epoch+1,rules_json=?,rules_digest=?,updated_at=?
+                WHERE singleton_id=1
+                """,
+                (rules_json, rules_digest, datetime.now(UTC).isoformat()),
+            )
+            assert updated.rowcount == 1
+
+        response = client.post(
+            f"/tasks/{task.json()['id']}/dispatch",
+            headers=headers,
+            json={
+                "required_skill": "research.query",
+                "payload": {"query": "bounded evidence"},
+            },
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "remote worker skill is denied by policy"}
+
+
+def test_dispatch_endpoint_allows_durable_policy_despite_stale_cache(tmp_path: Path) -> None:
+    client, app, headers, _ = _paired_agent_registration_client(tmp_path)
+    try:
+        task = client.post("/tasks", headers=headers, json={"input": "research safely"})
+        assert task.status_code == 201
+        raw_policy = yaml.safe_load(
+            (REPO_ROOT / "configs" / "permissions.yaml").read_text(encoding="utf-8")
+        )
+        raw_policy["worker_skill_rules"]["research.query"].update(
+            decision="deny",
+            auto_redistribute=False,
+        )
+        stale_path = tmp_path / "stale-dispatch-deny.yaml"
+        stale_path.write_text(yaml.safe_dump(raw_policy), encoding="utf-8")
+        app.state.agent_dispatcher.permission_policy.reload_worker_skill_rules(stale_path)
+
+        response = client.post(
+            f"/tasks/{task.json()['id']}/dispatch",
+            headers=headers,
+            json={
+                "required_skill": "research.query",
+                "payload": {"query": "bounded evidence"},
+            },
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+    assert response.status_code == 201
+    assert response.json()["required_skill"] == "research.query"
 
 
 def test_public_agent_card_is_metadata_only_and_revalidates_persisted_policy() -> None:

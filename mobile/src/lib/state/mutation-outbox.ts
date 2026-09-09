@@ -2,8 +2,16 @@ import * as SQLite from "expo-sqlite";
 
 const DATABASE_NAME = "mongars-replica.db";
 const DELIVERY_ERROR = "delivery failed; retry requires the same idempotency key";
+const DELIVERY_TIMEOUT_ERROR = "delivery timed out; retry requires the same idempotency key";
 const INVALID_LOCAL_ERROR = "invalid local mutation; delivery blocked";
+const PERMANENT_DELIVERY_ERROR =
+  "server rejected mutation permanently; automatic replay disabled";
 const ABANDONED_ERROR = "abandoned after authentication context changed";
+const DEFAULT_SEND_TIMEOUT_MS = 15_000;
+const MAX_SEND_TIMEOUT_MS = 120_000;
+const PERMANENT_DELIVERY_STATUSES = new Set([400, 404, 409, 410, 413, 415, 422]);
+const drainTailsByOrigin = new Map<string, Promise<unknown>>();
+const uncertainDeliveries = new Map<string, Promise<void>>();
 const CHAT_MODES = new Set<NonNullable<ChatMessageMutationPayload["mode"]>>([
   "normal",
   "commandant",
@@ -82,7 +90,10 @@ export type MutationDelivery = {
   attempt: number;
 };
 
-export type MutationSender = (mutation: MutationDelivery) => Promise<unknown>;
+export type MutationSender = (
+  mutation: MutationDelivery,
+  signal: AbortSignal,
+) => Promise<unknown>;
 
 export type MutationDrainResult = {
   attempted: number;
@@ -105,6 +116,7 @@ type MutationOutboxOptions = {
   openDatabase?: OpenDatabase;
   createId?: () => string;
   now?: () => string;
+  sendTimeoutMs?: number;
 };
 
 type CanonicalMutation = {
@@ -115,8 +127,41 @@ type CanonicalMutation = {
   idempotencyKey: string;
 };
 
+type MutationRowOutcome = {
+  attempted: number;
+  completed: number;
+  failed: number;
+  stop: boolean;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+class MutationDeliveryTimeoutError extends Error {}
+
+function isPermanentDeliveryError(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.status === "number" &&
+    Number.isSafeInteger(value.status) &&
+    PERMANENT_DELIVERY_STATUSES.has(value.status)
+  );
+}
+
+function deliveryKey(origin: string, id: string): string {
+  return `${origin}\u0000${id}`;
+}
+
+function serializeOriginDrain<T>(origin: string, operation: () => Promise<T>): Promise<T> {
+  const previous = drainTailsByOrigin.get(origin) ?? Promise.resolve();
+  const running = previous.catch(() => undefined).then(operation);
+  drainTailsByOrigin.set(origin, running);
+  const cleanup = () => {
+    if (drainTailsByOrigin.get(origin) === running) drainTailsByOrigin.delete(origin);
+  };
+  void running.then(cleanup, cleanup);
+  return running;
 }
 
 function assertExactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
@@ -392,13 +437,21 @@ export class MutationOutbox {
   private readonly openDatabase: OpenDatabase;
   private readonly createId: () => string;
   private readonly now: () => string;
+  private readonly sendTimeoutMs: number;
   private databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
-  private drainTail: Promise<unknown> = Promise.resolve();
 
   constructor(options: MutationOutboxOptions = {}) {
     this.openDatabase = options.openDatabase ?? (() => SQLite.openDatabaseAsync(DATABASE_NAME));
     this.createId = options.createId ?? randomIdentifier;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
+    if (
+      !Number.isSafeInteger(this.sendTimeoutMs) ||
+      this.sendTimeoutMs < 1 ||
+      this.sendTimeoutMs > MAX_SEND_TIMEOUT_MS
+    ) {
+      throw new MutationOutboxValidationError("send timeout is invalid");
+    }
   }
 
   private async database(): Promise<SQLite.SQLiteDatabase> {
@@ -500,11 +553,147 @@ export class MutationOutbox {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new MutationOutboxValidationError("drain limit is invalid");
     }
-    const run = this.drainTail.catch(() => undefined).then(() =>
-      this.drainOnce(origin, sender, limit),
+    return serializeOriginDrain(origin, () => this.drainOnce(origin, sender, limit));
+  }
+
+  private async waitForDelivery(
+    pending: Promise<unknown>,
+    controller: AbortController,
+  ): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        // Reject the deadline first so this attempt is classified as uncertain,
+        // even when aborting the transport synchronously rejects `pending`.
+        reject(new MutationDeliveryTimeoutError());
+        controller.abort();
+      }, this.sendTimeoutMs);
+    });
+    try {
+      await Promise.race([pending, deadline]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
+  }
+
+  private rememberUncertainDelivery(
+    database: SQLite.SQLiteDatabase,
+    row: MutationOutboxRow,
+    origin: string,
+    pending: Promise<unknown>,
+  ): void {
+    const key = deliveryKey(origin, row.id);
+    let tracked: Promise<void>;
+    tracked = pending.then(
+      async () => {
+        await database.runAsync(
+          `UPDATE mutation_outbox SET completed_at=?,last_error=NULL
+           WHERE id=? AND origin=? AND completed_at IS NULL`,
+          this.now(),
+          row.id,
+          origin,
+        );
+      },
+      () => undefined,
+    ).catch(() => undefined).finally(() => {
+      if (uncertainDeliveries.get(key) === tracked) uncertainDeliveries.delete(key);
+    });
+    uncertainDeliveries.set(key, tracked);
+  }
+
+  private async handleDeliveryFailure(
+    database: SQLite.SQLiteDatabase,
+    row: MutationOutboxRow,
+    origin: string,
+    cause: unknown,
+    pending: Promise<unknown>,
+  ): Promise<MutationRowOutcome> {
+    if (cause instanceof MutationDeliveryTimeoutError) {
+      this.rememberUncertainDelivery(database, row, origin, pending);
+      await database.runAsync(
+        `UPDATE mutation_outbox SET last_error=?
+         WHERE id=? AND origin=? AND completed_at IS NULL`,
+        DELIVERY_TIMEOUT_ERROR,
+        row.id,
+        origin,
+      );
+      return { attempted: 1, completed: 0, failed: 1, stop: true };
+    }
+    if (isPermanentDeliveryError(cause)) {
+      await database.runAsync(
+        `UPDATE mutation_outbox SET completed_at=?,last_error=?
+         WHERE id=? AND origin=? AND completed_at IS NULL`,
+        this.now(),
+        PERMANENT_DELIVERY_ERROR,
+        row.id,
+        origin,
+      );
+      return { attempted: 1, completed: 0, failed: 1, stop: false };
+    }
+    await database.runAsync(
+      `UPDATE mutation_outbox SET last_error=?
+       WHERE id=? AND origin=? AND completed_at IS NULL`,
+      DELIVERY_ERROR,
+      row.id,
+      origin,
     );
-    this.drainTail = run;
-    return run;
+    return { attempted: 1, completed: 0, failed: 1, stop: true };
+  }
+
+  private async processRow(
+    database: SQLite.SQLiteDatabase,
+    row: MutationOutboxRow,
+    origin: string,
+    sender: MutationSender,
+  ): Promise<MutationRowOutcome> {
+    if (uncertainDeliveries.has(deliveryKey(origin, row.id))) {
+      return { attempted: 0, completed: 0, failed: 0, stop: true };
+    }
+    let delivery: MutationDelivery;
+    try {
+      delivery = validateRow(row);
+    } catch {
+      await database.runAsync(
+        `UPDATE mutation_outbox SET completed_at=?,last_error=?
+         WHERE id=? AND origin=? AND completed_at IS NULL`,
+        this.now(),
+        INVALID_LOCAL_ERROR,
+        row.id,
+        origin,
+      );
+      return { attempted: 0, completed: 0, failed: 1, stop: false };
+    }
+
+    const attemptStarted = await database.runAsync(
+      `UPDATE mutation_outbox SET attempts=attempts+1,last_attempt_at=?,last_error=NULL
+       WHERE id=? AND origin=? AND completed_at IS NULL`,
+      this.now(),
+      row.id,
+      origin,
+    );
+    if (attemptStarted.changes !== 1) {
+      return { attempted: 0, completed: 0, failed: 0, stop: false };
+    }
+    const controller = new AbortController();
+    const pending = Promise.resolve().then(() => sender(delivery, controller.signal));
+    try {
+      await this.waitForDelivery(pending, controller);
+    } catch (cause) {
+      return this.handleDeliveryFailure(database, row, origin, cause, pending);
+    }
+    const marked = await database.runAsync(
+      `UPDATE mutation_outbox SET completed_at=?,last_error=NULL
+       WHERE id=? AND origin=? AND completed_at IS NULL`,
+      this.now(),
+      row.id,
+      origin,
+    );
+    return {
+      attempted: 1,
+      completed: marked.changes === 1 ? 1 : 0,
+      failed: 0,
+      stop: false,
+    };
   }
 
   private async drainOnce(
@@ -525,51 +714,11 @@ export class MutationOutbox {
     let failed = 0;
 
     for (const row of rows) {
-      let delivery: MutationDelivery;
-      try {
-        delivery = validateRow(row);
-      } catch {
-        failed += 1;
-        await database.runAsync(
-          `UPDATE mutation_outbox SET last_error=?
-           WHERE id=? AND origin=? AND completed_at IS NULL`,
-          INVALID_LOCAL_ERROR,
-          row.id,
-          origin,
-        );
-        continue;
-      }
-
-      const attemptStarted = await database.runAsync(
-        `UPDATE mutation_outbox SET attempts=attempts+1,last_attempt_at=?,last_error=NULL
-         WHERE id=? AND origin=? AND completed_at IS NULL`,
-        this.now(),
-        row.id,
-        origin,
-      );
-      if (attemptStarted.changes !== 1) continue;
-      attempted += 1;
-      try {
-        await sender(delivery);
-      } catch {
-        failed += 1;
-        await database.runAsync(
-          `UPDATE mutation_outbox SET last_error=?
-           WHERE id=? AND origin=? AND completed_at IS NULL`,
-          DELIVERY_ERROR,
-          row.id,
-          origin,
-        );
-        break;
-      }
-      const marked = await database.runAsync(
-        `UPDATE mutation_outbox SET completed_at=?,last_error=NULL
-         WHERE id=? AND origin=? AND completed_at IS NULL`,
-        this.now(),
-        row.id,
-        origin,
-      );
-      if (marked.changes === 1) completed += 1;
+      const outcome = await this.processRow(database, row, origin, sender);
+      attempted += outcome.attempted;
+      completed += outcome.completed;
+      failed += outcome.failed;
+      if (outcome.stop) break;
     }
 
     return {

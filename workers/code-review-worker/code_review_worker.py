@@ -14,6 +14,7 @@ import shutil
 import signal
 import stat
 import subprocess  # nosec B404
+import tempfile
 import threading
 import time
 import urllib.error
@@ -41,7 +42,17 @@ MAX_PATH_CHARACTERS = 500
 MAX_CONTROL_RESPONSE_BYTES = 1_000_000
 MAX_COMMAND_OUTPUT_BYTES = 500_000
 MAX_JOB_RESULT_BYTES = 524_288
+MAX_GIT_CONFIG_BYTES = 262_144
+MAX_SNAPSHOT_FILE_BYTES = 16_777_216
+MAX_SNAPSHOT_TOTAL_BYTES = 67_108_864
+MAX_SNAPSHOT_MANIFEST_ENTRIES = 250_000
+MAX_SNAPSHOT_DEPTH = 64
+HEARTBEAT_JOIN_TIMEOUT_SECONDS = 1.0
 FULL_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
+EXECUTABLE_GIT_SECTION_RE = re.compile(
+    r"^\s*\[\s*(?:filter|include|includeif)(?:\.|\s|\"|\])",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
 
 ControlRequest = Callable[[str, str, str, str, dict[str, Any] | None], Any]
 
@@ -88,6 +99,43 @@ class CommandResult:
         self.exit_code = exit_code
         self.output = output
         self.truncated = truncated
+
+
+class SnapshotFile:
+    __slots__ = ("content", "mode")
+
+    def __init__(self, content: bytes, mode: int) -> None:
+        self.content = content
+        self.mode = mode
+
+
+class OperationBudget:
+    """One monotonic deadline and cumulative source-read budget for a review."""
+
+    __slots__ = ("deadline", "remaining_bytes")
+
+    def __init__(self, timeout_seconds: float, maximum_bytes: int) -> None:
+        if timeout_seconds <= 0 or maximum_bytes < 1:
+            raise ValueError("review operation budget is invalid")
+        self.deadline = time.monotonic() + timeout_seconds
+        self.remaining_bytes = maximum_bytes
+
+    def remaining_seconds(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise WorkerExecutionError("read-only inspection timed out")
+        return remaining
+
+    def checkpoint(self) -> None:
+        self.remaining_seconds()
+
+    def consume(self, size: int) -> None:
+        self.checkpoint()
+        if size < 0 or size > self.remaining_bytes:
+            raise WorkerExecutionError(
+                "read-only inspection exceeded its cumulative snapshot byte limit"
+            )
+        self.remaining_bytes -= size
 
 
 class CommandRunner(Protocol):
@@ -349,7 +397,7 @@ class LeaseHeartbeat:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join()
+            self._thread.join(timeout=HEARTBEAT_JOIN_TIMEOUT_SECONDS)
 
 
 def protected_name(name: str) -> bool:
@@ -400,7 +448,384 @@ def _context_lines(payload: dict[str, Any]) -> int:
     return value
 
 
-def _validate_static_file(root: Path, relative: str) -> None:
+def _stable_file_identity(
+    metadata: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _directory_identity(path: Path, label: str) -> tuple[int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} must be a directory")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _tree_manifest(
+    root: Path,
+    *,
+    expected_root_identity: tuple[int, int],
+    label: str,
+    budget: OperationBudget,
+    skip_top_level: frozenset[str] = frozenset(),
+) -> tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]:
+    """Capture a bounded, descriptor-relative metadata manifest.
+
+    File contents are copied separately through ``O_NOFOLLOW`` descriptors. The
+    manifest joins those per-file checks into one repository-wide generation:
+    a same-inode edit changes ctime/mtime and a path swap changes dev/inode.
+    """
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        root_descriptor = os.open(root, directory_flags)
+    except OSError as exc:
+        raise WorkerExecutionError(f"{label} changed during snapshot capture") from exc
+    entries: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    open_descriptors = {root_descriptor}
+
+    def names_in(descriptor: int) -> list[str]:
+        names: list[str] = []
+        try:
+            with os.scandir(descriptor) as iterator:
+                for item in iterator:
+                    budget.checkpoint()
+                    names.append(item.name)
+                    if len(entries) + len(names) > MAX_SNAPSHOT_MANIFEST_ENTRIES:
+                        raise WorkerExecutionError(f"{label} exceeds its manifest entry limit")
+        except OSError as exc:
+            raise WorkerExecutionError(f"{label} changed during snapshot capture") from exc
+        names.sort()
+        return names
+
+    # Each frame retains its descriptor until every descendant has been walked,
+    # allowing the directory name to be revalidated relative to its original
+    # parent. Traversal is iterative so a hostile tree cannot exhaust Python's
+    # recursion stack; the explicit depth cap also bounds retained descriptors.
+    frames: list[
+        tuple[
+            int,
+            tuple[str, ...],
+            tuple[int, int, int, int, int, int],
+            list[str],
+            int,
+            int | None,
+            str | None,
+        ]
+    ] = []
+
+    try:
+        budget.checkpoint()
+        opened_root = os.fstat(root_descriptor)
+        if (
+            not stat.S_ISDIR(opened_root.st_mode)
+            or (opened_root.st_dev, opened_root.st_ino) != expected_root_identity
+        ):
+            raise WorkerExecutionError(f"{label} changed during snapshot capture")
+        initial_root_identity = _stable_file_identity(opened_root)
+        entries.append((".", initial_root_identity))
+        frames.append(
+            (
+                root_descriptor,
+                (),
+                initial_root_identity,
+                names_in(root_descriptor),
+                0,
+                None,
+                None,
+            )
+        )
+
+        while frames:
+            budget.checkpoint()
+            descriptor, prefix, identity, names, index, parent, parent_name = frames[-1]
+            if index >= len(names):
+                after = os.fstat(descriptor)
+                if _stable_file_identity(after) != identity:
+                    raise WorkerExecutionError(f"{label} changed during snapshot capture")
+                if parent is not None and parent_name is not None:
+                    named_after = os.stat(
+                        parent_name,
+                        dir_fd=parent,
+                        follow_symlinks=False,
+                    )
+                    if _stable_file_identity(named_after) != identity:
+                        raise WorkerExecutionError(f"{label} changed during snapshot capture")
+                frames.pop()
+                if descriptor != root_descriptor:
+                    os.close(descriptor)
+                    open_descriptors.remove(descriptor)
+                continue
+
+            name = names[index]
+            frames[-1] = (
+                descriptor,
+                prefix,
+                identity,
+                names,
+                index + 1,
+                parent,
+                parent_name,
+            )
+            if not prefix and name in skip_top_level:
+                continue
+            if len(entries) >= MAX_SNAPSHOT_MANIFEST_ENTRIES:
+                raise WorkerExecutionError(f"{label} exceeds its manifest entry limit")
+            relative_parts = (*prefix, name)
+            if len(relative_parts) > MAX_SNAPSHOT_DEPTH:
+                raise WorkerExecutionError(f"{label} exceeds its directory depth limit")
+            relative = "/".join(relative_parts)
+            before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            identity = _stable_file_identity(before)
+            entries.append((relative, identity))
+            if not stat.S_ISDIR(before.st_mode):
+                continue
+            child_descriptor = os.open(name, directory_flags, dir_fd=descriptor)
+            open_descriptors.add(child_descriptor)
+            opened = os.fstat(child_descriptor)
+            if _stable_file_identity(opened) != identity:
+                raise WorkerExecutionError(f"{label} changed during snapshot capture")
+            frames.append(
+                (
+                    child_descriptor,
+                    relative_parts,
+                    identity,
+                    names_in(child_descriptor),
+                    0,
+                    descriptor,
+                    name,
+                )
+            )
+
+        budget.checkpoint()
+        descriptor_after = os.fstat(root_descriptor)
+        named_after = root.lstat()
+        if (
+            _stable_file_identity(descriptor_after) != initial_root_identity
+            or _stable_file_identity(named_after) != initial_root_identity
+        ):
+            raise WorkerExecutionError(f"{label} changed during snapshot capture")
+    except OSError as exc:
+        raise WorkerExecutionError(f"{label} changed during snapshot capture") from exc
+    finally:
+        for descriptor in tuple(open_descriptors):
+            os.close(descriptor)
+    return tuple(entries)
+
+
+def _read_bounded_regular_path(
+    path: Path,
+    maximum_bytes: int,
+    label: str,
+    *,
+    budget: OperationBudget | None = None,
+) -> bytes:
+    if budget is not None:
+        budget.checkpoint()
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if stat.S_ISLNK(before.st_mode):
+        raise ValueError(f"{label} contains a symbolic link")
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{label} must be a regular file")
+    if before.st_nlink != 1:
+        raise ValueError(f"{label} must not be hard-linked")
+    if before.st_size > maximum_bytes:
+        raise ValueError(f"{label} exceeds its size limit")
+    if budget is not None and before.st_size > budget.remaining_bytes:
+        raise WorkerExecutionError(
+            "read-only inspection exceeded its cumulative snapshot byte limit"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} could not be opened safely") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _stable_file_identity(opened) != _stable_file_identity(before):
+            raise ValueError(f"{label} changed while it was opened")
+        content = bytearray()
+        while len(content) <= maximum_bytes:
+            if budget is not None:
+                budget.checkpoint()
+            chunk = os.read(descriptor, min(65_536, maximum_bytes + 1 - len(content)))
+            if not chunk:
+                break
+            if budget is not None:
+                budget.consume(len(chunk))
+            content.extend(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        named_after = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} changed while it was read") from exc
+    if (
+        len(content) > maximum_bytes
+        or _stable_file_identity(after) != _stable_file_identity(before)
+        or _stable_file_identity(named_after) != _stable_file_identity(before)
+    ):
+        raise ValueError(f"{label} changed while it was read")
+    if budget is not None:
+        budget.checkpoint()
+    return bytes(content)
+
+
+def _read_contained_regular_file(
+    root: Path,
+    relative: str,
+    *,
+    allow_missing: bool,
+    expected_root_identity: tuple[int, int],
+    budget: OperationBudget,
+    maximum_bytes: int = MAX_SNAPSHOT_FILE_BYTES,
+) -> SnapshotFile | None:
+    budget.checkpoint()
+    parts = Path(relative).parts
+    if not parts:
+        raise ValueError("review snapshot path is invalid")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        current_descriptor = os.open(root, directory_flags)
+    except OSError as exc:
+        raise ValueError("review snapshot root changed or contains a symbolic link") from exc
+    try:
+        opened_root = os.fstat(current_descriptor)
+        if (
+            not stat.S_ISDIR(opened_root.st_mode)
+            or (opened_root.st_dev, opened_root.st_ino) != expected_root_identity
+        ):
+            raise ValueError("review snapshot root changed during inspection")
+        for part in parts[:-1]:
+            try:
+                next_descriptor = os.open(part, directory_flags, dir_fd=current_descriptor)
+            except OSError as exc:
+                raise ValueError("review path changed or contains a symbolic link") from exc
+            os.close(current_descriptor)
+            current_descriptor = next_descriptor
+        name = parts[-1]
+        try:
+            before = os.stat(name, dir_fd=current_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            if allow_missing:
+                return None
+            raise ValueError("review file is unavailable") from None
+        except OSError as exc:
+            raise ValueError("review file is unavailable") from exc
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError("review path contains a symbolic link")
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("review snapshot accepts only regular files")
+        if before.st_nlink != 1:
+            raise ValueError("review snapshot rejects hard-linked files")
+        if before.st_size > maximum_bytes:
+            raise ValueError("review file exceeds its size limit")
+        if before.st_size > budget.remaining_bytes:
+            raise WorkerExecutionError(
+                "read-only inspection exceeded its cumulative snapshot byte limit"
+            )
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            file_descriptor = os.open(name, file_flags, dir_fd=current_descriptor)
+        except OSError as exc:
+            raise ValueError("review path changed or contains a symbolic link") from exc
+        try:
+            opened = os.fstat(file_descriptor)
+            if _stable_file_identity(opened) != _stable_file_identity(before):
+                raise ValueError("review file changed while it was opened")
+            content = bytearray()
+            while len(content) <= maximum_bytes:
+                budget.checkpoint()
+                chunk = os.read(
+                    file_descriptor,
+                    min(65_536, maximum_bytes + 1 - len(content)),
+                )
+                if not chunk:
+                    break
+                budget.consume(len(chunk))
+                content.extend(chunk)
+            after = os.fstat(file_descriptor)
+        finally:
+            os.close(file_descriptor)
+        try:
+            named_after = os.stat(name, dir_fd=current_descriptor, follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError("review file changed while it was read") from exc
+        if (
+            len(content) > maximum_bytes
+            or _stable_file_identity(after) != _stable_file_identity(before)
+            or _stable_file_identity(named_after) != _stable_file_identity(before)
+        ):
+            raise ValueError("review file changed while it was read")
+        budget.checkpoint()
+        return SnapshotFile(bytes(content), stat.S_IMODE(before.st_mode))
+    finally:
+        os.close(current_descriptor)
+
+
+def _write_private_snapshot_file(
+    root: Path,
+    relative: str,
+    source: SnapshotFile,
+    *,
+    budget: OperationBudget,
+) -> None:
+    budget.checkpoint()
+    destination = root / relative
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination_mode = 0o700 if source.mode & stat.S_IXUSR else 0o600
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(destination, flags, destination_mode)
+    try:
+        view = memoryview(source.content)
+        written = 0
+        while written < len(view):
+            budget.checkpoint()
+            written += os.write(descriptor, view[written:])
+        os.fchmod(descriptor, destination_mode)
+    finally:
+        os.close(descriptor)
+
+
+def _validate_static_file(
+    root: Path,
+    relative: str,
+    *,
+    budget: OperationBudget | None = None,
+) -> None:
+    if budget is not None:
+        budget.checkpoint()
     if Path(relative).suffix.casefold() != ".py":
         raise ValueError("static analysis accepts only Python files")
     cursor = root
@@ -413,9 +838,20 @@ def _validate_static_file(root: Path, relative: str) -> None:
         raise ValueError("review path escapes repository root")
     if not target.is_file():
         raise ValueError("static analysis accepts only regular files")
+    if target.stat().st_nlink != 1:
+        raise ValueError("static analysis rejects hard-linked files")
+    if budget is not None:
+        budget.checkpoint()
 
 
-def parse_review_job(root: Path, job: dict[str, Any]) -> ReviewRequest:
+def parse_review_job(
+    root: Path,
+    job: dict[str, Any],
+    *,
+    budget: OperationBudget | None = None,
+) -> ReviewRequest:
+    if budget is not None:
+        budget.checkpoint()
     root = root.resolve(strict=True)
     skill = job.get("required_skill")
     if not isinstance(skill, str) or skill not in REVIEW_SKILLS:
@@ -457,7 +893,7 @@ def parse_review_job(root: Path, job: dict[str, Any]) -> ReviewRequest:
         )
     paths = _paths(payload, required=True)
     for path in paths:
-        _validate_static_file(root, path)
+        _validate_static_file(root, path, budget=budget)
     return ReviewRequest(skill, paths=paths)
 
 
@@ -543,7 +979,11 @@ def _safe_subprocess_environment() -> dict[str, str]:
         "LC_ALL": "C",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_COUNT": "0",
         "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_LITERAL_PATHSPECS": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_LAZY_FETCH": "1",
         "GIT_TERMINAL_PROMPT": "0",
@@ -552,7 +992,45 @@ def _safe_subprocess_environment() -> dict[str, str]:
     }
 
 
-def _validate_git_metadata(root: Path) -> Path:
+def _validate_local_git_configuration(
+    git_dir: Path,
+    *,
+    budget: OperationBudget | None = None,
+) -> None:
+    for name in ("config", "config.worktree"):
+        if budget is not None:
+            budget.checkpoint()
+        path = git_dir / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError("review root Git configuration is unavailable") from exc
+        try:
+            configuration = _read_bounded_regular_path(
+                path,
+                MAX_GIT_CONFIG_BYTES,
+                "review root Git configuration",
+                budget=budget,
+            ).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("review root Git configuration is invalid") from exc
+        if (
+            "\0" in configuration
+            or "\ufeff" in configuration
+            or EXECUTABLE_GIT_SECTION_RE.search(configuration)
+        ):
+            raise ValueError("review root contains executable Git configuration")
+
+
+def _validate_git_metadata(
+    root: Path,
+    *,
+    budget: OperationBudget | None = None,
+) -> Path:
+    if budget is not None:
+        budget.checkpoint()
     git_dir = root / ".git"
     try:
         metadata = git_dir.lstat()
@@ -564,14 +1042,30 @@ def _validate_git_metadata(root: Path) -> Path:
         git_dir / "commondir",
         git_dir / "objects" / "info" / "alternates",
         git_dir / "objects" / "info" / "http-alternates",
+        git_dir / "info" / "grafts",
     ):
         if forbidden.exists() or forbidden.is_symlink():
             raise ValueError("review root uses alternate object or Git metadata storage")
+    visited = 0
     for directory, names, files in os.walk(git_dir, followlinks=False):
+        if budget is not None:
+            budget.checkpoint()
         base = Path(directory)
+        try:
+            depth = len(base.relative_to(git_dir).parts)
+        except ValueError as exc:  # pragma: no cover - os.walk is rooted at git_dir
+            raise ValueError("review root Git metadata escaped its root") from exc
+        if depth > MAX_SNAPSHOT_DEPTH:
+            raise ValueError("review root Git metadata exceeds its directory depth limit")
+        visited += len(names) + len(files)
+        if visited > MAX_SNAPSHOT_MANIFEST_ENTRIES:
+            raise ValueError("review root Git metadata exceeds its entry limit")
         for name in (*names, *files):
+            if budget is not None:
+                budget.checkpoint()
             if (base / name).is_symlink():
                 raise ValueError("review root Git metadata contains a symbolic link")
+    _validate_local_git_configuration(git_dir, budget=budget)
     return git_dir
 
 
@@ -616,37 +1110,108 @@ class CodeReviewExecutor:
         root = root.resolve(strict=True)
         if not root.is_dir():
             raise ValueError("review root must be a Git working tree")
-        git_dir = _validate_git_metadata(root)
+        if not 0 < timeout_seconds <= 60:
+            raise ValueError("review timeout must be between 0 and 60 seconds")
+        startup_budget = OperationBudget(timeout_seconds, MAX_SNAPSHOT_TOTAL_BYTES)
+        git_dir = _validate_git_metadata(root, budget=startup_budget)
         if not Path(git_binary).is_absolute() or Path(git_binary).name != "git":
             raise ValueError("git executable must be an absolute git path")
         if not Path(ruff_binary).is_absolute() or Path(ruff_binary).name != "ruff":
             raise ValueError("Ruff executable must be an absolute ruff path")
-        if not 0 < timeout_seconds <= 60:
-            raise ValueError("review timeout must be between 0 and 60 seconds")
         self.root = root
         self.git_dir = git_dir
+        self.root_identity = _directory_identity(root, "review root")
+        self.git_dir_identity = _directory_identity(git_dir, "review root Git metadata")
         self.git_binary = git_binary
         self.ruff_binary = ruff_binary
         self.timeout_seconds = timeout_seconds
         self.runner = runner
         self.environment = _safe_subprocess_environment()
 
-    def _run(self, arguments: list[str]) -> CommandResult:
-        return self.runner(
-            arguments,
-            cwd=self.root,
-            timeout_seconds=self.timeout_seconds,
-            max_output_bytes=MAX_COMMAND_OUTPUT_BYTES,
-            env=self.environment,
-        )
+    def _source_manifest(
+        self,
+        *,
+        include_worktree: bool,
+        budget: OperationBudget,
+    ) -> tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]:
+        """Return one bounded generation token for every tracked live input."""
 
-    def _git_prefix(self) -> list[str]:
+        self._require_repository_identity(budget)
+        git_entries = _tree_manifest(
+            self.git_dir,
+            expected_root_identity=self.git_dir_identity,
+            label="review Git metadata",
+            budget=budget,
+        )
+        namespaced = [(f"git/{path}", identity) for path, identity in git_entries]
+        if include_worktree:
+            worktree_entries = _tree_manifest(
+                self.root,
+                expected_root_identity=self.root_identity,
+                label="review worktree",
+                budget=budget,
+                skip_top_level=frozenset({".git"}),
+            )
+            namespaced.extend((f"worktree/{path}", identity) for path, identity in worktree_entries)
+        self._require_repository_identity(budget)
+        return tuple(namespaced)
+
+    def _require_source_manifest(
+        self,
+        expected: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...],
+        *,
+        include_worktree: bool,
+        budget: OperationBudget,
+    ) -> None:
+        current = self._source_manifest(
+            include_worktree=include_worktree,
+            budget=budget,
+        )
+        if current != expected:
+            raise WorkerExecutionError("review inputs changed during snapshot capture")
+
+    def _require_repository_identity(self, budget: OperationBudget) -> None:
+        budget.checkpoint()
+        try:
+            root_identity = _directory_identity(self.root, "review root")
+            git_dir = _validate_git_metadata(self.root, budget=budget)
+            git_dir_identity = _directory_identity(git_dir, "review root Git metadata")
+        except ValueError as exc:
+            raise WorkerExecutionError("review repository changed during inspection") from exc
+        if root_identity != self.root_identity or git_dir_identity != self.git_dir_identity:
+            raise WorkerExecutionError("review repository changed during inspection")
+
+    def _run(
+        self,
+        arguments: list[str],
+        *,
+        budget: OperationBudget,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+    ) -> CommandResult:
+        self._require_repository_identity(budget)
+        command_environment = dict(self.environment)
+        if environment is not None:
+            command_environment.update(environment)
+        result = self.runner(
+            arguments,
+            cwd=self.root if cwd is None else cwd,
+            timeout_seconds=budget.remaining_seconds(),
+            max_output_bytes=MAX_COMMAND_OUTPUT_BYTES,
+            env=command_environment,
+        )
+        budget.checkpoint()
+        self._require_repository_identity(budget)
+        return result
+
+    def _git_prefix(self, *, work_tree: Path | None = None) -> list[str]:
+        selected_work_tree = self.root if work_tree is None else work_tree
         return [
             self.git_binary,
             f"--git-dir={self.git_dir}",
-            f"--work-tree={self.root}",
+            f"--work-tree={selected_work_tree}",
             "-c",
-            f"core.worktree={self.root}",
+            f"core.worktree={selected_work_tree}",
             "-c",
             "core.attributesfile=/dev/null",
             "-c",
@@ -660,12 +1225,78 @@ class CodeReviewExecutor:
             "--no-pager",
         ]
 
+    def _snapshot_index(
+        self,
+        destination: Path,
+        budget: OperationBudget,
+    ) -> Path | None:
+        self._require_repository_identity(budget)
+        source = _read_contained_regular_file(
+            self.git_dir,
+            "index",
+            allow_missing=True,
+            expected_root_identity=self.git_dir_identity,
+            budget=budget,
+            maximum_bytes=MAX_SNAPSHOT_FILE_BYTES,
+        )
+        if source is None:
+            return None
+        _write_private_snapshot_file(destination, "index", source, budget=budget)
+        self._require_repository_identity(budget)
+        return destination / "index"
+
+    def _snapshot_worktree(
+        self,
+        destination: Path,
+        paths: list[str] | tuple[str, ...],
+        *,
+        budget: OperationBudget,
+        allow_missing: bool = True,
+    ) -> None:
+        budget.checkpoint()
+        destination.mkdir(mode=0o700)
+        self._require_repository_identity(budget)
+        for relative in paths:
+            source = _read_contained_regular_file(
+                self.root,
+                relative,
+                allow_missing=allow_missing,
+                expected_root_identity=self.root_identity,
+                budget=budget,
+            )
+            if source is not None:
+                _write_private_snapshot_file(
+                    destination,
+                    relative,
+                    source,
+                    budget=budget,
+                )
+        self._require_repository_identity(budget)
+
+    def _resolve_head(self, *, required: bool, budget: OperationBudget) -> str | None:
+        result = self._run(
+            self._git_prefix() + ["rev-parse", "--verify", "HEAD^{commit}"],
+            budget=budget,
+        )
+        if result.exit_code != 0 or result.truncated:
+            if required:
+                raise WorkerExecutionError("review HEAD could not be pinned")
+            return None
+        revision = result.output.strip()
+        if FULL_COMMIT_RE.fullmatch(revision) is None:
+            raise WorkerExecutionError("review HEAD returned an invalid object id")
+        return revision.lower()
+
     @staticmethod
     def _require_git_success(result: CommandResult) -> None:
         if result.exit_code != 0 and not result.truncated:
             raise WorkerExecutionError("read-only Git inspection failed")
 
-    def _status(self) -> dict[str, Any]:
+    def _status(self, budget: OperationBudget) -> dict[str, Any]:
+        source_manifest = self._source_manifest(
+            include_worktree=True,
+            budget=budget,
+        )
         command = self._git_prefix() + [
             "status",
             "--porcelain=v1",
@@ -673,7 +1304,12 @@ class CodeReviewExecutor:
             "--untracked-files=normal",
             "--ignore-submodules=all",
         ]
-        command_result = self._run(command)
+        command_result = self._run(command, budget=budget)
+        self._require_source_manifest(
+            source_manifest,
+            include_worktree=True,
+            budget=budget,
+        )
         self._require_git_success(command_result)
         raw_records = _nul_records(command_result.output)
         entries: list[dict[str, str]] = []
@@ -712,13 +1348,25 @@ class CodeReviewExecutor:
         ensure_result_size(result)
         return result
 
-    def _discover(self, command: list[str]) -> tuple[list[str], int, bool]:
-        result = self._run(command)
+    def _discover(
+        self,
+        command: list[str],
+        *,
+        budget: OperationBudget,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+    ) -> tuple[list[str], int, bool]:
+        result = self._run(
+            command,
+            budget=budget,
+            cwd=cwd,
+            environment=environment,
+        )
         self._require_git_success(result)
         paths, omitted, selection_truncated = _safe_discovered_paths(result.output)
         return paths, omitted, result.truncated or selection_truncated
 
-    def _diff(self, request: ReviewRequest) -> dict[str, Any]:
+    def _diff(self, request: ReviewRequest, budget: OperationBudget) -> dict[str, Any]:
         options = [
             "--no-ext-diff",
             "--no-textconv",
@@ -727,40 +1375,112 @@ class CodeReviewExecutor:
         ]
         if request.staged:
             options.append("--cached")
-        discovery = self._git_prefix() + ["diff", *options, "--name-only", "-z", "--"]
-        discovery.extend(request.paths)
-        paths, omitted, selection_truncated = self._discover(discovery)
-        if not paths:
-            result: dict[str, Any] = {
+        with tempfile.TemporaryDirectory(prefix="mongars-review-") as temporary_name:
+            # Keep discovery, index capture, HEAD resolution, and selected file
+            # capture in one checked live-source generation. The command below
+            # then reads only the private worktree/index plus content-addressed
+            # Git objects.
+            source_manifest = self._source_manifest(
+                include_worktree=not request.staged,
+                budget=budget,
+            )
+            temporary = Path(temporary_name)
+            index_path = self._snapshot_index(temporary, budget)
+            environment = {"GIT_INDEX_FILE": str(index_path)} if index_path is not None else None
+            pinned_base = (
+                self._resolve_head(required=False, budget=budget) if request.staged else None
+            )
+            base_arguments = [pinned_base] if pinned_base is not None else []
+            discovery = self._git_prefix() + [
+                "diff",
+                *options,
+                "--name-only",
+                "-z",
+                *base_arguments,
+                "--",
+                *request.paths,
+            ]
+            paths, omitted, selection_truncated = self._discover(
+                discovery,
+                budget=budget,
+                environment=environment,
+            )
+            if not paths:
+                self._require_source_manifest(
+                    source_manifest,
+                    include_worktree=not request.staged,
+                    budget=budget,
+                )
+                result: dict[str, Any] = {
+                    "content_trust": "untrusted",
+                    "output": "",
+                    "exit_code": 0,
+                    "protected_entries_omitted": omitted,
+                    "truncated": selection_truncated,
+                }
+                return result
+            work_tree = self.root
+            command_cwd = self.root
+            if not request.staged:
+                work_tree = temporary / "worktree"
+                self._snapshot_worktree(work_tree, paths, budget=budget)
+                command_cwd = work_tree
+            self._require_source_manifest(
+                source_manifest,
+                include_worktree=not request.staged,
+                budget=budget,
+            )
+            command = self._git_prefix(work_tree=work_tree) + [
+                "diff",
+                *options,
+                f"--unified={request.context_lines}",
+                *base_arguments,
+                "--",
+                *paths,
+            ]
+            # Object files remain in the operator-mounted repository. Fence
+            # their complete metadata generation around the immutable-OID read
+            # so a same-inode pack/loose-object mutation cannot go unnoticed.
+            object_manifest = self._source_manifest(
+                include_worktree=False,
+                budget=budget,
+            )
+            command_result = self._run(
+                command,
+                budget=budget,
+                cwd=command_cwd,
+                environment=environment,
+            )
+            self._require_source_manifest(
+                object_manifest,
+                include_worktree=False,
+                budget=budget,
+            )
+            self._require_git_success(command_result)
+            result = {
                 "content_trust": "untrusted",
-                "output": "",
-                "exit_code": 0,
+                "output": command_result.output,
+                "exit_code": command_result.exit_code,
                 "protected_entries_omitted": omitted,
-                "truncated": selection_truncated,
+                "truncated": command_result.truncated or selection_truncated,
             }
+            ensure_result_size(result)
             return result
-        command = self._git_prefix() + [
-            "diff",
-            *options,
-            f"--unified={request.context_lines}",
-            "--",
-            *paths,
-        ]
-        command_result = self._run(command)
-        self._require_git_success(command_result)
-        result = {
-            "content_trust": "untrusted",
-            "output": command_result.output,
-            "exit_code": command_result.exit_code,
-            "protected_entries_omitted": omitted,
-            "truncated": command_result.truncated or selection_truncated,
-        }
-        ensure_result_size(result)
-        return result
 
-    def _show(self, request: ReviewRequest) -> dict[str, Any]:
+    def _show(self, request: ReviewRequest, budget: OperationBudget) -> dict[str, Any]:
         if request.revision is None:
             raise ValueError("show revision is required")
+        source_manifest = self._source_manifest(
+            include_worktree=False,
+            budget=budget,
+        )
+        revision = (
+            self._resolve_head(required=True, budget=budget)
+            if request.revision == "HEAD"
+            else request.revision.lower()
+        )
+        if revision is None:  # pragma: no cover - required resolution cannot return None
+            raise WorkerExecutionError("review HEAD could not be pinned")
         options = [
             "--no-ext-diff",
             "--no-textconv",
@@ -773,12 +1493,20 @@ class CodeReviewExecutor:
             "--format=",
             "--name-only",
             "-z",
-            request.revision,
+            revision,
             "--",
             *request.paths,
         ]
-        paths, omitted, selection_truncated = self._discover(discovery)
+        paths, omitted, selection_truncated = self._discover(
+            discovery,
+            budget=budget,
+        )
         if not paths:
+            self._require_source_manifest(
+                source_manifest,
+                include_worktree=False,
+                budget=budget,
+            )
             result: dict[str, Any] = {
                 "content_trust": "untrusted",
                 "output": "",
@@ -792,11 +1520,16 @@ class CodeReviewExecutor:
             *options,
             "--format=fuller",
             f"--unified={request.context_lines}",
-            request.revision,
+            revision,
             "--",
             *paths,
         ]
-        command_result = self._run(command)
+        command_result = self._run(command, budget=budget)
+        self._require_source_manifest(
+            source_manifest,
+            include_worktree=False,
+            budget=budget,
+        )
         self._require_git_success(command_result)
         result = {
             "content_trust": "untrusted",
@@ -808,7 +1541,11 @@ class CodeReviewExecutor:
         ensure_result_size(result)
         return result
 
-    def _static_analysis(self, request: ReviewRequest) -> dict[str, Any]:
+    def _static_analysis(
+        self,
+        request: ReviewRequest,
+        budget: OperationBudget,
+    ) -> dict[str, Any]:
         command = [
             self.ruff_binary,
             "check",
@@ -820,7 +1557,24 @@ class CodeReviewExecutor:
             "--",
             *request.paths,
         ]
-        command_result = self._run(command)
+        with tempfile.TemporaryDirectory(prefix="mongars-review-") as temporary_name:
+            source_manifest = self._source_manifest(
+                include_worktree=True,
+                budget=budget,
+            )
+            snapshot_root = Path(temporary_name) / "worktree"
+            self._snapshot_worktree(
+                snapshot_root,
+                request.paths,
+                budget=budget,
+                allow_missing=False,
+            )
+            self._require_source_manifest(
+                source_manifest,
+                include_worktree=True,
+                budget=budget,
+            )
+            command_result = self._run(command, budget=budget, cwd=snapshot_root)
         if command_result.exit_code not in {0, 1} and not command_result.truncated:
             raise WorkerExecutionError("fixed Ruff analysis failed")
         result: dict[str, Any] = {
@@ -834,14 +1588,15 @@ class CodeReviewExecutor:
         return result
 
     def execute(self, job: dict[str, Any]) -> dict[str, Any]:
-        request = parse_review_job(self.root, job)
+        budget = OperationBudget(self.timeout_seconds, MAX_SNAPSHOT_TOTAL_BYTES)
+        request = parse_review_job(self.root, job, budget=budget)
         if request.skill == "code_review.git_status":
-            return self._status()
+            return self._status(budget)
         if request.skill == "code_review.git_diff":
-            return self._diff(request)
+            return self._diff(request, budget)
         if request.skill == "code_review.git_show":
-            return self._show(request)
-        return self._static_analysis(request)
+            return self._show(request, budget)
+        return self._static_analysis(request, budget)
 
 
 def ensure_result_size(result: dict[str, Any]) -> None:
@@ -866,6 +1621,8 @@ def ensure_result_contract(result: dict[str, Any]) -> None:
 
 
 def _failure_message(exc: Exception) -> str:
+    if isinstance(exc, (MemoryError, RecursionError)):
+        return "read-only inspection exceeded its resource limits"
     if isinstance(exc, OSError):
         return "read-only inspection failed"
     return str(exc)[:500]
@@ -900,7 +1657,14 @@ def run_once(
                 raise TypeError("review executor returned a non-object result")
             ensure_result_contract(result)
             result_body: dict[str, Any] = {"status": "completed", "result": result}
-        except (OSError, TypeError, ValueError, WorkerExecutionError) as exc:
+        except (
+            MemoryError,
+            OSError,
+            RecursionError,
+            TypeError,
+            ValueError,
+            WorkerExecutionError,
+        ) as exc:
             result_body = {"status": "failed", "error": _failure_message(exc)}
         heartbeat.ensure_active()
         client.submit_result(job_id, lease, result_body)

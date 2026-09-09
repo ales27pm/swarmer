@@ -38,6 +38,20 @@ class UnavailableExternalBoard:
         raise MessageBoardUnavailableError("external board unavailable")
 
 
+class BlockingDedupeBoard(RemoteAcknowledgingBoard):
+    """Blocks one publish so its local publication lease can expire."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def publish(self, event: DurableEvent) -> dict[str, Any]:
+        self.entered.set()
+        await self.release.wait()
+        return await super().publish(event)
+
+
 async def initialize_outbox(database: Path, *, event_count: int = 1) -> list[int]:
     await StateService(database).initialize()
     identifiers: list[int] = []
@@ -310,3 +324,138 @@ async def test_external_outage_stops_batch_and_releases_unattempted_claims(tmp_p
     rows = [await fetch_outbox_row(database, event_id) for event_id in event_ids]
     assert [row["attempts"] for row in rows] == [1, 0, 0, 0, 0]
     assert all(row["publishing_owner"] is None for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_publish_longer_than_lease_republishes_once_and_records_duplicate(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "state.db"
+    outbox_id = (await initialize_outbox(database))[0]
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    board = BlockingDedupeBoard()
+    old = OutboxService(
+        database,
+        board,
+        instance_id="slow-publisher",
+        publication_lease_seconds=5,
+    )
+    new = OutboxService(
+        database,
+        board,
+        instance_id="takeover-publisher",
+        publication_lease_seconds=5,
+    )
+    old_claim = (await old.claim_batch(limit=1, now=started))[0]
+    slow_publish = asyncio.create_task(old.publish_claimed(old_claim))
+    await asyncio.wait_for(board.entered.wait(), timeout=1)
+
+    board.release.set()
+    first_ack = await asyncio.wait_for(slow_publish, timeout=1)
+    stale_mark = await old.mark_published(
+        outbox_id,
+        owner_instance_id=old.instance_id,
+        publish_generation=int(old_claim["publish_generation"]),
+        now=started + timedelta(seconds=6),
+    )
+    new_claim = (await new.claim_batch(limit=1, now=started + timedelta(seconds=6)))[0]
+    second_ack = await new.publish_claimed(new_claim)
+    marked = await new.mark_published(
+        outbox_id,
+        owner_instance_id=new.instance_id,
+        publish_generation=int(new_claim["publish_generation"]),
+        now=started + timedelta(seconds=7),
+    )
+
+    assert first_ack["duplicate"] is False
+    assert stale_mark is False
+    assert second_ack["duplicate"] is True
+    assert marked is True
+    assert board.delivery_attempts == ["task-0:queued", "task-0:queued"]
+    restarted = OutboxService(
+        database,
+        board,
+        instance_id="metrics-after-restart",
+        publication_lease_seconds=5,
+    )
+    metrics = await restarted.metrics()
+    assert metrics["outbox_duplicate_publications"] == 1
+    assert metrics["outbox_claim_expirations"] == 1
+    assert metrics["outbox_publish_latency_ms_count"] == 2
+    assert metrics["outbox_publish_latency_ms_total"] >= 0
+    assert metrics["outbox_publish_latency_ms_max"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_recover_expired_claim_records_one_durable_expiration_metric(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "state.db"
+    await initialize_outbox(database)
+    started = datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    board = RemoteAcknowledgingBoard()
+    stopped = OutboxService(
+        database,
+        board,
+        instance_id="stopped-publisher",
+        publication_lease_seconds=5,
+    )
+    assert len(await stopped.claim_batch(limit=1, now=started)) == 1
+
+    restarted = OutboxService(
+        database,
+        board,
+        instance_id="restarted-publisher",
+        publication_lease_seconds=5,
+    )
+    assert await restarted.recover_expired_claims(now=started + timedelta(seconds=6)) == 1
+    assert await restarted.recover_expired_claims(now=started + timedelta(seconds=7)) == 0
+
+    metrics = await OutboxService(
+        database,
+        board,
+        instance_id="metrics-reader",
+    ).metrics()
+    assert metrics["outbox_claim_expirations"] == 1
+    assert metrics["outbox_duplicate_publications"] == 0
+    assert metrics["outbox_publish_latency_ms_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_metrics_ignore_unbounded_append_only_audit_history(tmp_path: Path) -> None:
+    database = tmp_path / "state.db"
+    await initialize_outbox(database)
+    misleading_rows = [
+        (
+            "outbox.publication.claim_expired",
+            '{"duplicate":true,"latency_ms":999999}',
+            "2026-09-08T16:00:00+00:00",
+        )
+        for _ in range(5_000)
+    ]
+    misleading_rows.extend(
+        (
+            "outbox.publication.acknowledged",
+            '{"duplicate":true,"latency_ms":999999}',
+            "2026-09-08T16:00:00+00:00",
+        )
+        for _ in range(5_000)
+    )
+    async with aiosqlite.connect(database) as db:
+        await db.executemany(
+            "INSERT INTO audit_events(event_type,payload_json,created_at) VALUES(?,?,?)",
+            misleading_rows,
+        )
+        await db.commit()
+
+    metrics = await OutboxService(
+        database,
+        RemoteAcknowledgingBoard(),
+        instance_id="bounded-metrics-reader",
+    ).metrics()
+
+    assert metrics["outbox_claim_expirations"] == 0
+    assert metrics["outbox_duplicate_publications"] == 0
+    assert metrics["outbox_publish_latency_ms_count"] == 0
+    assert metrics["outbox_publish_latency_ms_total"] == 0
+    assert metrics["outbox_publish_latency_ms_max"] == 0
