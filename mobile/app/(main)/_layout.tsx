@@ -20,7 +20,8 @@ export default function MainLayout() {
       <Tabs.Screen name="tasks" options={{ title: "Tâches" }} />
       <Tabs.Screen name="approvals" options={{ title: "Accords" }} />
       <Tabs.Screen name="memory" options={{ title: "Mémoire" }} />
-      <Tabs.Screen name="agents" options={{ title: "Agents" }} />
+      <Tabs.Screen name="swarm" options={{ title: "Swarm" }} />
+      <Tabs.Screen name="agents" options={{ href: null, title: "Agents" }} />
       <Tabs.Screen name="settings" options={{ href: null, title: "Réglages" }} />
     </Tabs>
   );

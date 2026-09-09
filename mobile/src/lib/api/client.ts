@@ -37,8 +37,14 @@ import type {
   ApprovalDecisionResult,
   AuditEvent,
   Bootstrap,
+  GoalCreateInput,
+  GoalDetail,
+  GoalFeedbackInput,
+  GoalRecord,
+  GoalResult,
   MemoryItem,
   Message,
+  PlanNode,
   Task,
   TaskDetail,
   TaskMode,
@@ -53,8 +59,17 @@ export type {
   ApprovalDecisionResult,
   AuditEvent,
   Bootstrap,
+  GoalAutonomyProfile,
+  GoalCreateInput,
+  GoalDetail,
+  GoalFeedbackInput,
+  GoalNodeStatus,
+  GoalRecord,
+  GoalResult,
+  GoalStatus,
   MemoryItem,
   Message,
+  PlanNode,
   Task,
   TaskDetail,
   TaskMode,
@@ -95,6 +110,12 @@ type ResolvedConnection =
   | (StoredConnection & { source: "active" })
   | (PendingConnectionSnapshot & { source: "pending" })
   | { baseUrl: string; source: "default"; token: null };
+
+type RequestConnectionFence = {
+  baseUrl: string;
+  token: string | null;
+  storageGeneration: number;
+};
 
 export type PairingResult = {
   bootstrap: Bootstrap;
@@ -319,6 +340,61 @@ async function resolveRequestConnection(): Promise<{ baseUrl: string; token: str
   return stored.source === "pending" ? resolvePendingConnection(stored) : stored;
 }
 
+async function readEffectiveConnectionLocked(): Promise<{
+  baseUrl: string;
+  token: string | null;
+}> {
+  const pending = await readPendingConnectionLocked();
+  if (pending) return pending;
+  const active = await readActiveConnectionLocked();
+  return active ?? { baseUrl: DEFAULT_SERVER_URL, token: null };
+}
+
+function connectionRequestChanged(): Error {
+  return new Error("La connexion jumelée a changé pendant la requête; réessaie l’action.");
+}
+
+async function captureRequestConnectionFence(): Promise<RequestConnectionFence> {
+  const resolved = await resolveRequestConnection();
+  return withConnectionStorageLock(async () => {
+    const current = await readEffectiveConnectionLocked();
+    if (current.baseUrl !== resolved.baseUrl || current.token !== resolved.token) {
+      throw connectionRequestChanged();
+    }
+    return {
+      ...resolved,
+      storageGeneration: connectionStorageGeneration,
+    };
+  });
+}
+
+async function assertRequestConnectionCurrent(
+  connection: RequestConnectionFence,
+): Promise<void> {
+  await withConnectionStorageLock(async () => {
+    if (connection.storageGeneration !== connectionStorageGeneration) {
+      throw connectionRequestChanged();
+    }
+    const current = await readEffectiveConnectionLocked();
+    if (current.baseUrl !== connection.baseUrl || current.token !== connection.token) {
+      throw connectionRequestChanged();
+    }
+  });
+}
+
+async function fencedRequest<T>(
+  path: string,
+  init?: RequestInit,
+  shouldAccept: () => boolean = () => true,
+): Promise<T> {
+  const connection = await captureRequestConnectionFence();
+  if (!shouldAccept()) throw connectionRequestChanged();
+  const value = await requestAt<T>(connection.baseUrl, path, init, connection.token);
+  await assertRequestConnectionCurrent(connection);
+  if (!shouldAccept()) throw connectionRequestChanged();
+  return value;
+}
+
 export async function getServerUrl(): Promise<string> {
   return (await getConnection()).baseUrl;
 }
@@ -524,6 +600,7 @@ function isBootstrapEnvelope(value: unknown): value is Bootstrap {
     value.agents,
     value.pinned_memory,
   ];
+  const optionalArrays = [value.messages, value.goals, value.plan_nodes, value.goal_results];
   const counts = [
     value.counts.tasks,
     value.counts.messages,
@@ -536,7 +613,7 @@ function isBootstrapEnvelope(value: unknown): value is Bootstrap {
     typeof value.server_time === "string" &&
     typeof value.cursor === "string" &&
     arrays.every(Array.isArray) &&
-    (value.messages === undefined || Array.isArray(value.messages)) &&
+    optionalArrays.every((item) => item === undefined || Array.isArray(item)) &&
     counts.every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
   );
 }
@@ -757,6 +834,83 @@ export function getTask(taskId: string): Promise<TaskDetail> {
   return request<TaskDetail>(`/tasks/${resourceId(taskId)}`);
 }
 
+export function listGoals(
+  shouldAccept: () => boolean = () => true,
+): Promise<GoalRecord[]> {
+  return fencedRequest<GoalRecord[]>("/goals", undefined, shouldAccept);
+}
+
+export function createGoal(input: GoalCreateInput): Promise<GoalDetail> {
+  return fencedRequest<GoalDetail>("/goals", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getGoal(
+  goalId: string,
+  shouldAccept: () => boolean = () => true,
+): Promise<GoalDetail> {
+  return fencedRequest<GoalDetail>(
+    `/goals/${resourceId(goalId)}`,
+    undefined,
+    shouldAccept,
+  );
+}
+
+export function startGoal(goalId: string): Promise<GoalDetail> {
+  return fencedRequest<GoalDetail>(`/goals/${resourceId(goalId)}/start`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function cancelGoal(goalId: string): Promise<GoalDetail> {
+  return fencedRequest<GoalDetail>(`/goals/${resourceId(goalId)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function replanGoal(goalId: string, reason?: string): Promise<GoalDetail> {
+  return fencedRequest<GoalDetail>(`/goals/${resourceId(goalId)}/replan`, {
+    method: "POST",
+    body: JSON.stringify(reason?.trim() ? { reason: reason.trim() } : {}),
+  });
+}
+
+export function listGoalNodes(
+  goalId: string,
+  shouldAccept: () => boolean = () => true,
+): Promise<PlanNode[]> {
+  return fencedRequest<PlanNode[]>(
+    `/goals/${resourceId(goalId)}/nodes`,
+    undefined,
+    shouldAccept,
+  );
+}
+
+export function getGoalResult(
+  goalId: string,
+  shouldAccept: () => boolean = () => true,
+): Promise<GoalResult | null> {
+  return fencedRequest<GoalResult | null>(
+    `/goals/${resourceId(goalId)}/result`,
+    undefined,
+    shouldAccept,
+  );
+}
+
+export function createGoalFeedback(
+  goalId: string,
+  input: GoalFeedbackInput,
+): Promise<unknown> {
+  return fencedRequest<unknown>(`/goals/${resourceId(goalId)}/feedback`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function cancelTask(taskId: string): Promise<Task> {
   return request<Task>(`/tasks/${resourceId(taskId)}/cancel`, { method: "POST" });
 }
@@ -819,24 +973,24 @@ export async function bootstrapSync(
   shouldApply: () => boolean = () => true,
 ): Promise<Bootstrap> {
   const generation = ++latestBootstrapGeneration;
-  const stored = await getConnection();
-  const connection = stored.source === "pending"
-    ? await resolvePendingConnection(stored)
-    : stored;
+  const connection = await captureRequestConnectionFence();
   const data = await requestAt<Bootstrap>(
     connection.baseUrl,
     "/sync/bootstrap",
     undefined,
     connection.token,
   );
+  await assertRequestConnectionCurrent(connection);
   const pendingApply = bootstrapReplicaApplyTail
     .catch(() => undefined)
     .then(async () => {
       if (generation !== latestBootstrapGeneration || !shouldApply()) return;
+      await assertRequestConnectionCurrent(connection);
       await applyBootstrap(data, connection.baseUrl);
     });
   bootstrapReplicaApplyTail = pendingApply;
   await pendingApply;
+  await assertRequestConnectionCurrent(connection);
   return data;
 }
 

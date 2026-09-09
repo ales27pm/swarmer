@@ -6,16 +6,26 @@ import {
   authorizeIPhoneCapabilityRequest,
   bootstrapSync,
   consumeIPhoneCapabilityRequest,
+  cancelGoal,
+  createGoal,
+  createGoalFeedback,
   createIPhoneCapabilityApiSession,
   createEventStreamTicket,
   createTask,
+  getGoal,
+  getGoalResult,
   getIPhoneCapabilityRequest,
+  listGoalNodes,
+  listGoals,
   listMessages,
   listIPhoneCapabilityRequests,
   pairDevice,
+  replanGoal,
+  startGoal,
   submitIPhoneCapabilityResult,
   submitToolProposal,
   type Bootstrap,
+  type GoalDetail,
 } from "@/lib/api/client";
 import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
 import type {
@@ -1209,6 +1219,139 @@ describe("conversation read fencing", () => {
     await requestStarted.promise;
     isCurrent = false;
     response.resolve(successfulJson([]));
+
+    await expect(pending).rejects.toThrow("connexion jumelée a changé");
+  });
+});
+
+describe("goal API contract and connection fencing", () => {
+  const goalDetail: GoalDetail = {
+    goal: {
+      id: "goal_1",
+      root_task_id: "tsk_root",
+      objective: "Qualifier le swarm",
+      status: "planning",
+      autonomy_profile: "assisted",
+      planner_source: "ubuntu_local",
+      max_steps: 8,
+      max_parallelism: 2,
+      max_replans: 1,
+      max_runtime_seconds: 600,
+      max_model_calls: 10,
+      step_count: 0,
+      replan_count: 0,
+      model_call_count: 0,
+      completion_criteria: ["Toutes les preuves sont présentes"],
+      current_phase: "planning",
+      created_at: "2030-01-01T00:00:00Z",
+      updated_at: "2030-01-01T00:00:00Z",
+    },
+    nodes: [],
+    result: null,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockConnections({
+      [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
+    });
+  });
+
+  it("uses the v0.12 goal routes and exact public request bodies", async () => {
+    request
+      .mockResolvedValueOnce(successfulJson([goalDetail.goal]))
+      .mockResolvedValueOnce(successfulJson(goalDetail, 201))
+      .mockResolvedValueOnce(successfulJson(goalDetail))
+      .mockResolvedValueOnce(successfulJson(goalDetail))
+      .mockResolvedValueOnce(successfulJson(goalDetail))
+      .mockResolvedValueOnce(successfulJson(goalDetail))
+      .mockResolvedValueOnce(successfulJson([]))
+      .mockResolvedValueOnce(successfulJson(null))
+      .mockResolvedValueOnce(successfulJson({ accepted: true }));
+
+    await listGoals();
+    await createGoal({ objective: "Qualifier le swarm", autonomy_profile: "assisted" });
+    await getGoal("goal/one");
+    await startGoal("goal/one");
+    await cancelGoal("goal/one");
+    await replanGoal("goal/one", "  Nouvelle preuve  ");
+    await listGoalNodes("goal/one");
+    await getGoalResult("goal/one");
+    await createGoalFeedback("goal/one", { score: 5, note: "Solide" });
+
+    const authorization = { Authorization: "Bearer device-token" };
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "https://control.example/goals",
+      expect.objectContaining({ headers: authorization }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "https://control.example/goals",
+      expect.objectContaining({
+        body: JSON.stringify({ objective: "Qualifier le swarm", autonomy_profile: "assisted" }),
+        method: "POST",
+      }),
+    );
+    expect(request.mock.calls.slice(2, 8).map(([url]) => String(url))).toEqual([
+      "https://control.example/goals/goal%2Fone",
+      "https://control.example/goals/goal%2Fone/start",
+      "https://control.example/goals/goal%2Fone/cancel",
+      "https://control.example/goals/goal%2Fone/replan",
+      "https://control.example/goals/goal%2Fone/nodes",
+      "https://control.example/goals/goal%2Fone/result",
+    ]);
+    expect(request.mock.calls[3]?.[1]).toEqual(expect.objectContaining({
+      body: JSON.stringify({}),
+      method: "POST",
+    }));
+    expect(request.mock.calls[4]?.[1]).toEqual(expect.objectContaining({
+      body: JSON.stringify({}),
+      method: "POST",
+    }));
+    expect(request.mock.calls[5]?.[1]).toEqual(expect.objectContaining({
+      body: JSON.stringify({ reason: "Nouvelle preuve" }),
+      method: "POST",
+    }));
+    expect(request.mock.calls[8]?.[0]).toBe(
+      "https://control.example/goals/goal%2Fone/feedback",
+    );
+    expect(request.mock.calls[8]?.[1]).toEqual(expect.objectContaining({
+      body: JSON.stringify({ score: 5, note: "Solide" }),
+      method: "POST",
+    }));
+  });
+
+  it("rejects an authoritative goal response when re-pairing changes origin in flight", async () => {
+    const response = deferred<never>();
+    const started = deferred<void>();
+    let active = storedConnection("https://old.example", "old-device-token");
+    getItem.mockImplementation(async (key: string) => {
+      if (key === PENDING_CONNECTION_KEY) return null;
+      if (key === CONNECTION_KEY) return active;
+      return null;
+    });
+    request.mockImplementationOnce(() => {
+      started.resolve();
+      return response.promise;
+    });
+
+    const pending = getGoal("goal_1");
+    await started.promise;
+    active = storedConnection("https://new.example", "new-device-token");
+    response.resolve(successfulJson(goalDetail));
+
+    await expect(pending).rejects.toThrow("connexion jumelée a changé");
+  });
+
+  it("fences a goal response when its screen refresh epoch is stale", async () => {
+    const response = deferred<never>();
+    let current = true;
+    request.mockImplementationOnce(() => response.promise);
+
+    const pending = getGoal("goal_1", () => current);
+    current = false;
+    response.resolve(successfulJson(goalDetail));
 
     await expect(pending).rejects.toThrow("connexion jumelée a changé");
   });

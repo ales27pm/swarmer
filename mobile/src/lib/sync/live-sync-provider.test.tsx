@@ -135,6 +135,18 @@ describe("LiveSyncProvider", () => {
           refetch_required: true,
         },
       });
+      options?.onEvent?.({
+        type: "goal.updated",
+        payload: { id: "goal_1", refetch_required: true },
+      });
+      options?.onEvent?.({
+        type: "plan.node.updated",
+        payload: { id: "node_1", goal_run_id: "goal_1", refetch_required: true },
+      });
+      options?.onEvent?.({
+        type: "goal.result.updated",
+        payload: { goal_run_id: "goal_1", refetch_required: true },
+      });
     });
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));

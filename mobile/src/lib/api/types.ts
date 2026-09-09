@@ -141,6 +141,117 @@ export type ToolProposalInput =
 
 export type PlannerSource = "iphone_local" | "ubuntu_local" | "manual" | "test";
 
+export type GoalStatus =
+  | "planning"
+  | "running"
+  | "waiting_permission"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "budget_exhausted";
+
+export type GoalNodeStatus =
+  | "planned"
+  | "ready"
+  | "dispatched"
+  | "running"
+  | "waiting_permission"
+  | "waiting_capability"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "cancelled"
+  | "skipped";
+
+export type GoalAutonomyProfile = "manual" | "assisted" | "autonomous";
+
+export type GoalRecord = {
+  id: string;
+  root_task_id: string;
+  objective: string;
+  status: GoalStatus;
+  autonomy_profile: GoalAutonomyProfile;
+  planner_source: PlannerSource;
+  max_steps: number;
+  max_parallelism: number;
+  max_replans: number;
+  max_runtime_seconds: number;
+  max_model_calls: number;
+  step_count: number;
+  replan_count: number;
+  model_call_count: number;
+  completion_criteria: string[];
+  current_phase: string;
+  evaluator_status?: string | null;
+  evaluator_summary?: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  failure_reason?: string | null;
+};
+
+export type PlanNode = {
+  id: string;
+  goal_run_id: string;
+  parent_node_id?: string | null;
+  node_type: "worker" | "synthesis";
+  title: string;
+  objective: string;
+  required_skill?: string | null;
+  status: GoalNodeStatus;
+  priority: number;
+  depends_on: string[];
+  assigned_agent_id?: string | null;
+  worker_job_id?: string | null;
+  task_id?: string | null;
+  expected_output?: string | null;
+  result_summary?: string | null;
+  error_summary?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+};
+
+export type GoalResult = {
+  goal_run_id: string;
+  root_task_id: string;
+  status: GoalStatus;
+  answer: string;
+  completed_nodes: string[];
+  failed_nodes: string[];
+  agents_used: string[];
+  memory_ids: string[];
+  episode_ids: string[];
+  started_at: string;
+  completed_at: string;
+  limitations: string[];
+};
+
+export type GoalDetail = {
+  goal: GoalRecord;
+  nodes: PlanNode[];
+  result: GoalResult | null;
+};
+
+export type GoalCreateInput = {
+  objective: string;
+  autonomy_profile: GoalAutonomyProfile;
+  completion_criteria?: string[];
+  max_steps?: number;
+  max_parallelism?: number;
+  max_replans?: number;
+  max_runtime_seconds?: number;
+  max_model_calls?: number;
+};
+
+export type GoalFeedbackInput = {
+  score: number;
+  note?: string;
+  corrected_final_answer?: string;
+  corrected_plan_summary?: string;
+};
+
 type ApprovalRequester = {
   type: "device";
   id: string;
@@ -329,6 +440,9 @@ export type Bootstrap = {
   messages?: Message[];
   agents: Agent[];
   pinned_memory: MemoryItem[];
+  goals?: GoalRecord[];
+  plan_nodes?: PlanNode[];
+  goal_results?: GoalResult[];
   counts: {
     tasks: number;
     messages: number;
