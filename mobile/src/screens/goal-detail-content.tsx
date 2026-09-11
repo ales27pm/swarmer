@@ -35,6 +35,35 @@ const GOAL_LABELS: Record<GoalStatus, string> = {
   budget_exhausted: "Budget épuisé",
 };
 
+const PLANNING_PHASES: Record<string, { label: string; description: string }> = {
+  waiting_for_workers: {
+    label: "En attente d’un agent",
+    description: "Aucun agent d’exécution n’est en ligne. Connectez un agent d’exécution, puis réessayez. Aucun appel modèle n’est lancé pendant cette attente.",
+  },
+  planner_invalid_response: {
+    label: "Plan proposé invalide",
+    description: "La réponse du planificateur ne permet pas de créer un plan valide. Réessayez la planification.",
+  },
+  planner_request_rejected: {
+    label: "Demande de planification refusée",
+    description: "Le service de planification a refusé la demande. Réessayez après vérification de ce service.",
+  },
+  planner_invalid_context: {
+    label: "Contexte de planification invalide",
+    description: "Le contexte nécessaire à la planification est incomplet ou invalide. Réessayez après sa correction.",
+  },
+  planner_unavailable: {
+    label: "Planificateur indisponible",
+    description: "Le service de planification est indisponible. Réessayez lorsqu’il est rétabli.",
+  },
+};
+
+function goalLabel(goal: GoalDetail["goal"]) {
+  return goal.status === "planning" && goal.current_phase === "waiting_for_workers"
+    ? PLANNING_PHASES.waiting_for_workers.label
+    : GOAL_LABELS[goal.status];
+}
+
 const NODE_LABELS: Record<GoalNodeStatus, string> = {
   planned: "Planifié",
   ready: "Prêt",
@@ -401,13 +430,16 @@ function Feedback({ disabled, locked, onScore }: {
 function GoalActions({ controller }: { controller: GoalDetailController }) {
   const { busy, goal, online } = controller;
   if (!goal || !online) return null;
+  const planningAction = PLANNING_PHASES[goal.current_phase]
+    ? "Réessayer la planification"
+    : "Démarrer le but";
   return (
     <>
       {canStartGoal(goal) ? (
         <ActionButton
           busy={busy === "start"}
           disabled={Boolean(busy)}
-          label={goal.status === "planning" ? "Démarrer le but" : "Continuer le but"}
+          label={goal.status === "planning" ? planningAction : "Continuer le but"}
           onPress={() => void controller.start()}
           testID="start-goal-button"
           variant="accent"
@@ -442,6 +474,7 @@ function GoalOverview({ controller, navigation }: {
 }) {
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
   if (!goal) return null;
+  const planningPhase = goal.status === "planning" ? PLANNING_PHASES[goal.current_phase] : undefined;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
     ? `Agents en cours : ${runningAgents.join(", ")}`
@@ -450,8 +483,17 @@ function GoalOverview({ controller, navigation }: {
     <>
       <SectionTitle title="État autoritaire" />
       <Card>
-        <Text style={{ color: COLORS.info, fontWeight: "800" }}>{GOAL_LABELS[goal.status]}</Text>
-        <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>Phase : {goal.current_phase}</Text>
+        <Text style={{ color: planningPhase ? COLORS.warning : COLORS.info, fontWeight: "800" }}>
+          {goalLabel(goal)}
+        </Text>
+        <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>
+          Phase : {planningPhase?.label ?? goal.current_phase}
+        </Text>
+        {planningPhase ? (
+          <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning, lineHeight: 20 }}>
+            {planningPhase.description}
+          </Text>
+        ) : null}
         <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
           {completedCount}/{nodes.length} nœuds terminés · {blockedCount} bloqué{blockedSuffix}
         </Text>
@@ -467,7 +509,7 @@ function GoalOverview({ controller, navigation }: {
             Évaluation : {goal.evaluator_summary}
           </Text>
         ) : null}
-        {goal.failure_reason ? (
+        {goal.failure_reason && !planningPhase ? (
           <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>Échec : {goal.failure_reason}</Text>
         ) : null}
         <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
@@ -548,7 +590,7 @@ export function GoalDetailContent({ controller, navigation }: {
   navigation: GoalDetailNavigation;
 }) {
   const subtitle = controller.goal
-    ? `${controller.goal.id} · ${GOAL_LABELS[controller.goal.status]}`
+    ? `${controller.goal.id} · ${goalLabel(controller.goal)}`
     : "Preuves du control plane";
   return (
     <ScreenShell

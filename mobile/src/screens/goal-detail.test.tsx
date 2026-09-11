@@ -1,4 +1,4 @@
-import { act, render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { act, render, renderHook, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { Alert } from "react-native";
 
@@ -13,6 +13,7 @@ import {
   type GoalDetail,
 } from "@/lib/api/client";
 import { localGoalDetail } from "@/lib/state/replica";
+import { useGoalDetailController } from "@/screens/goal-detail-content";
 
 const mockPush = jest.fn();
 const mockStackScreen = jest.fn();
@@ -130,6 +131,22 @@ const detail: GoalDetail = {
   },
 };
 
+const waitingForWorkers: GoalDetail = {
+  ...detail,
+  goal: {
+    ...detail.goal,
+    status: "planning",
+    current_phase: "waiting_for_workers",
+    step_count: 0,
+    model_call_count: 0,
+    evaluator_summary: undefined,
+    completed_at: undefined,
+    failure_reason: "no online workers are available",
+  },
+  nodes: [],
+  result: null,
+};
+
 describe("GoalDetailScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -210,6 +227,85 @@ describe("GoalDetailScreen", () => {
     await waitFor(() => expect(mockCancelGoal).toHaveBeenCalledWith("goal_1"));
     await waitFor(() => expect(mockGetGoal).toHaveBeenCalledTimes(2));
     alert.mockRestore();
+  });
+
+  it("explains the worker wait and retries planning once before refreshing the server state", async () => {
+    const user = userEvent.setup();
+    const retry = deferred<GoalDetail>();
+    mockGetGoal.mockResolvedValueOnce(waitingForWorkers).mockResolvedValue(detail);
+    mockStartGoal.mockImplementationOnce(async () => retry.promise);
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText("En attente d’un agent")).toBeOnTheScreen();
+    expect(screen.getByText(/Connectez un agent d’exécution, puis réessayez/)).toBeOnTheScreen();
+    expect(screen.getByText(/Aucun appel modèle n’est lancé pendant cette attente/)).toBeOnTheScreen();
+    expect(screen.getByText("Aucun agent en cours.")).toBeOnTheScreen();
+    expect(screen.queryByText("En cours")).not.toBeOnTheScreen();
+    expect(screen.queryByText(/waiting_for_workers|no online workers/)).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Démarrer le but" })).not.toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+
+    await user.press(screen.getByRole("button", { name: "Réessayer la planification" }));
+    expect(mockStartGoal).toHaveBeenCalledWith("goal_1");
+    expect(screen.getByRole("button", { name: "Réessayer la planification" })).toBeDisabled();
+    await user.press(screen.getByRole("button", { name: "Réessayer la planification" }));
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+
+    await act(async () => retry.resolve(detail));
+    expect(await screen.findByText("Le runtime respecte les invariants observés.")).toBeOnTheScreen();
+    expect(mockGetGoal).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("En attente d’un agent")).not.toBeOnTheScreen();
+  });
+
+  it("keeps a cached worker wait read-only", async () => {
+    mockGetGoal.mockRejectedValue(new Error("Serveur indisponible"));
+    mockLocalGoal.mockResolvedValue(waitingForWorkers);
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText("En attente d’un agent")).toBeOnTheScreen();
+    expect(screen.getByText(/Copie locale possiblement périmée/)).toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Réessayer la planification" })).not.toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it("guards controller retries while busy and after falling back to an offline worker wait", async () => {
+    const retry = deferred<GoalDetail>();
+    mockGetGoal.mockResolvedValue(waitingForWorkers);
+    mockStartGoal.mockImplementationOnce(async () => retry.promise);
+    const { result } = await renderHook(() => useGoalDetailController("goal_1"));
+    await waitFor(() => expect(result.current.online).toBe(true));
+
+    await act(() => { void result.current.start(); });
+    expect(result.current.busy).toBe("start");
+    await act(async () => result.current.start());
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+
+    await act(async () => retry.resolve(waitingForWorkers));
+    await waitFor(() => expect(result.current.busy).toBeNull());
+    mockGetGoal.mockRejectedValue(new Error("Serveur indisponible"));
+    mockLocalGoal.mockResolvedValue(waitingForWorkers);
+    await act(async () => result.current.refresh());
+    expect(result.current.online).toBe(false);
+    await act(async () => result.current.start());
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["planner_invalid_response", "Plan proposé invalide"],
+    ["planner_request_rejected", "Demande de planification refusée"],
+    ["planner_invalid_context", "Contexte de planification invalide"],
+    ["planner_unavailable", "Planificateur indisponible"],
+  ])("explains the recoverable %s phase without exposing its raw failure", async (phase, label) => {
+    mockGetGoal.mockResolvedValue({
+      ...waitingForWorkers,
+      goal: { ...waitingForWorkers.goal, current_phase: phase, failure_reason: "RAW PROVIDER ERROR" },
+    });
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText(`Phase : ${label}`)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Réessayer la planification" })).toBeOnTheScreen();
+    expect(screen.queryByText(/RAW PROVIDER ERROR/)).not.toBeOnTheScreen();
+    expect(screen.queryByText(`Phase : ${phase}`)).not.toBeOnTheScreen();
   });
 
   it("advances a running manual goal only after an explicit continuation", async () => {
@@ -320,33 +416,37 @@ describe("GoalDetailScreen", () => {
     expect(mockCreateFeedback).toHaveBeenCalledTimes(1);
   });
 
-  it("locks state-dependent actions while authoritative reconciliation is unresolved", async () => {
-    const running: GoalDetail = {
-      ...detail,
-      goal: { ...detail.goal, status: "running", autonomy_profile: "manual" },
-      result: null,
-    };
-    const reconciliation = deferred<GoalDetail>();
-    mockGetGoal
-      .mockResolvedValueOnce(running)
-      .mockImplementationOnce(async () => reconciliation.promise);
-    await render(<GoalDetailScreen />);
-    expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
-    expect(screen.getByRole("button", { name: "Continuer le but" })).toBeOnTheScreen();
+  it.each(["manual continuation", "worker retry"])(
+    "locks %s while authoritative reconciliation is unresolved",
+    async (action) => {
+      const pending: GoalDetail = action === "worker retry" ? waitingForWorkers : {
+        ...detail,
+        goal: { ...detail.goal, status: "running", autonomy_profile: "manual" },
+        result: null,
+      };
+      const label = action === "worker retry" ? "Réessayer la planification" : "Continuer le but";
+      const reconciliation = deferred<GoalDetail>();
+      mockGetGoal
+        .mockResolvedValueOnce(pending)
+        .mockImplementationOnce(async () => reconciliation.promise);
+      await render(<GoalDetailScreen />);
+      expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
+      expect(screen.getByRole("button", { name: label })).toBeOnTheScreen();
 
-    await act(async () => {
-      void refreshFromLiveEvent?.();
-      await Promise.resolve();
-    });
-    expect(screen.queryByRole("button", { name: "Annuler le but" })).not.toBeOnTheScreen();
-    expect(screen.queryByRole("button", { name: "Continuer le but" })).not.toBeOnTheScreen();
-    expect(mockCancelGoal).not.toHaveBeenCalled();
-    expect(mockStartGoal).not.toHaveBeenCalled();
+      await act(async () => {
+        void refreshFromLiveEvent?.();
+        await Promise.resolve();
+      });
+      expect(screen.queryByRole("button", { name: "Annuler le but" })).not.toBeOnTheScreen();
+      expect(screen.queryByRole("button", { name: label })).not.toBeOnTheScreen();
+      expect(mockCancelGoal).not.toHaveBeenCalled();
+      expect(mockStartGoal).not.toHaveBeenCalled();
 
-    await act(async () => reconciliation.resolve(running));
-    expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
-    expect(screen.getByRole("button", { name: "Continuer le but" })).toBeOnTheScreen();
-  });
+      await act(async () => reconciliation.resolve(pending));
+      expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
+      expect(screen.getByRole("button", { name: label })).toBeOnTheScreen();
+    },
+  );
 
   it("fences a slow detail refresh after a newer live refresh", async () => {
     const older = deferred<GoalDetail>();

@@ -368,6 +368,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         default_max_model_calls=settings.goal_max_model_calls,
         instance_id=control_plane_instance.instance_id,
         model_call_lease_seconds=settings.goal_model_call_lease_seconds,
+        require_execution_workers=True,
     )
     idempotency_service = IdempotencyService(settings.db_path)
     consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)

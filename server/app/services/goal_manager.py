@@ -61,10 +61,29 @@ from app.services.swarm_contracts import (
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
+_PLANNER_FAILURE_DETAILS = {
+    "transport_unavailable": ("planner_unavailable", "Planner transport is unavailable."),
+    "request_rejected": (
+        "planner_request_rejected",
+        "The model provider rejected the planner request.",
+    ),
+    "invalid_response": (
+        "planner_invalid_response",
+        "The planner response did not pass server validation.",
+    ),
+    "invalid_context": (
+        "planner_invalid_context",
+        "The planner context could not be prepared.",
+    ),
+}
 
 
 class GoalManagerConflict(RuntimeError):
     """An authoritative goal invariant rejected a requested transition."""
+
+
+class _PlannerProposalRejected(GoalManagerConflict):
+    """A returned proposal failed validation before any graph mutation."""
 
 
 class GoalManager:
@@ -99,6 +118,7 @@ class GoalManager:
         default_max_model_calls: int = 30,
         instance_id: str | None = None,
         model_call_lease_seconds: int = 120,
+        require_execution_workers: bool = False,
     ) -> None:
         self.db_path = db_path
         self.state_service = state_service
@@ -114,6 +134,7 @@ class GoalManager:
         if not 30 <= model_call_lease_seconds <= 900:
             raise ValueError("model_call_lease_seconds must be between 30 and 900")
         self.model_call_lease_seconds = model_call_lease_seconds
+        self.require_execution_workers = require_execution_workers
         self.defaults = {
             "max_steps": default_max_steps,
             "max_parallelism": default_max_parallelism,
@@ -160,7 +181,7 @@ class GoalManager:
             return proposal
         if model_call_id is not None and proposal.objective == f"goal:{goal['id']}":
             return proposal.model_copy(update={"objective": str(goal["objective"])})
-        raise GoalManagerConflict("planner changed the authoritative goal objective")
+        raise _PlannerProposalRejected("planner changed the authoritative goal objective")
 
     @staticmethod
     def _runtime_expired(goal: Mapping[str, Any]) -> bool:
@@ -345,6 +366,14 @@ class GoalManager:
             if not nodes:
                 if goal["status"] != "planning":
                     raise GoalManagerConflict("goal plan is unavailable")
+                if request.plan_proposal is None and await self._wait_for_execution_workers(
+                    goal_run_id,
+                    maintenance_guard=maintenance_guard,
+                ):
+                    waiting = await self.get_goal(goal_run_id)
+                    if waiting is None:
+                        raise GoalManagerConflict("goal disappeared while waiting for workers")
+                    return waiting
                 proposal, source, call_id = await self._obtain_plan(
                     goal,
                     request,
@@ -378,6 +407,15 @@ class GoalManager:
                         model_call_id=call_id,
                         maintenance_guard=maintenance_guard,
                     )
+                except _PlannerProposalRejected:
+                    if call_id is not None:
+                        await self._record_planner_failure(
+                            goal_run_id,
+                            call_id,
+                            category="invalid_response",
+                            maintenance_guard=maintenance_guard,
+                        )
+                    raise
                 except BaseException:
                     if call_id is not None:
                         await self._finish_model_call(
@@ -405,6 +443,42 @@ class GoalManager:
             if detail is None:
                 raise RuntimeError("started goal disappeared")
             return detail
+
+    async def _wait_for_execution_workers(
+        self,
+        goal_run_id: str,
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> bool:
+        if not self.require_execution_workers:
+            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            online = await (
+                await db.execute(
+                    "SELECT 1 FROM agents WHERE status='online' "
+                    "AND json_array_length(skills_json)>0 LIMIT 1"
+                )
+            ).fetchone()
+            if online is not None:
+                await db.rollback()
+                return False
+            await db.execute(
+                """UPDATE goal_runs SET current_phase='waiting_for_workers',
+                failure_reason=?,updated_at=? WHERE id=? AND status='planning'
+                AND current_phase<>'waiting_for_workers'""",
+                (
+                    "No execution worker is online. Waiting for a worker to connect.",
+                    self._now(),
+                    goal_run_id,
+                ),
+            )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+        return True
 
     async def _mark_start_requested(
         self,
@@ -589,18 +663,27 @@ class GoalManager:
                 maintenance_guard=maintenance_guard,
             )
             raise GoalManagerConflict("goal runtime budget exhausted") from exc
-        except (OSError, RuntimeError, TypeError, ValueError, SwarmPlannerProviderError) as exc:
-            await self._finish_model_call(
-                call_id,
-                status="failed",
-                maintenance_guard=maintenance_guard,
-            )
-            await self._record_recoverable_error(
+        except SwarmPlannerProviderError as exc:
+            await self._record_planner_failure(
                 str(goal["id"]),
-                "planner_unavailable",
+                call_id,
+                category=exc.category,
                 maintenance_guard=maintenance_guard,
             )
-            raise GoalManagerConflict("planner unavailable; goal remains recoverable") from exc
+            reason = _PLANNER_FAILURE_DETAILS[exc.category][1]
+            if exc.category == "transport_unavailable":
+                raise GoalManagerConflict("planner unavailable; goal remains recoverable") from exc
+            raise GoalManagerConflict(f"{reason} Goal remains recoverable.") from exc
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            await self._record_planner_failure(
+                str(goal["id"]),
+                call_id,
+                category="invalid_context",
+                maintenance_guard=maintenance_guard,
+            )
+            raise GoalManagerConflict(
+                "The planner failed internally. Goal remains recoverable."
+            ) from exc
         return proposal, self.planner.source, call_id
 
     async def _reserve_model_call(
@@ -704,6 +787,7 @@ class GoalManager:
         *,
         status: str,
         output_digest: str | None = None,
+        error_category: str | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> bool:
         if status not in {"completed", "failed"}:
@@ -719,6 +803,7 @@ class GoalManager:
                 status=status,
                 now=now,
                 output_digest=output_digest,
+                error_category=error_category,
             )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
@@ -733,6 +818,7 @@ class GoalManager:
         status: str,
         now: str,
         output_digest: str | None = None,
+        error_category: str | None = None,
     ) -> bool:
         cursor = await db.execute(
             """UPDATE goal_model_calls SET status=?,completed_at=?,error_category=?,
@@ -745,7 +831,7 @@ class GoalManager:
             (
                 status,
                 now,
-                "provider_unavailable" if status == "failed" else None,
+                (error_category or "provider_unavailable") if status == "failed" else None,
                 output_digest,
                 now,
                 call_id,
@@ -754,6 +840,48 @@ class GoalManager:
             ),
         )
         return cursor.rowcount == 1
+
+    async def _record_planner_failure(
+        self,
+        goal_run_id: str,
+        call_id: str,
+        *,
+        category: str,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> bool:
+        phase, reason = _PLANNER_FAILURE_DETAILS[category]
+        now = self._now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            call = await (
+                await db.execute(
+                    "SELECT 1 FROM goal_model_calls WHERE id=? AND goal_run_id=? AND role='planner'",
+                    (call_id, goal_run_id),
+                )
+            ).fetchone()
+            if call is None:
+                await db.rollback()
+                raise GoalManagerConflict("planner call does not belong to this goal")
+            changed = await self._finish_model_call_locked(
+                db,
+                call_id,
+                status="failed",
+                now=now,
+                error_category=category,
+            )
+            if changed:
+                await db.execute(
+                    """UPDATE goal_runs SET current_phase=?,failure_reason=?,updated_at=?
+                    WHERE id=? AND status NOT IN
+                        ('completed','failed','cancelled','budget_exhausted')""",
+                    (phase, reason, now, goal_run_id),
+                )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+        return changed
 
     async def _require_current_model_call_locked(
         self,
@@ -805,7 +933,7 @@ class GoalManager:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
         proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
         if len(proposal.nodes) > int(goal["max_steps"]):
-            raise GoalManagerConflict("plan exceeds the goal step budget")
+            raise _PlannerProposalRejected("plan exceeds the goal step budget")
         try:
             validated = validate_swarm_plan(
                 proposal,
@@ -814,7 +942,7 @@ class GoalManager:
                 max_parallelism=int(goal["max_parallelism"]),
             )
         except PlanValidationError as exc:
-            raise GoalManagerConflict(str(exc)) from exc
+            raise _PlannerProposalRejected(str(exc)) from exc
         by_temp = {node.temporary_id: f"node_{uuid4().hex}" for node in proposal.nodes}
         now = self._now()
         async with aiosqlite.connect(self.db_path) as db:
@@ -2174,7 +2302,9 @@ class GoalManager:
                 )
             except (PlanValidationError, GoalManagerConflict) as exc:
                 if call_id is not None:
-                    await self._finish_model_call(call_id, status="failed")
+                    await self._record_planner_failure(
+                        goal_run_id, call_id, category="invalid_response"
+                    )
                 raise GoalManagerConflict(str(exc)) from exc
             if validated.fingerprint == goal.get("plan_fingerprint"):
                 if call_id is not None:
@@ -2606,8 +2736,18 @@ class GoalManager:
                           AND pending.lease_expires_at>?
                       )
                       AND (
-                        current_phase<>'planner_unavailable'
+                        current_phase NOT IN (
+                            'planner_unavailable','planner_request_rejected',
+                            'planner_invalid_response','planner_invalid_context'
+                        )
                         OR julianday(updated_at)<=julianday(?) - ? / 86400.0
+                      )
+                      AND (
+                        ?=0 OR current_phase<>'waiting_for_workers'
+                        OR EXISTS (
+                            SELECT 1 FROM agents WHERE status='online'
+                              AND json_array_length(skills_json)>0
+                        )
                       )
                       AND (
                         status='planning'
@@ -2650,6 +2790,7 @@ class GoalManager:
                         selection_now,
                         selection_now,
                         _PLANNER_RETRY_COOLDOWN_SECONDS,
+                        int(self.require_execution_workers),
                         bounded_limit,
                     ),
                 )

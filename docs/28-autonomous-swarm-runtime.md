@@ -106,6 +106,9 @@ Le schéma de génération envoyé au planner et à l'evaluator omet uniquement
 Les contrats Pydantic et OpenAPI conservent toutes leurs limites: chaque réponse
 est toujours validée localement avant toute transition. Une réponse trop longue
 ou un plan invalide reste rejeté.
+Le schéma envoyé pour chaque appel fixe aussi `objective` à la référence exacte
+du but via `const`. Les cartes de contexte, épisodes et stratégies ne sont pas
+des nœuds et ne peuvent pas devenir des dépendances du plan.
 
 Une proposition locale iPhone ou manuelle est acceptée seulement avec sa source
 explicite et subit le même validateur serveur. Elle doit conserver l'objectif
@@ -114,6 +117,13 @@ son appel serveur. Un autre objectif ou la référence d'un autre but est rejet�
 y compris lors d'une replanification. Le texte retiré par expurgation ou par la
 limite de contexte n'a donc jamais à être révélé au modèle pour qu'il puisse
 lier son plan au bon but.
+
+Avant une planification automatique, l'API exige au moins un agent d'exécution
+`online` déclarant des skills. Sinon le but reste en `planning`, phase
+`waiting_for_workers`, sans appel modèle, nœud inventé ou job. Les démarrages
+répétés ne consomment pas le budget d'appels; la maintenance reprend après
+l'arrivée d'un agent en ligne. Le délai total du but reste applicable. Une
+proposition manuelle explicite conserve sa validation et son chemin de dispatch.
 
 ## DAG et dispatch
 
@@ -195,7 +205,13 @@ contrat du skill termine le nœud en échec même si le worker annonce
 `completed`. Sans preuve valide, le but échoue fermé.
 Une indisponibilité du planner/evaluator laisse une phase récupérable et ne
 fabrique aucun résultat.
-Après une indisponibilité du planner, la maintenance attend au moins 60 secondes
+Le diagnostic distingue transport indisponible (`planner_unavailable`), requête
+refusée (`planner_request_rejected`), réponse invalide (`planner_invalid_response`)
+et contexte invalide (`planner_invalid_context`). Les raisons publiques sont
+fixes et ne contiennent pas la réponse brute du modèle. La clôture de l'appel
+et ce diagnostic sont atomiques et soumis au bail de l'appel: une réponse
+tardive ne peut pas écraser une reprise plus récente.
+Après chacun de ces échecs du planner, la maintenance attend au moins 60 secondes
 depuis la dernière modification persistée avant un nouvel essai automatique.
 Ce délai survit au redémarrage et s'applique avant la limite de sélection des
 buts. Un démarrage explicitement demandé peut réessayer immédiatement si le
