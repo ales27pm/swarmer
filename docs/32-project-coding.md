@@ -58,8 +58,8 @@ or inspection uses another node/job and another call. Generation jobs have one
 attempt and cannot be automatically redistributed. Existing user-selected step,
 runtime, and model-call limits remain authoritative.
 
-Model responses are limited to 1,500 tokens. Initial implementation writes one
-small complete file; subsequent iterations can repair several paths. A generation
+Model responses are limited to 2,000 tokens. Each iteration can write one
+complete file and use small patches or deletions to repair several paths. A generation
 timeout preserves the previous source and real check receipts, then returns a
 continuation for a new charged job. Network and request failures remain distinct
 from a timed-out generation; no job retries its model request internally.

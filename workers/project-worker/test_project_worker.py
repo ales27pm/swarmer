@@ -42,6 +42,10 @@ def step(**changes: Any) -> dict[str, Any]:
     }
 
 
+def single_file_step() -> dict[str, Any]:
+    return step(edits=[{"path": "app.py", "content": "value = 1\n"}])
+
+
 class Generator:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
@@ -199,7 +203,7 @@ def test_model_transport_uses_one_local_schema_request_without_credentials(
     requests: list[Any] = []
     raw = json.dumps(
         {
-            "message": {"content": json.dumps(step())},
+            "message": {"content": json.dumps(single_file_step())},
             "done": True,
             "done_reason": "stop",
             "prompt_eval_count": 31,
@@ -239,7 +243,7 @@ def test_model_transport_uses_one_local_schema_request_without_credentials(
     body = json.loads(requests[0].data)
     schema = body["format"]["oneOf"][0]
     assert all(branch["additionalProperties"] is False for branch in body["format"]["oneOf"])
-    assert schema["properties"]["edits"]["maxItems"] == 3
+    assert schema["properties"]["edits"]["maxItems"] == 1
     assert schema["properties"]["edits"]["items"]["properties"]["path"]["pattern"]
     if large_context:
         assert "minItems" not in schema["properties"]["edits"]
@@ -333,7 +337,7 @@ def test_final_request_trimming_keeps_error_context_as_a_fragment(
             return Response(
                 json.dumps(
                     {
-                        "message": {"content": json.dumps(step())},
+                        "message": {"content": json.dumps(single_file_step())},
                         "done": True,
                         "done_reason": "stop",
                     }
@@ -549,7 +553,7 @@ def test_timeout_recovery_still_discards_a_lost_lease(monkeypatch: pytest.Monkey
 
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("answered", [False, True])
-def test_initial_materialization_is_small_but_existing_multi_path_repairs_remain_available(
+def test_all_generation_phases_allow_only_one_complete_file_edit(
     monkeypatch: pytest.MonkeyPatch,
     existing: bool,
     answered: bool,
@@ -565,7 +569,7 @@ def test_initial_materialization_is_small_but_existing_multi_path_repairs_remain
     if not answered:
         data["conversation"] = []
     initial = answered and not existing
-    response = step(edits=[{"path": "models.py", "content": "VALUE = 1\n"}]) if initial else step()
+    response = step(edits=[{"path": "models.py", "content": "VALUE = 1\n"}])
     if existing:
         data["files"] = [{"path": "app.py", "content": "VALUE = 1\n"}]
 
@@ -589,10 +593,130 @@ def test_initial_materialization_is_small_but_existing_multi_path_repairs_remain
     result = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(data)
     assert len(captured) == 1
     body = captured[0]
-    assert body["options"]["num_predict"] == 1500
-    assert body["format"]["oneOf"][0]["properties"]["edits"]["maxItems"] == (1 if initial else 3)
-    assert len(result["edits"]) == (1 if initial else 3)
+    assert body["options"]["num_predict"] == 2000
+    assert body["format"]["oneOf"][0]["properties"]["edits"]["maxItems"] == 1
+    assert len(result["edits"]) == 1
     assert ("first implementation batch" in body["messages"][-1]["content"]) == initial
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("answered", [False, True])
+def test_two_full_file_edits_are_rejected_wholesale_in_every_generation_phase(
+    monkeypatch: pytest.MonkeyPatch, existing: bool, answered: bool
+) -> None:
+    data = payload()
+    if existing:
+        data["files"] = [{"path": "app.py", "content": "unchanged = True\n"}]
+        data["base_revision_id"] = "revision_1"
+        data["base_sha256"] = snapshot_sha(data["files"])
+    if answered:
+        data["conversation"] = [
+            {"role": "assistant", "content": "Web or desktop?"},
+            {"role": "user", "content": "Build a local web application."},
+        ]
+    original = copy.deepcopy(data)
+    calls = 0
+    response = step(
+        edits=[
+            {"path": "app.py", "content": "replaced = True\n"},
+            {"path": "models.py", "content": "added = True\n"},
+        ]
+    )
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            nonlocal calls
+            calls += 1
+            return Response(
+                json.dumps(
+                    {
+                        "message": {"content": json.dumps(response)},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    runner = Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert calls == 1 and runner.calls == 0
+    assert result["action"] == "continue" and "one full-file edit" in result["message"]
+    for field in ("files", "checks", "plan", "base_revision_id", "base_sha256"):
+        assert result[field] == original[field]
+    assert data == original
+
+
+def test_one_full_edit_patch_and_deletion_preserve_other_files_in_maximum_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = [
+        {"path": "app.py", "content": "APP = 1\n"},
+        {"path": "models.py", "content": "MODEL = 1\n"},
+        {"path": "obsolete.py", "content": "OBSOLETE = 1\n"},
+        {"path": "README.md", "content": "Requirements and startup instructions"},
+        *[{"path": f"keep{i}.py", "content": f"KEEP = {i}\n"} for i in range(76)],
+    ]
+    data = {
+        **payload(),
+        "files": files,
+        "focus_paths": ["models.py", "app.py"],
+        "base_revision_id": "revision_1",
+        "base_sha256": snapshot_sha(files),
+    }
+    original = copy.deepcopy(data)
+    calls = 0
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            nonlocal calls
+            calls += 1
+            body = json.loads(request.data)
+            schema = body["format"]["oneOf"][0]
+            choices = schema["properties"]["patches"]["items"]["oneOf"]
+            model = next(
+                choice
+                for choice in choices
+                if choice["properties"]["path"]["enum"] == ["models.py"]
+            )
+            identifier = model["properties"]["span_id"]["enum"][0]
+            response = step(
+                edits=[{"path": "app.py", "content": "APP = 2\n"}],
+                patches=[{"path": "models.py", "span_id": identifier, "new": "MODEL = 2\n"}],
+                deletions=["obsolete.py"],
+                focus_paths=[],
+            )
+            assert Draft202012Validator(body["format"]).is_valid(response)
+            return Response(
+                json.dumps(
+                    {
+                        "message": {"content": json.dumps(response)},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    runner = Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert calls == runner.calls == 1 and result["action"] == "complete"
+    updated = {item["path"]: item["content"] for item in result["files"]}
+    assert len(files) == 80 and len(updated) == 79
+    assert updated["app.py"] == "APP = 2\n" and updated["models.py"] == "MODEL = 2\n"
+    assert "obsolete.py" not in updated
+    for item in original["files"]:
+        if item["path"] not in {"app.py", "models.py", "obsolete.py"}:
+            assert updated[item["path"]] == item["content"]
+    assert data == original and result["base_sha256"] == original["base_sha256"]
 
 
 def test_wire_grammar_separates_mutation_read_and_clarification() -> None:
@@ -848,7 +972,7 @@ def test_source_priority_keeps_app_and_user_requirements_over_old_progress_and_s
             return Response(
                 json.dumps(
                     {
-                        "message": {"content": json.dumps(step())},
+                        "message": {"content": json.dumps(single_file_step())},
                         "done": True,
                         "done_reason": "stop",
                     }
@@ -940,7 +1064,7 @@ def test_zero_executed_tests_does_not_misclassify_collection_errors_or_skips(
             return Response(
                 json.dumps(
                     {
-                        "message": {"content": json.dumps(step())},
+                        "message": {"content": json.dumps(single_file_step())},
                         "done": True,
                         "done_reason": "stop",
                     }

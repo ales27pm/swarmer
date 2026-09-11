@@ -46,7 +46,7 @@ LOGGER = logging.getLogger("mongars.project_worker")
 _JOB_LOCK = threading.Lock()
 MAX_MODEL_RESPONSE_BYTES = 2_000_000
 MAX_PROMPT_BYTES = 22_000
-MAX_OUTPUT_TOKENS = 1_500
+MAX_OUTPUT_TOKENS = 2_000
 MAX_SPAN_BYTES = 12_000
 MAX_ADDRESS_BYTES = 8_000
 
@@ -71,12 +71,13 @@ make progress through file edits or a focused read, not restate a plan.
 For clarify: ask the concrete question in message; edits, patches, deletions, and
 requested_checks must all be empty arrays. Preserve the plan and existing work.
 Build the complete useful multi-file project across several small iterations.
-Keep the entire response below1500 tokens, including JSON, plan and messages.
-Usually implement one small complete module or file in an iteration. Split the
-application into cohesive small modules instead of generating a monolithic file.
-Repairs may change up to3 paths when necessary, using short patches. Choose a
-smaller complete batch instead of truncating JSON or file contents. Use continue
-while files or checks remain; keep messages, plan and run instructions concise.
+Keep the entire response below 2000 tokens, including JSON, plan and messages.
+Return at most ONE complete file edit per iteration: a small cohesive module or
+file. Split the application into small modules instead of generating a monolithic
+file. Repairs may change up to 3 paths through short patches or deletions, with
+at most one full-file replacement. Choose a smaller complete batch instead of
+truncating JSON or writing placeholder chunks. Use continue while work remains.
+Keep message to one sentence, the milestone plan concise, and run instructions brief.
 Keep the full concise milestone plan so later iterations finish the application,
 README.md, dependency manifests and real tests. No placeholder files or fake tests.
 edits is an array of {path,content} with COMPLETE replacement file contents.
@@ -154,7 +155,7 @@ STEP_SCHEMA: dict[str, Any] = {
         "plan": {"type": "array", "items": STRING},
         "edits": {
             "type": "array",
-            "maxItems": 3,
+            "maxItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -201,7 +202,7 @@ MODEL_TIMEOUT_DIAGNOSTIC = (
     "The local model timed out before returning a complete response. No edits were accepted, "
     "and the previous files and check receipts are unchanged. In the next charged iteration, "
     "return one smaller complete module or a short repair patch, with concise metadata, "
-    "within the 1500-token response limit. No retry occurred within this job."
+    "within the 2000-token response limit. No retry occurred within this job."
 )
 
 
@@ -683,7 +684,7 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         None,
     )
     # Qwen uses byte-fallback BPE: UTF-8 bytes conservatively bound input tokens.
-    # 22000 input bytes +1500 output tokens +1024 framing reserve is below32768.
+    # 22000 input bytes +2000 output tokens +1024 framing reserve is below32768.
     while prompt_size() > MAX_PROMPT_BYTES:
         removable = next(
             (
@@ -776,10 +777,6 @@ class ProjectGenerator:
             schema["properties"]["action"]["enum"] = ["continue", "complete"]
             if not payload["files"]:
                 schema["properties"]["edits"]["minItems"] = 1
-                if answered:
-                    # Initial materialization must fit the measured inference
-                    # window. Existing projects retain multi-path repair support.
-                    schema["properties"]["edits"]["maxItems"] = 1
             if needs_repair:
                 schema["properties"]["deletions"]["maxItems"] = 0
             first_field = "patches" if payload["files"] and not needs_tests else "edits"
@@ -951,16 +948,11 @@ class ProjectGenerator:
                     "Return a smaller complete JSON file-edit batch in the next iteration."
                 )
             step = parse_step(resolve_model_patches(transport._parse_json(content), addresses))
-            if answered and not payload["files"] and len(step["edits"]) > 1:
+            if len(step["edits"]) > 1:
                 raise ModelStepError(
-                    "The first implementation batch exceeded one edited file. No edits were "
-                    "accepted. Return one small complete file and continue the remaining plan "
-                    "in later charged iterations."
-                )
-            if len(step["edits"]) > 3:
-                raise ModelStepError(
-                    "The model batch exceeded three edited files. No edits were accepted. "
-                    "Return a smaller complete batch in the next iteration."
+                    "The model batch exceeded one full-file edit. No edits were accepted. "
+                    "Return one small complete file or use short patches for repairs. "
+                    "Continue remaining work in later charged iterations."
                 )
             return step
         except ModelStepError:
