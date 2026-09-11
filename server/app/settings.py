@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     goal_context_max_result_chars_per_node: int = Field(default=2_000, ge=0, le=100_000)
     embedding_base_url: str | None = None
     embedding_model: str | None = None
+    project_embedding_base_url: str | None = None
+    project_embedding_model: str | None = None
+    project_embedding_model_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    project_memory_query_prefix: str = Field(default="", max_length=200)
+    project_memory_document_prefix: str = Field(default="", max_length=200)
     permissions_path: Path = DEFAULT_PERMISSIONS_PATH
     pairing_bootstrap_token: SecretStr | None = None
     pairing_code_ttl_seconds: int = 600
@@ -85,6 +90,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_agent_timing(self) -> "Settings":
+        project_embedding_fields = (
+            self.project_embedding_base_url,
+            self.project_embedding_model,
+            self.project_embedding_model_revision,
+        )
+        if any(project_embedding_fields) and not all(project_embedding_fields):
+            raise ValueError(
+                "project embeddings require a provider URL, model, and pinned model SHA-256"
+            )
         if self.agent_heartbeat_seconds >= self.agent_lease_seconds:
             raise ValueError("agent heartbeat interval must be shorter than the lease")
         if self.agent_heartbeat_seconds >= self.agent_offline_timeout_seconds:

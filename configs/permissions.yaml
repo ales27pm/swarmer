@@ -41,6 +41,12 @@ tool_rules:
     decision: ask
     risk: medium
     approval_ttl_seconds: 300
+  workspace.write_project:
+    id: ask-reviewed-project-publication
+    description: Saving a reviewed project revision requires explicit one-use approval.
+    decision: ask
+    risk: medium
+    approval_ttl_seconds: 300
   process.run:
     id: ask-sandboxed-process
     description: Running a sandboxed process can modify workspace files and requires explicit one-use approval.
@@ -92,6 +98,12 @@ capability_rules:
 # executable allowlist for dispatch. Only the two original workspace reads are
 # safe for automatic lease redistribution.
 worker_skill_rules:
+  code.build_project:
+    id: allow-isolated-project-builder
+    description: Build and test a private project snapshot in an isolated runtime without host workspace access.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   code.generate_python:
     id: allow-worker-python-proposal
     description: A local model worker may propose one Python file without writing or executing it.

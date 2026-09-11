@@ -159,6 +159,29 @@ class GoalReplanRequest(BaseModel):
         return self
 
 
+class GoalMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: LongText
+    client_message_id: StableIdentifier
+    reply_to_message_id: StableIdentifier | None = None
+
+
+class GoalMessageRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: StableIdentifier
+    goal_run_id: StableIdentifier
+    role: Literal["user", "assistant"]
+    content: LongText
+    created_at: Timestamp
+
+
+class GoalMessagesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    messages: list[GoalMessageRecord] = Field(max_length=100)
+    active_goal_id: StableIdentifier
+    pending_question_id: StableIdentifier | None = None
+
+
 class GoalCancelRequest(BaseModel):
     """An intentionally empty, strict cancellation command."""
 

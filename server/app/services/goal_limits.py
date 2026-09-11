@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -123,3 +124,33 @@ class GoalLoopGuard:
             and state_fingerprint == self.previous_state_fingerprint
         ):
             raise GoalLoopDetected("evaluator repeated a decision without state change")
+
+
+def active_runtime_seconds(goal: Mapping[str, Any], *, now: datetime | None = None) -> float:
+    """Elapsed execution time, excluding durably recorded human waits."""
+    record = dict(goal)
+    if not record.get("started_at"):
+        return 0.0
+    started = datetime.fromisoformat(str(record["started_at"]))
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    end = now or datetime.now(UTC)
+    if record.get("paused_at"):
+        paused = datetime.fromisoformat(str(record["paused_at"]))
+        if paused.tzinfo is None:
+            paused = paused.replace(tzinfo=UTC)
+        end = min(end, paused)
+    return max(0.0, (end - started).total_seconds() - float(record.get("paused_seconds") or 0))
+
+
+def runtime_remaining_seconds(goal: Mapping[str, Any], *, now: datetime | None = None) -> float:
+    return max(0.0, float(goal["max_runtime_seconds"]) - active_runtime_seconds(goal, now=now))
+
+
+def runtime_expired(goal: Mapping[str, Any], *, now: datetime | None = None) -> bool:
+    return runtime_remaining_seconds(goal, now=now) <= 0
+
+
+# Used in the same writer transaction that makes a goal runnable again.
+RESUME_RUNTIME_SQL = """paused_seconds=paused_seconds + CASE WHEN paused_at IS NULL THEN 0
+    ELSE MAX(0,(julianday(?) - julianday(paused_at))*86400.0) END, paused_at=NULL"""

@@ -48,6 +48,37 @@ afterEach(() => {
 });
 
 describe("swarm UI primitives", () => {
+  it("permits only an explicit one-use decision for a verified redacted project revision", async () => {
+    const projectApproval: Approval = {
+      ...approval,
+      action: "workspace.write_project",
+      summary: "Save a reviewed project revision",
+      action_preview: {
+        operation: "Save reviewed project revision",
+        target: "generated/project_1/revisions/revision_2",
+        details: ["2 files; source content hidden", "Existing project revisions are preserved"],
+        arguments_redacted: true,
+      },
+    };
+    const onDecision = jest.fn();
+    const user = userEvent.setup();
+    await render(<ApprovalDecisionCard approval={projectApproval} busy={null} onDecision={onDecision} />);
+    expect(screen.getByText(/generated\/project_1\/revisions\/revision_2/)).toBeOnTheScreen();
+    expect(onDecision).not.toHaveBeenCalled();
+    await user.press(screen.getByRole("button", { name: /^Autoriser une fois/ }));
+    expect(onDecision).toHaveBeenCalledWith("approve");
+  });
+
+  it.each([false, true])("rejects malformed project preview redaction=%s", async (redacted) => {
+    const malformed = {
+      ...approval, action: "workspace.write_project", summary: "Save a reviewed project revision",
+      action_preview: { ...approval.action_preview, arguments_redacted: redacted, ...(redacted ? { files: [{ content: "private source" }] } : {}) },
+    } as unknown as Approval;
+    await render(<ApprovalDecisionCard approval={malformed} busy={null} onDecision={jest.fn()} />);
+    expect(screen.getByRole("button", { name: /^Autoriser une fois/ })).toBeDisabled();
+    expect(screen.queryByText("private source")).not.toBeOnTheScreen();
+  });
+
   it("exposes task status and errors to assistive technology", async () => {
     await render(
       <>

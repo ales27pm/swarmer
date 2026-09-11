@@ -1,5 +1,8 @@
 # Python code proposals
 
+This is the legacy single-file workflow. The preferred software capability is
+now [project coding with continued conversations](32-project-coding.md).
+
 The `code.generate_python` worker produces one bounded, standard-library Python
 file. It has no workspace access, write API, shell, or execution capability.
 It calls the operator-configured loopback model once per leased job and validates

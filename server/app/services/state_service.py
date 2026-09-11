@@ -47,7 +47,7 @@ from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 23
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -509,6 +509,11 @@ CREATE TABLE IF NOT EXISTS goal_runs (
     max_replans INTEGER NOT NULL CHECK(max_replans >= 0),
     max_runtime_seconds INTEGER NOT NULL CHECK(max_runtime_seconds > 0),
     max_model_calls INTEGER NOT NULL CHECK(max_model_calls > 0),
+    paused_at TEXT,
+    paused_seconds REAL NOT NULL DEFAULT 0,
+    conversation_revision INTEGER NOT NULL DEFAULT 0,
+    pending_message_revision INTEGER NOT NULL DEFAULT 0,
+    reply_dispatch_credit INTEGER NOT NULL DEFAULT 0,
     step_count INTEGER NOT NULL DEFAULT 0 CHECK(step_count >= 0),
     replan_count INTEGER NOT NULL DEFAULT 0 CHECK(replan_count >= 0),
     model_call_count INTEGER NOT NULL DEFAULT 0 CHECK(model_call_count >= 0),
@@ -551,6 +556,7 @@ CREATE TABLE IF NOT EXISTS plan_nodes (
     result_summary TEXT,
     error_summary TEXT,
     planner_metadata_json TEXT NOT NULL DEFAULT '{}',
+    conversation_revision INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT,
@@ -580,6 +586,79 @@ CREATE TABLE IF NOT EXISTS goal_code_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_goal_code_proposals_goal
     ON goal_code_proposals(goal_run_id,node_id);
+CREATE TABLE IF NOT EXISTS coding_projects (
+    id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_project_links (
+    goal_run_id TEXT PRIMARY KEY REFERENCES goal_runs(id),
+    project_id TEXT NOT NULL REFERENCES coding_projects(id)
+);
+CREATE TABLE IF NOT EXISTS project_revisions (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES coding_projects(id),
+    goal_run_id TEXT NOT NULL REFERENCES goal_runs(id),
+    node_id TEXT NOT NULL UNIQUE REFERENCES plan_nodes(id),
+    worker_job_id TEXT NOT NULL UNIQUE REFERENCES agent_jobs(id),
+    revision INTEGER NOT NULL, snapshot_json TEXT NOT NULL, sha256 TEXT NOT NULL,
+    apply_task_id TEXT REFERENCES tasks(id), created_at TEXT NOT NULL,
+    UNIQUE(project_id,revision)
+);
+CREATE TABLE IF NOT EXISTS project_memory_items (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES coding_projects(id),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('message','plan')),
+    source_id TEXT NOT NULL,
+    source_goal_id TEXT NOT NULL REFERENCES goal_runs(id),
+    source_revision_id TEXT REFERENCES project_revisions(id),
+    source_order INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    embedding_identity TEXT,
+    dimensions INTEGER,
+    vector_json TEXT,
+    embedding_fingerprint TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id,source_kind,source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_memory_items_project
+    ON project_memory_items(project_id,source_order,id);
+CREATE TABLE IF NOT EXISTS project_memory_queries (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES coding_projects(id),
+    goal_run_id TEXT NOT NULL REFERENCES goal_runs(id),
+    node_id TEXT NOT NULL REFERENCES plan_nodes(id),
+    conversation_revision INTEGER NOT NULL,
+    base_revision_id TEXT REFERENCES project_revisions(id),
+    provider_identity TEXT NOT NULL,
+    query_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+    query_dimensions INTEGER,
+    query_vector_json TEXT,
+    query_vector_fingerprint TEXT,
+    error_category TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_project_memory_queries_goal ON project_memory_queries(goal_run_id,node_id);
+CREATE TABLE IF NOT EXISTS goal_conversations (
+    id TEXT PRIMARY KEY, active_goal_id TEXT NOT NULL REFERENCES goal_runs(id)
+);
+CREATE TABLE IF NOT EXISTS goal_conversation_links (
+    goal_run_id TEXT PRIMARY KEY REFERENCES goal_runs(id),
+    conversation_id TEXT NOT NULL REFERENCES goal_conversations(id),
+    parent_goal_id TEXT REFERENCES goal_runs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_conversation_links ON goal_conversation_links(conversation_id);
+CREATE TABLE IF NOT EXISTS goal_messages (
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES goal_conversations(id),
+    goal_run_id TEXT NOT NULL REFERENCES goal_runs(id),
+    role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL,
+    actor_id TEXT, client_message_id TEXT, reply_to_message_id TEXT,
+    is_question INTEGER NOT NULL DEFAULT 0, answered_by_message_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(conversation_id,actor_id,client_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_messages_conversation ON goal_messages(conversation_id,created_at,id);
 CREATE TABLE IF NOT EXISTS plan_edges (
     goal_run_id TEXT NOT NULL,
     from_node_id TEXT NOT NULL,
@@ -632,6 +711,7 @@ CREATE TABLE IF NOT EXISTS goal_model_calls (
     id TEXT PRIMARY KEY,
     goal_run_id TEXT NOT NULL,
     node_id TEXT,
+    conversation_revision INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL CHECK(role IN ('planner','evaluator','summarizer','synthesizer')),
     provider_source TEXT NOT NULL,
     model_id TEXT,
@@ -775,6 +855,21 @@ class StateService:
             await db.executescript(SCHEMA)
             await db.execute("BEGIN IMMEDIATE")
             await self._migrate_legacy_schema(db)
+            if version < 22:
+                await db.execute("""UPDATE goal_runs SET paused_at=updated_at
+                    WHERE status='waiting_permission' AND current_phase IN
+                    ('needs_user','code_proposal_ready','project_ready') AND paused_at IS NULL""")
+            await db.execute("""INSERT OR IGNORE INTO goal_conversations(id,active_goal_id)
+                SELECT 'gconv_' || id,id FROM goal_runs
+                WHERE id NOT IN (SELECT goal_run_id FROM goal_conversation_links)""")
+            await db.execute("""INSERT OR IGNORE INTO goal_conversation_links(goal_run_id,conversation_id)
+                SELECT id,'gconv_' || id FROM goal_runs
+                WHERE id NOT IN (SELECT goal_run_id FROM goal_conversation_links)""")
+            await db.execute("""INSERT OR IGNORE INTO goal_messages(
+                id,conversation_id,goal_run_id,role,content,created_at)
+                SELECT 'gmsg_initial_' || g.id,l.conversation_id,g.id,'user',g.objective,g.created_at
+                FROM goal_runs g JOIN goal_conversation_links l ON l.goal_run_id=g.id
+                WHERE NOT EXISTS (SELECT 1 FROM goal_messages m WHERE m.goal_run_id=g.id)""")
             await db.execute(
                 "INSERT OR IGNORE INTO outbox_operational_metrics(singleton_id) VALUES(1)"
             )
@@ -1017,7 +1112,16 @@ class StateService:
                 "last_agent_id": "TEXT",
                 "last_failure_reason": "TEXT",
             },
+            "goal_runs": {
+                "paused_at": "TEXT",
+                "paused_seconds": "REAL NOT NULL DEFAULT 0",
+                "conversation_revision": "INTEGER NOT NULL DEFAULT 0",
+                "pending_message_revision": "INTEGER NOT NULL DEFAULT 0",
+                "reply_dispatch_credit": "INTEGER NOT NULL DEFAULT 0",
+            },
+            "plan_nodes": {"conversation_revision": "INTEGER NOT NULL DEFAULT 0"},
             "goal_model_calls": {
+                "conversation_revision": "INTEGER NOT NULL DEFAULT 0",
                 "owner_instance_id": "TEXT",
                 "lease_expires_at": "TEXT",
                 "lease_generation": "INTEGER NOT NULL DEFAULT 0",
@@ -2112,7 +2216,8 @@ class StateService:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute(
-                    "SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at ASC LIMIT ?",
+                    """SELECT * FROM (SELECT * FROM messages WHERE conversation_id=?
+                    ORDER BY created_at DESC,rowid DESC LIMIT ?) ORDER BY created_at ASC,id ASC""",
                     (conversation_id, limit),
                 )
             ).fetchall()

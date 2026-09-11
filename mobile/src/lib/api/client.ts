@@ -1,5 +1,14 @@
 import { fetch } from "expo/fetch";
 import * as SecureStore from "expo-secure-store";
+import {
+  newGoalMessageId,
+  parseGoalConversation,
+  parseProjectPreview,
+  projectIdentifier,
+  validateGoalReply,
+  type GoalConversationSession,
+  type ProjectReview,
+} from "@/lib/api/project";
 
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import {
@@ -83,6 +92,7 @@ export type {
   ToolProposalInput,
 } from "@/lib/api/types";
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
+export type { GoalConversationSession, GoalReplyAttempt, ProjectReview, ProjectPreview } from "@/lib/api/project";
 
 const CONNECTION_KEY = "mongars.connection.v1";
 const PENDING_CONNECTION_KEY = "mongars.connection.pending.v1";
@@ -919,6 +929,65 @@ export async function reviewGoalCodeProposal(
         method: "POST",
         body: JSON.stringify({ sha256: reviewedDigest }),
       }, connection.token);
+      await assertRequestConnectionCurrent(connection);
+      return parseCodeProposalApplication(result);
+    },
+  };
+}
+
+export async function getGoalConversation(goalId: string): Promise<GoalConversationSession> {
+  const connection = await captureRequestConnectionFence();
+  const value = await requestAt<unknown>(connection.baseUrl, `/goals/${resourceId(goalId)}/messages`, undefined, connection.token);
+  await assertRequestConnectionCurrent(connection);
+  const conversation = parseGoalConversation(value);
+  const activeGoal = conversation.active_goal_id;
+  const questionId = conversation.pending_question_id;
+  return {
+    conversation,
+    prepareReply: (message) => {
+      const clientMessageId = newGoalMessageId();
+      const body = JSON.stringify({ message: validateGoalReply(message), client_message_id: clientMessageId, reply_to_message_id: questionId });
+      let inFlight = false;
+      let receipt: GoalDetail | null = null;
+      return {
+        clientMessageId,
+        send: async () => {
+          await assertRequestConnectionCurrent(connection);
+          if (receipt) return receipt;
+          if (inFlight) throw new Error("Cet envoi est déjà en cours.");
+          inFlight = true;
+          try {
+            const result = await requestAt<GoalDetail>(connection.baseUrl, `/goals/${resourceId(activeGoal)}/messages`, { method: "POST", body }, connection.token);
+            await assertRequestConnectionCurrent(connection);
+            projectIdentifier(result?.goal?.id);
+            receipt = result;
+            return result;
+          } finally {
+            inFlight = false;
+          }
+        },
+      };
+    },
+  };
+}
+
+export async function reviewGoalProject(goalId: string): Promise<ProjectReview> {
+  const connection = await captureRequestConnectionFence();
+  const path = `/goals/${resourceId(goalId)}/project`;
+  const value = await requestAt<unknown>(connection.baseUrl, path, undefined, connection.token);
+  await assertRequestConnectionCurrent(connection);
+  const project = parseProjectPreview(value);
+  const body = JSON.stringify({ revision_id: project.revision_id, sha256: project.sha256 });
+  const mayApply = project.state === "ready" && project.task_id === null && project.files.length > 0
+    && project.checks.some((check) => check.status === "passed") && !project.checks.some((check) => check.status === "failed");
+  let attempted = false;
+  return {
+    project,
+    prepareApproval: async () => {
+      if (attempted || !mayApply) throw new Error("Actualisez le projet et ses vérifications avant de préparer une autorisation.");
+      attempted = true;
+      await assertRequestConnectionCurrent(connection);
+      const result = await requestAt<unknown>(connection.baseUrl, `${path}/apply`, { method: "POST", body }, connection.token);
       await assertRequestConnectionCurrent(connection);
       return parseCodeProposalApplication(result);
     },

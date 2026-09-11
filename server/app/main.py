@@ -80,6 +80,7 @@ from app.services.execution_engine import (
 from app.services.feedback_dataset import FeedbackDatasetService
 from app.services.goal_code_application import GoalCodeApplicationConflict
 from app.services.goal_manager import GoalManager, GoalManagerConflict
+from app.services.goal_project import GoalProjectConflict
 from app.services.idempotency import (
     IdempotencyConflict,
     IdempotencyService,
@@ -104,6 +105,8 @@ from app.services.model_router import ModelRouter
 from app.services.orchestrator_service import OrchestratorError, OrchestratorService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.planner_provider import UbuntuLLMPlannerProvider, UbuntuSwarmPlannerProvider
+from app.services.project_contracts import ProjectApplication, ProjectApplyRequest, ProjectPreview
+from app.services.project_memory import ProjectMemoryService
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.result_aggregator import ResultAggregator
 from app.services.state_service import StateConflict, StateService
@@ -114,6 +117,8 @@ from app.services.swarm_contracts import (
     GoalDetail,
     GoalFeedbackRecord,
     GoalFeedbackRequest,
+    GoalMessageRequest,
+    GoalMessagesResponse,
     GoalRecord,
     GoalReplanRequest,
     GoalResult,
@@ -127,7 +132,7 @@ from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.13.0"
+API_VERSION = "0.14.0"
 logger = logging.getLogger(__name__)
 
 _MAINTENANCE_OPERATION_ERRORS = (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error)
@@ -379,6 +384,20 @@ def create_app(config: Settings | None = None) -> FastAPI:
         execution_engine=execution_engine,
     )
     idempotency_service = IdempotencyService(settings.db_path)
+    project_embedding_service = (
+        HttpEmbeddingService(settings.project_embedding_base_url, settings.project_embedding_model)
+        if settings.project_embedding_base_url and settings.project_embedding_model
+        else None
+    )
+    project_memory = ProjectMemoryService(
+        settings.db_path,
+        project_embedding_service,
+        model_revision=settings.project_embedding_model_revision,
+        query_prefix=settings.project_memory_query_prefix,
+        document_prefix=settings.project_memory_document_prefix,
+    )
+    if goal_manager.project_applications is not None:
+        goal_manager.project_applications.memory = project_memory
     consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)
     agent_scoring = AgentScoringService(
         settings.db_path,
@@ -487,6 +506,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         instance_started = False
         try:
             await state_service.initialize()
+            await project_memory.initialize()
             await goal_manager.initialize()
             await consumer_checkpoints.initialize()
             await agent_scoring.initialize()
@@ -1315,6 +1335,85 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if detail is None:
             raise HTTPException(status_code=404, detail="goal not found")
         return detail
+
+    @app.get("/goals/{goal_id}/messages", response_model=GoalMessagesResponse)
+    async def goal_messages(
+        goal_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            messages = await goal_manager.conversation_messages(goal_id)
+        except GoalManagerConflict as exc:
+            raise goal_conflict_http_exception(exc) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return messages
+
+    @app.post("/goals/{goal_id}/messages", response_model=GoalDetail)
+    async def reply_goal(
+        goal_id: str,
+        request: GoalMessageRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            detail = await goal_manager.reply_goal(goal_id, request, actor_id=str(principal["id"]))
+        except GoalManagerConflict as exc:
+            raise goal_conflict_http_exception(exc) from exc
+        await broadcast_goal_detail(detail)
+        return detail
+
+    @app.get("/goals/{goal_id}/project", response_model=ProjectPreview)
+    async def get_goal_project(
+        goal_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        service = goal_manager.project_applications
+        if service is None:
+            raise HTTPException(status_code=503, detail="project service unavailable")
+        try:
+            project = await service.get_project(goal_id)
+        except GoalProjectConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        response.headers["Cache-Control"] = "no-store"
+        return project
+
+    @app.post("/goals/{goal_id}/project/apply", response_model=ProjectApplication)
+    async def apply_goal_project(
+        goal_id: str,
+        request: ProjectApplyRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        service = goal_manager.project_applications
+        if service is None:
+            raise HTTPException(status_code=503, detail="project service unavailable")
+        try:
+            call = await service.apply(
+                goal_id,
+                request.revision_id,
+                requester=AuthenticatedRequester(
+                    id=str(principal["id"]), name=str(principal["name"])
+                ),
+                sha256=request.sha256,
+            )
+        except (GoalProjectConflict, ExecutionError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        detail = await goal_manager.get_goal(goal_id)
+        if detail is not None:
+            await broadcast_goal_detail(detail)
+        await broadcast({"type": "tool.proposed", "payload": call})
+        approval = await approval_gateway.get(str(call["approval_id"]))
+        if approval is not None:
+            await broadcast({"type": "approval.requested", "payload": approval})
+        return {
+            "task_id": call["task_id"],
+            "tool_call_id": call["id"],
+            "approval_id": call["approval_id"],
+        }
 
     @app.post("/goals/{goal_id}/start", response_model=GoalDetail)
     async def start_goal(

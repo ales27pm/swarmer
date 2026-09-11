@@ -16,6 +16,7 @@ export default function GoalDetailScreen() {
   const navigation = {
     openApprovals: () => router.push("/approvals"),
     openTask: (taskId: string) => router.push({ pathname: "/task/[id]", params: { id: taskId } }),
+    openGoal: (goalId: string) => router.push({ pathname: "/goal/[id]", params: { id: goalId } }),
   };
 
   return (

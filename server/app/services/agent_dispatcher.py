@@ -131,12 +131,14 @@ class AgentDispatcher:
             encoded_payload = json.dumps(
                 payload,
                 allow_nan=False,
+                ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
             )
         except (TypeError, ValueError) as exc:
             raise AgentDispatchConflict("job payload must be canonical JSON") from exc
-        if len(encoded_payload.encode("utf-8")) > 1_000_000:
+        max_payload_bytes = 4_000_000 if required_skill == "code.build_project" else 1_000_000
+        if len(encoded_payload.encode("utf-8")) > max_payload_bytes:
             raise AgentDispatchConflict("job payload is too large")
         job_id = f"job_{uuid4().hex}"
         async with aiosqlite.connect(self.db_path) as db:
@@ -194,7 +196,9 @@ class AgentDispatcher:
                         required_skill,
                         encoded_payload,
                         "queued",
-                        1 if required_skill == "code.generate_python" else self.max_attempts,
+                        1
+                        if required_skill in {"code.generate_python", "code.build_project"}
+                        else self.max_attempts,
                         now,
                         now,
                     ),
@@ -680,13 +684,19 @@ class AgentDispatcher:
             raise AgentDispatchConflict("result status must be completed or failed")
         try:
             result_json = (
-                json.dumps(result, allow_nan=False, separators=(",", ":"), sort_keys=True)
+                json.dumps(
+                    result,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
                 if result is not None
                 else None
             )
         except (TypeError, ValueError) as exc:
             raise AgentDispatchConflict("job result must be canonical JSON") from exc
-        if result_json is not None and len(result_json.encode("utf-8")) > 1_000_000:
+        if result_json is not None and len(result_json.encode("utf-8")) > 4_000_000:
             raise AgentDispatchConflict("job result is too large")
         public_error = "remote worker reported failure" if status == "failed" else None
         async with aiosqlite.connect(self.db_path) as db:
@@ -709,6 +719,9 @@ class AgentDispatcher:
                 raise AgentDispatchConflict(
                     "job lease is stale, expired, or owned by another agent"
                 )
+            result_limit = 4_000_000 if row["required_skill"] == "code.build_project" else 1_000_000
+            if result_json is not None and len(result_json.encode("utf-8")) > result_limit:
+                raise AgentDispatchConflict("job result is too large")
             if str(row["status"]) in TERMINAL_JOB_STATUSES:
                 same = False
                 try:
@@ -716,6 +729,7 @@ class AgentDispatcher:
                         json.dumps(
                             json.loads(str(row["result_json"])),
                             allow_nan=False,
+                            ensure_ascii=False,
                             separators=(",", ":"),
                             sort_keys=True,
                         )

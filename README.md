@@ -228,6 +228,11 @@ locale dans [`docs/18-dev-setup.md`](docs/18-dev-setup.md).
 
 ## Runtime de buts v0.12
 
+Le [développement de projets v0.14](docs/32-project-coding.md) ajoute une
+conversation persistante, les réponses aux clarifications, des fichiers versionnés,
+des vérifications Python/Node isolées et la poursuite du même projet après une
+nouvelle demande. Les révisions se publient après une approbation liée à leur contenu.
+
 ### IMPLEMENTED
 
 - Une ressource `goal` distincte des tâches ordinaires porte l'objectif,

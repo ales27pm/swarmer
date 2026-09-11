@@ -211,6 +211,7 @@ const APPROVAL_SUMMARIES: Record<string, string> = {
   "workspace.list_dir": "List a workspace directory",
   "workspace.read_text": "Read a workspace file",
   "workspace.write_text": "Write text to a workspace file",
+  "workspace.write_project": "Save a reviewed project revision",
   "process.run": "Run a sandboxed process",
 };
 
@@ -219,6 +220,7 @@ const WORKSPACE_ACTIONS = new Set([
   "workspace.list_dir",
   "workspace.read_text",
   "workspace.write_text",
+  "workspace.write_project",
 ]);
 
 const ACTION_PREVIEW_KEYS = new Set([
@@ -276,7 +278,7 @@ function hasWorkspaceActionPreview(
     preview.command === undefined,
   ].every(Boolean);
   if (!workspaceShape) return false;
-  return action !== "workspace.write_text" || preview.arguments_redacted === true;
+  return !["workspace.write_text", "workspace.write_project"].includes(action) || preview.arguments_redacted === true;
 }
 
 function hasExactApprovalAction(approval: Approval): boolean {

@@ -55,7 +55,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "org.27pm.mongars",
-      "buildNumber": "20260911023306",
+      "buildNumber": "20260911054604",
       "deploymentTarget": "18.0",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "fr",

@@ -96,7 +96,15 @@ or modify software. A synthesis node requires required_skill=null and preferred_
 Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
 never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
-If code.generate_python is available, it can propose one small self-contained Python app.py
+If code.build_project is available, prefer it for software/application requests. Create one
+project worker node carrying all functional requirements; its implementation loop persists a
+cumulative multi-file project and actual build/test receipts. It can ask material clarification
+questions and incorporate later user replies. Preserve requested interface, platform, language,
+data persistence and acceptance criteria. Do not silently reduce an application to a tiny CLI.
+Do not add a parallel code.generate_python node or placeholder analysis for the same deliverable.
+The project worker and server drive subsequent implementation/check/repair iterations.
+Completion requires actual passing checks and a reviewed, approved project write.
+If code.build_project is absent and code.generate_python is available, it can propose one small self-contained Python app.py
 using only the standard library. Use a single worker node for that deliverable, carrying the
 user's functional requirements in its objective. The worker cannot edit, execute, install,
 or deploy files. The server waits for user review and a separate file-write approval.

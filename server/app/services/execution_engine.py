@@ -28,8 +28,11 @@ from app.services.approval_binding import (
     safe_affected_data_summary,
 )
 from app.services.audit_log import append_audit_event
+from app.services.goal_limits import runtime_expired
 from app.services.permission_policy import PermissionPolicy
 from app.services.process_sandbox import ProcessSandbox, ProcessSandboxError
+from app.services.project_contracts import ProjectWriteArguments
+from app.services.project_publication import publish_project
 
 
 class ExecutionError(RuntimeError):
@@ -65,6 +68,7 @@ class ExecutionEngine:
         "workspace.list_dir",
         "workspace.read_text",
         "workspace.write_text",
+        "workspace.write_project",
         "process.run",
     }
     PROPOSABLE_TASK_STATES: ClassVar[frozenset[str]] = frozenset({"created", "planned"})
@@ -72,6 +76,7 @@ class ExecutionEngine:
         "workspace.list_dir": frozenset({"path"}),
         "workspace.read_text": frozenset({"path"}),
         "workspace.write_text": frozenset({"path", "content"}),
+        "workspace.write_project": frozenset({"project_id", "revision_id", "sha256", "files"}),
         "process.run": frozenset({"argv", "cwd", "timeout_seconds"}),
     }
     MAX_READ_BYTES: ClassVar[int] = 131_072
@@ -347,6 +352,14 @@ class ExecutionEngine:
                 raise ExecutionError("content must be a string")
             relative = self._workspace_relative(raw_path)
             self._assert_not_protected(relative)
+        elif tool_name == "workspace.write_project":
+            try:
+                manifest = ProjectWriteArguments.model_validate(arguments)
+            except ValueError as exc:
+                raise ExecutionError("project manifest is invalid") from exc
+            self._assert_not_protected(Path(manifest.path))
+            for file in manifest.files:
+                self._assert_not_protected(Path(manifest.path) / file.path)
         elif tool_name == "workspace.list_dir":
             raw_path = arguments.get("path", ".")
             if not isinstance(raw_path, str):
@@ -433,6 +446,40 @@ class ExecutionEngine:
             if task_status not in self.PROPOSABLE_TASK_STATES:
                 await db.rollback()
                 raise ExecutionConflict(f"task cannot accept a tool call from {task_status}")
+
+            # The service may have prepared this child before a newer reply
+            # committed. Bind NEW project approvals at the actual writer claim;
+            # already-created calls retain their existing one-use consent.
+            project = await (
+                await db.execute(
+                    """SELECT g.status,g.current_phase,g.conversation_revision,
+                    n.conversation_revision,n.status,r.id,
+                    (SELECT latest.id FROM project_revisions latest
+                     WHERE latest.project_id=r.project_id ORDER BY revision DESC LIMIT 1),
+                    g.started_at,g.max_runtime_seconds,g.paused_at,g.paused_seconds
+                    FROM project_revisions r JOIN goal_runs g ON g.id=r.goal_run_id
+                    JOIN plan_nodes n ON n.id=r.node_id WHERE r.apply_task_id=?""",
+                    (task_id,),
+                )
+            ).fetchone()
+            if project is not None and (
+                project[0] != "waiting_permission"
+                or project[1] != "project_ready"
+                or project[2] != project[3]
+                or project[4] != "waiting_permission"
+                or project[5] != project[6]
+                or project[7] is None
+                or runtime_expired(
+                    dict(
+                        zip(
+                            ("started_at", "max_runtime_seconds", "paused_at", "paused_seconds"),
+                            project[7:],
+                            strict=True,
+                        )
+                    )
+                )
+            ):
+                raise ExecutionConflict("project changed before its approval was prepared")
 
             if approval_id:
                 affected_data_summary = safe_affected_data_summary(tool_name, arguments)
@@ -654,6 +701,14 @@ class ExecutionEngine:
             self._assert_not_protected(relative)
             return self._write_workspace_text(relative, content)
 
+        if tool_name == "workspace.write_project":
+            manifest = ProjectWriteArguments.model_validate(arguments)
+            self._assert_not_protected(Path(manifest.path))
+            for file in manifest.files:
+                self._assert_not_protected(Path(manifest.path) / file.path)
+            with self._open_workspace_directory(Path(manifest.path).parent, create=True) as fd:
+                return publish_project(fd, manifest)
+
         argv = arguments.get("argv")
         if not isinstance(argv, list):
             raise ExecutionError("argv must be a non-empty string array")
@@ -716,25 +771,35 @@ class ExecutionEngine:
                 raise ExecutionConflict("tool call is not executable in the current task state")
             application_goal = await (
                 await db.execute(
-                    """SELECT g.status,g.started_at,g.max_runtime_seconds
+                    """SELECT g.status,g.started_at,g.max_runtime_seconds,g.paused_at,g.paused_seconds
                     FROM goal_code_proposals AS p
                     LEFT JOIN goal_runs AS g ON g.id=p.goal_run_id
-                    WHERE p.apply_task_id=?""",
-                    (record["task_id"],),
+                    WHERE p.apply_task_id=?
+                    UNION ALL
+                    SELECT g.status,g.started_at,g.max_runtime_seconds,g.paused_at,g.paused_seconds
+                    FROM project_revisions AS r JOIN goal_runs AS g ON g.id=r.goal_run_id
+                    WHERE r.apply_task_id=?""",
+                    (record["task_id"], record["task_id"]),
                 )
             ).fetchone()
             if application_goal is not None:
-                now = datetime.now(UTC)
-                started = (
-                    datetime.fromisoformat(str(application_goal[1]))
-                    if application_goal[1] is not None
-                    else None
+                deadline = dict(
+                    zip(
+                        (
+                            "status",
+                            "started_at",
+                            "max_runtime_seconds",
+                            "paused_at",
+                            "paused_seconds",
+                        ),
+                        application_goal,
+                        strict=True,
+                    )
                 )
                 if (
                     application_goal[0] not in {"planning", "running", "waiting_permission"}
-                    or started is None
-                    or started.tzinfo is None
-                    or (now - started).total_seconds() >= int(application_goal[2])
+                    or application_goal[1] is None
+                    or runtime_expired(deadline)
                 ):
                     await db.rollback()
                     raise ExecutionConflict("code application goal is no longer executable")

@@ -1,0 +1,14 @@
+{
+  "manifest_version": "1",
+  "name": "mongars-project-worker",
+  "version": "0.14.0",
+  "protocol": "mongars-worker-v0.9",
+  "skills": [{"id": "code.build_project", "risk": "low", "result_trust": "untrusted"}],
+  "limits": {"max_concurrency": 1, "max_result_bytes": 4000000, "max_operation_seconds": 600},
+  "policy": {
+    "filesystem": "isolated-project-scratch",
+    "network": "control-plane-loopback-model-and-registry-only",
+    "writes": true,
+    "shell": false
+  }
+}

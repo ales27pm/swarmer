@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.audit_log import audit_event_hash
+from app.services.project_contracts import ProjectWriteArguments
 
 
 class ApprovalBindingError(ValueError):
@@ -19,6 +20,7 @@ PUBLIC_TOOL_SUMMARIES = {
     "workspace.list_dir": "List a workspace directory",
     "workspace.read_text": "Read a workspace file",
     "workspace.write_text": "Write text to a workspace file",
+    "workspace.write_project": "Save a reviewed project revision",
     "process.run": "Run a sandboxed process",
 }
 
@@ -82,6 +84,27 @@ def binding_matches(
 
 def safe_action_preview(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Return consent-relevant structure while omitting content and arbitrary values."""
+
+    if tool_name == "workspace.write_project":
+        files = arguments.get("files")
+        count = len(files) if isinstance(files, list) else 0
+        try:
+            manifest = ProjectWriteArguments.model_validate(arguments)
+            target = manifest.path
+            digest_details = [f"SHA-256: {manifest.sha256}"]
+        except ValueError:
+            target = "new generated project revision"
+            digest_details = []
+        return {
+            "operation": "Save reviewed project revision",
+            "target": target,
+            "details": [
+                f"{count} files; source content hidden",
+                "Existing project revisions are preserved",
+            ]
+            + digest_details,
+            "arguments_redacted": True,
+        }
 
     if tool_name == "workspace.write_text":
         raw_content = arguments.get("content", "")
@@ -148,6 +171,10 @@ def safe_action_preview(tool_name: str, arguments: dict[str, Any]) -> dict[str, 
 def safe_affected_data_summary(tool_name: str, arguments: dict[str, Any]) -> str:
     """Describe data exposure conservatively without rendering arbitrary values."""
 
+    if tool_name == "workspace.write_project":
+        return (
+            "Saves the reviewed files in a new immutable project revision; source content hidden."
+        )
     if tool_name == "workspace.write_text":
         raw_content = arguments.get("content", "")
         raw_target = arguments.get("path", "")
@@ -170,6 +197,12 @@ def safe_affected_data_summary(tool_name: str, arguments: dict[str, Any]) -> str
 def public_tool_arguments(tool_name: str, arguments: object) -> dict[str, Any]:
     """Project raw executor arguments into the sole safe public representation."""
 
+    if tool_name == "workspace.write_project":
+        files = arguments.get("files") if isinstance(arguments, dict) else None
+        return {
+            "file_count": len(files) if isinstance(files, list) else 0,
+            "arguments_redacted": True,
+        }
     if not isinstance(arguments, dict):
         if tool_name in {"workspace.list_dir", "workspace.read_text"}:
             return {"path": "<redacted>"}

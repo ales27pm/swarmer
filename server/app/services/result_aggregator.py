@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.services.code_proposal import validate_code_proposal_result
 from app.services.feedback_dataset import SafeDatasetValue, sanitize_dataset_value
+from app.services.project_contracts import PROJECT_SKILL, ProjectResult
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
@@ -246,6 +247,10 @@ def summarize_untrusted_worker_output(
 ) -> str:
     if not 1 <= max_chars <= _MAX_GOAL_SUMMARY_CHARS:
         raise ValueError("max_chars is outside the aggregation limit")
+    if isinstance(value, dict) and {"files", "checks", "base_revision_id"} <= set(value):
+        # Project source and runner output are available only on the private
+        # revision endpoint. Generic summaries never serialize this envelope.
+        return "Project iteration recorded; inspect its private revision and check results."
     sanitized = sanitize_dataset_value(value, max_text_chars=min(max_chars, 1_000))
     if sanitized in (None, "", [], {}):
         return "Worker output contained no safe summary fields."
@@ -271,6 +276,12 @@ def validate_worker_evidence(required_skill: object, value: object) -> bool:
 
     if not isinstance(required_skill, str) or not isinstance(value, dict):
         return False
+    if required_skill == PROJECT_SKILL:
+        try:
+            ProjectResult.model_validate(value)
+        except ValueError:
+            return False
+        return True
     if required_skill == "code.generate_python":
         try:
             validate_code_proposal_result(value)

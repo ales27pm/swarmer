@@ -18,6 +18,7 @@ from app.services.execution_engine import (
     ExecutionConflict,
     ExecutionEngine,
 )
+from app.services.goal_limits import runtime_expired
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.state_service import StateService
 
@@ -120,8 +121,9 @@ class GoalCodeApplicationService:
             )
             await db.execute(
                 """UPDATE goal_runs SET status='waiting_permission',
-                    current_phase='code_proposal_ready',failure_reason=NULL,updated_at=? WHERE id=?""",
-                (now, goal_run_id),
+                    current_phase='code_proposal_ready',failure_reason=NULL,
+                    paused_at=COALESCE(paused_at,?),updated_at=? WHERE id=?""",
+                (now, now, goal_run_id),
             )
             await db.execute(
                 "UPDATE tasks SET status='waiting_permission',updated_at=? WHERE id=?",
@@ -211,6 +213,7 @@ class GoalCodeApplicationService:
             row = await (
                 await db.execute(
                     """SELECT p.*,g.status AS goal_status,g.started_at,g.max_runtime_seconds,
+                        g.paused_at,g.paused_seconds,
                         n.status AS node_status FROM goal_code_proposals AS p
                     JOIN goal_runs AS g ON g.id=p.goal_run_id
                     JOIN plan_nodes AS n ON n.id=p.node_id
@@ -229,12 +232,7 @@ class GoalCodeApplicationService:
             ):
                 raise GoalCodeApplicationConflict("reviewed code proposal digest does not match")
             terminal = row["goal_status"] in _TERMINAL_GOALS
-            expired = False
-            if row["started_at"] is not None:
-                elapsed = (
-                    datetime.now(UTC) - datetime.fromisoformat(str(row["started_at"]))
-                ).total_seconds()
-                expired = elapsed >= int(row["max_runtime_seconds"])
+            expired = runtime_expired(dict(row))
             task_id = row["apply_task_id"]
             if task_id is None:
                 self._require_write_approval()
@@ -416,8 +414,11 @@ class GoalCodeApplicationService:
                 ).fetchone()
                 if waiting is None:
                     await db.execute(
-                        "UPDATE goal_runs SET status='running',current_phase='dispatching',updated_at=? WHERE id=?",
-                        (now, goal_id),
+                        """UPDATE goal_runs SET status='running',current_phase='dispatching',
+                        paused_seconds=paused_seconds+CASE WHEN paused_at IS NULL THEN 0
+                        ELSE MAX(0,(julianday(?)-julianday(paused_at))*86400.0) END,
+                        paused_at=NULL,updated_at=? WHERE id=?""",
+                        (now, now, goal_id),
                     )
                     await db.execute(
                         "UPDATE tasks SET status='running',updated_at=? WHERE id=(SELECT root_task_id FROM goal_runs WHERE id=?)",

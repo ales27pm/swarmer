@@ -64,6 +64,7 @@ def test_agent_skill_allowlist_is_exact() -> None:
             "code_review.git_show",
             "code_review.static_analysis",
             "code.generate_python",
+            "code.build_project",
         }
     )
 

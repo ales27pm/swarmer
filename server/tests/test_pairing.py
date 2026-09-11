@@ -3,8 +3,10 @@ import hashlib
 import hmac
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,6 +16,20 @@ from app.services.auth_service import AuthService
 from app.services.state_service import StateService
 
 OPERATOR_TOKEN = "test-operator-token-with-sufficient-entropy"
+
+
+def remote_request(
+    client: TestClient, app: FastAPI, method: str, path: str, **kwargs: Any
+) -> httpx.Response:
+    """Exercise a remote peer on the existing app loop without a second lifespan."""
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app, client=("198.51.100.7", 50_001))
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as remote:
+            return await remote.request(method, path, **kwargs)
+
+    assert client.portal is not None
+    return client.portal.call(request)
 
 
 class MutableClock:
@@ -89,10 +105,13 @@ def test_pairing_code_requires_local_authenticated_operator(
         client.post("/pairing/code", headers={"X-Mongars-Operator-Token": "wrong"}).status_code
         == 403
     )
-    with TestClient(test_app, client=("198.51.100.7", 50_001)) as remote:
-        response = remote.post(
-            "/pairing/code", headers={"X-Mongars-Operator-Token": OPERATOR_TOKEN}
-        )
+    response = remote_request(
+        client,
+        test_app,
+        "POST",
+        "/pairing/code",
+        headers={"X-Mongars-Operator-Token": OPERATOR_TOKEN},
+    )
     assert response.status_code == 403
 
 
@@ -374,17 +393,14 @@ async def test_expired_candidate_cannot_bootstrap_or_finalize_and_keeps_old_toke
 def test_remote_plain_http_rejects_device_credentials(
     test_app: FastAPI, client: TestClient, paired_headers: dict[str, str]
 ) -> None:
-    del client
-    with TestClient(test_app, client=("198.51.100.7", 50_001)) as remote:
-        response = remote.get("/tasks", headers=paired_headers)
+    response = remote_request(client, test_app, "GET", "/tasks", headers=paired_headers)
     assert response.status_code == 426
 
 
 def test_remote_plain_http_cannot_complete_pairing(test_app: FastAPI, client: TestClient) -> None:
     code = issue_code(client)
     body = {"code": code, "device_id": "remote-phone", "name": "Remote"}
-    with TestClient(test_app, client=("198.51.100.7", 50_001)) as remote:
-        response = remote.post("/pairing/complete", json=body)
+    response = remote_request(client, test_app, "POST", "/pairing/complete", json=body)
     assert response.status_code == 426
     assert client.post("/pairing/complete", json=body).status_code == 200
 
@@ -395,9 +411,16 @@ def test_remote_plain_http_cannot_verify_or_finalize_candidate(
     candidate = stage_pairing(client, device_id="remote-candidate")
     headers = candidate_headers(candidate)
     body = {"pairing_id": candidate["pairing_id"], "device_id": candidate["device_id"]}
-    with TestClient(test_app, client=("198.51.100.7", 50_001)) as remote:
-        assert remote.get("/sync/bootstrap", headers=headers).status_code == 426
-        assert remote.post("/pairing/finalize", headers=headers, json=body).status_code == 426
+    assert (
+        remote_request(client, test_app, "GET", "/sync/bootstrap", headers=headers).status_code
+        == 426
+    )
+    assert (
+        remote_request(
+            client, test_app, "POST", "/pairing/finalize", headers=headers, json=body
+        ).status_code
+        == 426
+    )
     assert client.get("/sync/bootstrap", headers=headers).status_code == 200
 
 

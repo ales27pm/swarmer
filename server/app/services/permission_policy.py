@@ -68,6 +68,7 @@ class PermissionPolicy:
             "workspace.list_dir",
             "workspace.read_text",
             "workspace.write_text",
+            "workspace.write_project",
             "process.run",
         }
     )
@@ -91,6 +92,16 @@ class PermissionPolicy:
         capability_rules: Mapping[str, ToolPermissionRule] | None = None,
         worker_skill_rules: Mapping[str, WorkerPermissionRule] | None = None,
     ) -> None:
+        if "workspace.write_project" not in tool_rules:
+            tool_rules = {
+                **tool_rules,
+                "workspace.write_project": ToolPermissionRule(
+                    id="deny-unconfigured-project-publication",
+                    description="Project publication has not been configured.",
+                    decision="deny",
+                    risk="medium",
+                ),
+            }
         missing = self.SUPPORTED_TOOLS - set(tool_rules)
         extra = set(tool_rules) - self.SUPPORTED_TOOLS
         if missing or extra:
@@ -128,6 +139,17 @@ class PermissionPolicy:
             )
             for name in SUPPORTED_AGENT_SKILLS
         }
+        if "code.build_project" not in effective_worker_rules:
+            effective_worker_rules = {
+                **effective_worker_rules,
+                "code.build_project": WorkerPermissionRule(
+                    id="deny-unconfigured-project-worker",
+                    description="Isolated project coding has not been configured.",
+                    decision="deny",
+                    risk="low",
+                    auto_redistribute=False,
+                ),
+            }
         missing_worker_skills = SUPPORTED_AGENT_SKILLS - set(effective_worker_rules)
         extra_worker_skills = set(effective_worker_rules) - SUPPORTED_AGENT_SKILLS
         if missing_worker_skills or extra_worker_skills:

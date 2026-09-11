@@ -7,6 +7,7 @@ import {
   cancelGoal,
   createGoalFeedback,
   getGoal,
+  getGoalConversation,
   getServerUrl,
   replanGoal,
   startGoal,
@@ -34,6 +35,7 @@ jest.mock("@/lib/api/client", () => ({
   cancelGoal: jest.fn(),
   createGoalFeedback: jest.fn(),
   getGoal: jest.fn(),
+  getGoalConversation: jest.fn(),
   getServerUrl: jest.fn(),
   replanGoal: jest.fn(),
   startGoal: jest.fn(),
@@ -149,6 +151,10 @@ const waitingForWorkers: GoalDetail = {
 
 describe("GoalDetailScreen", () => {
   beforeEach(() => {
+    jest.mocked(getGoalConversation).mockResolvedValue({
+      conversation: { messages: [], active_goal_id: "goal_1", pending_question_id: null },
+      prepareReply: () => ({ clientMessageId: "reply_test", send: async () => detail }),
+    });
     jest.clearAllMocks();
     refreshFromLiveEvent = undefined;
     mockGetGoal.mockResolvedValue(detail);

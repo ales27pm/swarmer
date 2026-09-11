@@ -20,8 +20,13 @@ CODE_REVIEW_SKILLS = frozenset(
     }
 )
 CODE_GENERATION_SKILLS = frozenset({"code.generate_python"})
+PROJECT_BUILD_SKILLS = frozenset({"code.build_project"})
 SUPPORTED_AGENT_SKILLS = (
-    WORKSPACE_SKILLS | RESEARCH_SKILLS | CODE_REVIEW_SKILLS | CODE_GENERATION_SKILLS
+    WORKSPACE_SKILLS
+    | RESEARCH_SKILLS
+    | CODE_REVIEW_SKILLS
+    | CODE_GENERATION_SKILLS
+    | PROJECT_BUILD_SKILLS
 )
 
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
@@ -48,6 +53,7 @@ _FAMILY_METADATA: Mapping[str, frozenset[str]] = MappingProxyType(
         "code_review": _BASE_METADATA
         | {"max_operation_seconds", "max_paths", "max_selected_files"},
         "code": _BASE_METADATA | {"max_operation_seconds"},
+        "project": _BASE_METADATA | {"max_operation_seconds"},
     }
 )
 
@@ -93,6 +99,8 @@ def _skill_families(skills: tuple[str, ...]) -> frozenset[str]:
         families.add("code_review")
     if set(skills) & CODE_GENERATION_SKILLS:
         families.add("code")
+    if set(skills) & PROJECT_BUILD_SKILLS:
+        families.add("project")
     return frozenset(families)
 
 
@@ -113,6 +121,11 @@ def _normalize_capability_metadata(
         if not isinstance(value, int) or isinstance(value, bool):
             raise AgentCardPolicyError("agent capability metadata values must be integers")
         minimum, maximum = _CAPABILITY_METADATA_RANGES[key]
+        if "project" in families:
+            if key == "max_result_bytes":
+                maximum = 4_000_000
+            elif key == "max_operation_seconds":
+                maximum = 600
         if not minimum <= value <= maximum:
             raise AgentCardPolicyError("agent capability metadata value is outside policy")
         normalized[key] = value
@@ -212,7 +225,8 @@ def _manifest_policy(raw: object, skills: tuple[str, ...]) -> Mapping[str, str |
         {"filesystem", "network", "writes", "shell"},
     ):
         raise AgentCardPolicyError("agent card execution policy has unsafe metadata")
-    if raw.get("writes") is not False or raw.get("shell", False) is not False:
+    project = bool(set(skills) & PROJECT_BUILD_SKILLS)
+    if raw.get("writes") is not project or raw.get("shell", False) is not False:
         raise AgentCardPolicyError("agent card requests write or shell capability")
     families = _skill_families(skills)
     if len(families) != 1:
@@ -223,15 +237,16 @@ def _manifest_policy(raw: object, skills: tuple[str, ...]) -> Mapping[str, str |
         "research": ("none", "configured-research-adapter-only"),
         "code_review": ("configured-repository-read-only", "control-plane-only"),
         "code": ("none", "control-plane-and-loopback-model-only"),
+        "project": ("isolated-project-scratch", "control-plane-loopback-model-and-registry-only"),
     }[family]
     if raw.get("filesystem") != expected[0] or raw.get("network") != expected[1]:
         raise AgentCardPolicyError("agent card execution policy is incompatible with its skills")
-    if family in {"code_review", "code"} and "shell" not in raw:
+    if family in {"code_review", "code", "project"} and "shell" not in raw:
         raise AgentCardPolicyError("code agent card must explicitly deny shell access")
     normalized: dict[str, str | bool] = {
         "filesystem": expected[0],
         "network": expected[1],
-        "writes": False,
+        "writes": project,
     }
     if "shell" in raw:
         normalized["shell"] = False

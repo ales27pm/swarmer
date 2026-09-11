@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import ipaddress
 import json
 import logging
@@ -79,9 +80,11 @@ def validate_control_plane_origin(origin: str) -> str:
     raise ValueError("control-plane URL requires HTTPS outside loopback")
 
 
-def _read_control_response(response: Any) -> Any:
-    raw = response.read(MAX_CONTROL_RESPONSE_BYTES + 1)
-    if len(raw) > MAX_CONTROL_RESPONSE_BYTES:
+def _read_control_response(
+    response: Any, max_response_bytes: int = MAX_CONTROL_RESPONSE_BYTES
+) -> Any:
+    raw = response.read(max_response_bytes + 1)
+    if len(raw) > max_response_bytes:
         raise WorkerProtocolError("control-plane response exceeded its size limit")
     try:
         return json.loads(raw) if raw else None
@@ -109,6 +112,8 @@ def request(
     token: str,
     method: str = "GET",
     body: dict[str, Any] | None = None,
+    *,
+    max_response_bytes: int = MAX_CONTROL_RESPONSE_BYTES,
 ) -> Any:
     base_url = validate_control_plane_origin(base_url)
     encoded = (
@@ -125,7 +130,7 @@ def request(
     opener = urllib.request.build_opener(_RejectRedirects())
     # This is the strictly validated operator-configured origin, never job input.
     with opener.open(call, timeout=30) as response:  # nosec B310
-        return _read_control_response(response)
+        return _read_control_response(response, max_response_bytes)
 
 
 class WorkerProtocolError(RuntimeError):
@@ -192,11 +197,21 @@ class ControlPlaneClient:
         agent_id: str,
         credential: str,
         request_fn: Any | None = None,
+        *,
+        max_response_bytes: int = MAX_CONTROL_RESPONSE_BYTES,
     ) -> None:
         self.base_url = validate_control_plane_origin(base_url)
         self.agent_id = agent_id
         self.credential = credential
+        if (
+            isinstance(max_response_bytes, bool)
+            or not isinstance(max_response_bytes, int)
+            or not 1 <= max_response_bytes <= 4_000_000
+        ):
+            raise ValueError("control-plane response limit must be between 1 and 4000000 bytes")
         self._request = request if request_fn is None else request_fn
+        if request_fn is None and max_response_bytes != MAX_CONTROL_RESPONSE_BYTES:
+            self._request = functools.partial(request, max_response_bytes=max_response_bytes)
 
     @staticmethod
     def _segment(value: str) -> str:

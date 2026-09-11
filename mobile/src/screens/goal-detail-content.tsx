@@ -3,6 +3,8 @@ import { Alert, Pressable, Text, View } from "react-native";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { GoalCodeProposalReview } from "@/components/goal-code-proposal";
+import { GoalConversation } from "@/components/goal-conversation";
+import { GoalProjectReview } from "@/components/goal-project-review";
 import {
   ActionButton,
   Card,
@@ -65,6 +67,8 @@ const CODE_PROPOSAL_PHASE = {
 };
 
 function goalLabel(goal: GoalDetail["goal"]) {
+  if (goal.status === "waiting_permission" && goal.current_phase === "needs_user") return "Votre réponse est attendue";
+  if (goal.status === "waiting_permission" && goal.current_phase === "project_ready") return "Projet prêt à relire";
   return goal.status === "planning" && goal.current_phase === "waiting_for_workers"
     ? PLANNING_PHASES.waiting_for_workers.label
     : GOAL_LABELS[goal.status];
@@ -125,6 +129,7 @@ type GoalDetailState = {
 export type GoalDetailNavigation = {
   openApprovals: () => void;
   openTask: (taskId: string) => void;
+  openGoal: (goalId: string) => void;
 };
 
 export type GoalDetailController = GoalDetailState & {
@@ -495,8 +500,12 @@ function GoalOverview({ controller, navigation }: {
 }) {
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
   if (!goal) return null;
-  const phaseNotice = goal.status === "waiting_permission" && goal.current_phase === "code_proposal_ready"
-    ? CODE_PROPOSAL_PHASE
+  const phaseNotice = goal.status === "waiting_permission"
+    ? goal.current_phase === "needs_user"
+      ? { label: "Votre réponse est attendue", description: "Répondez à la question dans la conversation du projet pour poursuivre le travail." }
+      : goal.current_phase === "project_ready"
+        ? { label: "Projet prêt à relire", description: "Examinez les fichiers et les vérifications avant de préparer une autorisation d’écriture." }
+        : goal.current_phase === "code_proposal_ready" ? CODE_PROPOSAL_PHASE : undefined
     : goal.status === "planning" ? PLANNING_PHASES[goal.current_phase] : undefined;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
@@ -601,6 +610,16 @@ function GoalBody({ controller, navigation }: {
     return (
       <>
         <GoalOverview controller={controller} navigation={navigation} />
+        <GoalConversation
+          key={controller.goal.id}
+          goal={controller.goal}
+          disabled={!controller.online || Boolean(controller.busy)}
+          onOpenGoal={navigation.openGoal}
+          onUpdated={() => controller.refresh(false)}
+        />
+        {controller.nodes.some((node) => node.required_skill === "code.build_project") ? (
+          <GoalProjectReview key={`project:${controller.goal.id}`} goalId={controller.goal.id} disabled={!controller.online || Boolean(controller.busy)} onOpenTask={navigation.openTask} />
+        ) : null}
         <GoalPlan
           nodes={controller.nodes}
           navigation={navigation}

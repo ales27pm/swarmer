@@ -11,7 +11,11 @@ from types import MappingProxyType
 
 import aiosqlite
 
-from app.services.agent_card import CODE_GENERATION_SKILLS, SUPPORTED_AGENT_SKILLS
+from app.services.agent_card import (
+    CODE_GENERATION_SKILLS,
+    PROJECT_BUILD_SKILLS,
+    SUPPORTED_AGENT_SKILLS,
+)
 from app.services.permission_policy import (
     PermissionPolicy,
     PermissionPolicyError,
@@ -114,7 +118,7 @@ class WorkerSkillPolicyStore:
         # A pre-code-generation epoch remains authoritative during upgrade.
         # Absent new skills are denied by is_allowed; only an explicit policy
         # reload can enable them. Missing original skills still fail closed.
-        if missing - CODE_GENERATION_SKILLS or extra:
+        if missing - CODE_GENERATION_SKILLS - PROJECT_BUILD_SKILLS or extra:
             raise WorkerSkillPolicyStateError(
                 "authoritative worker policy does not cover the supported skill set"
             )

@@ -107,10 +107,17 @@ type ProcessToolCall = ToolCallBase &
     "sandboxed process failed; detailed error retained locally"
   >;
 
+type ProjectWriteToolCall = ToolCallBase & {
+  tool_name: "workspace.write_project";
+  summary: "Save a reviewed project revision";
+  arguments: { file_count: number; arguments_redacted: true };
+} & ToolCallState<Record<string, unknown>>;
+
 export type ToolCall =
   | ListDirectoryToolCall
   | ReadTextToolCall
   | WriteToolCall
+  | ProjectWriteToolCall
   | ProcessToolCall;
 
 export type ToolProposalInput =
@@ -314,6 +321,11 @@ type ApprovalAction =
   | {
       action: "workspace.write_text";
       summary: "Write text to a workspace file";
+      action_preview: WriteApprovalPreview;
+    }
+  | {
+      action: "workspace.write_project";
+      summary: "Save a reviewed project revision";
       action_preview: WriteApprovalPreview;
     }
   | {

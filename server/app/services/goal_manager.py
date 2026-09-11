@@ -28,6 +28,14 @@ from app.services.goal_code_application import (
     GoalCodeApplicationConflict,
     GoalCodeApplicationService,
 )
+from app.services.goal_conversation import GoalConversationConflict, GoalConversationService
+from app.services.goal_limits import (
+    RESUME_RUNTIME_SQL,
+    active_runtime_seconds,
+    runtime_expired,
+    runtime_remaining_seconds,
+)
+from app.services.goal_project import GoalProjectConflict, GoalProjectService
 from app.services.goal_state import (
     GoalStateConflict,
     GoalStateService,
@@ -56,6 +64,7 @@ from app.services.swarm_contracts import (
     GoalCreateRequest,
     GoalEvaluationContext,
     GoalFeedbackRequest,
+    GoalMessageRequest,
     GoalReplanRequest,
     GoalStartRequest,
     PlannerSource,
@@ -67,6 +76,7 @@ from app.services.swarm_contracts import (
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
+PROJECT_SKILL = "code.build_project"
 _PLANNER_FAILURE_DETAILS = {
     "transport_unavailable": ("planner_unavailable", "Planner transport is unavailable."),
     "request_rejected": (
@@ -147,6 +157,10 @@ class GoalManager:
             if execution_engine is not None
             else None
         )
+        self.project_applications = (
+            GoalProjectService(db_path, execution_engine) if execution_engine is not None else None
+        )
+        self.conversations = GoalConversationService(db_path)
         self.defaults = {
             "max_steps": default_max_steps,
             "max_parallelism": default_max_parallelism,
@@ -189,6 +203,8 @@ class GoalManager:
         substitute a reference for user-supplied objective text.
         """
 
+        if sum(node.required_skill == PROJECT_SKILL for node in proposal.nodes) > 1:
+            raise _PlannerProposalRejected("a project plan requires one sequential project worker")
         if proposal.objective == goal["objective"]:
             return proposal
         if model_call_id is not None and proposal.objective == f"goal:{goal['id']}":
@@ -197,31 +213,18 @@ class GoalManager:
 
     @staticmethod
     def _runtime_expired(goal: Mapping[str, Any]) -> bool:
-        raw_started = goal.get("started_at")
-        if raw_started is None:
-            return False
-        started = datetime.fromisoformat(str(raw_started))
-        if started.tzinfo is None:
-            raise RuntimeError("goal start timestamp must be timezone-aware")
-        elapsed = (datetime.now(UTC) - started.astimezone(UTC)).total_seconds()
-        return elapsed >= int(goal["max_runtime_seconds"])
+        return runtime_expired(goal)
 
     @staticmethod
     def _remaining_runtime_seconds(goal: Mapping[str, Any]) -> float:
-        raw_started = goal.get("started_at")
-        if raw_started is None:
-            return float(goal["max_runtime_seconds"])
-        started = datetime.fromisoformat(str(raw_started))
-        if started.tzinfo is None:
-            raise RuntimeError("goal start timestamp must be timezone-aware")
-        deadline = started.astimezone(UTC) + timedelta(seconds=int(goal["max_runtime_seconds"]))
-        return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
+        return runtime_remaining_seconds(goal)
 
     async def initialize(self) -> None:
         for service in (self.context_builder, self.episode_memory):
             initializer = getattr(service, "initialize", None)
             if initializer is not None:
                 await initializer()
+
         now = self._now()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -232,6 +235,324 @@ class GoalManager:
                 (now, now),
             )
             await db.commit()
+
+    async def conversation_messages(self, goal_id: str, limit: int = 100) -> dict[str, Any]:
+        try:
+            return await self.conversations.messages(goal_id, limit=limit)
+        except GoalConversationConflict as exc:
+            raise GoalManagerConflict(str(exc)) from exc
+
+    async def recent_conversation(self, goal_id: str, limit: int = 40) -> list[dict[str, str]]:
+        history = await self.conversation_messages(goal_id, limit=limit)
+        return [
+            {"role": item["role"], "content": safe_context_text(item["content"], max_chars=4_000)}
+            for item in history["messages"]
+        ]
+
+    async def reply_goal(
+        self, goal_id: str, request: GoalMessageRequest, *, actor_id: str
+    ) -> dict[str, Any]:
+        # Seed a prior single-file artifact before creating its linked project continuation.
+        if self.project_applications is not None:
+            async with aiosqlite.connect(self.db_path) as db:
+                legacy = await (
+                    await db.execute(
+                        """SELECT 1 FROM goal_code_proposals p JOIN goal_runs g ON g.id=p.goal_run_id
+                    WHERE g.id=? AND g.status IN ('completed','failed','cancelled','budget_exhausted')
+                    AND NOT EXISTS (SELECT 1 FROM goal_project_links l WHERE l.goal_run_id=g.id)
+                    LIMIT 1""",
+                        (goal_id,),
+                    )
+                ).fetchone()
+            if legacy is not None:
+                await self.project_applications.ensure_project(goal_id)
+        # Never hold a model-call lock while accepting an independently durable reply.
+        try:
+            active_id = await self.conversations.append(
+                goal_id,
+                message=request.message,
+                client_message_id=request.client_message_id,
+                reply_to_message_id=request.reply_to_message_id,
+                actor_id=actor_id,
+            )
+        except GoalConversationConflict as exc:
+            raise GoalManagerConflict(str(exc)) from exc
+        detail = await self.get_goal(active_id)
+        if detail is None:
+            raise GoalManagerConflict("goal not found")
+        return detail
+
+    async def _worker_payload(
+        self, goal: Mapping[str, Any], node: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        if node["required_skill"] != PROJECT_SKILL:
+            return self._payload_for_node(node)
+        if self.project_applications is None:
+            raise GoalManagerConflict("The project application gateway is unavailable.")
+        goal_id = str(node["goal_run_id"])
+        return await self.project_applications.payload(
+            goal_id, dict(node), await self.recent_conversation(goal_id)
+        )
+
+    async def _resume_pending_conversation(
+        self, goal_id: str, *, maintenance_guard: MaintenanceLeaseGuard | None = None
+    ) -> None:
+        """Prepare the next iteration only after previous work and grants settle."""
+        goal = await self.graph.get_goal(goal_id)
+        if goal is None or goal["status"] in self.graph.GOAL_TERMINAL:
+            return
+        pending = int(goal.get("pending_message_revision") or 0) > 0
+        if not pending and goal["current_phase"] != "project_continue":
+            return
+        nodes = await self.graph.list_nodes(goal_id)
+        if any(node["status"] in {"dispatched", "running", "waiting_capability"} for node in nodes):
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            current = await (
+                await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal_id,))
+            ).fetchone()
+            if current is None or current["status"] in self.graph.GOAL_TERMINAL:
+                return
+            # A real approval is never implicitly denied, replaced or approved
+            # by text. A child committed before call creation is not a grant.
+            prepared = await (
+                await db.execute(
+                    """SELECT 1 FROM plan_nodes n LEFT JOIN project_revisions r ON r.node_id=n.id
+                    WHERE n.goal_run_id=? AND n.status='waiting_permission'
+                    AND (n.required_skill<>? OR (r.apply_task_id IS NOT NULL AND (
+                        EXISTS (SELECT 1 FROM tool_calls c WHERE c.task_id=r.apply_task_id)
+                        OR NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id=r.apply_task_id
+                                       AND t.status IN ('created','planned'))))) LIMIT 1""",
+                    (goal_id, PROJECT_SKILL),
+                )
+            ).fetchone()
+            if prepared:
+                return
+            orphaned = await (
+                await db.execute(
+                    """SELECT r.id,r.node_id,r.apply_task_id FROM project_revisions r
+                    JOIN plan_nodes n ON n.id=r.node_id JOIN tasks t ON t.id=r.apply_task_id
+                    WHERE r.goal_run_id=? AND n.status='waiting_permission'
+                    AND n.required_skill=? AND t.status IN ('created','planned')
+                    AND NOT EXISTS (SELECT 1 FROM tool_calls c WHERE c.task_id=t.id)""",
+                    (goal_id, PROJECT_SKILL),
+                )
+            ).fetchall()
+            for orphan in orphaned:
+                now = self._now()
+                # This same lock fences a delayed create_tool_call: it can no
+                # longer attach an approval to this cancelled historical task.
+                await db.execute(
+                    "UPDATE tasks SET status='cancelled',updated_at=?,completed_at=? WHERE id=?",
+                    (now, now, orphan["apply_task_id"]),
+                )
+                await db.execute(
+                    "UPDATE project_revisions SET apply_task_id=NULL WHERE id=?",
+                    (orphan["id"],),
+                )
+                await append_audit_event(
+                    db,
+                    "goal.project.review_superseded",
+                    {
+                        "goal_run_id": goal_id,
+                        "revision_id": orphan["id"],
+                        "node_id": orphan["node_id"],
+                        "apply_task_id": orphan["apply_task_id"],
+                        "conversation_revision": int(current["conversation_revision"]),
+                    },
+                    actor_type="control-plane",
+                    actor_id="goal-manager",
+                    task_id=orphan["apply_task_id"],
+                    trace_id=goal_id,
+                    created_at=now,
+                )
+            linked = await (
+                await db.execute("SELECT 1 FROM goal_project_links WHERE goal_run_id=?", (goal_id,))
+            ).fetchone()
+            project = linked is not None or any(n["required_skill"] == PROJECT_SKILL for n in nodes)
+            if project and self.project_applications is not None:
+                count = len(nodes)
+                now = self._now()
+                if count >= int(current["max_steps"]) or int(current["model_call_count"]) >= int(
+                    current["max_model_calls"]
+                ):
+                    await self._terminate_goal_locked(
+                        db,
+                        dict(current),
+                        status="budget_exhausted",
+                        reason="goal project iteration budget exhausted",
+                        now=now,
+                        maintenance_guard=maintenance_guard,
+                    )
+                    await db.commit()
+                    return
+                # Unprepared old proposals are superseded; their snapshots remain inspectable.
+                await db.execute(
+                    """UPDATE plan_nodes SET status='completed',completed_at=?,updated_at=?,
+                    result_summary='Project draft retained; newer instructions require another iteration.'
+                    WHERE goal_run_id=? AND required_skill=? AND status='waiting_permission'""",
+                    (now, now, goal_id, PROJECT_SKILL),
+                )
+                if any(n["status"] in {"planned", "ready"} for n in nodes):
+                    await db.execute(
+                        "UPDATE goal_runs SET pending_message_revision=0 WHERE id=?", (goal_id,)
+                    )
+                    await db.commit()
+                    return
+                await db.execute(
+                    """INSERT INTO plan_nodes(id,goal_run_id,node_type,title,objective,required_skill,
+                    status,priority,expected_output,created_at,updated_at,conversation_revision)
+                    VALUES(?,?,'worker','Continue project implementation',?,?,'ready',50,?,?,?,?)""",
+                    (
+                        f"node_{uuid4().hex}",
+                        goal_id,
+                        current["objective"],
+                        PROJECT_SKILL,
+                        "A cumulative project snapshot with actual build and test receipts.",
+                        now,
+                        now,
+                        int(current["conversation_revision"]),
+                    ),
+                )
+                # Only a fixed application SQL fragment is interpolated; values are bound.
+                await db.execute(
+                    f"""UPDATE goal_runs SET status='running',current_phase='project_building',
+                    pending_message_revision=0,updated_at=?,{RESUME_RUNTIME_SQL} WHERE id=?""",  # nosec B608
+                    (now, now, goal_id),
+                )
+                await db.execute(
+                    "UPDATE tasks SET status='running',updated_at=? WHERE id=?",
+                    (now, current["root_task_id"]),
+                )
+                await db.commit()
+                return
+        if not nodes or goal["status"] == "planning":
+            return
+        if any(n["status"] in self.ACTIVE_NODE_STATUSES for n in nodes):
+            return
+        if int(goal["replan_count"]) >= int(goal["max_replans"]):
+            await self._terminate_goal(
+                goal_id, status="budget_exhausted", reason="goal replan budget exhausted"
+            )
+            return
+        proposal, source, call_id = await self._obtain_plan(
+            goal, GoalStartRequest(), maintenance_guard=maintenance_guard
+        )
+        await self._append_replan_nodes(goal, proposal, source=source, model_call_id=call_id)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """UPDATE goal_runs SET pending_message_revision=0 WHERE id=?
+                AND conversation_revision=?""",
+                (goal_id, goal["conversation_revision"]),
+            )
+            await db.commit()
+
+    async def _accept_project_result(
+        self,
+        goal: Mapping[str, Any],
+        node: Mapping[str, Any],
+        job: Mapping[str, Any],
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> None:
+        if self.project_applications is None:
+            raise GoalManagerConflict("The project application gateway is unavailable.")
+        goal_id = str(goal["id"])
+        result = await self.project_applications.capture_result(
+            goal_id,
+            str(node["id"]),
+            str(job["id"]),
+            maintenance_guard=maintenance_guard,
+        )
+        now = self._now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            current = await (
+                await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal_id,))
+            ).fetchone()
+            current_node = await (
+                await db.execute("SELECT * FROM plan_nodes WHERE id=?", (node["id"],))
+            ).fetchone()
+            if (
+                current is None
+                or current["status"] in self.graph.GOAL_TERMINAL
+                or current_node is None
+            ):
+                return
+            if current_node["status"] not in {"dispatched", "running"}:
+                return
+            if self._runtime_expired(dict(current)):
+                await self._terminate_goal_locked(
+                    db,
+                    dict(current),
+                    status="budget_exhausted",
+                    reason="goal runtime budget exhausted",
+                    now=now,
+                    maintenance_guard=maintenance_guard,
+                )
+                await db.commit()
+                return
+            stale = int(current_node["conversation_revision"]) != int(
+                current["conversation_revision"]
+            )
+            action = "continue" if stale else str(result["action"])
+            message = (
+                "The previous iteration was retained. Continuing with your latest instructions."
+                if stale
+                else str(result["message"])
+            )
+            await GoalConversationService.assistant_locked(
+                db, goal_id, message, question=action == "clarify", now=now
+            )
+            waiting = action in {"clarify", "complete"}
+            await db.execute(
+                """UPDATE plan_nodes SET status=?,result_summary=?,updated_at=?,completed_at=? WHERE id=?""",
+                (
+                    "waiting_permission" if action == "complete" else "completed",
+                    "Project snapshot is ready for review."
+                    if action == "complete"
+                    else "Project iteration recorded; further work is required.",
+                    now,
+                    None if action == "complete" else now,
+                    node["id"],
+                ),
+            )
+            await db.execute(
+                """UPDATE goal_runs SET status=?,current_phase=?,evaluator_summary=?,
+                paused_at=CASE WHEN ? THEN COALESCE(paused_at,?) ELSE paused_at END,updated_at=? WHERE id=?""",
+                (
+                    "waiting_permission" if waiting else "running",
+                    "needs_user"
+                    if action == "clarify"
+                    else "project_ready"
+                    if action == "complete"
+                    else "project_continue",
+                    "Project needs your clarification."
+                    if action == "clarify"
+                    else "Project iteration recorded.",
+                    waiting,
+                    now,
+                    now,
+                    goal_id,
+                ),
+            )
+            await db.execute(
+                "UPDATE tasks SET status=?,updated_at=? WHERE id=?",
+                ("waiting_permission" if waiting else "running", now, current["root_task_id"]),
+            )
+            await db.commit()
+        if action == "continue":
+            await self._resume_pending_conversation(goal_id, maintenance_guard=maintenance_guard)
+            await self._advance_ready(
+                goal_id, explicit_user_action=False, maintenance_guard=maintenance_guard
+            )
 
     async def create_goal(
         self,
@@ -293,6 +614,9 @@ class GoalManager:
                     now.isoformat(),
                     now.isoformat(),
                 ),
+            )
+            await GoalConversationService.create_locked(
+                db, goal_run_id, request.objective, now.isoformat()
             )
             await append_audit_event(
                 db,
@@ -358,6 +682,12 @@ class GoalManager:
                 raise GoalManagerConflict("goal not found")
             if goal["status"] in self.graph.GOAL_TERMINAL:
                 raise GoalManagerConflict("terminal goal cannot be started")
+            await self._resume_pending_conversation(
+                goal_run_id, maintenance_guard=maintenance_guard
+            )
+            goal = await self.graph.get_goal(goal_run_id)
+            if goal is None:
+                raise GoalManagerConflict("goal not found")
             nodes = await self.graph.list_nodes(goal_run_id)
             if not nodes and goal["status"] == "planning":
                 goal = await self._mark_start_requested(
@@ -547,6 +877,28 @@ class GoalManager:
             return request.plan_proposal, PlannerSource(request.planner_source), None
         goal_id = str(goal["id"])
         additional_cards: list[ContextCard] = []
+        recent = [
+            message
+            for message in await self.recent_conversation(goal_id)
+            if not (
+                message["role"] == "user"
+                and message["content"] == safe_context_text(str(goal["objective"]), max_chars=4_000)
+            )
+        ]
+        if recent:
+            # Reserve room for capabilities and budgets; workers receive the full 40-message window.
+            summary = "\n".join(
+                f"{message['role']}: {safe_context_text(message['content'], max_chars=500)}"
+                for message in recent[-6:]
+            )
+            additional_cards.append(
+                ContextCard(
+                    card_id=f"conversation:{goal_id}",
+                    kind="user_guidance",
+                    summary=summary,
+                    provenance_ids=(goal_id,),
+                )
+            )
         if user_guidance is not None:
             guidance = safe_context_text(user_guidance, max_chars=500)
             if guidance:
@@ -641,6 +993,7 @@ class GoalManager:
             call_id = await self._reserve_model_call(
                 str(goal["id"]),
                 role="planner",
+                conversation_revision=int(goal.get("conversation_revision") or 0),
                 context_id=context_id,
                 input_digest=input_digest,
                 provider_source=self.planner.source.value,
@@ -663,18 +1016,14 @@ class GoalManager:
             async with asyncio.timeout(remaining):
                 proposal = await self.planner.propose(context_payload)
         except TimeoutError as exc:
-            await self._finish_model_call(
-                call_id,
-                status="failed",
-                maintenance_guard=maintenance_guard,
+            changed = await self._record_model_timeout(
+                str(goal["id"]), call_id, maintenance_guard=maintenance_guard
             )
-            await self._terminate_goal(
-                str(goal["id"]),
-                status="budget_exhausted",
-                reason="goal runtime budget exhausted",
-                maintenance_guard=maintenance_guard,
-            )
-            raise GoalManagerConflict("goal runtime budget exhausted") from exc
+            raise GoalManagerConflict(
+                "goal runtime budget exhausted"
+                if changed
+                else "model call was fenced by newer input"
+            ) from exc
         except SwarmPlannerProviderError as exc:
             await self._record_planner_failure(
                 str(goal["id"]),
@@ -707,6 +1056,7 @@ class GoalManager:
         input_digest: str,
         provider_source: str,
         model_id: str | None = None,
+        conversation_revision: int | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> str:
         call_id = f"gmc_{uuid4().hex}"
@@ -720,7 +1070,7 @@ class GoalManager:
                 await maintenance_guard.require_current_locked(db)
             row = await (
                 await db.execute(
-                    "SELECT model_call_count,max_model_calls,status FROM goal_runs WHERE id=?",
+                    "SELECT model_call_count,max_model_calls,status,conversation_revision FROM goal_runs WHERE id=?",
                     (goal_run_id,),
                 )
             ).fetchone()
@@ -730,6 +1080,11 @@ class GoalManager:
             if str(row["status"]) in self.graph.GOAL_TERMINAL:
                 await db.rollback()
                 raise GoalManagerConflict("terminal goal cannot call a model")
+            if (
+                conversation_revision is not None
+                and int(row["conversation_revision"]) != conversation_revision
+            ):
+                raise GoalManagerConflict("goal conversation changed before model reservation")
             if int(row["model_call_count"]) >= int(row["max_model_calls"]):
                 await db.rollback()
                 raise GoalManagerConflict("goal model call budget exhausted")
@@ -762,8 +1117,8 @@ class GoalManager:
                 INSERT INTO goal_model_calls(
                     id,goal_run_id,role,provider_source,model_id,context_id,input_digest,
                     output_digest,status,created_at,completed_at,error_category,
-                    owner_instance_id,lease_expires_at,lease_generation
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    owner_instance_id,lease_expires_at,lease_generation,conversation_revision
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     call_id,
@@ -781,6 +1136,7 @@ class GoalManager:
                     self.instance_id,
                     lease_expires_at,
                     generation,
+                    int(row["conversation_revision"]),
                 ),
             )
             await db.execute(
@@ -904,8 +1260,9 @@ class GoalManager:
     ) -> None:
         current = await (
             await db.execute(
-                """SELECT 1 FROM goal_model_calls WHERE id=? AND status='started'
-                AND owner_instance_id=? AND lease_expires_at>?""",
+                """SELECT 1 FROM goal_model_calls c JOIN goal_runs g ON g.id=c.goal_run_id
+                WHERE c.id=? AND c.status='started' AND c.owner_instance_id=? AND c.lease_expires_at>?
+                AND c.conversation_revision=g.conversation_revision""",
                 (call_id, self.instance_id, now),
             )
         ).fetchone()
@@ -917,6 +1274,7 @@ class GoalManager:
         goal_run_id: str,
         phase: str,
         *,
+        conversation_revision: int | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
         now = self._now()
@@ -926,12 +1284,63 @@ class GoalManager:
                 await maintenance_guard.require_current_locked(db)
             await db.execute(
                 """UPDATE goal_runs SET current_phase=?,failure_reason=?,updated_at=?
-                WHERE id=? AND status NOT IN ('completed','failed','cancelled','budget_exhausted')""",
-                (phase, phase.replace("_", " "), now, goal_run_id),
+                WHERE id=? AND status NOT IN ('completed','failed','cancelled','budget_exhausted')
+                AND (? IS NULL OR conversation_revision=?)""",
+                (
+                    phase,
+                    phase.replace("_", " "),
+                    now,
+                    goal_run_id,
+                    conversation_revision,
+                    conversation_revision,
+                ),
             )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             await db.commit()
+
+    async def _record_model_timeout(
+        self,
+        goal_id: str,
+        call_id: str,
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> bool:
+        """A timed-out older conversation cannot terminate its replacement."""
+        now = self._now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            current = await (
+                await db.execute(
+                    """SELECT g.* FROM goal_runs g JOIN goal_model_calls c ON c.goal_run_id=g.id
+                WHERE g.id=? AND c.id=? AND c.status='started' AND c.owner_instance_id=?
+                AND c.conversation_revision=g.conversation_revision
+                AND g.status NOT IN ('completed','failed','cancelled','budget_exhausted')""",
+                    (goal_id, call_id, self.instance_id),
+                )
+            ).fetchone()
+            if current is None:
+                return False
+            await db.execute(
+                "UPDATE goal_model_calls SET status='failed',completed_at=?,error_category='runtime_exhausted' WHERE id=?",
+                (now, call_id),
+            )
+            await self._terminate_goal_locked(
+                db,
+                dict(current),
+                status="budget_exhausted",
+                reason="goal runtime budget exhausted",
+                now=now,
+                maintenance_guard=maintenance_guard,
+            )
+            await db.commit()
+        await self._finalize_terminal_goal(
+            goal_id, status="budget_exhausted", maintenance_guard=maintenance_guard
+        )
+        return True
 
     async def _persist_initial_plan(
         self,
@@ -1043,7 +1452,7 @@ class GoalManager:
                 UPDATE goal_runs SET status='running',planner_source=?,plan_fingerprint=?,
                     max_parallelism=MIN(max_parallelism,?),
                     current_phase='dispatching',started_at=COALESCE(started_at,?),
-                    failure_reason=NULL,updated_at=?
+                    failure_reason=NULL,pending_message_revision=0,updated_at=?
                 WHERE id=? AND status='planning'
                 """,
                 (
@@ -1117,6 +1526,7 @@ class GoalManager:
         explicit_user_action: bool,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
+        await self._resume_pending_conversation(goal_run_id, maintenance_guard=maintenance_guard)
         await self.graph.refresh_ready_nodes(
             goal_run_id,
             maintenance_guard=maintenance_guard,
@@ -1136,7 +1546,9 @@ class GoalManager:
         active_count = sum(node["status"] in self.ACTIVE_NODE_STATUSES for node in nodes)
         available = max(0, int(goal["max_parallelism"]) - active_count)
         if goal["autonomy_profile"] == AutonomyProfile.MANUAL.value:
-            available = min(available, 1 if explicit_user_action else 0)
+            available = min(
+                available, 1 if explicit_user_action or goal.get("reply_dispatch_credit") else 0
+            )
         if available <= 0:
             return
         ready = [node for node in nodes if node["status"] == "ready"]
@@ -1225,7 +1637,7 @@ class GoalManager:
             )
             return
         try:
-            payload = self._payload_for_node(node)
+            payload = await self._worker_payload(goal, node)
         except GoalManagerConflict as exc:
             await self.graph.transition_node(
                 str(node["id"]),
@@ -1260,7 +1672,7 @@ class GoalManager:
                         (SELECT COUNT(*) FROM plan_nodes AS active
                          WHERE active.goal_run_id=g.id AND active.status IN
                            ('dispatched','running','waiting_permission','waiting_capability'))
-                           AS active_count,g.model_call_count,g.max_model_calls
+                           AS active_count,g.model_call_count,g.max_model_calls,g.conversation_revision
                     FROM goal_runs AS g WHERE g.id=? AND g.status='running'""",
                     (goal["id"],),
                 )
@@ -1274,7 +1686,10 @@ class GoalManager:
             if int(usage[3]) >= int(usage[2]):
                 await db.rollback()
                 return
-            if node["required_skill"] == CODE_PROPOSAL_SKILL:
+            if int(usage[6]) != int(goal.get("conversation_revision") or 0):
+                await db.rollback()
+                return
+            if node["required_skill"] in {CODE_PROPOSAL_SKILL, PROJECT_SKILL}:
                 if int(usage[4]) >= int(usage[5]):
                     await db.rollback()
                     await self._terminate_goal(
@@ -1294,7 +1709,7 @@ class GoalManager:
                     {
                         "goal_run_id": goal["id"],
                         "node_id": node["id"],
-                        "required_skill": CODE_PROPOSAL_SKILL,
+                        "required_skill": node["required_skill"],
                         "model_calls_reserved": 1,
                     },
                     actor_type="control-plane",
@@ -1305,15 +1720,16 @@ class GoalManager:
                 )
             await StateService._insert_task(db, child)
             cursor = await db.execute(
-                """UPDATE plan_nodes SET status='dispatched',task_id=?,updated_at=?
+                """UPDATE plan_nodes SET status='dispatched',task_id=?,updated_at=?,conversation_revision=?
                 WHERE id=? AND status='ready'""",
-                (child.id, now, node["id"]),
+                (child.id, now, int(usage[6]), node["id"]),
             )
             if cursor.rowcount != 1:
                 await db.rollback()
                 return
             await db.execute(
-                "UPDATE goal_runs SET step_count=step_count+1,updated_at=? WHERE id=?",
+                """UPDATE goal_runs SET step_count=step_count+1,updated_at=?,
+                pending_message_revision=0,reply_dispatch_credit=0 WHERE id=?""",
                 (now, goal["id"]),
             )
             await append_audit_event(
@@ -1458,15 +1874,36 @@ class GoalManager:
             node = await self.graph.get_node(str(node["id"]))
             if node is None:
                 return None
-            if (
-                node["status"] == "waiting_permission"
-                and node["required_skill"] == CODE_PROPOSAL_SKILL
-            ):
+            if node["status"] == "waiting_permission" and node["required_skill"] in {
+                CODE_PROPOSAL_SKILL,
+                PROJECT_SKILL,
+            }:
                 return await self.get_goal(goal_run_id)
             if node["status"] not in {"dispatched", "running", "waiting_capability"}:
                 if node["status"] in self.graph.NODE_TERMINAL:
                     return await self.get_goal(goal_run_id)
                 raise GoalManagerConflict("plan node is not accepting a worker result")
+            if (
+                node["required_skill"] == PROJECT_SKILL
+                and job["status"] == "completed"
+                and self.project_applications
+            ):
+                try:
+                    await self._accept_project_result(
+                        goal, node, job, maintenance_guard=maintenance_guard
+                    )
+                except (GoalProjectConflict, ValueError):
+                    await self.graph.transition_node(
+                        str(node["id"]),
+                        expected=str(node["status"]),
+                        target="failed",
+                        error_summary="The project result did not pass server validation.",
+                        maintenance_guard=maintenance_guard,
+                    )
+                    await self._evaluate_if_quiescent(
+                        goal_run_id, maintenance_guard=maintenance_guard
+                    )
+                return await self.get_goal(goal_run_id)
             valid_evidence = validate_worker_evidence(
                 node.get("required_skill"),
                 job.get("result"),
@@ -1534,9 +1971,11 @@ class GoalManager:
             return await self.get_goal(goal_run_id)
 
     async def on_tool_call_updated(self, tool_call_id: str) -> dict[str, Any] | None:
-        if self.code_applications is None:
-            return None
-        changed = await self.code_applications.synchronize(tool_call_id)
+        changed: set[str] = set()
+        if self.code_applications is not None:
+            changed.update(await self.code_applications.synchronize(tool_call_id))
+        if self.project_applications is not None:
+            changed.update(await self.project_applications.synchronize(tool_call_id))
         detail = None
         for goal_run_id in changed:
             async with self._lock(goal_run_id):
@@ -1643,11 +2082,12 @@ class GoalManager:
             )
             return
         nodes = await self.graph.list_nodes(goal_run_id)
+        if int(goal.get("pending_message_revision") or 0):
+            return
         if not nodes or any(node["status"] not in self.graph.NODE_TERMINAL for node in nodes):
             return
         state_fingerprint = self._state_fingerprint(nodes)
-        started = datetime.fromisoformat(str(goal["started_at"] or goal["created_at"]))
-        elapsed = max(0, int((datetime.now(UTC) - started.astimezone(UTC)).total_seconds()))
+        elapsed = int(active_runtime_seconds(goal))
         context = GoalEvaluationContext(
             schema_version="1.0",
             goal_run_id=goal_run_id,
@@ -1690,6 +2130,7 @@ class GoalManager:
             await self._record_recoverable_error(
                 goal_run_id,
                 "evaluator_context_unavailable",
+                conversation_revision=int(goal.get("conversation_revision") or 0),
                 maintenance_guard=maintenance_guard,
             )
             return
@@ -1707,6 +2148,7 @@ class GoalManager:
             call_id = await self._reserve_model_call(
                 goal_run_id,
                 role="evaluator",
+                conversation_revision=int(goal.get("conversation_revision") or 0),
                 context_id=context_id,
                 input_digest=input_digest,
                 provider_source=self.evaluator.source.value,
@@ -1734,16 +2176,8 @@ class GoalManager:
                 known_node_ids=context.known_node_ids,
             )
         except TimeoutError:
-            await self._finish_model_call(
-                call_id,
-                status="failed",
-                maintenance_guard=maintenance_guard,
-            )
-            await self._terminate_goal(
-                goal_run_id,
-                status="budget_exhausted",
-                reason="goal runtime budget exhausted",
-                maintenance_guard=maintenance_guard,
+            await self._record_model_timeout(
+                goal_run_id, call_id, maintenance_guard=maintenance_guard
             )
             return
         except (EvaluatorProviderError, OSError, RuntimeError, TypeError, ValueError):
@@ -1755,6 +2189,7 @@ class GoalManager:
             await self._record_recoverable_error(
                 goal_run_id,
                 "evaluator_unavailable",
+                conversation_revision=int(goal.get("conversation_revision") or 0),
                 maintenance_guard=maintenance_guard,
             )
             return
@@ -1941,9 +2376,12 @@ class GoalManager:
                 user_summary = f"{safe_reason_summary} Question: {safe_question}"[:4_000]
                 waiting = await db.execute(
                     """UPDATE goal_runs SET status='waiting_permission',
-                    current_phase='needs_user',evaluator_summary=?,updated_at=?
+                    current_phase='needs_user',evaluator_summary=?,updated_at=?,paused_at=COALESCE(paused_at,?)
                     WHERE id=? AND status='running'""",
-                    (user_summary, now, goal_run_id),
+                    (user_summary, now, now, goal_run_id),
+                )
+                await GoalConversationService.assistant_locked(
+                    db, goal_run_id, safe_question, question=True, now=now
                 )
                 if waiting.rowcount != 1:
                     await db.rollback()
@@ -2192,21 +2630,24 @@ class GoalManager:
                 """UPDATE approvals SET status='cancelled',decided_at=?
                 WHERE status='pending' AND task_id IN (
                     SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?
+                    UNION SELECT apply_task_id FROM project_revisions WHERE goal_run_id=?
                 )""",
-                (now, goal["id"]),
+                (now, goal["id"], goal["id"]),
             )
             await db.execute(
                 """UPDATE tool_calls SET status='cancelled',updated_at=?
                 WHERE status IN ('proposed','waiting_permission','queued') AND task_id IN (
                     SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?
+                    UNION SELECT apply_task_id FROM project_revisions WHERE goal_run_id=?
                 )""",
-                (now, goal["id"]),
+                (now, goal["id"], goal["id"]),
             )
             await db.execute(
                 """UPDATE tasks SET status='cancelled',updated_at=?,completed_at=?
                 WHERE status IN ('created','planned','waiting_permission','queued','blocked')
-                  AND id IN (SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?)""",
-                (now, now, goal["id"]),
+                  AND id IN (SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?
+                    UNION SELECT apply_task_id FROM project_revisions WHERE goal_run_id=?)""",
+                (now, now, goal["id"], goal["id"]),
             )
         await append_audit_event(
             db,
@@ -2310,8 +2751,10 @@ class GoalManager:
                     WHERE goal_run_id=? AND task_id IS NOT NULL
                     UNION SELECT apply_task_id FROM goal_code_proposals
                     WHERE goal_run_id=? AND apply_task_id IS NOT NULL
+                    UNION SELECT apply_task_id FROM project_revisions
+                    WHERE goal_run_id=? AND apply_task_id IS NOT NULL
                     ORDER BY task_id""",
-                    (goal_run_id, goal_run_id),
+                    (goal_run_id, goal_run_id, goal_run_id),
                 )
             ).fetchall()
         cancelled = 0
@@ -2326,7 +2769,8 @@ class GoalManager:
                 async with aiosqlite.connect(self.db_path) as db:
                     local_application = await (
                         await db.execute(
-                            "SELECT 1 FROM goal_code_proposals WHERE apply_task_id=?", (task_id,)
+                            "SELECT 1 FROM goal_code_proposals WHERE apply_task_id=? UNION SELECT 1 FROM project_revisions WHERE apply_task_id=?",
+                            (task_id, task_id),
                         )
                     ).fetchone()
                 if local_application is not None:
@@ -2507,6 +2951,13 @@ class GoalManager:
                 raise GoalManagerConflict("replan exceeds the goal step budget")
             if model_call_id is not None:
                 await self._require_current_model_call_locked(db, model_call_id, now=now)
+            if int(goal.get("pending_message_revision") or 0):
+                await db.execute(
+                    """UPDATE plan_nodes SET status='skipped',updated_at=?,completed_at=?,
+                    result_summary='Superseded by newer user instructions.'
+                    WHERE goal_run_id=? AND status IN ('planned','ready')""",
+                    (now, now, goal["id"]),
+                )
             for node in proposal.nodes:
                 hard_dependencies = sorted(by_temp[item] for item in node.dependencies)
                 optional_dependencies = sorted(by_temp[item] for item in node.optional_dependencies)
@@ -2550,7 +3001,7 @@ class GoalManager:
                 """UPDATE goal_runs SET status='running',planner_source=?,
                 plan_fingerprint=?,max_parallelism=MIN(max_parallelism,?),
                 replan_count=replan_count+1,current_phase='dispatching',
-                failure_reason=NULL,updated_at=? WHERE id=?""",
+                failure_reason=NULL,pending_message_revision=0,updated_at=? WHERE id=?""",
                 (
                     source.value,
                     validate_swarm_plan(
@@ -2709,8 +3160,8 @@ class GoalManager:
                     """SELECT * FROM goal_runs
                     WHERE status IN ('planning','running','waiting_permission')
                       AND started_at IS NOT NULL
-                      AND julianday(started_at) + max_runtime_seconds / 86400.0
-                          <= julianday(?)
+                      AND julianday(started_at) + (max_runtime_seconds + paused_seconds) / 86400.0
+                          <= julianday(COALESCE(paused_at,?))
                     ORDER BY updated_at ASC,id ASC LIMIT ?""",
                     (self._now(), bounded_limit),
                 )
@@ -2733,6 +3184,52 @@ class GoalManager:
                 maintenance_guard=maintenance_guard
             )
             changed += len(application_goals)
+        if self.project_applications is not None:
+            application_goals = await self.project_applications.synchronize(
+                maintenance_guard=maintenance_guard
+            )
+            changed += len(application_goals)
+        # Inputs are durable and may arrive while a model or approval is active.
+        # Select only continuations which can make progress, before applying LIMIT.
+        async with aiosqlite.connect(self.db_path) as db:
+            pending_goals = await (
+                await db.execute(
+                    """SELECT g.id FROM goal_runs g
+                WHERE g.status IN ('planning','running','waiting_permission')
+                AND (g.pending_message_revision>0 OR g.current_phase='project_continue')
+                AND NOT EXISTS (SELECT 1 FROM plan_nodes n WHERE n.goal_run_id=g.id
+                    AND n.status IN ('dispatched','running','waiting_capability'))
+                AND NOT EXISTS (SELECT 1 FROM plan_nodes n
+                    LEFT JOIN project_revisions r ON r.node_id=n.id
+                    WHERE n.goal_run_id=g.id AND n.status='waiting_permission'
+                    AND (n.required_skill<>'code.build_project' OR (r.apply_task_id IS NOT NULL AND (
+                        EXISTS (SELECT 1 FROM tool_calls c WHERE c.task_id=r.apply_task_id)
+                        OR NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id=r.apply_task_id
+                                       AND t.status IN ('created','planned'))))))
+                ORDER BY g.updated_at,g.id LIMIT ?""",
+                    (bounded_limit,),
+                )
+            ).fetchall()
+        for pending in pending_goals:
+            pending_id = str(pending[0])
+            async with self._lock(pending_id):
+                before_pending = await self.graph.get_goal(pending_id)
+                try:
+                    await self._resume_pending_conversation(
+                        pending_id, maintenance_guard=maintenance_guard
+                    )
+                except GoalManagerConflict:
+                    pass
+                after_pending = await self.graph.get_goal(pending_id)
+                if (
+                    before_pending is not None
+                    and after_pending is not None
+                    and (
+                        before_pending["updated_at"] != after_pending["updated_at"]
+                        or before_pending["status"] != after_pending["status"]
+                    )
+                ):
+                    changed += 1
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             rows = await (
@@ -2794,7 +3291,7 @@ class GoalManager:
                     child = await self.state_service.get_task(str(row["task_id"]))
                     if child is not None and child.status is TaskStatus.CREATED:
                         try:
-                            payload = self._payload_for_node(row)
+                            payload = await self._worker_payload(row, row)
                             job = await self.agent_dispatcher.queue_job(
                                 child.id,
                                 str(row["required_skill"]),
@@ -2851,9 +3348,9 @@ class GoalManager:
             selection_now = self._now()
             active_goals = await (
                 await db.execute(
-                    """SELECT id,status,autonomy_profile,updated_at,started_at FROM goal_runs
+                    """SELECT id,status,autonomy_profile,updated_at,started_at,reply_dispatch_credit FROM goal_runs
                     WHERE status IN ('planning','running')
-                      AND autonomy_profile<>'manual'
+                      AND (autonomy_profile<>'manual' OR reply_dispatch_credit=1)
                       AND started_at IS NOT NULL
                       AND NOT EXISTS (
                         SELECT 1 FROM goal_model_calls AS pending
@@ -2921,7 +3418,10 @@ class GoalManager:
                 )
             ).fetchall()
         for active in active_goals:
-            if str(active["autonomy_profile"]) == AutonomyProfile.MANUAL.value:
+            if (
+                str(active["autonomy_profile"]) == AutonomyProfile.MANUAL.value
+                and not active["reply_dispatch_credit"]
+            ):
                 continue
             if str(active["status"]) == "planning" and active["started_at"] is None:
                 continue

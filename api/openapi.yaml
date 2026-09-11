@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.13.0
+  version: 0.14.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -1365,6 +1365,206 @@ paths:
       security:
       - bearerAuth: []
 
+  /goals/{goal_id}/messages:
+    get:
+      summary: Goal Messages
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalMessagesResponse'
+          headers:
+            Cache-Control:
+              description: Private project and conversation data are never cached.
+              schema:
+                type: string
+                const: no-store
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      tags:
+      - Goals
+      security:
+      - bearerAuth: []
+    post:
+      summary: Reply Goal
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalMessageRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      tags:
+      - Goals
+      security:
+      - bearerAuth: []
+  /goals/{goal_id}/project:
+    get:
+      summary: Get Goal Project
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPreview'
+          headers:
+            Cache-Control:
+              description: Private project and conversation data are never cached.
+              schema:
+                type: string
+                const: no-store
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '503':
+          description: Project service unavailable
+      tags:
+      - Goals
+      security:
+      - bearerAuth: []
+  /goals/{goal_id}/project/apply:
+    post:
+      summary: Apply Goal Project
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectApplyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectApplication'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '503':
+          description: Project service unavailable
+      tags:
+      - Goals
+      security:
+      - bearerAuth: []
+
 x-websocket-endpoints:
   /ws:
     authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
@@ -1589,7 +1789,7 @@ components:
         - episode_retrieval_hits
       properties:
         status: {type: string, const: ok}
-        version: {const: 0.13.0}
+        version: {const: 0.14.0}
         instance_id:
           type: string
           pattern: '^cp_[0-9a-f]{32}$'
@@ -2846,7 +3046,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.13.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2860,7 +3060,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.13.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2901,7 +3101,7 @@ components:
       additionalProperties: false
       required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.13.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.0.}
         grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
         request_id: {type: string}
         task_id: {type: string}
@@ -3267,3 +3467,299 @@ components:
       - status
       - task_id
       title: CodeProposalPreview
+
+    GoalMessageRecord:
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        goal_run_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Run Id
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+          title: Role
+        content:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Content
+        created_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - goal_run_id
+      - role
+      - content
+      - created_at
+      title: GoalMessageRecord
+    GoalMessageRequest:
+      properties:
+        message:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Message
+        client_message_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Client Message Id
+        reply_to_message_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Reply To Message Id
+      additionalProperties: false
+      type: object
+      required:
+      - message
+      - client_message_id
+      title: GoalMessageRequest
+    GoalMessagesResponse:
+      properties:
+        messages:
+          items:
+            $ref: '#/components/schemas/GoalMessageRecord'
+          type: array
+          maxItems: 100
+          title: Messages
+        active_goal_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Active Goal Id
+        pending_question_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Pending Question Id
+      additionalProperties: false
+      type: object
+      required:
+      - messages
+      - active_goal_id
+      title: GoalMessagesResponse
+    ProjectApplication:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        tool_call_id:
+          type: string
+          title: Tool Call Id
+        approval_id:
+          type: string
+          title: Approval Id
+      additionalProperties: false
+      type: object
+      required:
+      - task_id
+      - tool_call_id
+      - approval_id
+      title: ProjectApplication
+    ProjectApplyRequest:
+      properties:
+        revision_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Revision Id
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - revision_id
+      - sha256
+      title: ProjectApplyRequest
+    ProjectCheck:
+      properties:
+        command:
+          items:
+            type: string
+            maxLength: 500
+            minLength: 1
+          type: array
+          maxItems: 24
+          minItems: 1
+          title: Command
+        status:
+          type: string
+          enum:
+          - passed
+          - failed
+          - skipped
+          title: Status
+        exit_code:
+          anyOf:
+          - type: integer
+            maximum: 255.0
+            minimum: -255.0
+          - type: 'null'
+          title: Exit Code
+        output:
+          type: string
+          maxLength: 8000
+          title: Output
+        duration_ms:
+          type: integer
+          maximum: 900000.0
+          minimum: 0.0
+          title: Duration Ms
+      additionalProperties: false
+      type: object
+      required:
+      - command
+      - status
+      - exit_code
+      - output
+      - duration_ms
+      title: ProjectCheck
+    ProjectFile:
+      properties:
+        path:
+          type: string
+          maxLength: 240
+          minLength: 1
+          title: Path
+        content:
+          type: string
+          maxLength: 64000
+          title: Content
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - content
+      title: ProjectFile
+    ProjectPreview:
+      properties:
+        project_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Project Id
+        revision_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Revision Id
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+        state:
+          type: string
+          enum:
+          - building
+          - needs_user
+          - ready
+          - waiting_permission
+          - applied
+          - failed
+          title: State
+        message:
+          type: string
+          maxLength: 4000
+          title: Message
+        plan:
+          items:
+            type: string
+          type: array
+          title: Plan
+        files:
+          items:
+            $ref: '#/components/schemas/ProjectFile'
+          type: array
+          title: Files
+        checks:
+          items:
+            $ref: '#/components/schemas/ProjectCheck'
+          type: array
+          title: Checks
+        run_instructions:
+          type: string
+          maxLength: 4000
+          title: Run Instructions
+        runtime:
+          type: string
+          enum:
+          - python
+          - node
+          - python_node
+          title: Runtime
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Id
+      additionalProperties: false
+      type: object
+      required:
+      - project_id
+      - revision_id
+      - revision
+      - sha256
+      - state
+      - message
+      - plan
+      - files
+      - checks
+      - run_instructions
+      - runtime
+      - task_id
+      title: ProjectPreview
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
