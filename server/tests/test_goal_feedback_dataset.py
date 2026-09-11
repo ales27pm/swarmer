@@ -276,6 +276,69 @@ async def test_goal_exports_cover_each_trajectory_without_raw_secrets(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_planner_export_preserves_complete_hard_and_optional_dag(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    await StateService(db_path).initialize()
+    await _seed_goal_feedback(db_path, "dag", score=5, reviewed=True, status="completed")
+    node_ids = ["node_dag", *(f"node_dag_{index:02}" for index in range(1, 20))]
+    expected_dependencies: dict[str, dict[str, list[str]]] = {}
+    async with aiosqlite.connect(db_path) as db:
+        for node_id in node_ids[1:]:
+            await db.execute(
+                """
+                INSERT INTO plan_nodes(
+                    id,goal_run_id,node_type,title,objective,status,expected_output,
+                    depends_on_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    node_id,
+                    "goal_dag",
+                    "synthesis",
+                    "Combine",
+                    "Combine prior evidence",
+                    "completed",
+                    "Summary",
+                    "[]",
+                    CREATED_AT,
+                    CREATED_AT,
+                ),
+            )
+        for index, node_id in enumerate(node_ids):
+            # A dense supported DAG exceeds 100 edges. Keep the legacy JSON empty
+            # so the test also checks that exports use the authoritative edge table.
+            expected_dependencies[node_id] = {"dependencies": [], "optional_dependencies": []}
+            for upstream_index, upstream in enumerate(node_ids[:index]):
+                dependency_type = "hard" if upstream_index % 2 == 0 else "optional"
+                field = "dependencies" if dependency_type == "hard" else "optional_dependencies"
+                expected_dependencies[node_id][field].append(upstream)
+                await db.execute(
+                    "INSERT INTO plan_edges(goal_run_id,from_node_id,to_node_id,dependency_type) "
+                    "VALUES(?,?,?,?)",
+                    ("goal_dag", upstream, node_id, dependency_type),
+                )
+        await db.commit()
+
+    service = FeedbackDatasetService(db_path)
+    exported = await service.export_goal_jsonl("planner")
+    record = json.loads(exported)
+    actual = {
+        node["node_id"]: {
+            "dependencies": node["dependencies"],
+            "optional_dependencies": node["optional_dependencies"],
+        }
+        for node in record["trajectory"]["nodes"]
+    }
+
+    assert actual == expected_dependencies
+    assert (
+        sum(len(values) for dependencies in actual.values() for values in dependencies.values())
+        == 190
+    )
+    assert await service.export_goal_jsonl("planner") == exported
+
+
+@pytest.mark.asyncio
 async def test_goal_dataset_filters_and_candidate_gate_are_independent(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     await StateService(db_path).initialize()

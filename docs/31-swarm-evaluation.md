@@ -119,6 +119,8 @@ un effet iOS.
 
 Objectif, critères, DAG validé, états finaux et métadonnées d'appels planner.
 Utile pour vérifier décomposition, dépendances, skills et budgets.
+Chaque nœud exporte `dependencies` et `optional_dependencies` depuis les arêtes
+SQLite autoritatives, dans un ordre stable, y compris pour un DAG dense.
 
 ### Evaluator
 

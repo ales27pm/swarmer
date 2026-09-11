@@ -64,7 +64,10 @@ class _CapturingPlanner:
 
     async def propose(self, context: Mapping[str, object]) -> SwarmPlanProposal:
         self.payloads.append(json.loads(json.dumps(dict(context))))
-        return self.proposal.model_copy(deep=True)
+        cards = context["cards"]
+        assert isinstance(cards, list)
+        goal_card = next(card for card in cards if card["kind"] == "goal")
+        return self.proposal.model_copy(update={"objective": goal_card["card_id"]}, deep=True)
 
 
 class _CapturingEvaluator:
@@ -223,3 +226,57 @@ async def test_goal_model_payloads_match_redacted_budgeted_context_records_and_r
     planner_record = await builder.get_record(str(latest_by_role["planner"]["context_id"]))
     assert planner_record is not None
     assert "episode_hint" in planner_record.provenance_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_builder", [False, True])
+@pytest.mark.parametrize(
+    "objective",
+    [
+        "Review /etc/private/repository safely",
+        "Review these details. " + "Bounded repository inspection. " * 100 + " ORIGINAL_TAIL",
+    ],
+    ids=["redacted-path", "long-objective"],
+)
+async def test_model_plan_binds_redacted_or_long_objective_without_echoing_raw_text(
+    tmp_path: Path, use_builder: bool, objective: str
+) -> None:
+    db_path = tmp_path / "binding.db"
+    policy = PermissionPolicy.from_yaml(REPO_ROOT / "configs" / "permissions.yaml")
+    state = StateService(db_path, permission_policy=policy)
+    await state.initialize()
+    planner = _CapturingPlanner(_synthesis_plan("unused", suffix="bound"))
+    evaluator = _CapturingEvaluator()
+    manager = GoalManager(
+        db_path,
+        state_service=state,
+        agent_dispatcher=AgentDispatcher(
+            db_path, SQLiteMessageBoard(db_path), permission_policy=policy
+        ),
+        planner=planner,
+        evaluator=evaluator,
+        permission_policy=policy,
+        context_builder=ContextBuilder(db_path) if use_builder else None,
+    )
+    await manager.initialize()
+    goal = await manager.create_goal(GoalCreateRequest(objective=objective), actor_id="test-phone")
+    detail = await manager.start_goal(str(goal["id"]), GoalStartRequest())
+
+    assert detail["goal"]["objective"] == objective
+    assert detail["goal"]["status"] == "running"
+    assert len(detail["nodes"]) == 1
+    payload = _canonical(planner.payloads[-1])
+    assert f"goal:{goal['id']}" in payload
+    assert "/etc/private" not in payload
+    assert "ORIGINAL_TAIL" not in payload
+    # The audit digest describes the actual model response, before the server
+    # restores the original objective for authoritative plan validation.
+    model_response = _synthesis_plan(f"goal:{goal['id']}", suffix="bound")
+    expected_digest = hashlib.sha256(
+        _canonical(model_response.model_dump(mode="json")).encode()
+    ).hexdigest()
+    async with aiosqlite.connect(db_path) as db:
+        row = await (
+            await db.execute("SELECT output_digest FROM goal_model_calls WHERE role='planner'")
+        ).fetchone()
+    assert row == (expected_digest,)

@@ -172,13 +172,14 @@ describe("GoalDetailScreen", () => {
     mockGetGoal.mockRejectedValue(new Error("Serveur indisponible"));
     mockLocalGoal.mockResolvedValue({
       ...detail,
-      goal: { ...detail.goal, status: "running" },
+      goal: { ...detail.goal, status: "running", autonomy_profile: "manual" },
     });
     await render(<GoalDetailScreen />);
 
     expect(await screen.findByText(/Copie locale possiblement périmée/)).toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Annuler le but" })).not.toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Démarrer le but" })).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Continuer le but" })).not.toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Demander une replanification" })).not.toBeOnTheScreen();
     expect(screen.getByRole("button", { name: "Noter le résultat 5 sur 5" })).toBeDisabled();
 
@@ -210,6 +211,67 @@ describe("GoalDetailScreen", () => {
     await waitFor(() => expect(mockGetGoal).toHaveBeenCalledTimes(2));
     alert.mockRestore();
   });
+
+  it("advances a running manual goal only after an explicit continuation", async () => {
+    const user = userEvent.setup();
+    const running: GoalDetail = {
+      ...detail,
+      goal: { ...detail.goal, status: "running", autonomy_profile: "manual", current_phase: "execution" },
+      nodes: detail.nodes.map((node, index) => ({
+        ...node,
+        node_type: "worker",
+        status: index === 0 ? "completed" : "ready",
+      })),
+      result: null,
+    };
+    const continuation = deferred<GoalDetail>();
+    mockGetGoal.mockResolvedValue(running);
+    mockStartGoal.mockImplementationOnce(async () => continuation.promise);
+    await render(<GoalDetailScreen />);
+
+    const button = await screen.findByRole("button", { name: "Continuer le but" });
+    expect(mockStartGoal).not.toHaveBeenCalled();
+    await user.press(button);
+
+    expect(mockStartGoal).toHaveBeenCalledWith("goal_1");
+    expect(screen.getByRole("button", { name: "Continuer le but" })).toBeDisabled();
+    await user.press(screen.getByRole("button", { name: "Continuer le but" }));
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+
+    await act(async () => continuation.resolve(running));
+    await waitFor(() => expect(mockGetGoal).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "Continuer le but", disabled: false })).toBeOnTheScreen();
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["assisted", "autonomous"] as const)(
+    "does not offer manual continuation for a running %s goal",
+    async (profile) => {
+      mockGetGoal.mockResolvedValue({
+        ...detail,
+        goal: { ...detail.goal, status: "running", autonomy_profile: profile },
+        result: null,
+      });
+      await render(<GoalDetailScreen />);
+      await screen.findByText("Qualifier le runtime distribué");
+
+      expect(screen.queryByRole("button", { name: "Continuer le but" })).not.toBeOnTheScreen();
+    },
+  );
+
+  it.each(["waiting_permission", "completed", "failed", "cancelled", "budget_exhausted"] as const)(
+    "does not offer manual continuation when the goal is %s",
+    async (status) => {
+      mockGetGoal.mockResolvedValue({
+        ...detail,
+        goal: { ...detail.goal, status, autonomy_profile: "manual" },
+      });
+      await render(<GoalDetailScreen />);
+      await screen.findByText("Qualifier le runtime distribué");
+
+      expect(screen.queryByRole("button", { name: "Continuer le but" })).not.toBeOnTheScreen();
+    },
+  );
 
   it.each(["running", "waiting_permission"] as const)(
     "offers replan while the authoritative goal is %s",
@@ -259,23 +321,31 @@ describe("GoalDetailScreen", () => {
   });
 
   it("locks state-dependent actions while authoritative reconciliation is unresolved", async () => {
-    const running = { ...detail, goal: { ...detail.goal, status: "running" as const }, result: null };
+    const running: GoalDetail = {
+      ...detail,
+      goal: { ...detail.goal, status: "running", autonomy_profile: "manual" },
+      result: null,
+    };
     const reconciliation = deferred<GoalDetail>();
     mockGetGoal
       .mockResolvedValueOnce(running)
       .mockImplementationOnce(async () => reconciliation.promise);
     await render(<GoalDetailScreen />);
     expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Continuer le but" })).toBeOnTheScreen();
 
     await act(async () => {
       void refreshFromLiveEvent?.();
       await Promise.resolve();
     });
     expect(screen.queryByRole("button", { name: "Annuler le but" })).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Continuer le but" })).not.toBeOnTheScreen();
     expect(mockCancelGoal).not.toHaveBeenCalled();
+    expect(mockStartGoal).not.toHaveBeenCalled();
 
     await act(async () => reconciliation.resolve(running));
     expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Continuer le but" })).toBeOnTheScreen();
   });
 
   it("fences a slow detail refresh after a newer live refresh", async () => {

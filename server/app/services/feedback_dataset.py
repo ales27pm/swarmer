@@ -18,13 +18,17 @@ from app.services.audit_log import append_audit_event
 
 SECRET_PATTERN = re.compile(r"(?i)(bearer\s+\S+|api[_-]?key\s*[:=]\s*\S+|token\s*[:=]\s*\S+)")
 PATH_PATTERN = re.compile(r"/(?:Users|home|root|private|etc)/[^\s\"']+")
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN(?P<label>(?: [A-Z0-9]+)* PRIVATE KEY)-----.*?"
+    r"(?:-----END(?P=label)-----|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
 _CREDENTIAL_URL = re.compile(r"(?i)\b(?:redis|rediss|https?)://[^/@\s:]+:[^/@\s]+@")
 _ADDITIONAL_SECRET = re.compile(
     r"(?i)\b(?:authorization|auth|password|passwd|secret|private[_ -]?key|"
     r"access[_ -]?key|session[_ -]?id|api[_ -]?key|token|grant|lease[_ -]?token)"
     r"\s*[:=]\s*(?:(?:bearer|basic)\s+)?[^\s,;]{4,}|"
-    r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b|"
-    r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"
+    r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b"
 )
 _COMMON_SECRET_PREFIX = re.compile(
     r"(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -86,7 +90,10 @@ GoalDatasetType = Literal["planner", "evaluator", "synthesis", "routing"]
 def redact_dataset_text(value: str | None) -> str | None:
     if value is None:
         return None
-    redacted = SECRET_PATTERN.sub("<redacted-secret>", value)
+    # Remove whole blocks before other patterns can consume their BEGIN marker.
+    # Incomplete PEM input is secret-bearing through the end of the supplied text.
+    redacted = _PRIVATE_KEY_BLOCK.sub("<redacted-secret>", value)
+    redacted = SECRET_PATTERN.sub("<redacted-secret>", redacted)
     redacted = _ADDITIONAL_SECRET.sub("<redacted-secret>", redacted)
     redacted = _COMMON_SECRET_PREFIX.sub("<redacted-secret>", redacted)
     redacted = _CREDENTIAL_URL.sub("<redacted-credential-url>", redacted)
@@ -356,6 +363,8 @@ async def _goal_dataset_record(
                         "title",
                         "objective",
                         "required_skill",
+                        "dependencies",
+                        "optional_dependencies",
                         "status",
                         "priority",
                         "expected_output",
@@ -464,6 +473,19 @@ async def _goal_nodes(db: aiosqlite.Connection, goal_run_id: str) -> list[dict[s
             (goal_run_id,),
         )
     ).fetchall()
+    edges = await (
+        await db.execute(
+            """
+            SELECT from_node_id,to_node_id,dependency_type FROM plan_edges
+            WHERE goal_run_id=? ORDER BY to_node_id ASC,from_node_id ASC
+            """,
+            (goal_run_id,),
+        )
+    ).fetchall()
+    dependency_ids: dict[tuple[str, str], list[str]] = {}
+    for edge in edges:
+        key = (str(edge["to_node_id"]), str(edge["dependency_type"]))
+        dependency_ids.setdefault(key, []).append(str(edge["from_node_id"]))
     return [
         {
             "node_id": str(item["id"]),
@@ -471,6 +493,8 @@ async def _goal_nodes(db: aiosqlite.Connection, goal_run_id: str) -> list[dict[s
             "title": sanitize_dataset_value(item["title"], max_text_chars=500),
             "objective": sanitize_dataset_value(item["objective"], max_text_chars=1_200),
             "required_skill": str(item["required_skill"] or ""),
+            "dependencies": dependency_ids.get((str(item["id"]), "hard"), []),
+            "optional_dependencies": dependency_ids.get((str(item["id"]), "optional"), []),
             "status": str(item["status"]),
             "priority": int(item["priority"]),
             "expected_output": sanitize_dataset_value(

@@ -185,6 +185,11 @@ function canMutate(state: GoalDetailState) {
   return state.source === "authoritative" && !state.busy && !state.refreshing;
 }
 
+function canStartGoal(goal: GoalDetail["goal"] | null | undefined) {
+  return goal?.status === "planning"
+    || (goal?.autonomy_profile === "manual" && goal.status === "running");
+}
+
 function canSubmitFeedback(goalId: string | undefined, state: GoalDetailState, locked: boolean) {
   return Boolean(
     goalId
@@ -241,8 +246,10 @@ export function useGoalDetailController(goalId: string | undefined): GoalDetailC
   }, [refresh, state]);
 
   const start = useCallback(async () => {
-    if (goalId) await runAction("start", () => startGoal(goalId));
-  }, [goalId, runAction]);
+    if (goalId && canStartGoal(state.detail?.goal)) {
+      await runAction("start", () => startGoal(goalId));
+    }
+  }, [goalId, runAction, state.detail?.goal]);
 
   const replan = useCallback(async () => {
     if (goalId) await runAction("replan", () => replanGoal(goalId));
@@ -396,11 +403,11 @@ function GoalActions({ controller }: { controller: GoalDetailController }) {
   if (!goal || !online) return null;
   return (
     <>
-      {goal.status === "planning" ? (
+      {canStartGoal(goal) ? (
         <ActionButton
           busy={busy === "start"}
           disabled={Boolean(busy)}
-          label="Démarrer le but"
+          label={goal.status === "planning" ? "Démarrer le but" : "Continuer le but"}
           onPress={() => void controller.start()}
           testID="start-goal-button"
           variant="accent"

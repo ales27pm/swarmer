@@ -415,7 +415,19 @@ def create_app(config: Settings | None = None) -> FastAPI:
         )
 
     async def reconcile_goal_runs(guard: MaintenanceLeaseGuard) -> int:
-        return await goal_manager.reconcile(maintenance_guard=guard)
+        invalidation = {"type": "sync.invalidated", "payload": {"refetch_required": True}}
+        try:
+            changed = await goal_manager.reconcile(maintenance_guard=guard)
+        except _MAINTENANCE_OPERATION_ERRORS:
+            # A terminal transition may already be committed when a later
+            # projection fails. Phones must refetch that authoritative state.
+            await broadcast(invalidation)
+            raise
+        if changed:
+            # Coalesce the batch into one durable, metadata-only notification;
+            # the relay also reaches phones connected to another API process.
+            await broadcast(invalidation)
+        return changed
 
     async def run_distributed_runtime_maintenance_cycle(*, refresh_scores: bool) -> bool:
         """Run one recurring cycle; a known failure cannot starve independent work."""

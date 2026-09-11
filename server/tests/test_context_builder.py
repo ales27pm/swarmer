@@ -409,6 +409,32 @@ async def test_context_is_deterministic_bounded_provenanced_and_redacted(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_context_removes_private_key_bodies_before_persistence(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, root_id, upstream_id, node_id = await _seed_goal(db_path)
+    body = "c3ludGhldGljS2V5TWF0ZXJpYWxDb250ZXh0Rml4dHVyZQ=="
+    pem = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n-----END OPENSSH PRIVATE KEY-----"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("UPDATE tasks SET input=? WHERE id=?", (f"Inspect {pem}", root_id))
+        await db.execute(
+            "UPDATE plan_nodes SET result_summary=? WHERE id=?",
+            (f"Before {pem} after", upstream_id),
+        )
+        await db.commit()
+    builder = ContextBuilder(db_path)
+    await builder.initialize()
+
+    context = await builder.build(goal_run_id=goal_id, node_id=node_id)
+    restored = await builder.get_record(context.id)
+
+    assert restored is not None
+    assert restored.payload == context.model_payload()
+    assert body not in json.dumps(restored.payload)
+    upstream = next(card for card in context.cards if card.kind == "upstream")
+    assert "Before <redacted-secret> after" in upstream.summary
+
+
+@pytest.mark.asyncio
 async def test_context_truncation_is_stable_and_respects_item_and_token_budgets(
     tmp_path: Path,
 ) -> None:

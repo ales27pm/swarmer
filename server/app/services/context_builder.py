@@ -24,8 +24,7 @@ _ADDITIONAL_SECRET = re.compile(
     r"\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}|"
     r"\b(?:sk|ghp|github_pat)-?[A-Za-z0-9_-]{12,}\b|"
     r"\bAKIA[A-Z0-9]{16}\b|"
-    r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b|"
-    r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"
+    r"\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b"
 )
 _CREDENTIAL_URL = re.compile(r"(?i)\b(?:redis|rediss|https?)://[^/@\s:]+:[^/@\s]+@")
 _ADDITIONAL_PATH = re.compile(

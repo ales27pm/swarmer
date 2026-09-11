@@ -89,7 +89,9 @@ contient seulement:
 Le parser borne la taille, rejette clés dupliquées, constantes non finies,
 champs supplémentaires et mauvais types. Le serveur vérifie ensuite:
 
-- objectif identique au but autoritatif;
+- objectif lié au but autoritatif: le planner modèle recopie le `card_id`
+  `goal:goal_<id>` du contexte, que le serveur vérifie puis remplace par
+  l'objectif original; le texte original exact reste accepté pour compatibilité;
 - IDs uniques, dépendances connues et graphe acyclique;
 - nombre de nœuds et parallélisme dans les budgets;
 - skill connu et autorisé par la politique courante;
@@ -99,7 +101,12 @@ Les champs `status`, `completed`, `result` et `tool_call` ne font pas partie du
 contrat. Un modèle ne peut donc pas déclarer son propre succès ou son effet.
 
 Une proposition locale iPhone ou manuelle est acceptée seulement avec sa source
-explicite et subit exactement le même validateur serveur.
+explicite et subit le même validateur serveur. Elle doit conserver l'objectif
+original exact; la référence de carte est réservée à une réponse modèle liée à
+son appel serveur. Un autre objectif ou la référence d'un autre but est rejeté,
+y compris lors d'une replanification. Le texte retiré par expurgation ou par la
+limite de contexte n'a donc jamais à être révélé au modèle pour qu'il puisse
+lier son plan au bon but.
 
 ## DAG et dispatch
 

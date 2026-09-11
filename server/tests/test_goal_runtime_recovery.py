@@ -26,6 +26,7 @@ from app.services.swarm_contracts import (
     EvaluationStatus,
     GoalCreateRequest,
     GoalStartRequest,
+    PlannerSource,
     PlanNodeType,
     SwarmPlanNodeProposal,
     SwarmPlanProposal,
@@ -437,3 +438,194 @@ async def test_reconcile_rebuilds_terminal_result_and_episode_after_projection_c
         ).fetchone()
     assert episode is not None
     assert str(episode[1]) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_recovers_started_goal_after_more_than_one_batch_of_idle_goals(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(tmp_path / "recovery-fairness.db", _worker_plan())
+    for index in range(101):
+        await manager.create_goal(
+            GoalCreateRequest(objective=f"Idle goal {index}"), actor_id="test-phone"
+        )
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    await manager._mark_start_requested(str(goal["id"]))
+
+    await manager.reconcile()
+
+    detail = await manager.get_goal(str(goal["id"]))
+    assert detail is not None
+    assert detail["goal"]["status"] == "running"
+    assert detail["nodes"][0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_expires_goal_behind_more_than_one_batch_of_unexpired_manual_goals(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(tmp_path / "deadline-fairness.db", _worker_plan())
+    for index in range(101):
+        old = await manager.create_goal(
+            GoalCreateRequest(
+                objective=f"Manual goal {index}",
+                autonomy_profile=AutonomyProfile.MANUAL,
+                max_runtime_seconds=86_400,
+            ),
+            actor_id="test-phone",
+        )
+        await manager._mark_start_requested(str(old["id"]))
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_runtime_seconds=30),
+        actor_id="test-phone",
+    )
+    await manager._mark_start_requested(str(goal["id"]))
+    now = datetime.now(UTC)
+    older = (now - timedelta(seconds=100)).isoformat()
+    expired = (now - timedelta(seconds=35)).isoformat()
+    async with aiosqlite.connect(manager.db_path) as db:
+        await db.execute(
+            "UPDATE goal_runs SET started_at=?,updated_at=? WHERE id<>?",
+            (older, older, goal["id"]),
+        )
+        await db.execute(
+            "UPDATE goal_runs SET started_at=?,updated_at=? WHERE id=?",
+            (expired, expired, goal["id"]),
+        )
+        await db.commit()
+
+    await manager.reconcile()
+
+    detail = await manager.get_goal(str(goal["id"]))
+    assert detail is not None
+    assert detail["goal"]["status"] == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_projects_completed_job_ahead_of_unchanged_queued_job(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(tmp_path / "job-fairness.db", _worker_plan(include_review=True))
+    goal = await _create_and_start(manager)
+    registration = await manager.state_service.register_agent(
+        AgentCreate(
+            name="Review worker",
+            endpoint="https://worker.invalid",
+            skills=["code_review.git_status"],
+        ),
+        "test-phone",
+    )
+    await manager.state_service.heartbeat_agent(
+        str(registration["id"]), "online", str(registration["credential"])
+    )
+    job = await manager.agent_dispatcher.claim(str(registration["id"]))
+    assert job is not None
+    await manager.agent_dispatcher.submit_result(
+        str(registration["id"]),
+        str(job["id"]),
+        str(job["claim_token"]),
+        status="completed",
+        result={
+            "content_trust": "untrusted",
+            "entries": [],
+            "protected_entries_omitted": 0,
+            "truncated": False,
+        },
+        error=None,
+        lease_id=str(job["lease_id"]),
+        lease_generation=int(job["lease_generation"]),
+    )
+    # Simulate the result hook being missed; an older queued file job must not
+    # occupy the only reconciliation slot on every pass.
+    await manager.reconcile(limit=1)
+
+    nodes = await manager.graph.list_nodes(str(goal["id"]))
+    by_skill = {node["required_skill"]: node for node in nodes}
+    assert by_skill["workspace.list_dir"]["status"] == "dispatched"
+    assert by_skill["code_review.git_status"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_recovers_planning_goal_ahead_of_unchanged_running_goal(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(tmp_path / "active-fairness.db", _worker_plan())
+    older = await _create_and_start(manager)
+    newer = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    await manager._mark_start_requested(str(newer["id"]))
+
+    await manager.reconcile(limit=1)
+
+    detail = await manager.get_goal(str(newer["id"]))
+    assert detail is not None
+    assert detail["goal"]["status"] == "running"
+    assert detail["nodes"][0]["status"] == "dispatched"
+    assert (await manager.graph.list_nodes(str(older["id"])))[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_propagates_failed_hard_dependency_while_optional_dependency_runs(
+    tmp_path: Path,
+) -> None:
+    proposal = _worker_plan()
+    base = proposal.nodes[0]
+    proposal = proposal.model_copy(
+        update={
+            "max_parallelism": 2,
+            "nodes": [
+                base.model_copy(
+                    update={"temporary_id": "failed", "title": "Failed", "priority": 4}
+                ),
+                base.model_copy(
+                    update={"temporary_id": "running", "title": "Running", "priority": 3}
+                ),
+                base.model_copy(
+                    update={
+                        "temporary_id": "blocked",
+                        "title": "Blocked",
+                        "priority": 2,
+                        "dependencies": ["failed"],
+                        "optional_dependencies": ["running"],
+                    }
+                ),
+                base.model_copy(
+                    update={
+                        "temporary_id": "next",
+                        "title": "Next",
+                        "priority": 1,
+                        "optional_dependencies": ["blocked"],
+                    }
+                ),
+            ],
+        }
+    )
+    manager = await _manager(tmp_path / "failed-dependency-recovery.db", proposal)
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective=proposal.objective), actor_id="test-phone"
+    )
+    started = await manager._mark_start_requested(str(goal["id"]))
+    await manager._persist_initial_plan(
+        started, proposal, source=PlannerSource.MANUAL, model_call_id=None
+    )
+    nodes = {node["title"]: node for node in await manager.graph.list_nodes(str(goal["id"]))}
+    # This is the persisted state after a worker failure was projected but the
+    # subsequent dependency refresh was interrupted by a process restart.
+    for title, target in (("Failed", "failed"), ("Running", "running")):
+        await manager.graph.transition_node(
+            str(nodes[title]["id"]), expected="ready", target="running"
+        )
+        if target == "failed":
+            await manager.graph.transition_node(
+                str(nodes[title]["id"]), expected="running", target=target
+            )
+
+    await manager.reconcile()
+
+    nodes = {node["title"]: node for node in await manager.graph.list_nodes(str(goal["id"]))}
+    assert nodes["Running"]["status"] == "running"
+    assert nodes["Blocked"]["status"] == "blocked"
+    assert nodes["Next"]["status"] == "dispatched"

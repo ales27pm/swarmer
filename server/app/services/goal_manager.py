@@ -142,6 +142,26 @@ class GoalManager:
         return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
+    def _bind_plan_to_goal(
+        goal: Mapping[str, Any],
+        proposal: SwarmPlanProposal,
+        *,
+        model_call_id: str | None,
+    ) -> SwarmPlanProposal:
+        """Resolve a model's goal-card reference without revealing the raw objective.
+
+        The reference must identify this call's goal. Explicit phone/manual
+        proposals keep their existing exact-objective contract; they cannot
+        substitute a reference for user-supplied objective text.
+        """
+
+        if proposal.objective == goal["objective"]:
+            return proposal
+        if model_call_id is not None and proposal.objective == f"goal:{goal['id']}":
+            return proposal.model_copy(update={"objective": str(goal["objective"])})
+        raise GoalManagerConflict("planner changed the authoritative goal objective")
+
+    @staticmethod
     def _runtime_expired(goal: Mapping[str, Any]) -> bool:
         raw_started = goal.get("started_at")
         if raw_started is None:
@@ -771,8 +791,8 @@ class GoalManager:
         model_call_id: str | None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
-        if proposal.objective != goal["objective"]:
-            raise GoalManagerConflict("planner changed the authoritative goal objective")
+        output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
+        proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
         if len(proposal.nodes) > int(goal["max_steps"]):
             raise GoalManagerConflict("plan exceeds the goal step budget")
         try:
@@ -912,7 +932,6 @@ class GoalManager:
                 created_at=now,
             )
             if model_call_id is not None:
-                output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
                 cursor = await db.execute(
                     """UPDATE goal_model_calls SET status='completed',completed_at=?,
                     output_digest=?,latency_ms=CAST(MAX(0,
@@ -2135,13 +2154,14 @@ class GoalManager:
                 return result
             goal = refreshed_goal
             try:
+                bound_proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=call_id)
                 validated = validate_swarm_plan(
-                    proposal,
+                    bound_proposal,
                     policy=self.permission_policy,
                     max_nodes=max(1, int(goal["max_steps"]) - len(nodes)),
                     max_parallelism=int(goal["max_parallelism"]),
                 )
-            except PlanValidationError as exc:
+            except (PlanValidationError, GoalManagerConflict) as exc:
                 if call_id is not None:
                     await self._finish_model_call(call_id, status="failed")
                 raise GoalManagerConflict(str(exc)) from exc
@@ -2182,6 +2202,8 @@ class GoalManager:
         source: PlannerSource,
         model_call_id: str | None,
     ) -> None:
+        output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
+        proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
         existing = await self.graph.list_nodes(str(goal["id"]))
         if len(existing) + len(proposal.nodes) > int(goal["max_steps"]):
             raise GoalManagerConflict("replan exceeds the goal step budget")
@@ -2282,7 +2304,6 @@ class GoalManager:
                 ),
             )
             if model_call_id is not None:
-                output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
                 cursor = await db.execute(
                     """UPDATE goal_model_calls SET status='completed',completed_at=?,
                     output_digest=?,latency_ms=CAST(MAX(0,
@@ -2427,8 +2448,10 @@ class GoalManager:
                     """SELECT * FROM goal_runs
                     WHERE status IN ('planning','running','waiting_permission')
                       AND started_at IS NOT NULL
+                      AND julianday(started_at) + max_runtime_seconds / 86400.0
+                          <= julianday(?)
                     ORDER BY updated_at ASC,id ASC LIMIT ?""",
-                    (bounded_limit,),
+                    (self._now(), bounded_limit),
                 )
             ).fetchall()
         changed = 0
@@ -2459,6 +2482,16 @@ class GoalManager:
                     WHERE g.status IN ('running','waiting_permission')
                       AND n.node_type='worker'
                       AND n.status IN ('dispatched','running','waiting_capability')
+                      AND (
+                        j.status IN ('completed','failed','cancelled','quarantined')
+                        OR (n.status='dispatched' AND j.status IN ('claimed','running'))
+                        OR (n.worker_job_id IS NULL AND n.task_id IS NOT NULL AND (
+                            EXISTS (SELECT 1 FROM agent_jobs AS orphan
+                                    WHERE orphan.task_id=n.task_id)
+                            OR EXISTS (SELECT 1 FROM tasks AS child
+                                       WHERE child.id=n.task_id AND child.status='created')
+                        ))
+                      )
                     ORDER BY n.updated_at ASC,n.id ASC LIMIT ?
                     """,
                     (bounded_limit,),
@@ -2553,8 +2586,51 @@ class GoalManager:
                 await db.execute(
                     """SELECT id,status,autonomy_profile,updated_at,started_at FROM goal_runs
                     WHERE status IN ('planning','running')
+                      AND autonomy_profile<>'manual'
+                      AND started_at IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM goal_model_calls AS pending
+                        WHERE pending.goal_run_id=goal_runs.id AND pending.status='started'
+                          AND pending.lease_expires_at>?
+                      )
+                      AND (
+                        status='planning'
+                        OR NOT EXISTS (
+                            SELECT 1 FROM plan_nodes AS unfinished
+                            WHERE unfinished.goal_run_id=goal_runs.id
+                              AND unfinished.status NOT IN
+                                  ('completed','failed','blocked','cancelled','skipped')
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM plan_nodes AS ready
+                            WHERE ready.goal_run_id=goal_runs.id AND ready.status='ready'
+                              AND (ready.node_type='synthesis' OR (
+                                SELECT COUNT(*) FROM plan_nodes AS active
+                                WHERE active.goal_run_id=goal_runs.id AND active.status IN
+                                    ('dispatched','running','waiting_permission','waiting_capability')
+                              ) < goal_runs.max_parallelism)
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM plan_nodes AS planned
+                            WHERE planned.goal_run_id=goal_runs.id AND planned.status='planned'
+                              AND (
+                                NOT EXISTS (
+                                    SELECT 1 FROM plan_edges AS edge
+                                    JOIN plan_nodes AS dependency ON dependency.id=edge.from_node_id
+                                    WHERE edge.to_node_id=planned.id AND dependency.status NOT IN
+                                        ('completed','failed','blocked','cancelled','skipped')
+                                )
+                                OR EXISTS (
+                                    SELECT 1 FROM plan_edges AS edge
+                                    JOIN plan_nodes AS dependency ON dependency.id=edge.from_node_id
+                                    WHERE edge.to_node_id=planned.id AND edge.dependency_type='hard'
+                                      AND dependency.status IN ('failed','blocked','cancelled','skipped')
+                                )
+                              )
+                        )
+                      )
                     ORDER BY updated_at ASC,id ASC LIMIT ?""",
-                    (bounded_limit,),
+                    (self._now(), bounded_limit),
                 )
             ).fetchall()
         for active in active_goals:

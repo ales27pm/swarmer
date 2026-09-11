@@ -23,6 +23,7 @@ from app.services.swarm_contracts import (
     EvaluationDecision,
     EvaluationStatus,
     GoalCreateRequest,
+    GoalReplanRequest,
     GoalStartRequest,
     PlannerSource,
     PlanNodeType,
@@ -691,3 +692,109 @@ async def test_malformed_completed_worker_result_fails_goal_node(tmp_path: Path)
     )
     assert invalid_node["status"] == "failed"
     assert invalid_node["error_summary"] == "worker completed without valid skill evidence"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_objective", ["different objective", "goal:goal_stale"])
+async def test_model_plan_cannot_retarget_goal_with_text_or_stale_binding(
+    tmp_path: Path, wrong_objective: str
+) -> None:
+    plan = _parallel_plan().model_copy(update={"objective": wrong_objective})
+    manager = await _manager(tmp_path, plan)
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+
+    with pytest.raises(GoalManagerConflict, match="changed the authoritative goal objective"):
+        await manager.start_goal(str(goal["id"]), GoalStartRequest())
+
+    assert await manager.graph.list_nodes(str(goal["id"])) == []
+    async with aiosqlite.connect(manager.db_path) as db:
+        assert await (await db.execute("SELECT status FROM goal_model_calls")).fetchone() == (
+            "failed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_plan_binding_from_another_existing_goal_is_rejected(tmp_path: Path) -> None:
+    manager = await _manager(tmp_path, _parallel_plan())
+    other = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    target = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    manager.planner = DeterministicSwarmPlannerProvider(
+        _parallel_plan().model_copy(update={"objective": f"goal:{other['id']}"})
+    )
+
+    with pytest.raises(GoalManagerConflict, match="changed the authoritative goal objective"):
+        await manager.start_goal(str(target["id"]), GoalStartRequest())
+
+    assert await manager.graph.list_nodes(str(target["id"])) == []
+    assert await manager.graph.list_nodes(str(other["id"])) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["manual", "iphone_local"])
+async def test_explicit_plan_requires_original_objective_instead_of_model_binding(
+    tmp_path: Path, source: str
+) -> None:
+    manager = await _manager(tmp_path, _parallel_plan())
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    request = GoalStartRequest.model_validate(
+        {
+            "plan_proposal": _parallel_plan().model_copy(
+                update={"objective": f"goal:{goal['id']}"}
+            ),
+            "planner_source": source,
+        }
+    )
+    with pytest.raises(GoalManagerConflict, match="changed the authoritative goal objective"):
+        await manager.start_goal(str(goal["id"]), request)
+
+    # Existing explicit proposals still use the unchanged raw objective.
+    accepted = await manager.start_goal(
+        str(goal["id"]),
+        GoalStartRequest.model_validate(
+            {"plan_proposal": _parallel_plan(), "planner_source": source}
+        ),
+    )
+    assert accepted["goal"]["status"] == "running"
+    assert accepted["goal"]["model_call_count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["model", "manual", "iphone_local"])
+async def test_replan_cannot_change_the_original_goal_objective(
+    tmp_path: Path, source: str
+) -> None:
+    manager = await _manager(tmp_path, _parallel_plan())
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    started = await manager._mark_start_requested(str(goal["id"]))
+    await manager._persist_initial_plan(
+        started, _parallel_plan(), source=PlannerSource.MANUAL, model_call_id=None
+    )
+    original_nodes = await manager.graph.list_nodes(str(goal["id"]))
+    wrong_plan = _parallel_plan().model_copy(update={"objective": "Inspect a different project"})
+    manager.planner = DeterministicSwarmPlannerProvider(wrong_plan)
+    request = (
+        GoalReplanRequest()
+        if source == "model"
+        else GoalReplanRequest.model_validate(
+            {"plan_proposal": wrong_plan, "planner_source": source}
+        )
+    )
+
+    with pytest.raises(GoalManagerConflict, match="changed the authoritative goal objective"):
+        await manager.replan_goal(str(goal["id"]), request)
+
+    assert await manager.graph.list_nodes(str(goal["id"])) == original_nodes
+    refreshed = await manager.graph.get_goal(str(goal["id"]))
+    assert refreshed is not None
+    assert refreshed["objective"] == "Inspect the repository"
+    assert refreshed["replan_count"] == 0
