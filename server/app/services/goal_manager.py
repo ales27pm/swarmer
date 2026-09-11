@@ -21,7 +21,13 @@ from app.services.context_builder import (
     safe_context_text,
 )
 from app.services.evaluator_provider import EvaluatorProvider, EvaluatorProviderError
+from app.services.execution_engine import ExecutionEngine
 from app.services.feedback_dataset import redact_dataset_text
+from app.services.goal_code_application import (
+    CODE_PROPOSAL_SKILL,
+    GoalCodeApplicationConflict,
+    GoalCodeApplicationService,
+)
 from app.services.goal_state import (
     GoalStateConflict,
     GoalStateService,
@@ -119,6 +125,7 @@ class GoalManager:
         instance_id: str | None = None,
         model_call_lease_seconds: int = 120,
         require_execution_workers: bool = False,
+        execution_engine: ExecutionEngine | None = None,
     ) -> None:
         self.db_path = db_path
         self.state_service = state_service
@@ -135,6 +142,11 @@ class GoalManager:
             raise ValueError("model_call_lease_seconds must be between 30 and 900")
         self.model_call_lease_seconds = model_call_lease_seconds
         self.require_execution_workers = require_execution_workers
+        self.code_applications = (
+            GoalCodeApplicationService(db_path, execution_engine)
+            if execution_engine is not None
+            else None
+        )
         self.defaults = {
             "max_steps": default_max_steps,
             "max_parallelism": default_max_parallelism,
@@ -1179,6 +1191,8 @@ class GoalManager:
             payload: dict[str, Any] = {"path": "."}
         elif skill == "research.query":
             payload = {"query": objective[:2_000], "max_results": 5}
+        elif skill == CODE_PROPOSAL_SKILL:
+            payload = {"objective": safe_context_text(objective, max_chars=4_000)}
         elif skill == "code_review.git_status":
             payload = {}
         elif skill == "code_review.git_diff":
@@ -1201,6 +1215,15 @@ class GoalManager:
         *,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
+        if node["required_skill"] == CODE_PROPOSAL_SKILL and self.code_applications is None:
+            await self.graph.transition_node(
+                str(node["id"]),
+                expected="ready",
+                target="blocked",
+                error_summary="The local code application gateway is unavailable.",
+                maintenance_guard=maintenance_guard,
+            )
+            return
         try:
             payload = self._payload_for_node(node)
         except GoalManagerConflict as exc:
@@ -1237,7 +1260,7 @@ class GoalManager:
                         (SELECT COUNT(*) FROM plan_nodes AS active
                          WHERE active.goal_run_id=g.id AND active.status IN
                            ('dispatched','running','waiting_permission','waiting_capability'))
-                           AS active_count
+                           AS active_count,g.model_call_count,g.max_model_calls
                     FROM goal_runs AS g WHERE g.id=? AND g.status='running'""",
                     (goal["id"],),
                 )
@@ -1251,6 +1274,35 @@ class GoalManager:
             if int(usage[3]) >= int(usage[2]):
                 await db.rollback()
                 return
+            if node["required_skill"] == CODE_PROPOSAL_SKILL:
+                if int(usage[4]) >= int(usage[5]):
+                    await db.rollback()
+                    await self._terminate_goal(
+                        str(goal["id"]),
+                        status="budget_exhausted",
+                        reason="goal model call budget exhausted",
+                        maintenance_guard=maintenance_guard,
+                    )
+                    return
+                await db.execute(
+                    "UPDATE goal_runs SET model_call_count=model_call_count+1 WHERE id=?",
+                    (goal["id"],),
+                )
+                await append_audit_event(
+                    db,
+                    "goal.codegen.reserved",
+                    {
+                        "goal_run_id": goal["id"],
+                        "node_id": node["id"],
+                        "required_skill": CODE_PROPOSAL_SKILL,
+                        "model_calls_reserved": 1,
+                    },
+                    actor_type="control-plane",
+                    actor_id="goal-manager",
+                    task_id=child.id,
+                    trace_id=str(goal["id"]),
+                    created_at=now,
+                )
             await StateService._insert_task(db, child)
             cursor = await db.execute(
                 """UPDATE plan_nodes SET status='dispatched',task_id=?,updated_at=?
@@ -1406,6 +1458,11 @@ class GoalManager:
             node = await self.graph.get_node(str(node["id"]))
             if node is None:
                 return None
+            if (
+                node["status"] == "waiting_permission"
+                and node["required_skill"] == CODE_PROPOSAL_SKILL
+            ):
+                return await self.get_goal(goal_run_id)
             if node["status"] not in {"dispatched", "running", "waiting_capability"}:
                 if node["status"] in self.graph.NODE_TERMINAL:
                     return await self.get_goal(goal_run_id)
@@ -1414,6 +1471,23 @@ class GoalManager:
                 node.get("required_skill"),
                 job.get("result"),
             )
+            if (
+                node["required_skill"] == CODE_PROPOSAL_SKILL
+                and job["status"] == "completed"
+                and valid_evidence
+                and self.code_applications is not None
+            ):
+                try:
+                    await self.code_applications.capture_result(
+                        goal_run_id,
+                        str(node["id"]),
+                        str(job["id"]),
+                        maintenance_guard=maintenance_guard,
+                    )
+                except GoalCodeApplicationConflict:
+                    valid_evidence = False
+                else:
+                    return await self.get_goal(goal_run_id)
             target = "completed" if job["status"] == "completed" and valid_evidence else "failed"
             result_summary = (
                 summarize_untrusted_worker_output(job.get("result"))
@@ -1458,6 +1532,19 @@ class GoalManager:
                 maintenance_guard=maintenance_guard,
             )
             return await self.get_goal(goal_run_id)
+
+    async def on_tool_call_updated(self, tool_call_id: str) -> dict[str, Any] | None:
+        if self.code_applications is None:
+            return None
+        changed = await self.code_applications.synchronize(tool_call_id)
+        detail = None
+        for goal_run_id in changed:
+            async with self._lock(goal_run_id):
+                await self._advance_ready(goal_run_id, explicit_user_action=False)
+                await self._drain_synthesis_nodes(goal_run_id)
+                await self._evaluate_if_quiescent(goal_run_id)
+                detail = await self.get_goal(goal_run_id)
+        return detail
 
     async def on_capability_requested(self, job_id: str) -> dict[str, Any] | None:
         node = await self.graph.node_for_job(job_id)
@@ -2099,6 +2186,28 @@ class GoalManager:
                     str(goal["id"]),
                 ),
             )
+            # Fence reviewed local writes in the same transaction as cancellation.
+            # A write already claimed by the executor keeps its truthful outcome.
+            await db.execute(
+                """UPDATE approvals SET status='cancelled',decided_at=?
+                WHERE status='pending' AND task_id IN (
+                    SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?
+                )""",
+                (now, goal["id"]),
+            )
+            await db.execute(
+                """UPDATE tool_calls SET status='cancelled',updated_at=?
+                WHERE status IN ('proposed','waiting_permission','queued') AND task_id IN (
+                    SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?
+                )""",
+                (now, goal["id"]),
+            )
+            await db.execute(
+                """UPDATE tasks SET status='cancelled',updated_at=?,completed_at=?
+                WHERE status IN ('created','planned','waiting_permission','queued','blocked')
+                  AND id IN (SELECT apply_task_id FROM goal_code_proposals WHERE goal_run_id=?)""",
+                (now, now, goal["id"]),
+            )
         await append_audit_event(
             db,
             f"goal.{status}",
@@ -2199,8 +2308,10 @@ class GoalManager:
                 await db.execute(
                     """SELECT task_id FROM plan_nodes
                     WHERE goal_run_id=? AND task_id IS NOT NULL
-                    ORDER BY created_at ASC,id ASC""",
-                    (goal_run_id,),
+                    UNION SELECT apply_task_id FROM goal_code_proposals
+                    WHERE goal_run_id=? AND apply_task_id IS NOT NULL
+                    ORDER BY task_id""",
+                    (goal_run_id, goal_run_id),
                 )
             ).fetchall()
         cancelled = 0
@@ -2211,6 +2322,15 @@ class GoalManager:
             task = await self.state_service.get_task(task_id)
             if task is None or task.status.value in {"completed", "failed", "cancelled"}:
                 continue
+            if task.status.value == "running":
+                async with aiosqlite.connect(self.db_path) as db:
+                    local_application = await (
+                        await db.execute(
+                            "SELECT 1 FROM goal_code_proposals WHERE apply_task_id=?", (task_id,)
+                        )
+                    ).fetchone()
+                if local_application is not None:
+                    continue
             try:
                 result = await self.state_service.cancel_task(
                     task_id,
@@ -2608,6 +2728,11 @@ class GoalManager:
                 maintenance_guard=maintenance_guard,
             )
             changed += 1
+        if self.code_applications is not None:
+            application_goals = await self.code_applications.synchronize(
+                maintenance_guard=maintenance_guard
+            )
+            changed += len(application_goals)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             rows = await (

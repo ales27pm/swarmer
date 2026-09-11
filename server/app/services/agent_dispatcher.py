@@ -194,7 +194,7 @@ class AgentDispatcher:
                         required_skill,
                         encoded_payload,
                         "queued",
-                        self.max_attempts,
+                        1 if required_skill == "code.generate_python" else self.max_attempts,
                         now,
                         now,
                     ),

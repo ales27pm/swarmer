@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -1264,6 +1264,107 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /goals/{goal_id}/nodes/{node_id}/code-proposal:
+    get:
+      summary: Get Code Proposal
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: node_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Node Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeProposalPreview'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      security:
+      - bearerAuth: []
+  /goals/{goal_id}/nodes/{node_id}/code-proposal/apply:
+    post:
+      summary: Apply Code Proposal
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: node_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Node Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeProposalApplyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeProposalApplication'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      security:
+      - bearerAuth: []
+
 x-websocket-endpoints:
   /ws:
     authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
@@ -1323,6 +1424,7 @@ x-websocket-endpoints:
       objectives, expected outputs, worker summaries, or synthesized answers.
       No event carries native results, bearer credentials, grants, or leases.
 
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1344,7 +1446,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: opaque-agent-credential
-      description: One-time credential returned when an authenticated device registers an agent.
+      description: One-time credential from paired-device registration or private local-operator enrollment.
 
   parameters:
     TaskId:
@@ -1487,7 +1589,7 @@ components:
         - episode_retrieval_hits
       properties:
         status: {type: string, const: ok}
-        version: {const: 0.12.0}
+        version: {const: 0.13.0}
         instance_id:
           type: string
           pattern: '^cp_[0-9a-f]{32}$'
@@ -2744,7 +2846,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.12.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.13.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2758,7 +2860,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.12.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.13.0.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -2799,7 +2901,7 @@ components:
       additionalProperties: false
       required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.12.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.13.0.}
         grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
         request_id: {type: string}
         task_id: {type: string}
@@ -3091,3 +3193,77 @@ components:
       properties:
         ticket: {type: string, writeOnly: true}
         expires_in_seconds: {const: 30}
+
+    CodeProposalApplication:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        tool_call_id:
+          type: string
+          title: Tool Call Id
+        approval_id:
+          type: string
+          title: Approval Id
+      additionalProperties: false
+      type: object
+      required:
+      - task_id
+      - tool_call_id
+      - approval_id
+      title: CodeProposalApplication
+    CodeProposalApplyRequest:
+      properties:
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - sha256
+      title: CodeProposalApplyRequest
+    CodeProposalPreview:
+      properties:
+        node_id:
+          type: string
+          title: Node Id
+        path:
+          type: string
+          title: Path
+        content:
+          type: string
+          maxLength: 64000
+          title: Content
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+        summary:
+          type: string
+          maxLength: 500
+          title: Summary
+        status:
+          type: string
+          enum:
+          - proposal
+          - waiting_permission
+          - applied
+          - failed
+          title: Status
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Id
+      additionalProperties: false
+      type: object
+      required:
+      - node_id
+      - path
+      - content
+      - sha256
+      - summary
+      - status
+      - task_id
+      title: CodeProposalPreview

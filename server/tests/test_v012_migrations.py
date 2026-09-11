@@ -141,7 +141,7 @@ async def test_v011_upgrade_to_v012_is_additive_restart_safe_and_preserves_state
             ).fetchall()
         }
 
-    assert SCHEMA_VERSION == V011_SCHEMA_VERSION + 1
+    assert SCHEMA_VERSION >= V011_SCHEMA_VERSION + 1
     assert version == (SCHEMA_VERSION,)
     assert task == (
         "Preserve the v0.11 task",

@@ -19,7 +19,10 @@ CODE_REVIEW_SKILLS = frozenset(
         "code_review.static_analysis",
     }
 )
-SUPPORTED_AGENT_SKILLS = WORKSPACE_SKILLS | RESEARCH_SKILLS | CODE_REVIEW_SKILLS
+CODE_GENERATION_SKILLS = frozenset({"code.generate_python"})
+SUPPORTED_AGENT_SKILLS = (
+    WORKSPACE_SKILLS | RESEARCH_SKILLS | CODE_REVIEW_SKILLS | CODE_GENERATION_SKILLS
+)
 
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
 _VERSION_RE = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
@@ -44,6 +47,7 @@ _FAMILY_METADATA: Mapping[str, frozenset[str]] = MappingProxyType(
         | {"max_operation_seconds", "max_results", "max_query_characters"},
         "code_review": _BASE_METADATA
         | {"max_operation_seconds", "max_paths", "max_selected_files"},
+        "code": _BASE_METADATA | {"max_operation_seconds"},
     }
 )
 
@@ -87,6 +91,8 @@ def _skill_families(skills: tuple[str, ...]) -> frozenset[str]:
         families.add("research")
     if set(skills) & CODE_REVIEW_SKILLS:
         families.add("code_review")
+    if set(skills) & CODE_GENERATION_SKILLS:
+        families.add("code")
     return frozenset(families)
 
 
@@ -216,11 +222,12 @@ def _manifest_policy(raw: object, skills: tuple[str, ...]) -> Mapping[str, str |
         "workspace": ("configured-workspace-read-only", "control-plane-only"),
         "research": ("none", "configured-research-adapter-only"),
         "code_review": ("configured-repository-read-only", "control-plane-only"),
+        "code": ("none", "control-plane-and-loopback-model-only"),
     }[family]
     if raw.get("filesystem") != expected[0] or raw.get("network") != expected[1]:
         raise AgentCardPolicyError("agent card execution policy is incompatible with its skills")
-    if family == "code_review" and "shell" not in raw:
-        raise AgentCardPolicyError("code review agent card must explicitly deny shell access")
+    if family in {"code_review", "code"} and "shell" not in raw:
+        raise AgentCardPolicyError("code agent card must explicitly deny shell access")
     normalized: dict[str, str | bool] = {
         "filesystem": expected[0],
         "network": expected[1],

@@ -198,4 +198,19 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         return _workspace_payload(required_skill, payload)
     if required_skill == "research.query":
         return _research_payload(payload)
+    if required_skill == "code.generate_python":
+        _exact_fields(payload, frozenset({"objective"}))
+        objective = payload.get("objective")
+        if (
+            not isinstance(objective, str)
+            or not objective.strip()
+            or len(objective) > 4_000
+            or "\0" in objective
+        ):
+            raise RemoteJobPolicyError("code generation requires a bounded objective")
+        try:
+            objective.encode("utf-8")
+        except UnicodeError as exc:
+            raise RemoteJobPolicyError("code generation objective is invalid Unicode") from exc
+        return {"objective": objective.strip()}
     return _review_payload(required_skill, payload)

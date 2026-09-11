@@ -268,6 +268,39 @@ describe("GoalDetailScreen", () => {
     expect(mockStartGoal).not.toHaveBeenCalled();
   });
 
+  it("offers an explicit code review for a completed generation job", async () => {
+    mockGetGoal.mockResolvedValue({
+      ...detail,
+      goal: { ...detail.goal, status: "waiting_permission", current_phase: "code_proposal_ready" },
+      nodes: [{
+        ...detail.nodes[0],
+        required_skill: "code.generate_python",
+        worker_job_id: "job_code",
+        status: "waiting_permission",
+      }],
+    });
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByRole("button", { name: "Examiner le code proposé" })).toBeOnTheScreen();
+    expect(screen.getByText("Phase : Code prêt à relire")).toBeOnTheScreen();
+    expect(screen.getByText(/Le code n’a pas été exécuté/)).toBeOnTheScreen();
+    expect(screen.queryByText(/SHA-256 du contenu proposé/)).not.toBeOnTheScreen();
+  });
+
+  it.each([
+    { label: "an unrelated skill", skill: "workspace.read_text", status: "completed" as const, job: "job_read" },
+    { label: "an unfinished job", skill: "code.generate_python", status: "running" as const, job: "job_code" },
+    { label: "a missing worker job", skill: "code.generate_python", status: "completed" as const, job: null },
+  ])("does not offer a code preview for $label", async ({ skill, status, job }) => {
+    mockGetGoal.mockResolvedValue({
+      ...detail,
+      nodes: [{ ...detail.nodes[0], required_skill: skill, status, worker_job_id: job }],
+    });
+    await render(<GoalDetailScreen />);
+    await screen.findByText("Qualifier le runtime distribué");
+    expect(screen.queryByRole("button", { name: "Examiner le code proposé" })).not.toBeOnTheScreen();
+  });
+
   it("guards controller retries while busy and after falling back to an offline worker wait", async () => {
     const retry = deferred<GoalDetail>();
     mockGetGoal.mockResolvedValue(waitingForWorkers);

@@ -8,7 +8,7 @@ import secrets
 import stat
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import aiosqlite
@@ -47,7 +47,7 @@ from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -562,6 +562,24 @@ CREATE TABLE IF NOT EXISTS plan_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_plan_nodes_goal_status
     ON plan_nodes(goal_run_id, status, priority DESC, created_at, id);
+CREATE TABLE IF NOT EXISTS goal_code_proposals (
+    node_id TEXT PRIMARY KEY,
+    goal_run_id TEXT NOT NULL,
+    worker_job_id TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    apply_task_id TEXT UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(node_id) REFERENCES plan_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY(goal_run_id) REFERENCES goal_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY(worker_job_id) REFERENCES agent_jobs(id),
+    FOREIGN KEY(apply_task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_code_proposals_goal
+    ON goal_code_proposals(goal_run_id,node_id);
 CREATE TABLE IF NOT EXISTS plan_edges (
     goal_run_id TEXT NOT NULL,
     from_node_id TEXT NOT NULL,
@@ -2426,7 +2444,15 @@ class StateService:
         value["agent_card"] = public_agent_card(value).model_dump(mode="json")
         return value
 
-    async def register_agent(self, request: AgentCreate, actor_id: str) -> dict[str, Any]:
+    async def register_agent(
+        self,
+        request: AgentCreate,
+        actor_id: str,
+        *,
+        actor_type: Literal["device", "operator"] = "device",
+    ) -> dict[str, Any]:
+        if actor_type not in {"device", "operator"} or not actor_id:
+            raise ValueError("worker registration requires an identified device or operator")
         policy = validate_agent_registration(request)
         agent_id = f"agt_{uuid4().hex}"
         credential = secrets.token_urlsafe(32)
@@ -2478,7 +2504,7 @@ class StateService:
                 db,
                 "agent.registered",
                 {"agent_id": agent_id},
-                actor_type="device",
+                actor_type=actor_type,
                 actor_id=actor_id,
                 created_at=now,
             )

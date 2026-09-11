@@ -96,8 +96,16 @@ or modify software. A synthesis node requires required_skill=null and preferred_
 Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
 never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
-Minimal synthesis-node shape (replace the ID/text as needed):
-{"temporary_id":"assess","node_type":"synthesis","title":"Assess capability gap","objective":"Identify missing execution capabilities","required_skill":null,"dependencies":[],"optional_dependencies":[],"expected_output":"A clear capability limitation","priority":1,"preferred_agent_constraints":null}
+If code.generate_python is available, it can propose one small self-contained Python app.py
+using only the standard library. Use a single worker node for that deliverable, carrying the
+user's functional requirements in its objective. The worker cannot edit, execute, install,
+or deploy files. The server waits for user review and a separate file-write approval.
+For this single-file deliverable use exactly one code.generate_python worker node with no
+dependencies. Do not add placeholder capability-gap, assessment, or synthesis nodes when
+this coding skill is available. Completion means the proposed source was approved and saved;
+execution, testing, installation and deployment remain explicitly unverified limitations.
+If the user explicitly requests execution, tests or deployment, preserve those requirements
+as unmet; do not replace them with a weaker saved-source criterion.
 Never emit credentials, tool calls, shell commands, approval decisions, execution state, or claims
 that work completed. The server validates the DAG, policy, budgets, and every later transition.
 """

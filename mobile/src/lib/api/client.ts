@@ -3,6 +3,11 @@ import * as SecureStore from "expo-secure-store";
 
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import {
+  parseCodeProposalApplication,
+  parseGoalCodeProposal,
+  type GoalCodeProposalReview,
+} from "@/lib/api/code-proposal";
+import {
   assertCapabilityRequestFresh,
   CapabilityProtocolError,
   parseCapabilityAuthorizationResponse,
@@ -77,6 +82,7 @@ export type {
   ToolCall,
   ToolProposalInput,
 } from "@/lib/api/types";
+export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
 
 const CONNECTION_KEY = "mongars.connection.v1";
 const PENDING_CONNECTION_KEY = "mongars.connection.pending.v1";
@@ -888,6 +894,35 @@ export function listGoalNodes(
     undefined,
     shouldAccept,
   );
+}
+
+export async function reviewGoalCodeProposal(
+  goalId: string,
+  nodeId: string,
+): Promise<GoalCodeProposalReview> {
+  const connection = await captureRequestConnectionFence();
+  const path = `/goals/${resourceId(goalId)}/nodes/${resourceId(nodeId)}/code-proposal`;
+  const value = await requestAt<unknown>(connection.baseUrl, path, undefined, connection.token);
+  await assertRequestConnectionCurrent(connection);
+  const proposal = parseGoalCodeProposal(value, goalId, nodeId);
+  const reviewedDigest = proposal.sha256;
+  let attempted = false;
+  return {
+    proposal,
+    prepareApproval: async () => {
+      if (attempted || proposal.status !== "proposal" || proposal.task_id !== null) {
+        throw new Error("Actualisez la proposition avant de préparer une nouvelle autorisation.");
+      }
+      attempted = true;
+      await assertRequestConnectionCurrent(connection);
+      const result = await requestAt<unknown>(connection.baseUrl, `${path}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ sha256: reviewedDigest }),
+      }, connection.token);
+      await assertRequestConnectionCurrent(connection);
+      return parseCodeProposalApplication(result);
+    },
+  };
 }
 
 export function getGoalResult(

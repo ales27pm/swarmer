@@ -714,6 +714,30 @@ class ExecutionEngine:
             if row is None or task is None or str(row[3]) != "queued" or str(task[0]) != "queued":
                 await db.rollback()
                 raise ExecutionConflict("tool call is not executable in the current task state")
+            application_goal = await (
+                await db.execute(
+                    """SELECT g.status,g.started_at,g.max_runtime_seconds
+                    FROM goal_code_proposals AS p
+                    LEFT JOIN goal_runs AS g ON g.id=p.goal_run_id
+                    WHERE p.apply_task_id=?""",
+                    (record["task_id"],),
+                )
+            ).fetchone()
+            if application_goal is not None:
+                now = datetime.now(UTC)
+                started = (
+                    datetime.fromisoformat(str(application_goal[1]))
+                    if application_goal[1] is not None
+                    else None
+                )
+                if (
+                    application_goal[0] not in {"planning", "running", "waiting_permission"}
+                    or started is None
+                    or started.tzinfo is None
+                    or (now - started).total_seconds() >= int(application_goal[2])
+                ):
+                    await db.rollback()
+                    raise ExecutionConflict("code application goal is no longer executable")
             try:
                 current_arguments = json.loads(str(row[2]))
             except json.JSONDecodeError as exc:

@@ -6,6 +6,11 @@
 tâches enfants worker, budgets, loop guards, agrégation sûre, API authentifiée
 et projections mobile.
 
+Depuis l'API v0.13, le worker `code.generate_python` peut aussi produire un
+fichier Python proposé. Une revue authentifiée puis l'autorisation unique du
+Gateway sont nécessaires avant son écriture. Cette étape ne lance ni ne teste
+le programme. Voir [le flux de revue et d'exploitation](29-python-code-proposals.md).
+
 **QUALIFIED:** invariants fonctionnels et de sécurité par tests automatisés
 locaux. Les leases, gateways, workers et transports sous-jacents conservent la
 qualification bornée v0.11.

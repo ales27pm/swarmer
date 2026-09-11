@@ -92,6 +92,12 @@ capability_rules:
 # executable allowlist for dispatch. Only the two original workspace reads are
 # safe for automatic lease redistribution.
 worker_skill_rules:
+  code.generate_python:
+    id: allow-worker-python-proposal
+    description: A local model worker may propose one Python file without writing or executing it.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   workspace.list_dir:
     id: allow-worker-workspace-list
     description: A policy-bound worker may list validated non-protected workspace paths.

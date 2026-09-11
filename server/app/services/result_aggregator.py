@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 import aiosqlite
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.services.code_proposal import validate_code_proposal_result
 from app.services.feedback_dataset import SafeDatasetValue, sanitize_dataset_value
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
 
@@ -270,6 +271,12 @@ def validate_worker_evidence(required_skill: object, value: object) -> bool:
 
     if not isinstance(required_skill, str) or not isinstance(value, dict):
         return False
+    if required_skill == "code.generate_python":
+        try:
+            validate_code_proposal_result(value)
+        except ValueError:
+            return False
+        return True
     if required_skill == "workspace.list_dir":
         if not _only_result_fields(value, required={"entries"}, optional={"capability_result"}):
             return False

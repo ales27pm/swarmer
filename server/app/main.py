@@ -17,6 +17,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -58,6 +59,11 @@ from app.services.approval_binding import (
 )
 from app.services.approval_gateway import ApprovalConflict, ApprovalGateway
 from app.services.auth_service import AuthService, PairingConflict, PairingRateLimited
+from app.services.code_proposal import (
+    CodeProposalApplication,
+    CodeProposalApplyRequest,
+    CodeProposalPreview,
+)
 from app.services.context_builder import ContextBuilder
 from app.services.control_plane_instance import ControlPlaneInstanceService
 from app.services.embedding_service import HttpEmbeddingService
@@ -72,6 +78,7 @@ from app.services.execution_engine import (
     ExecutionOutcomeUncertain,
 )
 from app.services.feedback_dataset import FeedbackDatasetService
+from app.services.goal_code_application import GoalCodeApplicationConflict
 from app.services.goal_manager import GoalManager, GoalManagerConflict
 from app.services.idempotency import (
     IdempotencyConflict,
@@ -120,7 +127,7 @@ from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.12.0"
+API_VERSION = "0.13.0"
 logger = logging.getLogger(__name__)
 
 _MAINTENANCE_OPERATION_ERRORS = (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error)
@@ -369,6 +376,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         instance_id=control_plane_instance.instance_id,
         model_call_lease_seconds=settings.goal_model_call_lease_seconds,
         require_execution_workers=True,
+        execution_engine=execution_engine,
     )
     idempotency_service = IdempotencyService(settings.db_path)
     consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)
@@ -978,6 +986,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
         await broadcast({"type": event_type, "payload": tool_call})
         if task:
             await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+        goal_detail = await run_goal_hook(
+            "tool-result", lambda: goal_manager.on_tool_call_updated(tool_call_id)
+        )
+        if goal_detail is not None:
+            await broadcast_goal_detail(goal_detail)
         return tool_call
 
     async def publish_execution_rejected(
@@ -1317,6 +1330,64 @@ def create_app(config: Settings | None = None) -> FastAPI:
         await broadcast_goal_detail(detail)
         return detail
 
+    @app.get("/goals/{goal_id}/nodes/{node_id}/code-proposal", response_model=CodeProposalPreview)
+    async def get_code_proposal(
+        goal_id: str,
+        node_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        service = goal_manager.code_applications
+        if service is None:
+            raise HTTPException(status_code=503, detail="code application service unavailable")
+        try:
+            preview = await service.get_proposal(goal_id, node_id)
+        except GoalCodeApplicationConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if preview is None:
+            raise HTTPException(status_code=404, detail="code proposal not found")
+        response.headers["Cache-Control"] = "no-store"
+        return preview
+
+    @app.post(
+        "/goals/{goal_id}/nodes/{node_id}/code-proposal/apply",
+        response_model=CodeProposalApplication,
+    )
+    async def apply_code_proposal(
+        goal_id: str,
+        node_id: str,
+        request: CodeProposalApplyRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        service = goal_manager.code_applications
+        if service is None:
+            raise HTTPException(status_code=503, detail="code application service unavailable")
+        try:
+            call = await service.apply(
+                goal_id,
+                node_id,
+                requester=AuthenticatedRequester(
+                    id=str(principal["id"]), name=str(principal["name"])
+                ),
+                reviewed_sha256=request.sha256,
+            )
+        except (GoalCodeApplicationConflict, ExecutionError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await broadcast({"type": "tool.proposed", "payload": call})
+        if call.get("approval_id"):
+            approval = await approval_gateway.get(str(call["approval_id"]))
+            if approval is not None:
+                await broadcast({"type": "approval.requested", "payload": approval})
+        task = await state_service.get_task(str(call["task_id"]))
+        if task is not None:
+            await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
+        return {
+            "task_id": call["task_id"],
+            "tool_call_id": call["id"],
+            "approval_id": call["approval_id"],
+        }
+
     @app.post("/goals/{goal_id}/cancel", response_model=GoalDetail)
     async def cancel_goal(
         goal_id: str,
@@ -1612,6 +1683,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
             return record
         if decision == "deny":
             await broadcast({"type": "tool.denied", "payload": tool_call})
+            goal_detail = await run_goal_hook(
+                "tool-denied", lambda: goal_manager.on_tool_call_updated(str(tool_call["id"]))
+            )
+            if goal_detail is not None:
+                await broadcast_goal_detail(goal_detail)
             return {"approval": record, "tool_call": tool_call}
         result = await run_tool_call(tool_call["id"], tool_call["task_id"])
         return {"approval": record, "tool_call": result}

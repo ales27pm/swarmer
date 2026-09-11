@@ -1,0 +1,9 @@
+{
+  "manifest_version": "1",
+  "name": "mongars-code-worker",
+  "version": "0.13.0",
+  "protocol": "mongars-worker-v0.9",
+  "skills": [{"id": "code.generate_python", "risk": "low", "result_trust": "untrusted"}],
+  "limits": {"max_concurrency": 1, "max_result_bytes": 512000, "max_operation_seconds": 120},
+  "policy": {"filesystem": "none", "network": "control-plane-and-loopback-model-only", "writes": false, "shell": false}
+}

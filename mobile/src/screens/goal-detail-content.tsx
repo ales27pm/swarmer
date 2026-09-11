@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
 
 import { ScreenShell } from "@/components/screen-shell";
+import { GoalCodeProposalReview } from "@/components/goal-code-proposal";
 import {
   ActionButton,
   Card,
@@ -56,6 +57,11 @@ const PLANNING_PHASES: Record<string, { label: string; description: string }> = 
     label: "Planificateur indisponible",
     description: "Le service de planification est indisponible. Réessayez lorsqu’il est rétabli.",
   },
+};
+
+const CODE_PROPOSAL_PHASE = {
+  label: "Code prêt à relire",
+  description: "Examinez le code proposé, puis préparez la demande d’autorisation d’écriture. Le code n’a pas été exécuté.",
 };
 
 function goalLabel(goal: GoalDetail["goal"]) {
@@ -366,7 +372,11 @@ function NodeActions({ node, navigation }: { node: PlanNode; navigation: GoalDet
   );
 }
 
-function NodeCard({ node, navigation }: { node: PlanNode; navigation: GoalDetailNavigation }) {
+function NodeCard({ node, navigation, readOnly }: {
+  node: PlanNode;
+  navigation: GoalDetailNavigation;
+  readOnly: boolean;
+}) {
   return (
     <Card testID={`plan-node-${node.id}`}>
       <View style={{ alignItems: "center", flexDirection: "row", justifyContent: "space-between" }}>
@@ -388,6 +398,17 @@ function NodeCard({ node, navigation }: { node: PlanNode; navigation: GoalDetail
       <NodeMetadata node={node} />
       <NodeOutcome node={node} />
       <NodeActions node={node} navigation={navigation} />
+      {node.required_skill === "code.generate_python"
+        && node.worker_job_id
+        && (node.status === "waiting_permission" || node.status === "completed") ? (
+          <GoalCodeProposalReview
+            key={node.worker_job_id}
+            goalId={node.goal_run_id}
+            nodeId={node.id}
+            disabled={readOnly}
+            onOpenTask={navigation.openTask}
+          />
+        ) : null}
     </Card>
   );
 }
@@ -474,7 +495,9 @@ function GoalOverview({ controller, navigation }: {
 }) {
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
   if (!goal) return null;
-  const planningPhase = goal.status === "planning" ? PLANNING_PHASES[goal.current_phase] : undefined;
+  const phaseNotice = goal.status === "waiting_permission" && goal.current_phase === "code_proposal_ready"
+    ? CODE_PROPOSAL_PHASE
+    : goal.status === "planning" ? PLANNING_PHASES[goal.current_phase] : undefined;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
     ? `Agents en cours : ${runningAgents.join(", ")}`
@@ -483,15 +506,15 @@ function GoalOverview({ controller, navigation }: {
     <>
       <SectionTitle title="État autoritaire" />
       <Card>
-        <Text style={{ color: planningPhase ? COLORS.warning : COLORS.info, fontWeight: "800" }}>
+        <Text style={{ color: phaseNotice ? COLORS.warning : COLORS.info, fontWeight: "800" }}>
           {goalLabel(goal)}
         </Text>
         <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>
-          Phase : {planningPhase?.label ?? goal.current_phase}
+          Phase : {phaseNotice?.label ?? goal.current_phase}
         </Text>
-        {planningPhase ? (
+        {phaseNotice ? (
           <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning, lineHeight: 20 }}>
-            {planningPhase.description}
+            {phaseNotice.description}
           </Text>
         ) : null}
         <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
@@ -509,7 +532,7 @@ function GoalOverview({ controller, navigation }: {
             Évaluation : {goal.evaluator_summary}
           </Text>
         ) : null}
-        {goal.failure_reason && !planningPhase ? (
+        {goal.failure_reason && !phaseNotice ? (
           <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>Échec : {goal.failure_reason}</Text>
         ) : null}
         <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
@@ -519,12 +542,16 @@ function GoalOverview({ controller, navigation }: {
   );
 }
 
-function GoalPlan({ nodes, navigation }: { nodes: PlanNode[]; navigation: GoalDetailNavigation }) {
+function GoalPlan({ nodes, navigation, readOnly }: {
+  nodes: PlanNode[];
+  navigation: GoalDetailNavigation;
+  readOnly: boolean;
+}) {
   return (
     <>
       <SectionTitle title="Plan" />
       {nodes.length ? nodes.map((node) => (
-        <NodeCard key={node.id} node={node} navigation={navigation} />
+        <NodeCard key={node.id} node={node} navigation={navigation} readOnly={readOnly} />
       )) : (
         <Text style={{ color: COLORS.subtle }}>Aucun nœud autoritaire disponible.</Text>
       )}
@@ -574,7 +601,11 @@ function GoalBody({ controller, navigation }: {
     return (
       <>
         <GoalOverview controller={controller} navigation={navigation} />
-        <GoalPlan nodes={controller.nodes} navigation={navigation} />
+        <GoalPlan
+          nodes={controller.nodes}
+          navigation={navigation}
+          readOnly={!controller.online || Boolean(controller.busy)}
+        />
         <GoalResultSection controller={controller} />
       </>
     );
