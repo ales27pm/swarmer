@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
+from pydantic import ValidationError
 
 from app.services.model_wire_schema import model_wire_schema
 from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
+    MAX_PROPOSAL_BYTES,
     PlanValidationError,
     parse_evaluation_json,
     validate_evaluation_decision,
@@ -19,9 +22,29 @@ from app.services.swarm_contracts import (
     PlannerSource,
 )
 
+EvaluatorFailureCategory = Literal[
+    "transport_unavailable", "request_rejected", "invalid_response", "invalid_context"
+]
+EvaluatorDiagnostic = Literal[
+    "transport", "http_status", "envelope", "json", "schema", "graph", "context"
+]
+
 
 class EvaluatorProviderError(RuntimeError):
-    """The evaluator transport or proposal contract failed."""
+    """A safe failure classification; model values never enter diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: EvaluatorFailureCategory = "transport_unavailable",
+        diagnostic: EvaluatorDiagnostic = "transport",
+        output_digest: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.diagnostic = diagnostic
+        self.output_digest = output_digest
 
 
 class EvaluatorProvider(Protocol):
@@ -131,6 +154,16 @@ The Ubuntu control plane independently validates your proposal and remains autho
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.post(f"{self.base_url}/chat/completions", json=payload)
                 response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            rejected = 400 <= exc.response.status_code < 500 and exc.response.status_code not in {
+                408,
+                429,
+            }
+            raise EvaluatorProviderError(
+                "local evaluator request failed",
+                category="request_rejected" if rejected else "transport_unavailable",
+                diagnostic="http_status",
+            ) from exc
         except httpx.HTTPError as exc:
             raise EvaluatorProviderError("local evaluator unavailable") from exc
 
@@ -138,16 +171,42 @@ The Ubuntu control plane independently validates your proposal and remains autho
             body = response.json()
             content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise EvaluatorProviderError("invalid evaluator response envelope") from exc
+            raise EvaluatorProviderError(
+                "invalid evaluator response envelope",
+                category="invalid_response",
+                diagnostic="envelope",
+            ) from exc
         if not isinstance(content, str):
-            raise EvaluatorProviderError("evaluator content is not text")
+            raise EvaluatorProviderError(
+                "evaluator content is not text", category="invalid_response", diagnostic="envelope"
+            )
+        output_digest = None
+        try:
+            encoded = content.encode("utf-8")
+            if len(encoded) <= MAX_PROPOSAL_BYTES:
+                output_digest = hashlib.sha256(encoded).hexdigest()
+        except UnicodeError:
+            pass
         try:
             decision = parse_evaluation_json(content.strip())
+        except PlanValidationError as exc:
+            raise EvaluatorProviderError(
+                "evaluator returned an invalid proposal",
+                category="invalid_response",
+                diagnostic="schema" if isinstance(exc.__cause__, ValidationError) else "json",
+                output_digest=output_digest,
+            ) from exc
+        try:
             validated = validate_evaluation_decision(
                 decision,
                 policy=self.policy,
                 known_node_ids=context.known_node_ids,
             )
         except PlanValidationError as exc:
-            raise EvaluatorProviderError("evaluator returned an invalid proposal") from exc
+            raise EvaluatorProviderError(
+                "evaluator returned an invalid proposal",
+                category="invalid_response",
+                diagnostic="graph",
+                output_digest=output_digest,
+            ) from exc
         return validated.decision

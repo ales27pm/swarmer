@@ -367,19 +367,232 @@ def test_final_request_trimming_keeps_error_context_as_a_fragment(
     )
 
 
-def test_model_invalid_response_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("stage", ["connect", "read", "wrapped"])
+def test_model_timeout_preserves_snapshot_and_receipts_without_execution_or_retry(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
     calls = 0
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "original = 'été'\r\n"}],
+        "plan": ["Preserve completed work", "Add tests"],
+        "checks": [
+            {
+                "command": ["python", "-m", "pytest", "-q"],
+                "status": "failed",
+                "exit_code": 1,
+                "output": "real previous failure",
+                "duration_ms": 25,
+            }
+        ],
+        "base_revision_id": "revision_1",
+    }
+    data["base_sha256"] = snapshot_sha(data["files"])
+    original = copy.deepcopy(data)
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def read(self, size: int = -1) -> bytes:
+            raise TimeoutError("private response detail")
 
     class Opener:
         def open(self, request: Any, *, timeout: float) -> Any:
             nonlocal calls
             calls += 1
-            raise TimeoutError("offline")
+            if stage == "read":
+                return Response()
+            if stage == "wrapped":
+                raise worker.urllib.error.URLError(TimeoutError("private connection detail"))
+            raise TimeoutError("private connection detail")
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
-    with pytest.raises(ProjectError):
-        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen2.5-coder:7b").generate(payload())
-    assert calls == 1
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    runner = Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert calls == 1 and runner.calls == 0
+    assert result["action"] == "continue"
+    for field in ("files", "plan", "checks", "base_revision_id", "base_sha256"):
+        assert result[field] == original[field]
+    assert data == original
+    assert result["message"] == worker.MODEL_TIMEOUT_DIAGNOSTIC
+    assert "private" not in result["message"]
+
+
+@pytest.mark.parametrize(
+    "failure,category",
+    [
+        ("connection", "connection_error"),
+        ("url", "connection_error"),
+        (400, "configuration_error"),
+        (401, "configuration_error"),
+        (404, "configuration_error"),
+        (429, "unavailable"),
+        (500, "unavailable"),
+    ],
+)
+def test_non_timeout_transport_failure_stays_failed_and_logs_only_fixed_category(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str | int,
+    category: str,
+) -> None:
+    calls = 0
+    submitted = []
+    job = {
+        "id": "job_1",
+        "required_skill": "code.build_project",
+        "payload": payload(),
+        "claim_token": "lease-proof",
+        "lease_id": "lease_1",
+        "lease_generation": 1,
+    }
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            nonlocal calls
+            calls += 1
+            if failure == "connection":
+                raise ConnectionRefusedError("private connection detail")
+            if failure == "url":
+                raise worker.urllib.error.URLError("private DNS detail")
+            raise worker.urllib.error.HTTPError(
+                "http://private.invalid/secret", failure, "private body", {}, None
+            )
+
+    def request(origin: str, path: str, token: str, method: str, body: Any, **kwargs: Any) -> Any:
+        if path.endswith("/claim"):
+            return job
+        if path.endswith("/result"):
+            submitted.append(body)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    monkeypatch.setattr(worker.protocol, "request", request)
+    runner = Runner()
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    assert worker.run_once("https://control.example", "agt_1", "credential", generator, runner)
+    assert calls == 1 and runner.calls == 0
+    assert len(submitted) == 1 and submitted[0]["status"] == "failed"
+    assert submitted[0]["error"] == "project_model_" + category
+    assert "result" not in submitted[0]
+    assert category in caplog.text and "private" not in caplog.text
+    assert not worker._JOB_LOCK.locked()
+
+
+def test_timeout_is_submitted_as_completed_iteration_for_its_existing_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    submitted = []
+    claimed = []
+
+    def request(origin: str, path: str, token: str, method: str, body: Any, **kwargs: Any) -> Any:
+        if path.endswith("/claim"):
+            job_id = "job_" + str(len(claimed) + 1)
+            claimed.append(job_id)
+            return {
+                "id": job_id,
+                "required_skill": "code.build_project",
+                "payload": payload(),
+                "claim_token": "lease-proof",
+                "lease_id": job_id,
+                "lease_generation": 1,
+            }
+        if path.endswith("/result"):
+            submitted.append(body)
+        return {"status": "ok"}
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("private detail")
+
+    monkeypatch.setattr(worker.protocol, "request", request)
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    runner = Runner()
+    for attempt in (1, 2):
+        assert worker.run_once("https://control.example", "agt_1", "credential", generator, runner)
+        assert calls == len(claimed) == len(submitted) == attempt
+        assert submitted[-1]["lease_id"] == claimed[-1]
+        assert submitted[-1]["status"] == "completed"
+        assert submitted[-1]["result"]["action"] == "continue"
+        assert submitted[-1]["result"]["checks"] == []
+    assert runner.calls == 0
+
+
+def test_timeout_recovery_still_discards_a_lost_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    active_checks = 0
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("private detail")
+
+    def active() -> None:
+        nonlocal active_checks
+        active_checks += 1
+        if active_checks > 1:
+            raise worker.protocol.LeaseLost("cancelled")
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    runner = Runner()
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    with pytest.raises(worker.protocol.LeaseLost):
+        worker.run_iteration(payload(), generator, runner, active)
+    assert calls == 1 and runner.calls == 0
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("answered", [False, True])
+def test_initial_materialization_is_small_but_existing_multi_path_repairs_remain_available(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+    answered: bool,
+) -> None:
+    captured = []
+    data = {
+        **payload(),
+        "conversation": [
+            {"role": "assistant", "content": "Web or desktop?"},
+            {"role": "user", "content": "A local web application with persistent contacts."},
+        ],
+    }
+    if not answered:
+        data["conversation"] = []
+    initial = answered and not existing
+    response = step(edits=[{"path": "models.py", "content": "VALUE = 1\n"}]) if initial else step()
+    if existing:
+        data["files"] = [{"path": "app.py", "content": "VALUE = 1\n"}]
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            captured.append(json.loads(request.data))
+            return Response(
+                json.dumps(
+                    {
+                        "message": {"content": json.dumps(response)},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    result = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(data)
+    assert len(captured) == 1
+    body = captured[0]
+    assert body["options"]["num_predict"] == 1500
+    assert body["format"]["oneOf"][0]["properties"]["edits"]["maxItems"] == (1 if initial else 3)
+    assert len(result["edits"]) == (1 if initial else 3)
+    assert ("first implementation batch" in body["messages"][-1]["content"]) == initial
 
 
 def test_wire_grammar_separates_mutation_read_and_clarification() -> None:

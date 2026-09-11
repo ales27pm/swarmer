@@ -9,6 +9,8 @@ without running code. User replies and previous files arrive in the next payload
 The model returns incremental replacements, exact text patches and deletions.
 Each call changes at most three paths. Up to eight patches may replace unique
 nonempty spans in the current base, with 8KB limits on each old/new string.
+The first implementation after clarification writes at most one small complete
+file. Later iterations retain multi-path repairs and build the remaining modules.
 Ambiguous, overlapping or conflicting changes reject the entire batch; matching
 never normalizes whitespace or guesses the intended source. The worker validates
 paths and bounds, verifies the base snapshot hash, preserves every unmentioned file, and
@@ -63,7 +65,7 @@ named `swarmer-project-worker-<uid>` (for example
 path for Docker bind mounts, hides host home, and makes worker source read-only.
 
 The provider uses native Ollama `/api/chat` on the validated loopback origin,
-with `num_ctx=32768`, `num_predict=3000`, and `keep_alive=10m`. Its stable system
+with `num_ctx=32768`, `num_predict=1500`, and `keep_alive=10m`. Its stable system
 prefix supports Ollama's existing KV reuse; there is no invented cache-hit API or
 cloud fallback. Total prompt text is bounded to 22KB of UTF8, reserving output and
 message framing within 32K tokens. Numeric prompt/evaluation/load timings are
@@ -92,6 +94,12 @@ source. A focused read rotates the candidate region even when the full file fits
 Repeated focus remains
 subject to the goal budget. Invalid model edits are rejected without altering the
 snapshot; a safe diagnostic guides the next job, preserving previous real checks.
+A model timeout also returns an unchanged snapshot with a fixed diagnostic asking
+for a smaller complete batch. The next attempt is a new, separately charged job;
+there is no retry inside the timed-out job and no fabricated check receipt.
+Connection failures, rejected HTTP configuration and service unavailability are
+distinct fixed transport categories and remain failed jobs. Logs omit raw error
+bodies and endpoints. Goal and worker time/call budgets remain unchanged.
 
 Docker access is operator authority. The generated project never receives the
 Docker socket, host home, control-plane environment, agent credential, model

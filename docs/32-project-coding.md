@@ -58,6 +58,20 @@ or inspection uses another node/job and another call. Generation jobs have one
 attempt and cannot be automatically redistributed. Existing user-selected step,
 runtime, and model-call limits remain authoritative.
 
+Model responses are limited to 1,500 tokens. Initial implementation writes one
+small complete file; subsequent iterations can repair several paths. A generation
+timeout preserves the previous source and real check receipts, then returns a
+continuation for a new charged job. Network and request failures remain distinct
+from a timed-out generation; no job retries its model request internally.
+
+An evaluator transport or response failure waits at least 60 seconds before an
+automatic retry of unchanged state. Three invalid or rejected responses for the
+same conversation and worker state pause evaluation and its runtime clock. Use
+the app's retry action or send new instructions to recover; the original budgets
+and call history remain intact. Invalid evaluation context pauses immediately
+without making a provider request. Diagnostics contain fixed categories and
+stages, not model response text.
+
 The local Ollama provider requests a 32,768-token context and retains the model
 for ten minutes. A stable prompt prefix allows Ollama to reuse its in-memory KV
 cache across compatible iterations. Model eviction or restart discards that

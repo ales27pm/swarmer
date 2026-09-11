@@ -46,7 +46,7 @@ LOGGER = logging.getLogger("mongars.project_worker")
 _JOB_LOCK = threading.Lock()
 MAX_MODEL_RESPONSE_BYTES = 2_000_000
 MAX_PROMPT_BYTES = 22_000
-MAX_OUTPUT_TOKENS = 3_000
+MAX_OUTPUT_TOKENS = 1_500
 MAX_SPAN_BYTES = 12_000
 MAX_ADDRESS_BYTES = 8_000
 
@@ -71,9 +71,12 @@ make progress through file edits or a focused read, not restate a plan.
 For clarify: ask the concrete question in message; edits, patches, deletions, and
 requested_checks must all be empty arrays. Preserve the plan and existing work.
 Build the complete useful multi-file project across several small iterations.
-Each response may edit at most3 files, preferably1 or2 medium files. Keep the
-entire response below3000 tokens: choose a smaller complete batch instead of
-truncating JSON or file contents. Use continue while files or checks remain.
+Keep the entire response below1500 tokens, including JSON, plan and messages.
+Usually implement one small complete module or file in an iteration. Split the
+application into cohesive small modules instead of generating a monolithic file.
+Repairs may change up to3 paths when necessary, using short patches. Choose a
+smaller complete batch instead of truncating JSON or file contents. Use continue
+while files or checks remain; keep messages, plan and run instructions concise.
 Keep the full concise milestone plan so later iterations finish the application,
 README.md, dependency manifests and real tests. No placeholder files or fake tests.
 edits is an array of {path,content} with COMPLETE replacement file contents.
@@ -192,6 +195,32 @@ STEP_SCHEMA: dict[str, Any] = {
 
 class ModelStepError(ProjectError):
     """A rejected model response; its safe diagnostic can guide a new charged job."""
+
+
+MODEL_TIMEOUT_DIAGNOSTIC = (
+    "The local model timed out before returning a complete response. No edits were accepted, "
+    "and the previous files and check receipts are unchanged. In the next charged iteration, "
+    "return one smaller complete module or a short repair patch, with concise metadata, "
+    "within the 1500-token response limit. No retry occurred within this job."
+)
+
+
+class ModelTransportError(ProjectError):
+    """A fixed transport category; raw endpoints, bodies and exceptions stay private."""
+
+    def __init__(self, category: str) -> None:
+        messages = {
+            "connection_error": "The local project model could not be reached.",
+            "configuration_error": "The local project model rejected its configured request.",
+            "unavailable": "The local project model is unavailable.",
+        }
+        self.category = category
+        super().__init__(messages[category])
+
+
+def model_http_error(status: int) -> ModelTransportError:
+    category = "unavailable" if status in {408, 429} or status >= 500 else "configuration_error"
+    return ModelTransportError(category)
 
 
 def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
@@ -654,7 +683,7 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         None,
     )
     # Qwen uses byte-fallback BPE: UTF-8 bytes conservatively bound input tokens.
-    # 22000 input bytes +3000 output tokens +1024 framing reserve is below32768.
+    # 22000 input bytes +1500 output tokens +1024 framing reserve is below32768.
     while prompt_size() > MAX_PROMPT_BYTES:
         removable = next(
             (
@@ -747,6 +776,10 @@ class ProjectGenerator:
             schema["properties"]["action"]["enum"] = ["continue", "complete"]
             if not payload["files"]:
                 schema["properties"]["edits"]["minItems"] = 1
+                if answered:
+                    # Initial materialization must fit the measured inference
+                    # window. Existing projects retain multi-path repair support.
+                    schema["properties"]["edits"]["maxItems"] = 1
             if needs_repair:
                 schema["properties"]["deletions"]["maxItems"] = 0
             first_field = "patches" if payload["files"] and not needs_tests else "edits"
@@ -778,6 +811,12 @@ class ProjectGenerator:
             )
         elif answered:
             current_task = "Implement this latest user request now:\n" + last_user
+            if not payload["files"]:
+                current_task += (
+                    "\nThis is the first implementation batch. Return one small complete file "
+                    "and a concise plan for the remaining modules, tests and documentation. "
+                    "Do not put the entire application into this first file. Use continue."
+                )
         else:
             current_task = (
                 "Respond to the original request in its language:\n" + payload["objective"]
@@ -873,10 +912,18 @@ class ProjectGenerator:
         try:
             with opener.open(request, timeout=self.timeout_seconds) as response:  # nosec B310
                 if response.status != 200:
-                    raise ProjectError("local project model returned an unsuccessful response")
+                    raise model_http_error(response.status)
                 raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
-        except (OSError, urllib.error.URLError) as exc:
-            raise ProjectError("local project model request failed") from exc
+        except TimeoutError as exc:
+            raise ModelStepError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
+        except urllib.error.HTTPError as exc:
+            raise model_http_error(exc.code) from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ModelStepError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
+            raise ModelTransportError("connection_error") from exc
+        except OSError as exc:
+            raise ModelTransportError("connection_error") from exc
         if len(raw) > MAX_MODEL_RESPONSE_BYTES:
             raise ProjectError("local project model response exceeded its byte limit")
         try:
@@ -904,6 +951,12 @@ class ProjectGenerator:
                     "Return a smaller complete JSON file-edit batch in the next iteration."
                 )
             step = parse_step(resolve_model_patches(transport._parse_json(content), addresses))
+            if answered and not payload["files"] and len(step["edits"]) > 1:
+                raise ModelStepError(
+                    "The first implementation batch exceeded one edited file. No edits were "
+                    "accepted. Return one small complete file and continue the remaining plan "
+                    "in later charged iterations."
+                )
             if len(step["edits"]) > 3:
                 raise ModelStepError(
                     "The model batch exceeded three edited files. No edits were accepted. "
@@ -1070,6 +1123,9 @@ def run_once(
         try:
             result = run_iteration(parse_payload(job), generator, runner, ensure_job_active)
             result_body: dict[str, Any] = {"status": "completed", "result": result}
+        except ModelTransportError as exc:
+            LOGGER.warning("project model transport failed: %s", exc.category)
+            result_body = {"status": "failed", "error": "project_model_" + exc.category}
         except (ProjectError, OSError, TypeError, UnicodeError, ValueError):
             result_body = {"status": "failed", "error": "Project iteration failed validation"}
         heartbeat.ensure_active()

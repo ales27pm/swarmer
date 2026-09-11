@@ -149,6 +149,18 @@ const waitingForWorkers: GoalDetail = {
   result: null,
 };
 
+const waitingForEvaluation: GoalDetail = {
+  ...waitingForWorkers,
+  goal: {
+    ...detail.goal,
+    status: "waiting_permission",
+    current_phase: "evaluator_retry_required",
+    evaluator_summary: undefined,
+    completed_at: undefined,
+    failure_reason: "The evaluator context could not be prepared.",
+  },
+};
+
 describe("GoalDetailScreen", () => {
   beforeEach(() => {
     jest.mocked(getGoalConversation).mockResolvedValue({
@@ -347,6 +359,123 @@ describe("GoalDetailScreen", () => {
     expect(screen.queryByText(`Phase : ${phase}`)).not.toBeOnTheScreen();
   });
 
+  it.each([
+    ["evaluator_unavailable", "Évaluateur indisponible"],
+    ["evaluator_request_rejected", "Demande d’évaluation refusée"],
+    ["evaluator_invalid_response", "Évaluation reçue invalide"],
+  ])("explains the automatic evaluator cooldown for %s", async (phase, label) => {
+    mockGetGoal.mockResolvedValue({
+      ...waitingForEvaluation,
+      goal: { ...waitingForEvaluation.goal, status: "running", current_phase: phase, failure_reason: "RAW PROVIDER ERROR" },
+    });
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText(`Phase : ${label}`)).toBeOnTheScreen();
+    expect(screen.getByText(/tentative automatique devient possible après un délai d’au moins 60 secondes, dans la limite du budget restant/)).toBeOnTheScreen();
+    expect(screen.queryByText(`Phase : ${phase}`)).not.toBeOnTheScreen();
+    expect(screen.queryByText(/RAW PROVIDER ERROR/)).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Réessayer l’évaluation" })).not.toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["evaluator_unavailable", "Réessayer l’évaluation"],
+    ["evaluator_request_rejected", "Réessayer l’évaluation"],
+    ["evaluator_invalid_response", "Réessayer l’évaluation"],
+    ["project_continue", "Continuer le but"],
+  ])("requires an explicit manual action for %s without promising automatic work", async (phase, action) => {
+    const user = userEvent.setup();
+    mockGetGoal.mockResolvedValue({
+      ...waitingForEvaluation,
+      goal: { ...waitingForEvaluation.goal, status: "running", current_phase: phase, autonomy_profile: "manual" },
+    });
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByRole("button", { name: action })).toBeOnTheScreen();
+    expect(screen.getByText(/tilisez «/)).toBeOnTheScreen();
+    expect(screen.queryByText(/automatique/)).not.toBeOnTheScreen();
+    expect(screen.queryByText(/délai d’au moins 60 secondes/)).not.toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+    await user.press(screen.getByRole("button", { name: action }));
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+    expect(mockStartGoal).toHaveBeenCalledWith("goal_1");
+  });
+
+  it("labels the transient evaluator retry without inventing a question", async () => {
+    mockGetGoal.mockResolvedValue({
+      ...waitingForEvaluation,
+      goal: { ...waitingForEvaluation.goal, status: "running", current_phase: "evaluator_retrying", failure_reason: undefined },
+    });
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText("Phase : Nouvelle évaluation")).toBeOnTheScreen();
+    expect(screen.getByText(/prépare une nouvelle évaluation avec le budget restant/)).toBeOnTheScreen();
+    expect(screen.queryByText("Phase : evaluator_retrying")).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Répondre à la question" })).not.toBeOnTheScreen();
+  });
+
+  it.each(["manual", "assisted", "autonomous"] as const)(
+    "explicitly retries a paused evaluation for the %s profile without inventing a question",
+    async (autonomy_profile) => {
+      const user = userEvent.setup();
+      mockGetGoal.mockResolvedValue({
+        ...waitingForEvaluation,
+        goal: { ...waitingForEvaluation.goal, autonomy_profile },
+      });
+      await render(<GoalDetailScreen />);
+
+      expect(await screen.findByText("Phase : Évaluation à réessayer")).toBeOnTheScreen();
+      expect(screen.getByText(/Le budget déjà utilisé est conservé/)).toBeOnTheScreen();
+      expect(await screen.findByLabelText("Message pour le projet")).toBeOnTheScreen();
+      expect(screen.queryByRole("button", { name: "Répondre à la question" })).not.toBeOnTheScreen();
+      expect(screen.queryByText(/Répondez à la question dans la conversation/)).not.toBeOnTheScreen();
+      expect(screen.queryByText(/The evaluator context/)).not.toBeOnTheScreen();
+      expect(mockStartGoal).not.toHaveBeenCalled();
+
+      await user.press(screen.getByRole("button", { name: "Réessayer l’évaluation" }));
+      expect(mockStartGoal).toHaveBeenCalledTimes(1);
+      expect(mockStartGoal).toHaveBeenCalledWith("goal_1");
+    },
+  );
+
+  it("guards paused evaluator retries while busy and after an offline fallback", async () => {
+    const retry = deferred<GoalDetail>();
+    mockGetGoal.mockResolvedValue(waitingForEvaluation);
+    mockStartGoal.mockImplementationOnce(async () => retry.promise);
+    const { result } = await renderHook(() => useGoalDetailController("goal_1"));
+    await waitFor(() => expect(result.current.online).toBe(true));
+
+    await act(() => { void result.current.start(); });
+    expect(result.current.busy).toBe("start");
+    await act(async () => result.current.start());
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+
+    await act(async () => retry.resolve(waitingForEvaluation));
+    await waitFor(() => expect(result.current.busy).toBeNull());
+    mockGetGoal.mockRejectedValue(new Error("Serveur indisponible"));
+    mockLocalGoal.mockResolvedValue(waitingForEvaluation);
+    await act(async () => result.current.refresh());
+    expect(result.current.online).toBe(false);
+    await act(async () => result.current.start());
+    expect(mockStartGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["project_continue", "Poursuite du projet"],
+    ["project_building", "Construction du projet"],
+  ])("describes %s as ongoing work without claiming the project is ready", async (phase, label) => {
+    mockGetGoal.mockResolvedValue({
+      ...waitingForWorkers,
+      goal: { ...waitingForWorkers.goal, status: "running", current_phase: phase, failure_reason: undefined },
+    });
+    await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText(`Phase : ${label}`)).toBeOnTheScreen();
+    expect(screen.queryByText(`Phase : ${phase}`)).not.toBeOnTheScreen();
+    expect(screen.queryByText("Projet prêt à relire")).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Préparer l’autorisation du projet" })).not.toBeOnTheScreen();
+  });
+
   it("advances a running manual goal only after an explicit continuation", async () => {
     const user = userEvent.setup();
     const running: GoalDetail = {
@@ -455,15 +584,15 @@ describe("GoalDetailScreen", () => {
     expect(mockCreateFeedback).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["manual continuation", "worker retry"])(
+  it.each(["manual continuation", "worker retry", "evaluator retry"])(
     "locks %s while authoritative reconciliation is unresolved",
     async (action) => {
-      const pending: GoalDetail = action === "worker retry" ? waitingForWorkers : {
+      const pending: GoalDetail = action === "evaluator retry" ? waitingForEvaluation : action === "worker retry" ? waitingForWorkers : {
         ...detail,
         goal: { ...detail.goal, status: "running", autonomy_profile: "manual" },
         result: null,
       };
-      const label = action === "worker retry" ? "Réessayer la planification" : "Continuer le but";
+      const label = action === "evaluator retry" ? "Réessayer l’évaluation" : action === "worker retry" ? "Réessayer la planification" : "Continuer le but";
       const reconciliation = deferred<GoalDetail>();
       mockGetGoal
         .mockResolvedValueOnce(pending)

@@ -61,12 +61,79 @@ const PLANNING_PHASES: Record<string, { label: string; description: string }> = 
   },
 };
 
+const RUNNING_PHASES: Record<string, { label: string; description: string }> = {
+  evaluator_unavailable: {
+    label: "Évaluateur indisponible",
+    description: "Le service d’évaluation est indisponible.",
+  },
+  evaluator_request_rejected: {
+    label: "Demande d’évaluation refusée",
+    description: "Le service d’évaluation a refusé la demande.",
+  },
+  evaluator_invalid_response: {
+    label: "Évaluation reçue invalide",
+    description: "La réponse reçue ne permet pas de valider le résultat.",
+  },
+  evaluator_retrying: {
+    label: "Nouvelle évaluation",
+    description: "Le serveur prépare une nouvelle évaluation avec le budget restant.",
+  },
+  project_continue: {
+    label: "Poursuite du projet",
+    description: "Le projet nécessite une nouvelle étape de construction ou de vérification.",
+  },
+  project_building: {
+    label: "Construction du projet",
+    description: "L’agent construit ou vérifie le projet par étapes. Les fichiers et les résultats disponibles peuvent être consultés dans la révision du projet.",
+  },
+};
+
+const EVALUATOR_COOLDOWN_PHASES = new Set([
+  "evaluator_unavailable", "evaluator_request_rejected", "evaluator_invalid_response",
+]);
+
+function runningPhase(goal: GoalDetail["goal"]) {
+  const phase = RUNNING_PHASES[goal.current_phase];
+  if (!phase) return undefined;
+  if (EVALUATOR_COOLDOWN_PHASES.has(goal.current_phase)) {
+    const instruction = goal.autonomy_profile === "manual"
+      ? "Utilisez « Réessayer l’évaluation » pour lancer une nouvelle tentative avec le budget restant."
+      : "Une nouvelle tentative automatique devient possible après un délai d’au moins 60 secondes, dans la limite du budget restant.";
+    return { ...phase, description: `${phase.description} ${instruction}` };
+  }
+  if (goal.current_phase === "project_continue") {
+    const instruction = goal.autonomy_profile === "manual"
+      ? "Utilisez « Continuer le but » pour lancer l’étape suivante avec le budget restant."
+      : "Le travail peut reprendre automatiquement dans la limite du budget restant.";
+    return { ...phase, description: `${phase.description} ${instruction}` };
+  }
+  return phase;
+}
+
+const EVALUATOR_RETRY_PHASE = {
+  label: "Évaluation à réessayer",
+  description: "L’évaluation est en pause. Vous pouvez la réessayer ou préciser la demande dans la conversation. Le budget déjà utilisé est conservé.",
+};
+
 const CODE_PROPOSAL_PHASE = {
   label: "Code prêt à relire",
   description: "Examinez le code proposé, puis préparez la demande d’autorisation d’écriture. Le code n’a pas été exécuté.",
 };
 
+function awaitsEvaluatorRetry(goal: GoalDetail["goal"] | null | undefined) {
+  return goal?.status === "waiting_permission" && goal.current_phase === "evaluator_retry_required";
+}
+
+function hasEvaluatorRetryAction(goal: GoalDetail["goal"]) {
+  return awaitsEvaluatorRetry(goal) || (
+    goal.status === "running" && goal.autonomy_profile === "manual"
+    && EVALUATOR_COOLDOWN_PHASES.has(goal.current_phase)
+  );
+}
+
 function goalLabel(goal: GoalDetail["goal"]) {
+  if (awaitsEvaluatorRetry(goal)) return EVALUATOR_RETRY_PHASE.label;
+  if (goal.status === "running" && RUNNING_PHASES[goal.current_phase]) return RUNNING_PHASES[goal.current_phase].label;
   if (goal.status === "waiting_permission" && goal.current_phase === "needs_user") return "Votre réponse est attendue";
   if (goal.status === "waiting_permission" && goal.current_phase === "project_ready") return "Projet prêt à relire";
   return goal.status === "planning" && goal.current_phase === "waiting_for_workers"
@@ -227,7 +294,8 @@ function canMutate(state: GoalDetailState) {
 
 function canStartGoal(goal: GoalDetail["goal"] | null | undefined) {
   return goal?.status === "planning"
-    || (goal?.autonomy_profile === "manual" && goal.status === "running");
+    || (goal?.autonomy_profile === "manual" && goal.status === "running")
+    || awaitsEvaluatorRetry(goal);
 }
 
 function canSubmitFeedback(goalId: string | undefined, state: GoalDetailState, locked: boolean) {
@@ -465,7 +533,7 @@ function GoalActions({ controller }: { controller: GoalDetailController }) {
         <ActionButton
           busy={busy === "start"}
           disabled={Boolean(busy)}
-          label={goal.status === "planning" ? planningAction : "Continuer le but"}
+          label={hasEvaluatorRetryAction(goal) ? "Réessayer l’évaluation" : goal.status === "planning" ? planningAction : "Continuer le but"}
           onPress={() => void controller.start()}
           testID="start-goal-button"
           variant="accent"
@@ -500,13 +568,16 @@ function GoalOverview({ controller, navigation }: {
 }) {
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
   if (!goal) return null;
-  const phaseNotice = goal.status === "waiting_permission"
-    ? goal.current_phase === "needs_user"
+  const phaseNotice = awaitsEvaluatorRetry(goal) ? EVALUATOR_RETRY_PHASE
+    : goal.status === "waiting_permission" ? goal.current_phase === "needs_user"
       ? { label: "Votre réponse est attendue", description: "Répondez à la question dans la conversation du projet pour poursuivre le travail." }
       : goal.current_phase === "project_ready"
         ? { label: "Projet prêt à relire", description: "Examinez les fichiers et les vérifications avant de préparer une autorisation d’écriture." }
         : goal.current_phase === "code_proposal_ready" ? CODE_PROPOSAL_PHASE : undefined
-    : goal.status === "planning" ? PLANNING_PHASES[goal.current_phase] : undefined;
+    : goal.status === "planning" ? PLANNING_PHASES[goal.current_phase]
+      : goal.status === "running" ? runningPhase(goal) : undefined;
+  const phaseColor = goal.current_phase === "project_continue" || goal.current_phase === "project_building" || goal.current_phase === "evaluator_retrying"
+    ? COLORS.info : COLORS.warning;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
     ? `Agents en cours : ${runningAgents.join(", ")}`
@@ -515,14 +586,14 @@ function GoalOverview({ controller, navigation }: {
     <>
       <SectionTitle title="État autoritaire" />
       <Card>
-        <Text style={{ color: phaseNotice ? COLORS.warning : COLORS.info, fontWeight: "800" }}>
+        <Text style={{ color: phaseNotice ? phaseColor : COLORS.info, fontWeight: "800" }}>
           {goalLabel(goal)}
         </Text>
         <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>
           Phase : {phaseNotice?.label ?? goal.current_phase}
         </Text>
         {phaseNotice ? (
-          <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning, lineHeight: 20 }}>
+          <Text accessibilityLiveRegion="polite" style={{ color: phaseColor, lineHeight: 20 }}>
             {phaseNotice.description}
           </Text>
         ) : null}

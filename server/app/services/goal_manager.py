@@ -16,8 +16,8 @@ from app.models import TaskCreate, TaskMode, TaskRecord, TaskStatus
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.audit_log import append_audit_event
 from app.services.context_builder import (
+    ContextBuilder,
     ContextCard,
-    bound_evaluation_context,
     safe_context_text,
 )
 from app.services.evaluator_provider import EvaluatorProvider, EvaluatorProviderError
@@ -76,6 +76,27 @@ from app.services.swarm_contracts import (
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
+_EVALUATOR_RETRY_COOLDOWN_SECONDS = 60
+_MAX_INVALID_EVALUATOR_ATTEMPTS = 3
+_EVALUATOR_FAILURE_DETAILS = {
+    "transport_unavailable": ("evaluator_unavailable", "Evaluator transport is unavailable."),
+    "request_rejected": (
+        "evaluator_request_rejected",
+        "The model provider rejected the evaluator request.",
+    ),
+    "invalid_response": (
+        "evaluator_invalid_response",
+        "The evaluator response did not pass server validation.",
+    ),
+    "invalid_context": (
+        "evaluator_invalid_context",
+        "The evaluator context could not be prepared.",
+    ),
+}
+_EVALUATOR_RETRY_REASON = (
+    "Evaluation is paused after repeated invalid responses. "
+    "Retry evaluation or send new instructions to continue."
+)
 PROJECT_SKILL = "code.build_project"
 _PLANNER_FAILURE_DETAILS = {
     "transport_unavailable": ("planner_unavailable", "Planner transport is unavailable."),
@@ -304,6 +325,11 @@ class GoalManager:
         pending = int(goal.get("pending_message_revision") or 0) > 0
         if not pending and goal["current_phase"] != "project_continue":
             return
+        if pending and goal["current_phase"] == "evaluator_retry_required":
+            await self._resume_evaluator_retry(goal_id, maintenance_guard=maintenance_guard)
+            goal = await self.graph.get_goal(goal_id)
+            if goal is None:
+                return
         nodes = await self.graph.list_nodes(goal_id)
         if any(node["status"] in {"dispatched", "running", "waiting_capability"} for node in nodes):
             return
@@ -682,6 +708,7 @@ class GoalManager:
                 raise GoalManagerConflict("goal not found")
             if goal["status"] in self.graph.GOAL_TERMINAL:
                 raise GoalManagerConflict("terminal goal cannot be started")
+            await self._resume_evaluator_retry(goal_run_id, maintenance_guard=maintenance_guard)
             await self._resume_pending_conversation(
                 goal_run_id, maintenance_guard=maintenance_guard
             )
@@ -779,6 +806,7 @@ class GoalManager:
             )
             await self._evaluate_if_quiescent(
                 goal_run_id,
+                explicit_user_action=True,
                 maintenance_guard=maintenance_guard,
             )
             detail = await self.get_goal(goal_run_id)
@@ -1057,6 +1085,8 @@ class GoalManager:
         provider_source: str,
         model_id: str | None = None,
         conversation_revision: int | None = None,
+        evaluator_state_fingerprint: str | None = None,
+        explicit_user_action: bool = False,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> str:
         call_id = f"gmc_{uuid4().hex}"
@@ -1070,7 +1100,7 @@ class GoalManager:
                 await maintenance_guard.require_current_locked(db)
             row = await (
                 await db.execute(
-                    "SELECT model_call_count,max_model_calls,status,conversation_revision FROM goal_runs WHERE id=?",
+                    "SELECT * FROM goal_runs WHERE id=?",
                     (goal_run_id,),
                 )
             ).fetchone()
@@ -1085,6 +1115,19 @@ class GoalManager:
                 and int(row["conversation_revision"]) != conversation_revision
             ):
                 raise GoalManagerConflict("goal conversation changed before model reservation")
+            if evaluator_state_fingerprint is not None:
+                if (
+                    row["status"] != "running"
+                    or int(row["pending_message_revision"])
+                    or not await self._evaluation_state_matches_locked(
+                        db, goal_run_id, evaluator_state_fingerprint
+                    )
+                ):
+                    raise GoalManagerConflict("goal changed before evaluation reservation")
+                if not explicit_user_action and await self._evaluator_cooling_down_locked(
+                    db, dict(row), evaluator_state_fingerprint, now=now
+                ):
+                    raise GoalManagerConflict("evaluator retry cooldown is active")
             if int(row["model_call_count"]) >= int(row["max_model_calls"]):
                 await db.rollback()
                 raise GoalManagerConflict("goal model call budget exhausted")
@@ -2064,10 +2107,207 @@ class GoalManager:
             ).encode("utf-8")
         ).hexdigest()
 
+    async def _evaluation_state_matches_locked(
+        self, db: aiosqlite.Connection, goal_id: str, state_fingerprint: str
+    ) -> bool:
+        rows = await (
+            await db.execute(
+                """SELECT id,status,result_summary,error_summary FROM plan_nodes
+                WHERE goal_run_id=? ORDER BY id""",
+                (goal_id,),
+            )
+        ).fetchall()
+        return (
+            bool(rows)
+            and all(row["status"] in self.graph.NODE_TERMINAL for row in rows)
+            and (self._state_fingerprint([dict(row) for row in rows]) == state_fingerprint)
+        )
+
+    @staticmethod
+    async def _evaluator_attempts_locked(
+        db: aiosqlite.Connection, goal: Mapping[str, Any]
+    ) -> list[aiosqlite.Row]:
+        # A goal has at most 100 model credits. Retain the exact request digest;
+        # retry identity uses its persisted state, excluding volatile time/budgets.
+        return list(
+            await (
+                await db.execute(
+                    """SELECT c.status,c.error_category,c.completed_at,
+                    json_extract(x.context_json,'$.state_fingerprint') AS state_fingerprint
+                    FROM goal_model_calls c LEFT JOIN goal_contexts x ON x.id=c.context_id
+                    WHERE c.goal_run_id=? AND c.role='evaluator' AND c.conversation_revision=?
+                    ORDER BY c.lease_generation DESC LIMIT 100""",
+                    (goal["id"], goal["conversation_revision"]),
+                )
+            ).fetchall()
+        )
+
+    async def _evaluator_cooling_down_locked(
+        self,
+        db: aiosqlite.Connection,
+        goal: Mapping[str, Any],
+        state_fingerprint: str,
+        *,
+        now: str,
+    ) -> bool:
+        attempts = await self._evaluator_attempts_locked(db, goal)
+        if not attempts:
+            return False
+        latest = attempts[0]
+        return bool(
+            latest["status"] == "failed"
+            and (
+                latest["error_category"] in _EVALUATOR_FAILURE_DETAILS
+                or latest["error_category"] == "provider_unavailable"
+            )
+            and latest["state_fingerprint"] == state_fingerprint
+            and latest["completed_at"]
+            and datetime.fromisoformat(latest["completed_at"])
+            > datetime.fromisoformat(now) - timedelta(seconds=_EVALUATOR_RETRY_COOLDOWN_SECONDS)
+        )
+
+    async def _resume_evaluator_retry(
+        self, goal_id: str, *, maintenance_guard: MaintenanceLeaseGuard | None = None
+    ) -> None:
+        """Only an explicit start or a durable new reply releases this human wait."""
+        now = self._now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            # This fixed fragment resumes accounting; all values remain bound.
+            updated = await db.execute(
+                f"""UPDATE goal_runs SET status='running',current_phase='evaluator_retrying',
+                failure_reason=NULL,updated_at=?,{RESUME_RUNTIME_SQL}
+                WHERE id=? AND status='waiting_permission' AND current_phase='evaluator_retry_required'
+                AND NOT EXISTS (SELECT 1 FROM plan_nodes WHERE goal_run_id=goal_runs.id
+                    AND status NOT IN ('completed','failed','blocked','cancelled','skipped'))""",  # nosec B608
+                (now, now, goal_id),
+            )
+            if updated.rowcount:
+                await append_audit_event(
+                    db,
+                    "goal.evaluator.retry_requested",
+                    {"goal_run_id": goal_id},
+                    actor_type="control-plane",
+                    actor_id="goal-manager",
+                    trace_id=goal_id,
+                    created_at=now,
+                )
+            await db.commit()
+
+    async def _record_evaluator_failure(
+        self,
+        goal_id: str,
+        error: EvaluatorProviderError,
+        *,
+        conversation_revision: int,
+        state_fingerprint: str,
+        call_id: str | None = None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> bool:
+        phase, reason = _EVALUATOR_FAILURE_DETAILS[error.category]
+        now = self._now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            goal = await (
+                await db.execute(
+                    """SELECT * FROM goal_runs WHERE id=? AND status='running'
+                    AND conversation_revision=? AND pending_message_revision=0""",
+                    (goal_id, conversation_revision),
+                )
+            ).fetchone()
+            if goal is None:
+                return False
+            if call_id is not None:
+                try:
+                    await self._require_current_model_call_locked(db, call_id, now=now)
+                except GoalManagerConflict:
+                    return False
+            if not await self._evaluation_state_matches_locked(db, goal_id, state_fingerprint):
+                if call_id is not None:
+                    await self._finish_model_call_locked(
+                        db, call_id, status="failed", now=now, error_category="state_changed"
+                    )
+                    await db.commit()
+                return False
+            if call_id is not None and not await self._finish_model_call_locked(
+                db,
+                call_id,
+                status="failed",
+                now=now,
+                error_category=error.category,
+                output_digest=error.output_digest,
+            ):
+                return False
+            invalid_attempts = 0
+            for attempt in await self._evaluator_attempts_locked(db, dict(goal)):
+                if (
+                    attempt["status"] != "failed"
+                    or attempt["state_fingerprint"] != state_fingerprint
+                ):
+                    break
+                if attempt["error_category"] in {"invalid_response", "request_rejected"}:
+                    invalid_attempts += 1
+            pause = error.category == "invalid_context" or (
+                error.category in {"invalid_response", "request_rejected"}
+                and invalid_attempts >= _MAX_INVALID_EVALUATOR_ATTEMPTS
+            )
+            if pause:
+                phase = "evaluator_retry_required"
+                reason = (
+                    f"{reason} Retry evaluation or send new instructions to continue."
+                    if error.category == "invalid_context"
+                    else _EVALUATOR_RETRY_REASON
+                )
+            await db.execute(
+                """UPDATE goal_runs SET status=?,current_phase=?,failure_reason=?,updated_at=?,
+                paused_at=CASE WHEN ? THEN COALESCE(paused_at,?) ELSE paused_at END,
+                evaluator_summary=CASE WHEN ? THEN ? ELSE evaluator_summary END WHERE id=?""",
+                (
+                    "waiting_permission" if pause else "running",
+                    phase,
+                    reason,
+                    now,
+                    pause,
+                    now,
+                    pause,
+                    reason,
+                    goal_id,
+                ),
+            )
+            if pause:
+                await GoalConversationService.assistant_locked(
+                    db, goal_id, reason, question=False, now=now
+                )
+            await append_audit_event(
+                db,
+                "goal.evaluator.failed",
+                {
+                    "goal_run_id": goal_id,
+                    "model_call_id": call_id,
+                    "category": error.category,
+                    "diagnostic": error.diagnostic,
+                    "retry_required": pause,
+                },
+                actor_type="control-plane",
+                actor_id="goal-manager",
+                trace_id=goal_id,
+                created_at=now,
+            )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+        return True
+
     async def _evaluate_if_quiescent(
         self,
         goal_run_id: str,
         *,
+        explicit_user_action: bool = False,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
         goal = await self.graph.get_goal(goal_run_id)
@@ -2087,50 +2327,59 @@ class GoalManager:
         if not nodes or any(node["status"] not in self.graph.NODE_TERMINAL for node in nodes):
             return
         state_fingerprint = self._state_fingerprint(nodes)
+        if not explicit_user_action:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                if await self._evaluator_cooling_down_locked(
+                    db, goal, state_fingerprint, now=self._now()
+                ):
+                    return
         elapsed = int(active_runtime_seconds(goal))
-        context = GoalEvaluationContext(
-            schema_version="1.0",
-            goal_run_id=goal_run_id,
-            objective=str(goal["objective"]),
-            completion_criteria=list(goal["completion_criteria"]),
-            node_results=[
-                EvaluationNodeResult(
-                    node_id=str(node["id"]),
-                    title=str(node["title"]),
-                    status=PlanNodeStatus(str(node["status"])),
-                    expected_output=str(node["expected_output"]),
-                    result_summary=(
-                        str(node["result_summary"]) if node.get("result_summary") else None
-                    ),
-                    failure_reason=(
-                        str(node["error_summary"]) if node.get("error_summary") else None
-                    ),
-                )
-                for node in nodes
-            ],
-            known_node_ids=[str(node["id"]) for node in nodes],
-            remaining_step_budget=max(0, int(goal["max_steps"]) - int(goal["step_count"])),
-            remaining_model_call_budget=max(
-                0, int(goal["max_model_calls"]) - int(goal["model_call_count"])
-            ),
-            elapsed_seconds=min(elapsed, 86_400),
-            state_fingerprint=state_fingerprint,
-        )
-        context_id: str | None = None
         try:
-            if self.context_builder is not None:
-                context, recorded = await self.context_builder.build_evaluation_context(
-                    context,
-                    provenance_ids=(goal_run_id, *(str(node["id"]) for node in nodes)),
-                )
-                context_id = str(recorded.id)
-            else:
-                context = bound_evaluation_context(context, max_tokens=2_048)
-        except (TypeError, ValueError):
-            await self._record_recoverable_error(
+            context = GoalEvaluationContext(
+                schema_version="1.0",
+                goal_run_id=goal_run_id,
+                objective=str(goal["objective"]),
+                completion_criteria=list(goal["completion_criteria"]),
+                node_results=[
+                    EvaluationNodeResult(
+                        node_id=str(node["id"]),
+                        title=str(node["title"]),
+                        status=PlanNodeStatus(str(node["status"])),
+                        expected_output=str(node["expected_output"]),
+                        result_summary=(
+                            str(node["result_summary"]) if node.get("result_summary") else None
+                        ),
+                        failure_reason=(
+                            str(node["error_summary"]) if node.get("error_summary") else None
+                        ),
+                    )
+                    for node in nodes
+                ],
+                known_node_ids=[str(node["id"]) for node in nodes],
+                remaining_step_budget=max(0, int(goal["max_steps"]) - int(goal["step_count"])),
+                remaining_model_call_budget=max(
+                    0, int(goal["max_model_calls"]) - int(goal["model_call_count"])
+                ),
+                elapsed_seconds=min(elapsed, 86_400),
+                state_fingerprint=state_fingerprint,
+            )
+            builder = self.context_builder or ContextBuilder(self.db_path, max_tokens=2_048)
+            context, recorded = await builder.build_evaluation_context(
+                context,
+                provenance_ids=(goal_run_id, *(str(node["id"]) for node in nodes)),
+            )
+            context_id = str(recorded.id)
+        except (TypeError, ValueError, RuntimeError):
+            await self._record_evaluator_failure(
                 goal_run_id,
-                "evaluator_context_unavailable",
+                EvaluatorProviderError(
+                    "evaluator context unavailable",
+                    category="invalid_context",
+                    diagnostic="context",
+                ),
                 conversation_revision=int(goal.get("conversation_revision") or 0),
+                state_fingerprint=state_fingerprint,
                 maintenance_guard=maintenance_guard,
             )
             return
@@ -2149,6 +2398,8 @@ class GoalManager:
                 goal_run_id,
                 role="evaluator",
                 conversation_revision=int(goal.get("conversation_revision") or 0),
+                evaluator_state_fingerprint=state_fingerprint,
+                explicit_user_action=explicit_user_action,
                 context_id=context_id,
                 input_digest=input_digest,
                 provider_source=self.evaluator.source.value,
@@ -2180,16 +2431,25 @@ class GoalManager:
                 goal_run_id, call_id, maintenance_guard=maintenance_guard
             )
             return
-        except (EvaluatorProviderError, OSError, RuntimeError, TypeError, ValueError):
-            await self._finish_model_call(
-                call_id,
-                status="failed",
-                maintenance_guard=maintenance_guard,
-            )
-            await self._record_recoverable_error(
+        except (EvaluatorProviderError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            if isinstance(exc, EvaluatorProviderError):
+                failure = exc
+            elif isinstance(exc, PlanValidationError):
+                failure = EvaluatorProviderError(
+                    "invalid evaluator proposal", category="invalid_response", diagnostic="graph"
+                )
+            elif isinstance(exc, OSError):
+                failure = EvaluatorProviderError("evaluator transport unavailable")
+            else:
+                failure = EvaluatorProviderError(
+                    "evaluator failed internally", category="invalid_context", diagnostic="context"
+                )
+            await self._record_evaluator_failure(
                 goal_run_id,
-                "evaluator_unavailable",
+                failure,
+                call_id=call_id,
                 conversation_revision=int(goal.get("conversation_revision") or 0),
+                state_fingerprint=state_fingerprint,
                 maintenance_guard=maintenance_guard,
             )
             return
@@ -3365,6 +3625,32 @@ class GoalManager:
                         OR julianday(updated_at)<=julianday(?) - ? / 86400.0
                       )
                       AND (
+                        current_phase NOT IN (
+                            'evaluator_unavailable','evaluator_request_rejected',
+                            'evaluator_invalid_response','evaluator_invalid_context',
+                            'evaluator_context_unavailable'
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM plan_nodes AS changed_node
+                            WHERE changed_node.goal_run_id=goal_runs.id AND (
+                                changed_node.status NOT IN
+                                    ('completed','failed','blocked','cancelled','skipped')
+                                OR julianday(changed_node.updated_at)>julianday(goal_runs.updated_at)
+                            )
+                        )
+                        OR NOT EXISTS (
+                            SELECT 1 FROM goal_model_calls AS recent
+                            WHERE recent.goal_run_id=goal_runs.id AND recent.role='evaluator'
+                              AND recent.conversation_revision=goal_runs.conversation_revision
+                              AND recent.status='failed'
+                              AND recent.error_category IN (
+                                'transport_unavailable','request_rejected','invalid_response',
+                                'invalid_context','provider_unavailable'
+                              )
+                              AND julianday(recent.completed_at)>julianday(?) - ? / 86400.0
+                        )
+                      )
+                      AND (
                         ?=0 OR current_phase<>'waiting_for_workers'
                         OR EXISTS (
                             SELECT 1 FROM agents WHERE status='online'
@@ -3412,6 +3698,8 @@ class GoalManager:
                         selection_now,
                         selection_now,
                         _PLANNER_RETRY_COOLDOWN_SECONDS,
+                        selection_now,
+                        _EVALUATOR_RETRY_COOLDOWN_SECONDS,
                         int(self.require_execution_workers),
                         bounded_limit,
                     ),
