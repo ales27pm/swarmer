@@ -12,6 +12,10 @@ from uuid import uuid4
 
 import aiosqlite
 
+from app.services.agent_liveness import (
+    DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
+    agent_is_fresh,
+)
 from app.services.feedback_dataset import redact_dataset_text
 from app.services.swarm_contracts import EvaluationNodeResult, GoalEvaluationContext
 
@@ -146,6 +150,7 @@ class ContextBuilder:
         max_memory_items: int = 6,
         max_episode_items: int = 4,
         max_agent_cards: int = 6,
+        offline_timeout_seconds: int = DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
         max_upstream_results: int = 8,
         max_result_chars_per_node: int = 2_000,
         max_items: int | None = None,
@@ -160,6 +165,8 @@ class ContextBuilder:
             raise ValueError("max_episode_items must be between 0 and 100")
         if not 0 <= max_agent_cards <= 64:
             raise ValueError("max_agent_cards must be between 0 and 64")
+        if offline_timeout_seconds <= 0:
+            raise ValueError("agent offline timeout must be positive")
         if not 0 <= max_upstream_results <= 20:
             raise ValueError("max_upstream_results must be between 0 and 20")
         if not 0 <= max_result_chars_per_node <= 100_000:
@@ -173,6 +180,7 @@ class ContextBuilder:
         self.max_memory_items = max_memory_items
         self.max_episode_items = max_episode_items
         self.max_agent_cards = max_agent_cards
+        self.offline_timeout_seconds = offline_timeout_seconds
         self.max_upstream_results = max_upstream_results
         self.max_result_chars_per_node = max_result_chars_per_node
         # Compatibility-only caps retained for callers of the pre-v0.12 API.
@@ -702,32 +710,34 @@ class ContextBuilder:
             ).fetchall()
         )
 
-    @staticmethod
     async def _agents_locked(
+        self,
         db: aiosqlite.Connection,
         *,
         limit: int,
     ) -> list[aiosqlite.Row]:
         if limit == 0:
             return []
-        return list(
-            await (
-                await db.execute(
-                    """
-                    SELECT a.id,a.name,a.version,a.model_id,a.status,a.skills_json,
-                           a.max_concurrency,a.runtime,a.supported_protocol_version,
-                           COALESCE(s.composite_score,0.0) AS observed_score
-                    FROM agents AS a
-                    LEFT JOIN agent_score_snapshots AS s ON s.agent_id=a.id
-                    WHERE a.status IN ('online','draining')
-                    ORDER BY CASE a.status WHEN 'online' THEN 0 ELSE 1 END,
-                             observed_score DESC,a.id ASC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                )
-            ).fetchall()
-        )
+        now = self.clock()
+        agents: list[aiosqlite.Row] = []
+        async with db.execute(
+            """
+            SELECT a.id,a.name,a.version,a.model_id,a.status,a.skills_json,a.last_seen_at,
+                   a.max_concurrency,a.runtime,a.supported_protocol_version,
+                   COALESCE(s.composite_score,0.0) AS observed_score
+            FROM agents AS a
+            LEFT JOIN agent_score_snapshots AS s ON s.agent_id=a.id
+            WHERE a.status IN ('online','draining')
+            ORDER BY CASE a.status WHEN 'online' THEN 0 ELSE 1 END,
+                     observed_score DESC,a.id ASC
+            """
+        ) as cursor:
+            async for row in cursor:
+                if agent_is_fresh(dict(row), now=now, timeout_seconds=self.offline_timeout_seconds):
+                    agents.append(row)
+                    if len(agents) == limit:
+                        break
+        return agents
 
     @staticmethod
     async def _failures_locked(
@@ -1134,6 +1144,8 @@ def bound_evaluation_context(
                     ),
                     result_summary=result,
                     failure_reason=failure,
+                    node_type=node.node_type,
+                    required_skill=node.required_skill,
                 )
             )
         return GoalEvaluationContext(
@@ -1150,6 +1162,9 @@ def bound_evaluation_context(
             ],
             node_results=nodes,
             known_node_ids=list(context.known_node_ids),
+            available_skills=(
+                list(context.available_skills) if context.available_skills is not None else None
+            ),
             remaining_step_budget=context.remaining_step_budget,
             remaining_model_call_budget=context.remaining_model_call_budget,
             elapsed_seconds=context.elapsed_seconds,

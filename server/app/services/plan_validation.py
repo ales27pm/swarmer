@@ -9,6 +9,7 @@ from typing import Any, NoReturn
 
 from pydantic import BaseModel, ValidationError
 
+from app.services.agent_card import PROJECT_BUILD_SKILLS
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.swarm_contracts import (
     MAX_PLAN_NODES,
@@ -94,11 +95,26 @@ def _parse_json_object(text: str) -> Mapping[str, object]:
 
 
 def parse_swarm_plan_json(text: str) -> SwarmPlanProposal:
-    return _coerce_model(SwarmPlanProposal, _parse_json_object(text))
+    proposal = _coerce_model(SwarmPlanProposal, _parse_json_object(text))
+    _validate_project_plan_shape(proposal.nodes)
+    return proposal
 
 
 def parse_evaluation_json(text: str) -> EvaluationDecision:
     return _coerce_model(EvaluationDecision, _parse_json_object(text))
+
+
+def _validate_project_plan_shape(nodes: Sequence[SwarmPlanNodeProposal]) -> None:
+    projects = [node for node in nodes if node.required_skill in PROJECT_BUILD_SKILLS]
+    if projects and (
+        len(nodes) != 1
+        or projects[0].node_type is not PlanNodeType.WORKER
+        or projects[0].dependencies
+        or projects[0].optional_dependencies
+    ):
+        raise PlanValidationError(
+            "a project plan requires exactly one worker with no hard or optional dependencies"
+        )
 
 
 def _validate_worker_policy(node: SwarmPlanNodeProposal, policy: PermissionPolicy) -> None:
@@ -126,6 +142,7 @@ def _validate_node_graph(
 ) -> tuple[str, ...]:
     if len(nodes) > MAX_PLAN_NODES:
         raise PlanValidationError(f"plans cannot contain more than {MAX_PLAN_NODES} nodes")
+    _validate_project_plan_shape(nodes)
 
     by_id: dict[str, SwarmPlanNodeProposal] = {}
     for node in nodes:

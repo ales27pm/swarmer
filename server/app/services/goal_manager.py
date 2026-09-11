@@ -13,6 +13,7 @@ from uuid import uuid4
 import aiosqlite
 
 from app.models import TaskCreate, TaskMode, TaskRecord, TaskStatus
+from app.services.agent_card import SUPPORTED_AGENT_PROTOCOL, SUPPORTED_AGENT_SKILLS
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.audit_log import append_audit_event
 from app.services.context_builder import (
@@ -600,7 +601,10 @@ class GoalManager:
             source=actor_id,
         ).model_copy(update={"status": TaskStatus.PLANNED})
         criteria = request.completion_criteria or [
-            "Provide an evidence-backed response to the objective"
+            (
+                "Fulfill the user's requested outcome, preserving the requested deliverables and "
+                "actions, with evidence for each claimed result."
+            )
         ]
         limits = {
             name: getattr(request, name) if getattr(request, name) is not None else default
@@ -814,6 +818,17 @@ class GoalManager:
                 raise RuntimeError("started goal disappeared")
             return detail
 
+    async def _has_online_worker_locked(self, db: aiosqlite.Connection) -> bool:
+        now = self.agent_dispatcher.clock()
+        async with db.execute(
+            "SELECT last_seen_at FROM agents WHERE status='online' "
+            "AND json_array_length(skills_json)>0"
+        ) as cursor:
+            async for row in cursor:
+                if self.agent_dispatcher.scheduler.is_fresh({"last_seen_at": row[0]}, now=now):
+                    return True
+        return False
+
     async def _wait_for_execution_workers(
         self,
         goal_run_id: str,
@@ -826,13 +841,7 @@ class GoalManager:
             await db.execute("BEGIN IMMEDIATE")
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
-            online = await (
-                await db.execute(
-                    "SELECT 1 FROM agents WHERE status='online' "
-                    "AND json_array_length(skills_json)>0 LIMIT 1"
-                )
-            ).fetchone()
-            if online is not None:
+            if await self._has_online_worker_locked(db):
                 await db.rollback()
                 return False
             await db.execute(
@@ -2303,6 +2312,40 @@ class GoalManager:
             await db.commit()
         return True
 
+    async def _available_worker_skills(self) -> list[str] | None:
+        """Current permitted capabilities, independent of temporarily occupied slots."""
+        scheduler = self.agent_dispatcher.scheduler
+        now = self.agent_dispatcher.clock()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN")
+            snapshot = await self.agent_dispatcher.worker_skill_policy.load_locked(
+                db, now=now.isoformat()
+            )
+            if snapshot is None:
+                return None
+            rows = await (
+                await db.execute(
+                    """SELECT status,skills_json,last_seen_at,supported_protocol_version
+                    FROM agents WHERE status IN ('online','busy')
+                    AND supported_protocol_version=?""",
+                    (SUPPORTED_AGENT_PROTOCOL,),
+                )
+            ).fetchall()
+            # Context collection must not persist even an optional policy bootstrap.
+            await db.rollback()
+        skills: set[str] = set()
+        for row in rows:
+            if not scheduler.is_fresh(dict(row), now=now):
+                continue
+            declared = json.loads(str(row["skills_json"]))
+            if not isinstance(declared, list) or any(
+                not isinstance(skill, str) for skill in declared
+            ):
+                raise ValueError("worker skills are not a string list")
+            skills.update(set(declared) & SUPPORTED_AGENT_SKILLS & snapshot.allowed_skills)
+        return sorted(skills)
+
     async def _evaluate_if_quiescent(
         self,
         goal_run_id: str,
@@ -2353,10 +2396,20 @@ class GoalManager:
                         failure_reason=(
                             str(node["error_summary"]) if node.get("error_summary") else None
                         ),
+                        node_type=PlanNodeType(str(node["node_type"])),
+                        required_skill=node.get("required_skill"),
                     )
                     for node in nodes
+                    # Deterministic synthesis without hard or optional inputs
+                    # produced no evidence; retain its ID and stored history.
+                    if not (
+                        node["node_type"] == PlanNodeType.SYNTHESIS.value
+                        and node["status"] == PlanNodeStatus.COMPLETED.value
+                        and node.get("depends_on") == []
+                    )
                 ],
                 known_node_ids=[str(node["id"]) for node in nodes],
+                available_skills=await self._available_worker_skills(),
                 remaining_step_budget=max(0, int(goal["max_steps"]) - int(goal["step_count"])),
                 remaining_model_call_budget=max(
                     0, int(goal["max_model_calls"]) - int(goal["model_call_count"])
@@ -2370,7 +2423,7 @@ class GoalManager:
                 provenance_ids=(goal_run_id, *(str(node["id"]) for node in nodes)),
             )
             context_id = str(recorded.id)
-        except (TypeError, ValueError, RuntimeError):
+        except (TypeError, ValueError, RuntimeError, aiosqlite.Error):
             await self._record_evaluator_failure(
                 goal_run_id,
                 EvaluatorProviderError(
@@ -3606,6 +3659,11 @@ class GoalManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             selection_now = self._now()
+            has_online_worker = (
+                await self._has_online_worker_locked(db)
+                if self.require_execution_workers
+                else False
+            )
             active_goals = await (
                 await db.execute(
                     """SELECT id,status,autonomy_profile,updated_at,started_at,reply_dispatch_credit FROM goal_runs
@@ -3652,10 +3710,7 @@ class GoalManager:
                       )
                       AND (
                         ?=0 OR current_phase<>'waiting_for_workers'
-                        OR EXISTS (
-                            SELECT 1 FROM agents WHERE status='online'
-                              AND json_array_length(skills_json)>0
-                        )
+                        OR ?=1
                       )
                       AND (
                         status='planning'
@@ -3701,6 +3756,7 @@ class GoalManager:
                         selection_now,
                         _EVALUATOR_RETRY_COOLDOWN_SECONDS,
                         int(self.require_execution_workers),
+                        int(has_online_worker),
                         bounded_limit,
                     ),
                 )

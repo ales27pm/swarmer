@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: monGARS Control Plane API
-  version: 0.14.0
+  version: 0.14.1
   description: |
     Authenticated local control-plane API. Pairing-code issuance requires both an
     actual loopback socket peer and the configured operator bootstrap token. A
@@ -1789,7 +1789,7 @@ components:
         - episode_retrieval_hits
       properties:
         status: {type: string, const: ok}
-        version: {const: 0.14.0}
+        version: {const: 0.14.1}
         instance_id:
           type: string
           pattern: '^cp_[0-9a-f]{32}$'
@@ -3046,7 +3046,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.1.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -3060,7 +3060,7 @@ components:
       additionalProperties: false
       required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.1.}
         request_id: {type: string}
         task_id: {type: string}
         agent_id: {type: string}
@@ -3101,7 +3101,7 @@ components:
       additionalProperties: false
       required: [schema_version, grant_id, request_id, task_id, agent_id, target_device_id, approval_id, audit_id, capability, action_digest, issued_at, expires_at, use]
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.0.}
+        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.1.}
         grant_id: {type: string, minLength: 32, maxLength: 500, readOnly: true}
         request_id: {type: string}
         task_id: {type: string}

@@ -132,7 +132,7 @@ from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.14.0"
+API_VERSION = "0.14.1"
 logger = logging.getLogger(__name__)
 
 _MAINTENANCE_OPERATION_ERRORS = (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error)
@@ -324,6 +324,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         max_memory_items=settings.goal_context_max_memory_items,
         max_episode_items=settings.goal_context_max_episode_items,
         max_agent_cards=settings.goal_context_max_agent_cards,
+        offline_timeout_seconds=settings.agent_offline_timeout_seconds,
         max_upstream_results=settings.goal_context_max_upstream_results,
         max_result_chars_per_node=settings.goal_context_max_result_chars_per_node,
     )

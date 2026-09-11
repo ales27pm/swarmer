@@ -23,6 +23,7 @@ export function ScreenShell({
       style={{ backgroundColor: COLORS.background }}
       testID={testID}
       contentInsetAdjustmentBehavior="automatic"
+      automaticallyAdjustKeyboardInsets
       contentContainerStyle={{ gap: 16, padding: 16, paddingBottom: 40 }}
       keyboardShouldPersistTaps="handled"
       refreshControl={

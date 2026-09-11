@@ -326,10 +326,10 @@ def test_all_committed_json_schemas_are_valid_and_roadmap_is_explicit() -> None:
 
 def test_openapi_covers_runtime_transport_statuses_and_response_credentials() -> None:
     document = yaml.safe_load((REPO_ROOT / "api" / "openapi.yaml").read_text(encoding="utf-8"))
-    assert document["info"]["version"] == "0.14.0"
+    assert document["info"]["version"] == "0.14.1"
     runtime_status = document["components"]["schemas"]["RuntimeStatus"]
     assert runtime_status["additionalProperties"] is False
-    assert runtime_status["properties"]["version"] == {"const": "0.14.0"}
+    assert runtime_status["properties"]["version"] == {"const": "0.14.1"}
     assert {
         "redis_reconnect_count",
         "redis_last_error_category",

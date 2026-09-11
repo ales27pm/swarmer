@@ -5,6 +5,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+
 SCHEMA_VERSION = "1.0"
 MAX_PLAN_NODES = 20
 MAX_PLAN_PARALLELISM = 3
@@ -402,6 +404,8 @@ class EvaluationNodeResult(BaseModel):
     expected_output: LongText
     result_summary: LongText | None = None
     failure_reason: ShortText | None = None
+    node_type: PlanNodeType | None = None
+    required_skill: StableIdentifier | None = None
 
 
 class GoalEvaluationContext(BaseModel):
@@ -415,6 +419,10 @@ class GoalEvaluationContext(BaseModel):
     completion_criteria: list[ShortText] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     node_results: list[EvaluationNodeResult] = Field(max_length=MAX_PLAN_NODES)
     known_node_ids: list[StableIdentifier] = Field(max_length=MAX_PLAN_NODES)
+    # None preserves unknown facts in older contexts; [] means observed absence.
+    available_skills: list[StableIdentifier] | None = Field(
+        default=None, max_length=len(SUPPORTED_AGENT_SKILLS)
+    )
     remaining_step_budget: int = Field(strict=True, ge=0, le=MAX_PLAN_NODES)
     remaining_model_call_budget: int = Field(strict=True, ge=0, le=100)
     elapsed_seconds: int = Field(strict=True, ge=0, le=86_400)
@@ -425,6 +433,11 @@ class GoalEvaluationContext(BaseModel):
 
     @model_validator(mode="after")
     def validate_node_ids(self) -> GoalEvaluationContext:
+        if self.available_skills is not None:
+            if len(set(self.available_skills)) != len(self.available_skills):
+                raise ValueError("available_skills must be unique")
+            if not set(self.available_skills).issubset(SUPPORTED_AGENT_SKILLS):
+                raise ValueError("available_skills contain an unsupported skill")
         if len(set(self.known_node_ids)) != len(self.known_node_ids):
             raise ValueError("known_node_ids must be unique")
         result_ids = [node.node_id for node in self.node_results]

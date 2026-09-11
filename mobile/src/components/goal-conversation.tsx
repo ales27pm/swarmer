@@ -116,7 +116,7 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
             <Text selectable style={{ color: COLORS.text, lineHeight: 21 }}>{message.content}</Text>
           </View>
         ))}
-        {question ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning }}>Une précision est demandée. Votre réponse sera liée à cette question ; elle n’autorise aucune écriture.</Text> : null}
+        {question ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning }}>Une précision est demandée. Votre réponse sera liée à cette question et permettra de poursuivre le travail sur le projet. L’application des fichiers dans votre espace de travail nécessitera une approbation distincte.</Text> : null}
         {notice ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.accent }}>{notice}</Text> : null}
         <TextInput
           accessibilityLabel={question ? "Réponse à la question du projet" : "Message pour le projet"}

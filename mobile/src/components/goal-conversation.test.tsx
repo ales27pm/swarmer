@@ -51,7 +51,9 @@ describe("GoalConversation", () => {
     const user = userEvent.setup();
     await render(<GoalConversation {...props} />);
     await screen.findByText(question.content);
-    expect(screen.getByText(/elle n’autorise aucune écriture/)).toBeOnTheScreen();
+    expect(screen.getByText(/Votre réponse sera liée à cette question et permettra de poursuivre le travail sur le projet/)).toBeOnTheScreen();
+    expect(screen.getByText(/L’application des fichiers dans votre espace de travail nécessitera une approbation distincte/)).toBeOnTheScreen();
+    expect(screen.queryByText(/n’autorise aucune écriture/)).not.toBeOnTheScreen();
     const answer = "Une application web avec gestion des contacts. ".repeat(60);
     await fireEvent.changeText(screen.getByLabelText("Réponse à la question du projet"), answer);
     await user.press(screen.getByRole("button", { name: "Répondre à la question" }));
