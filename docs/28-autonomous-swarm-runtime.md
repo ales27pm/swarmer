@@ -100,6 +100,13 @@ champs supplémentaires et mauvais types. Le serveur vérifie ensuite:
 Les champs `status`, `completed`, `result` et `tool_call` ne font pas partie du
 contrat. Un modèle ne peut donc pas déclarer son propre succès ou son effet.
 
+Le schéma de génération envoyé au planner et à l'evaluator omet uniquement
+`maxLength` sur les chaînes pour contourner une incompatibilité de grammaire
+[Ollama/llama.cpp](https://github.com/ggml-org/llama.cpp/issues/25746).
+Les contrats Pydantic et OpenAPI conservent toutes leurs limites: chaque réponse
+est toujours validée localement avant toute transition. Une réponse trop longue
+ou un plan invalide reste rejeté.
+
 Une proposition locale iPhone ou manuelle est acceptée seulement avec sa source
 explicite et subit le même validateur serveur. Elle doit conserver l'objectif
 original exact; la référence de carte est réservée à une réponse modèle liée à
@@ -188,6 +195,12 @@ contrat du skill termine le nœud en échec même si le worker annonce
 `completed`. Sans preuve valide, le but échoue fermé.
 Une indisponibilité du planner/evaluator laisse une phase récupérable et ne
 fabrique aucun résultat.
+Après une indisponibilité du planner, la maintenance attend au moins 60 secondes
+depuis la dernière modification persistée avant un nouvel essai automatique.
+Ce délai survit au redémarrage et s'applique avant la limite de sélection des
+buts. Un démarrage explicitement demandé peut réessayer immédiatement si le
+budget le permet. Quand le budget d'appels est épuisé, le but passe à
+`budget_exhausted`; son historique et ses limites ne sont pas réinitialisés.
 
 ## Résultat et provenance
 

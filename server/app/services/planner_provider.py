@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.services.model_wire_schema import model_wire_schema
 from app.services.orchestrator_service import OrchestratorService
 from app.services.plan_validation import PlanValidationError, parse_swarm_plan_json
 from app.services.swarm_contracts import PlannerSource, SwarmPlanProposal
@@ -73,10 +74,18 @@ class UbuntuSwarmPlannerProvider:
     SYSTEM_PROMPT = """You are the monGARS multi-agent goal planner.
 Return exactly one JSON object matching the supplied schema and no prose.
 Decompose only the bounded, redacted context supplied by the Ubuntu control plane.
-Set objective to the exact card_id of the card whose kind is goal (goal:goal_<id>).
+Set the top-level objective to the exact card_id of the card whose kind is goal (goal:goal_<id>).
 This binds your proposal to its goal; do not reconstruct or rewrite the redacted objective.
+Keep all text concise: titles and criteria at most 500 characters, objectives and summaries
+at most 4000 characters. The server enforces these limits independently of the generation schema.
 Use only agent skills shown in that context. Prefer independent nodes when they can run safely
-in parallel. A synthesis node may depend on evidence nodes but has no worker skill.
+in parallel. Never invent a skill. If no agent cards are present, propose only a synthesis node
+describing missing execution capabilities; do not pretend that the available runtime can create
+or modify software. A synthesis node requires required_skill=null and preferred_agent_constraints=null.
+Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
+never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
+Minimal synthesis-node shape (replace the ID/text as needed):
+{"temporary_id":"assess","node_type":"synthesis","title":"Assess capability gap","objective":"Identify missing execution capabilities","required_skill":null,"dependencies":[],"optional_dependencies":[],"expected_output":"A clear capability limitation","priority":1,"preferred_agent_constraints":null}
 Never emit credentials, tool calls, shell commands, approval decisions, execution state, or claims
 that work completed. The server validates the DAG, policy, budgets, and every later transition.
 """
@@ -99,7 +108,7 @@ that work completed. The server validates the DAG, policy, budgets, and every la
             "json_schema": {
                 "name": "swarm_plan_proposal",
                 "strict": True,
-                "schema": SwarmPlanProposal.model_json_schema(),
+                "schema": model_wire_schema(SwarmPlanProposal),
             },
         }
 

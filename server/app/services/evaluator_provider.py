@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.services.model_wire_schema import model_wire_schema
 from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
     PlanValidationError,
@@ -66,6 +67,8 @@ class UbuntuEvaluatorProvider:
     SYSTEM_PROMPT = """You are the monGARS goal evaluator.
 Return exactly one JSON object matching the supplied schema and no prose.
 Evaluate only the bounded goal state in the user message.
+Keep all text concise: titles, criteria, requirements and questions at most 500 characters;
+objectives and summaries at most 4000 characters. The server independently enforces these limits.
 You may propose continue, replan, done, failed, or needs_user.
 Never claim that a tool, worker, permission, native capability, or task already executed.
 Never emit credentials, executable commands, tool calls, approval decisions, or side effects.
@@ -92,7 +95,7 @@ The Ubuntu control plane independently validates your proposal and remains autho
             "json_schema": {
                 "name": "goal_evaluation_decision",
                 "strict": True,
-                "schema": EvaluationDecision.model_json_schema(),
+                "schema": model_wire_schema(EvaluationDecision),
             },
         }
 

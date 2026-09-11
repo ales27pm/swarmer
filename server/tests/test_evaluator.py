@@ -288,6 +288,35 @@ async def test_ubuntu_evaluator_fails_closed_on_invalid_output(
         await provider.evaluate(evaluation_context())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summary_length", [4000, 4001])
+async def test_evaluator_wire_schema_preserves_local_string_limits(
+    policy: PermissionPolicy, summary_length: int
+) -> None:
+    raw = continue_decision()
+    raw["reason_summary"] = "x" * summary_length
+    post = AsyncMock(return_value=_response_for(json.dumps(raw)))
+    provider = UbuntuEvaluatorProvider(
+        base_url="http://127.0.0.1:8711/v1", model="local-evaluator", policy=policy
+    )
+    with patch("httpx.AsyncClient.post", post):
+        if summary_length == 4000:
+            decision = await provider.evaluate(evaluation_context())
+            assert decision.reason_summary == raw["reason_summary"]
+        else:
+            with pytest.raises(EvaluatorProviderError, match="invalid proposal") as raised:
+                await provider.evaluate(evaluation_context())
+            assert isinstance(raised.value.__cause__, PlanValidationError)
+            assert "at most 4000 characters" in str(raised.value.__cause__)
+
+    assert post.await_count == 1
+    assert post.await_args is not None
+    wire = post.await_args.kwargs["json"]["response_format"]
+    assert wire["type"] == "json_schema"
+    assert wire["json_schema"]["strict"] is True
+    assert '"maxLength"' not in json.dumps(wire["json_schema"]["schema"])
+
+
 def test_model_router_is_deterministic_metadata_without_execution_authority() -> None:
     router = ModelRouter(
         [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,13 @@ from app.services.evaluator_provider import (
     DeterministicEvaluatorProvider,
     NoopEvaluatorProvider,
 )
-from app.services.goal_manager import GoalManager
+from app.services.goal_manager import GoalManager, GoalManagerConflict
 from app.services.message_board import SQLiteMessageBoard
 from app.services.permission_policy import PermissionPolicy
-from app.services.planner_provider import DeterministicSwarmPlannerProvider
+from app.services.planner_provider import (
+    DeterministicSwarmPlannerProvider,
+    SwarmPlannerProviderError,
+)
 from app.services.state_service import StateService
 from app.services.swarm_contracts import (
     AutonomyProfile,
@@ -118,6 +122,172 @@ async def _create_and_start(
     )
     await manager.start_goal(str(goal["id"]), GoalStartRequest())
     return goal
+
+
+class _RecoverablePlanner:
+    source = PlannerSource.TEST
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.available = False
+
+    async def propose(self, context: Mapping[str, object]) -> SwarmPlanProposal:
+        del context
+        self.calls += 1
+        if not self.available:
+            raise SwarmPlannerProviderError("local swarm planner unavailable")
+        return _worker_plan()
+
+
+async def _failed_initial_plan(
+    manager: GoalManager,
+    planner: _RecoverablePlanner,
+    *,
+    max_model_calls: int | None = None,
+) -> dict[str, Any]:
+    manager.planner = planner
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=max_model_calls),
+        actor_id="test-phone",
+    )
+    with pytest.raises(GoalManagerConflict, match="planner unavailable"):
+        await manager.start_goal(str(goal["id"]), GoalStartRequest())
+    return goal
+
+
+@pytest.mark.asyncio
+async def test_planner_unavailable_cooldown_survives_manager_restart(tmp_path: Path) -> None:
+    database = tmp_path / "planner-cooldown.db"
+    manager = await _manager(database, _worker_plan())
+    planner = _RecoverablePlanner()
+    goal = await _failed_initial_plan(manager, planner)
+    restarted = await _manager(database, _worker_plan())
+    restarted.planner = planner
+
+    for _ in range(3):
+        assert await restarted.reconcile() == 0
+
+    record = await restarted.graph.get_goal(str(goal["id"]))
+    assert record is not None
+    assert planner.calls == record["model_call_count"] == 1
+    assert record["status"] == "planning"
+    assert record["current_phase"] == "planner_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_planner_automatically_recovers_after_persisted_cooldown(tmp_path: Path) -> None:
+    manager = await _manager(tmp_path / "planner-cooldown-expired.db", _worker_plan())
+    planner = _RecoverablePlanner()
+    goal = await _failed_initial_plan(manager, planner)
+    planner.available = True
+    async with aiosqlite.connect(manager.db_path) as db:
+        await db.execute(
+            "UPDATE goal_runs SET updated_at=? WHERE id=?",
+            ((datetime.now(UTC) - timedelta(seconds=61)).isoformat(), goal["id"]),
+        )
+        await db.commit()
+
+    assert await manager.reconcile() >= 1
+
+    record = await manager.graph.get_goal(str(goal["id"]))
+    assert record is not None
+    assert planner.calls == record["model_call_count"] == 2
+    assert record["status"] == "running"
+    assert (await manager.graph.list_nodes(str(goal["id"])))[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_explicit_planner_retry_bypasses_maintenance_cooldown(tmp_path: Path) -> None:
+    manager = await _manager(tmp_path / "planner-explicit-retry.db", _worker_plan())
+    planner = _RecoverablePlanner()
+    goal = await _failed_initial_plan(manager, planner)
+    planner.available = True
+
+    detail = await manager.start_goal(str(goal["id"]), GoalStartRequest())
+
+    assert planner.calls == detail["goal"]["model_call_count"] == 2
+    assert detail["goal"]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_planner_cooldown_does_not_starve_an_eligible_goal(tmp_path: Path) -> None:
+    manager = await _manager(tmp_path / "planner-cooldown-fairness.db", _worker_plan())
+    planner = _RecoverablePlanner()
+    cooled = await _failed_initial_plan(manager, planner)
+    planner.available = True
+    eligible = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    await manager._mark_start_requested(str(eligible["id"]))
+
+    await manager.reconcile(limit=1)
+
+    cooled_record = await manager.graph.get_goal(str(cooled["id"]))
+    eligible_record = await manager.graph.get_goal(str(eligible["id"]))
+    assert cooled_record is not None and eligible_record is not None
+    assert cooled_record["status"] == "planning"
+    assert cooled_record["model_call_count"] == 1
+    assert eligible_record["status"] == "running"
+    assert eligible_record["model_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reports_committed_planner_failure_for_invalidation(tmp_path: Path) -> None:
+    manager = await _manager(tmp_path / "planner-failure-notification.db", _worker_plan())
+    planner = _RecoverablePlanner()
+    manager.planner = planner
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="test-phone"
+    )
+    await manager._mark_start_requested(str(goal["id"]))
+
+    assert await manager.reconcile() == 1
+
+    record = await manager.graph.get_goal(str(goal["id"]))
+    assert record is not None
+    assert record["current_phase"] == "planner_unavailable"
+    assert record["model_call_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_retry", [False, True])
+async def test_exhausted_planner_budget_terminates_without_another_call(
+    tmp_path: Path, explicit_retry: bool
+) -> None:
+    manager = await _manager(tmp_path / "planner-budget-exhausted.db", _worker_plan())
+    planner = _RecoverablePlanner()
+    goal = await _failed_initial_plan(manager, planner, max_model_calls=1)
+    planner.available = True
+    if explicit_retry:
+        with pytest.raises(GoalManagerConflict, match="model call budget exhausted"):
+            await manager.start_goal(str(goal["id"]), GoalStartRequest())
+    else:
+        async with aiosqlite.connect(manager.db_path) as db:
+            await db.execute(
+                "UPDATE goal_runs SET updated_at=? WHERE id=?",
+                ((datetime.now(UTC) - timedelta(seconds=61)).isoformat(), goal["id"]),
+            )
+            await db.commit()
+        assert await manager.reconcile() >= 1
+
+    record = await manager.graph.get_goal(str(goal["id"]))
+    assert record is not None
+    assert record["status"] == "budget_exhausted"
+    assert record["failure_reason"] == "goal model call budget exhausted"
+    assert planner.calls == record["model_call_count"] == record["max_model_calls"] == 1
+    async with aiosqlite.connect(manager.db_path) as db:
+        root = await (
+            await db.execute("SELECT status FROM tasks WHERE id=?", (goal["root_task_id"],))
+        ).fetchone()
+        audit = await (
+            await db.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE task_id=? "
+                "AND event_type='goal.budget_exhausted'",
+                (goal["root_task_id"],),
+            )
+        ).fetchone()
+    assert root == ("failed",)
+    assert audit == (1,)
 
 
 @pytest.mark.asyncio

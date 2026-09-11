@@ -60,6 +60,7 @@ from app.services.swarm_contracts import (
 )
 
 logger = logging.getLogger(__name__)
+_PLANNER_RETRY_COOLDOWN_SECONDS = 60
 
 
 class GoalManagerConflict(RuntimeError):
@@ -550,15 +551,25 @@ class GoalManager:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        call_id = await self._reserve_model_call(
-            str(goal["id"]),
-            role="planner",
-            context_id=context_id,
-            input_digest=input_digest,
-            provider_source=self.planner.source.value,
-            model_id=getattr(self.planner, "model", None),
-            maintenance_guard=maintenance_guard,
-        )
+        try:
+            call_id = await self._reserve_model_call(
+                str(goal["id"]),
+                role="planner",
+                context_id=context_id,
+                input_digest=input_digest,
+                provider_source=self.planner.source.value,
+                model_id=getattr(self.planner, "model", None),
+                maintenance_guard=maintenance_guard,
+            )
+        except GoalManagerConflict as exc:
+            if str(exc) == "goal model call budget exhausted":
+                await self._terminate_goal(
+                    str(goal["id"]),
+                    status="budget_exhausted",
+                    reason="goal model call budget exhausted",
+                    maintenance_guard=maintenance_guard,
+                )
+            raise
         try:
             remaining = self._remaining_runtime_seconds(goal)
             if remaining <= 0:
@@ -2582,6 +2593,7 @@ class GoalManager:
                 changed += 1
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            selection_now = self._now()
             active_goals = await (
                 await db.execute(
                     """SELECT id,status,autonomy_profile,updated_at,started_at FROM goal_runs
@@ -2592,6 +2604,10 @@ class GoalManager:
                         SELECT 1 FROM goal_model_calls AS pending
                         WHERE pending.goal_run_id=goal_runs.id AND pending.status='started'
                           AND pending.lease_expires_at>?
+                      )
+                      AND (
+                        current_phase<>'planner_unavailable'
+                        OR julianday(updated_at)<=julianday(?) - ? / 86400.0
                       )
                       AND (
                         status='planning'
@@ -2630,7 +2646,12 @@ class GoalManager:
                         )
                       )
                     ORDER BY updated_at ASC,id ASC LIMIT ?""",
-                    (self._now(), bounded_limit),
+                    (
+                        selection_now,
+                        selection_now,
+                        _PLANNER_RETRY_COOLDOWN_SECONDS,
+                        bounded_limit,
+                    ),
                 )
             ).fetchall()
         for active in active_goals:
@@ -2648,7 +2669,9 @@ class GoalManager:
                         maintenance_guard=maintenance_guard,
                     )
                 except GoalManagerConflict:
-                    continue
+                    # Failure may have committed a recoverable phase or terminal
+                    # budget state. Count that change for mobile invalidation.
+                    pass
             else:
                 async with self._lock(goal_run_id):
                     await self._advance_ready(
