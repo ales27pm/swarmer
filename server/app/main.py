@@ -132,7 +132,7 @@ from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.settings import Settings, get_settings
 
-API_VERSION = "0.14.1"
+API_VERSION = "0.14.2"
 logger = logging.getLogger(__name__)
 
 _MAINTENANCE_OPERATION_ERRORS = (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error)

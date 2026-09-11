@@ -1521,12 +1521,92 @@ class StateService:
                 created_at=now,
             )
 
+        orphan_reason = "active task has no executable local or remote work after reconciliation"
+        # Older startup sweeps mistook abstract goal containers for executable
+        # leaf tasks. Recover only that proven projection error, not ordinary
+        # terminal tasks. Publication acknowledgements do not change task state.
+        recoverable_roots = await (
+            await db.execute(
+                """
+                SELECT t.id,g.id AS goal_id,a.id AS failure_audit_id
+                FROM tasks AS t JOIN goal_runs AS g ON g.root_task_id=t.id
+                JOIN audit_events AS a ON a.task_id=t.id
+                WHERE t.status='failed' AND t.error_json=?
+                  AND g.status IN ('running','waiting_permission')
+                  AND g.started_at IS NOT NULL AND g.completed_at IS NULL
+                  AND a.event_type='task.failed.migration'
+                  AND a.actor_type='control-plane' AND a.actor_id='migration'
+                  AND a.trace_id=t.id AND a.payload_json=? AND a.hash IS NOT NULL
+                  AND a.created_at=t.updated_at AND a.created_at=t.completed_at
+                  AND a.id=(
+                      SELECT MAX(latest.id) FROM audit_events AS latest
+                      WHERE latest.task_id=t.id
+                        AND latest.event_type<>'outbox.publication.acknowledged'
+                  )
+                  AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE task_id=t.id)
+                  AND NOT EXISTS (SELECT 1 FROM tool_calls WHERE task_id=t.id)
+                ORDER BY t.id
+                """,
+                (
+                    json.dumps({"message": orphan_reason}),
+                    json.dumps({"reason": orphan_reason}, separators=(",", ":"), sort_keys=True),
+                ),
+            )
+        ).fetchall()
+        for root in recoverable_roots:
+            task_id = str(root["id"])
+            failure_audit_id = int(root["failure_audit_id"])
+            # This is an audited repair of one historical projection bug. The
+            # normal task state machine still forbids all terminal transitions.
+            restored = await db.execute(
+                """UPDATE tasks SET status='running',updated_at=?,completed_at=NULL,error_json=NULL
+                WHERE id=? AND status='failed'""",
+                (now, task_id),
+            )
+            if restored.rowcount != 1:
+                raise RuntimeError("goal root changed during startup recovery")
+            await append_audit_event(
+                db,
+                "task.goal_root.recovered",
+                {
+                    "goal_run_id": str(root["goal_id"]),
+                    "migration_failure_audit_id": failure_audit_id,
+                    "previous_status": "failed",
+                    "status": "running",
+                },
+                actor_type="control-plane",
+                actor_id="migration",
+                task_id=task_id,
+                trace_id=task_id,
+                created_at=now,
+            )
+            await OutboxService.enqueue_locked(
+                db,
+                aggregate_type="task",
+                aggregate_id=task_id,
+                topic="tasks.status",
+                event_type="running",
+                payload={
+                    "task_id": task_id,
+                    "status": "running",
+                    "reason": "active_goal_root_recovered",
+                },
+                task_id=task_id,
+                message_id=task_id,
+                dedupe_key=f"task:{task_id}:goal-root-recovered:{failure_audit_id}",
+                created_at=now,
+            )
+
         orphaned_tasks = list(
             await (
                 await db.execute(
                     """
                     SELECT t.id,t.status FROM tasks AS t
                     WHERE t.status IN ('queued','running')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM goal_runs AS g WHERE g.root_task_id=t.id
+                            AND g.status IN ('planning','running','waiting_permission')
+                      )
                       AND NOT EXISTS (
                           SELECT 1 FROM agent_jobs AS j
                           WHERE j.task_id=t.id
@@ -1544,7 +1624,7 @@ class StateService:
         for orphan in orphaned_tasks:
             task_id = str(orphan["id"])
             task_status = str(orphan["status"])
-            reason = "active task has no executable local or remote work after reconciliation"
+            reason = orphan_reason
             await TaskStateMachine.transition_locked(
                 db,
                 task_id=task_id,
