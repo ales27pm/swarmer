@@ -12,7 +12,8 @@
     "android": "expo start --android",
     "typecheck": "tsc --noEmit",
     "lint": "expo lint",
-    "test": "jest"
+    "test": "jest",
+    "eas-build-on-success": "node scripts/verify-eas-ios-archive.cjs"
   },
   "dependencies": {
     "@vibecodeapp/sdk": "^0.4.15",
@@ -60,6 +61,13 @@
     "preset": "jest-expo",
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/src/$1"
+    }
+  },
+  "expo": {
+    "autolinking": {
+      "apple": {
+        "buildFromSource": ["expo-contacts"]
+      }
     }
   },
   "overrides": {

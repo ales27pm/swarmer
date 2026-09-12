@@ -86,6 +86,9 @@ printf 'check: running mobile type, lint, test, and Expo health gates\n'
   npx --no-install expo-doctor
 )
 
+printf 'check: running iOS archive verifier regression tests\n'
+"$SERVER_BIN/python" "$MOBILE_DIR/scripts/test_verify_ios_archive.py"
+
 if command -v xcrun >/dev/null 2>&1; then
   printf 'check: running strict Swift local-model store tests\n'
   "$MOBILE_DIR/scripts/test-local-model-store.sh"
