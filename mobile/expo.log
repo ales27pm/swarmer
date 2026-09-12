@@ -1,0 +1,36 @@
++ exec gosu vibecode node node_modules/.bin/expo start --localhost
+Starting project at /home/user/workspace/mobile
+Error: Cannot find module 'nativewind/metro'
+Require stack:
+- /home/user/workspace/mobile/metro.config.js
+- /home/user/workspace/mobile/node_modules/@expo/require-utils/build/load.js
+- /home/user/workspace/mobile/node_modules/@expo/require-utils/build/index.js
+- /home/user/workspace/mobile/node_modules/@expo/config/build/Config.js
+- /home/user/workspace/mobile/node_modules/@expo/config/build/index.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/src/start/detectDevClient.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/src/start/resolveOptions.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/src/start/index.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/bin/cli
+- /home/user/workspace/mobile/node_modules/expo/bin/cli
+Error: Cannot find module 'nativewind/metro'
+Require stack:
+- /home/user/workspace/mobile/metro.config.js
+- /home/user/workspace/mobile/node_modules/@expo/require-utils/build/load.js
+- /home/user/workspace/mobile/node_modules/@expo/require-utils/build/index.js
+- /home/user/workspace/mobile/node_modules/@expo/config/build/Config.js
+- /home/user/workspace/mobile/node_modules/@expo/config/build/index.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/src/start/detectDevClient.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/src/start/resolveOptions.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/src/start/index.js
+- /home/user/workspace/mobile/node_modules/@expo/cli/build/bin/cli
+- /home/user/workspace/mobile/node_modules/expo/bin/cli
+    at Function._resolveFilename (node:internal/modules/cjs/loader:1249:15)
+    at Function._load (node:internal/modules/cjs/loader:1075:27)
+    at TracingChannel.traceSync (node:diagnostics_channel:315:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:218:24)
+    at Module.require (node:internal/modules/cjs/loader:1340:12)
+    at require (node:internal/modules/helpers:141:16)
+    at Object.<anonymous> (/home/user/workspace/mobile/metro.config.js:5:28)
+    at Module._compile (node:internal/modules/cjs/loader:1546:14)
+    at Object..js (node:internal/modules/cjs/loader:1689:10)
+    at Module.load (node:internal/modules/cjs/loader:1318:32)
