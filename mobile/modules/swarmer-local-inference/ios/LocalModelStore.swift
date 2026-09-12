@@ -51,7 +51,7 @@ actor LocalModelStore {
     #endif
   }
   private static let coreMLSidecarNames: Set<String> = [
-    "config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+    "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
     "added_tokens.json", "tokenizer.model", "merges.txt", "vocab.json"
   ]
   private static let mlxArtifactExtensions: Set<String> = [

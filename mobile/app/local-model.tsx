@@ -4,6 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
+import { LocalModelPresets } from "@/components/local-model-presets";
 import {
   ActionButton,
   Card,
@@ -16,6 +17,8 @@ import { sendChat, submitToolProposal } from "@/lib/api/client";
 import {
   buildLocalProposalPrompt,
   cancelLocalGeneration,
+  cancelLocalModelDownload,
+  downloadLocalGgufModel,
   generateLocalProposal,
   getLocalInferenceCapabilities,
   importLocalModel,
@@ -33,6 +36,13 @@ import {
   type LocalModel,
   type LocalToolProposal,
 } from "@/lib/local-inference";
+import { LOCAL_MODEL_PRESETS, preferredLocalRuntime } from "@/lib/local-model-presets";
+import {
+  DEFAULT_GENERATION_SETTINGS,
+  parseGenerationSettings,
+  readLocalModelSettings,
+  saveLocalModelSettings,
+} from "@/lib/local-model-settings";
 
 const RUNTIMES: readonly {
   value: LocalInferenceRuntime;
@@ -44,7 +54,7 @@ const RUNTIMES: readonly {
   { value: "llama.cpp", label: "llama.cpp", detail: "Fichier GGUF importé" },
 ];
 
-type BusyAction = "initial" | "import" | "load" | "generate" | "cancel" | "unload" | "submit";
+type BusyAction = "initial" | "import" | "download" | "save" | "load" | "generate" | "cancel" | "unload" | "submit";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -240,13 +250,17 @@ export default function LocalModelScreen() {
   const nativeAvailable = isLocalInferenceAvailable();
   const generationVersion = useRef(0);
   const loadVersion = useRef(0);
+  const downloadVersion = useRef(0);
+  const runtimeSelections = useRef<Partial<Record<LocalInferenceRuntime, { modelId: string; revision: string }>>>({});
   const mounted = useRef(true);
   const [capabilities, setCapabilities] = useState<LocalInferenceCapabilities | null>(null);
   const [models, setModels] = useState<LocalModel[]>([]);
-  const [runtime, setRuntime] = useState<LocalInferenceRuntime>("coreml");
+  const [runtime, setRuntime] = useState<LocalInferenceRuntime>("mlx");
   const [modelId, setModelId] = useState("");
   const [revision, setRevision] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [maxTokens, setMaxTokens] = useState(String(DEFAULT_GENERATION_SETTINGS.maxTokens));
+  const [temperature, setTemperature] = useState(String(DEFAULT_GENERATION_SETTINGS.temperature));
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<BusyAction | null>(nativeAvailable ? "initial" : null);
   const [notice, setNotice] = useState(
@@ -289,15 +303,29 @@ export default function LocalModelScreen() {
     if (!nativeAvailable) return;
     mounted.current = true;
     let active = true;
-    void Promise.all([getLocalInferenceCapabilities(), listLocalModels()])
-      .then(([nextCapabilities, nextModels]) => {
+    const savedSettings = readLocalModelSettings().catch(() => {
+      if (active) setError("Les réglages enregistrés n’ont pas pu être lus. Les préréglages restent disponibles.");
+      return null;
+    });
+    void Promise.all([getLocalInferenceCapabilities(), listLocalModels(), savedSettings])
+      .then(([nextCapabilities, nextModels, saved]) => {
         if (!active) return;
         setCapabilities(nextCapabilities);
         setModels(nextModels);
-        const firstSupported = RUNTIMES.find((item) =>
-          supportsRuntime(nextCapabilities, item.value),
-        );
-        if (firstSupported) setRuntime(firstSupported.value);
+        const firstSupported = preferredLocalRuntime(nextCapabilities);
+        const nextRuntime = saved && supportsRuntime(nextCapabilities, saved.runtime)
+          ? saved.runtime : firstSupported;
+        if (nextRuntime) {
+          setRuntime(nextRuntime);
+          const restore = saved?.runtime === nextRuntime;
+          const preset = LOCAL_MODEL_PRESETS[nextRuntime];
+          setModelId(restore ? saved.modelId : nextRuntime === "mlx" ? preset.repoId : "");
+          setRevision(restore ? saved.revision : nextRuntime === "mlx" ? preset.revision : "");
+        }
+        if (saved) {
+          setMaxTokens(String(saved.maxTokens));
+          setTemperature(String(saved.temperature));
+        }
         setNotice(
           firstSupported
             ? "Choisis un modèle local. Aucune donnée n’est envoyée au control plane pendant l’inférence."
@@ -317,6 +345,7 @@ export default function LocalModelScreen() {
       mounted.current = false;
       generationVersion.current += 1;
       loadVersion.current += 1;
+      downloadVersion.current += 1;
       void cancelLocalGeneration()
         .catch(() => undefined)
         .then(() => unloadLocalModel().catch(() => undefined));
@@ -325,13 +354,78 @@ export default function LocalModelScreen() {
 
   function selectRuntime(nextRuntime: LocalInferenceRuntime) {
     if (locked || loaded || nextRuntime === runtime) return;
+    runtimeSelections.current[runtime] = { modelId, revision };
     invalidateProposal();
     setRuntime(nextRuntime);
-    setModelId("");
-    setRevision("");
+    const preset = LOCAL_MODEL_PRESETS[nextRuntime];
+    const previous = runtimeSelections.current[nextRuntime];
+    setModelId(previous?.modelId ?? (nextRuntime === "mlx" ? preset.repoId : ""));
+    setRevision(previous?.revision ?? (nextRuntime === "mlx" ? preset.revision : ""));
     setLoaded(false);
     setError(null);
     setNotice("Choisis un modèle compatible avec ce runtime.");
+  }
+
+  function applyMlxPreset() {
+    if (locked || loaded) return;
+    invalidateProposal();
+    setModelId(LOCAL_MODEL_PRESETS.mlx.repoId);
+    setRevision(LOCAL_MODEL_PRESETS.mlx.revision);
+    setError(null);
+    setNotice("Dolphin MLX est sélectionné. Le chargement démarre uniquement avec le bouton Charger le modèle.");
+  }
+
+  async function saveSettings() {
+    if (locked) return;
+    setError(null);
+    setBusy("save");
+    try {
+      const generation = parseGenerationSettings(maxTokens, temperature);
+      await saveLocalModelSettings({ runtime, modelId: modelId.trim(), revision: revision.trim(), ...generation });
+      if (mounted.current) setNotice("Réglages enregistrés sur cet iPhone. Le modèle ne sera pas chargé automatiquement.");
+    } catch (cause) {
+      if (mounted.current) setError(errorMessage(cause));
+    } finally {
+      if (mounted.current) setBusy(null);
+    }
+  }
+
+  async function downloadGgufPreset() {
+    const download = LOCAL_MODEL_PRESETS["llama.cpp"].download;
+    if (locked || loaded || !selectedRuntimeSupported || runtime !== "llama.cpp" || !download) return;
+    const requestVersion = downloadVersion.current + 1;
+    downloadVersion.current = requestVersion;
+    setBusy("download");
+    setError(null);
+    setNotice("Téléchargement de Dolphin GGUF (2,02 Go), puis vérification de son intégrité. Garde l’app au premier plan.");
+    try {
+      const imported = await downloadLocalGgufModel(download);
+      if (!mounted.current || downloadVersion.current !== requestVersion) return;
+      if (imported.runtime !== "llama.cpp") throw new Error("Le téléchargement n’a pas retourné un modèle GGUF.");
+      setModels((current) => [imported, ...current.filter((model) => model.modelId !== imported.modelId)]);
+      setModelId(imported.modelId);
+      setRevision("");
+      invalidateProposal();
+      setNotice("Dolphin GGUF est téléchargé et vérifié. Tu peux maintenant charger le modèle.");
+    } catch (cause) {
+      if (!mounted.current || downloadVersion.current !== requestVersion) return;
+      if (isPickerCancellation(cause)) setNotice("Téléchargement annulé.");
+      else setError(errorMessage(cause));
+    } finally {
+      if (mounted.current) setBusy(null);
+    }
+  }
+
+  async function cancelDownload() {
+    if (busy !== "download") return;
+    downloadVersion.current += 1;
+    const cancelledVersion = downloadVersion.current;
+    try {
+      await cancelLocalModelDownload();
+      if (mounted.current && downloadVersion.current === cancelledVersion) setNotice("Annulation du téléchargement demandée.");
+    } catch (cause) {
+      if (mounted.current && downloadVersion.current === cancelledVersion) setError(errorMessage(cause));
+    }
   }
 
   function selectModel(model: LocalModel) {
@@ -461,8 +555,7 @@ export default function LocalModelScreen() {
     try {
       const result = await generateLocalProposal({
         prompt: buildLocalProposalPrompt(intent),
-        maxTokens: 512,
-        temperature: 0.1,
+        ...parseGenerationSettings(maxTokens, temperature),
       });
       if (generationVersion.current !== version) return;
       setRawText(result.text);
@@ -591,8 +684,22 @@ export default function LocalModelScreen() {
         />
       </Card>
 
+      <LocalModelPresets
+        runtime={runtime}
+        disabled={locked || loaded || !selectedRuntimeSupported}
+        onApply={applyMlxPreset}
+        onError={setError}
+      />
+
       <SectionTitle title="Modèle" />
       <Card>
+        {runtime === "llama.cpp" ? (
+          <ActionButton
+            disabled={busy === "download" ? false : locked || loaded || !selectedRuntimeSupported}
+            label={busy === "download" ? "Annuler le téléchargement" : "Télécharger Dolphin GGUF · 2,02 Go"}
+            onPress={() => void (busy === "download" ? cancelDownload() : downloadGgufPreset())}
+          />
+        ) : null}
         <ImportedModels
           disabled={locked || loaded}
           models={runtimeModels}
@@ -678,6 +785,32 @@ export default function LocalModelScreen() {
             onPress={() => void unloadModel()}
           />
         ) : null}
+      </Card>
+
+      <SectionTitle title="Réglages de génération" />
+      <Card>
+        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
+          256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime.
+        </Text>
+        <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–512)</Text>
+        <TextInput
+          accessibilityLabel="Limite de jetons de sortie"
+          editable={!locked}
+          keyboardType="number-pad"
+          value={maxTokens}
+          onChangeText={(value) => { invalidateProposal(); setMaxTokens(value); }}
+          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
+        />
+        <Text style={{ color: COLORS.text, fontWeight: "700" }}>Température (0–2)</Text>
+        <TextInput
+          accessibilityLabel="Température de génération"
+          editable={!locked}
+          keyboardType="decimal-pad"
+          value={temperature}
+          onChangeText={(value) => { invalidateProposal(); setTemperature(value); }}
+          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
+        />
+        <ActionButton label="Enregistrer les réglages" disabled={locked || !nativeAvailable} busy={busy === "save"} onPress={() => void saveSettings()} />
       </Card>
 
       <SectionTitle title="Intention" />

@@ -37,6 +37,10 @@ enum LocalInferenceError: Error, Sendable {
   case modelNotFound(String)
   case metadataCorrupt
   case invalidDisplayName
+  case invalidDownloadMetadata
+  case downloadSizeMismatch
+  case downloadChecksumMismatch
+  case modelDownloadFailed
   case immutableRevisionRequired
   case runtimeMismatch
   case modelNotLoaded

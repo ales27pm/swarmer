@@ -389,13 +389,23 @@ export default function SettingsScreen() {
       <SectionTitle title="Inférence sur l’iPhone" />
       <Card>
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-          Importe ou charge un modèle Core ML, MLX ou GGUF. L’intention et la sortie restent sur l’iPhone pendant la génération; une proposition n’est envoyée au control plane qu’après une action explicite.
+          Dolphin 3.0 Llama 3.2 3B est proposé en MLX 4 bits, GGUF Q4_K_M et Core ML INT4. Choisis ton runtime et enregistre les réglages pour tes prochaines itérations sur l’iPhone.
         </Text>
         <ActionButton
           label="Ouvrir les modèles locaux"
           onPress={() => router.push("/local-model")}
           testID="open-local-model-button"
         />
+      </Card>
+      <SectionTitle title="Modèles des agents du swarm" />
+      <Card>
+        <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>Préréglages serveur abliterated</Text>
+        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
+          Hermes 3 · Llama 3.2 3B pour l’orchestrateur, la planification et l’évaluation. G9v3 3B Heretic pour les workers rapides. Les deux utilisent GGUF Q4_K_M.
+        </Text>
+        <Text selectable style={{ color: COLORS.subtle, lineHeight: 19 }}>
+          Ces préréglages se configurent sur le serveur. Les modèles réellement actifs dépendent de cette configuration; les modèles de l’iPhone se règlent séparément ci-dessus.
+        </Text>
       </Card>
       <ControlPlaneSection
         activeUrl={dashboard.activeUrl}

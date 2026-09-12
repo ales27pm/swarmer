@@ -80,7 +80,7 @@ bool AddSampler(llama_sampler *chain, llama_sampler *component, NSError **error)
   return true;
 }
 
-bool Tokenize(const llama_vocab *vocab, NSString *prompt, std::vector<llama_token> &tokens,
+bool Tokenize(const llama_model *model, const llama_vocab *vocab, NSString *prompt, std::vector<llama_token> &tokens,
               NSError **error) {
   NSData *utf8 = [prompt dataUsingEncoding:NSUTF8StringEncoding];
   if (utf8.length == 0 || utf8.length > INT32_MAX) {
@@ -88,12 +88,36 @@ bool Tokenize(const llama_vocab *vocab, NSString *prompt, std::vector<llama_toke
     return false;
   }
 
-  const char *bytes = static_cast<const char *>(utf8.bytes);
-  const int32_t byteCount = static_cast<int32_t>(utf8.length);
+  std::string effectivePrompt(static_cast<const char *>(utf8.bytes), utf8.length);
+  const char *chatTemplate = llama_model_chat_template(model, nullptr);
+  const bool isChat = chatTemplate != nullptr && chatTemplate[0] != '\0';
+  if (isChat) {
+    if (effectivePrompt.find('\0') != std::string::npos) {
+      if (error != nullptr) { *error = LlamaError(28, @"Chat prompts cannot contain null characters."); }
+      return false;
+    }
+    const llama_chat_message message{"user", effectivePrompt.c_str()};
+    std::vector<char> formatted(std::min<size_t>(262144, effectivePrompt.size() * 2 + 1024));
+    int32_t count = llama_chat_apply_template(chatTemplate, &message, 1, true,
+                                              formatted.data(), static_cast<int32_t>(formatted.size()));
+    if (count > 0 && count <= 262144 && static_cast<size_t>(count) > formatted.size()) {
+      formatted.resize(static_cast<size_t>(count));
+      count = llama_chat_apply_template(chatTemplate, &message, 1, true,
+                                        formatted.data(), static_cast<int32_t>(formatted.size()));
+    }
+    if (count <= 0 || static_cast<size_t>(count) > formatted.size()) {
+      if (error != nullptr) { *error = LlamaError(29, @"The GGUF chat template is unsupported or too large."); }
+      return false;
+    }
+    effectivePrompt.assign(formatted.data(), static_cast<size_t>(count));
+  }
+
+  const char *bytes = effectivePrompt.data();
+  const int32_t byteCount = static_cast<int32_t>(effectivePrompt.size());
   int32_t capacity = std::max<int32_t>(32, byteCount + 8);
   tokens.resize(static_cast<size_t>(capacity));
 
-  int32_t count = llama_tokenize(vocab, bytes, byteCount, tokens.data(), capacity, true, false);
+  int32_t count = llama_tokenize(vocab, bytes, byteCount, tokens.data(), capacity, true, isChat);
   if (count == INT32_MIN) {
     if (error != nullptr) { *error = LlamaError(21, @"Tokenization overflowed llama.cpp limits."); }
     return false;
@@ -101,7 +125,7 @@ bool Tokenize(const llama_vocab *vocab, NSString *prompt, std::vector<llama_toke
   if (count < 0) {
     capacity = -count;
     tokens.resize(static_cast<size_t>(capacity));
-    count = llama_tokenize(vocab, bytes, byteCount, tokens.data(), capacity, true, false);
+    count = llama_tokenize(vocab, bytes, byteCount, tokens.data(), capacity, true, isChat);
   }
   if (count <= 0) {
     if (error != nullptr) { *error = LlamaError(22, @"The GGUF tokenizer rejected the prompt."); }
@@ -281,7 +305,7 @@ void FillBatch(llama_batch &batch, const llama_token *tokens, int32_t count, int
     }
 
     std::vector<llama_token> promptTokens;
-    if (!Tokenize(vocab, prompt, promptTokens, &localError)) { return; }
+    if (!Tokenize(model, vocab, prompt, promptTokens, &localError)) { return; }
 
     const int32_t boundedMaxTokens = static_cast<int32_t>(std::clamp<NSInteger>(maxTokens, 1, 512));
     const uint32_t contextCapacity = llama_n_ctx(context);

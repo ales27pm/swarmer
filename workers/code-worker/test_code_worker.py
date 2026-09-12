@@ -24,6 +24,42 @@ def worker() -> ModuleType:
     return module
 
 
+@pytest.mark.parametrize(
+    ("override", "expected_model", "expected_url"),
+    [
+        (False, "G9v3-3B-Heretic-Abliterated", "http://127.0.0.1:8712/v1/chat/completions"),
+        (True, "custom-worker:Q5_K_M", "http://127.0.0.1:9000/v1/chat/completions"),
+    ],
+)
+def test_worker_startup_model_defaults_and_overrides(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    override: bool,
+    expected_model: str,
+    expected_url: str,
+) -> None:
+    monkeypatch.setattr("sys.argv", ["code_worker.py", "--once"])
+    for key in ("MONGARS_CODE_MODEL_ID", "MONGARS_CODE_MODEL_URL"):
+        monkeypatch.delenv(key, raising=False)
+    if override:
+        monkeypatch.setenv("MONGARS_CODE_MODEL_ID", "custom-worker:Q5_K_M")
+        monkeypatch.setenv("MONGARS_CODE_MODEL_URL", "http://127.0.0.1:9000/v1")
+    monkeypatch.setenv("MONGARS_SERVER_URL", "https://control.example")
+    monkeypatch.setenv("MONGARS_AGENT_ID", "test-agent")
+    monkeypatch.setenv("MONGARS_AGENT_CREDENTIAL", "test-credential")
+    calls: list[tuple[str, str]] = []
+
+    def observe_run_once(
+        server_url: str, agent_id: str, credential: str, generator: Any, **kwargs: Any
+    ) -> bool:
+        calls.append((generator.model, generator.url))
+        return False
+
+    monkeypatch.setattr(worker, "run_once", observe_run_once)
+    worker.main()
+    assert calls == [(expected_model, expected_url)]
+
+
 def proposal(
     content: str = "def main():\n    print('CRM proposal')\n",
 ) -> dict[str, str]:

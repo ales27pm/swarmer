@@ -1,10 +1,12 @@
-import { render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 import LocalModelScreen from "@/../app/local-model";
 import { sendChat, submitToolProposal, type Task } from "@/lib/api/client";
 import {
   cancelLocalGeneration,
+  cancelLocalModelDownload,
+  downloadLocalGgufModel,
   generateLocalProposal,
   getLocalInferenceCapabilities,
   importLocalModel,
@@ -14,6 +16,15 @@ import {
   pickAndImportLocalModelDirectory,
   unloadLocalModel,
 } from "@/lib/local-inference";
+
+import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
+import { readLocalModelSettings, saveLocalModelSettings } from "@/lib/local-model-settings";
+
+jest.mock("@/lib/local-model-settings", () => ({
+  ...jest.requireActual<typeof import("@/lib/local-model-settings")>("@/lib/local-model-settings"),
+  readLocalModelSettings: jest.fn(),
+  saveLocalModelSettings: jest.fn(),
+}));
 
 const mockPush = jest.fn();
 
@@ -30,6 +41,8 @@ jest.mock("@/lib/local-inference", () => {
   return {
     ...actual,
     cancelLocalGeneration: jest.fn(),
+    cancelLocalModelDownload: jest.fn(),
+    downloadLocalGgufModel: jest.fn(),
     generateLocalProposal: jest.fn(),
     getLocalInferenceCapabilities: jest.fn(),
     importLocalModel: jest.fn(),
@@ -71,8 +84,9 @@ const mockSubmit = jest.mocked(submitToolProposal);
 async function prepareMlxModel(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText(/Choisis un modèle local/);
   await user.press(screen.getByRole("button", { name: "Runtime MLX" }));
-  await user.type(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
-  await user.type(
+  await fireEvent.changeText(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
+  await fireEvent.changeText(screen.getByLabelText("Révision Hugging Face immuable"), "");
+  await fireEvent.changeText(
     screen.getByLabelText("Révision Hugging Face immuable"),
     "a".repeat(40),
   );
@@ -83,6 +97,9 @@ async function prepareMlxModel(user: ReturnType<typeof userEvent.setup>) {
 describe("LocalModelScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.mocked(readLocalModelSettings).mockResolvedValue(null);
+    jest.mocked(saveLocalModelSettings).mockResolvedValue();
+    jest.mocked(cancelLocalModelDownload).mockResolvedValue();
     mockIsAvailable.mockReturnValue(true);
     mockCapabilities.mockResolvedValue({
       coreml: true,
@@ -119,11 +136,113 @@ describe("LocalModelScreen", () => {
     mockUnload.mockResolvedValue();
   });
 
+  it("prefills pinned Dolphin MLX without loading or downloading automatically", async () => {
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    expect(screen.getByLabelText("Dépôt Hugging Face")).toHaveDisplayValue(LOCAL_MODEL_PRESETS.mlx.repoId);
+    expect(screen.getByLabelText("Révision Hugging Face immuable")).toHaveDisplayValue(LOCAL_MODEL_PRESETS.mlx.revision);
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled();
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(downloadLocalGgufModel).not.toHaveBeenCalled();
+  });
+
+  it("loads the pinned default only after an explicit load", async () => {
+    const preset = LOCAL_MODEL_PRESETS.mlx;
+    mockLoad.mockResolvedValue({ state: "ready", runtime: "mlx", modelId: preset.repoId, revision: preset.revision });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
+    expect(await screen.findByText(/Modèle chargé localement/)).toBeOnTheScreen();
+    expect(mockLoad).toHaveBeenCalledWith({ runtime: "mlx", modelId: preset.repoId, revision: preset.revision });
+  });
+
+  it("keeps the native runtimes usable if saved settings cannot be read", async () => {
+    jest.mocked(readLocalModelSettings).mockRejectedValue(new Error("Storage unavailable"));
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    expect(screen.getByText(/Les réglages enregistrés n’ont pas pu être lus/)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled();
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
+  it("keeps a custom model when switching away and back to its runtime", async () => {
+    jest.mocked(readLocalModelSettings).mockResolvedValue({
+      runtime: "mlx", modelId: "owner/custom", revision: "b".repeat(40), maxTokens: 128, temperature: 0.2,
+    });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Runtime Core ML" }));
+    await user.press(screen.getByRole("button", { name: "Runtime MLX" }));
+    expect(screen.getByLabelText("Dépôt Hugging Face")).toHaveDisplayValue("owner/custom");
+    expect(screen.getByLabelText("Révision Hugging Face immuable")).toHaveDisplayValue("b".repeat(40));
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
+  it("restores custom settings and passes edited sampling limits into generation", async () => {
+    jest.mocked(readLocalModelSettings).mockResolvedValue({
+      runtime: "mlx", modelId: "mlx-community/test-model", revision: "a".repeat(40), maxTokens: 128, temperature: 0,
+    });
+    mockGenerate.mockResolvedValue({ text: '{"tool_name":"none","arguments":{},"summary":"Prêt"}', finishReason: "stop", tokenCount: 20 });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    expect(screen.getByLabelText("Dépôt Hugging Face")).toHaveDisplayValue("mlx-community/test-model");
+    await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
+    await screen.findByText(/Modèle chargé localement/);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Bonjour");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    await screen.findByText("Prêt");
+    expect(mockGenerate).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 128, temperature: 0 }));
+    await user.press(screen.getByRole("button", { name: "Enregistrer les réglages" }));
+    await screen.findByText(/Réglages enregistrés/);
+    expect(saveLocalModelSettings).toHaveBeenCalledWith(expect.objectContaining({ modelId: "mlx-community/test-model", maxTokens: 128, temperature: 0 }));
+  });
+
+  it("downloads and selects GGUF with its exact pin and checksum before loading", async () => {
+    jest.mocked(downloadLocalGgufModel).mockResolvedValue({
+      modelId: "local_dolphin", runtime: "llama.cpp", displayName: "Dolphin GGUF", source: "Dolphin.gguf", sizeBytes: 2_019_382_400, importedAt: "2026-09-12T12:00:00Z",
+    });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Runtime llama.cpp" }));
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
+    await user.press(screen.getByRole("button", { name: "Télécharger Dolphin GGUF · 2,02 Go" }));
+    await screen.findByText(/Dolphin GGUF est téléchargé et vérifié/);
+    expect(downloadLocalGgufModel).toHaveBeenCalledWith(LOCAL_MODEL_PRESETS["llama.cpp"].download);
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled();
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("ignores a late GGUF result after download cancellation", async () => {
+    let completeDownload!: (value: Awaited<ReturnType<typeof downloadLocalGgufModel>>) => void;
+    jest.mocked(downloadLocalGgufModel).mockImplementation(() => new Promise((resolve) => { completeDownload = resolve; }));
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Runtime llama.cpp" }));
+    await user.press(screen.getByRole("button", { name: "Télécharger Dolphin GGUF · 2,02 Go" }));
+    await user.press(screen.getByRole("button", { name: "Annuler le téléchargement" }));
+    await screen.findByText(/Annulation du téléchargement demandée/);
+    await act(async () => completeDownload({
+      modelId: "late_dolphin", runtime: "llama.cpp", displayName: "Late Dolphin", source: "Dolphin.gguf", sizeBytes: 2_019_382_400, importedAt: "2026-09-12T12:00:00Z",
+    }));
+    expect(cancelLocalModelDownload).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
+    expect(screen.queryByText("Late Dolphin")).not.toBeOnTheScreen();
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
   it("imports a Core ML folder so tokenizer sidecars remain in the same payload", async () => {
     const user = userEvent.setup();
     await render(<LocalModelScreen />);
 
     await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Runtime Core ML" }));
     await user.press(screen.getByRole("button", { name: "Importer un dossier Core ML" }));
 
     await waitFor(() =>
@@ -182,12 +301,13 @@ describe("LocalModelScreen", () => {
 
     await screen.findByText(/Choisis un modèle local/);
     await user.press(screen.getByRole("button", { name: "Runtime MLX" }));
-    await user.type(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
+    await fireEvent.changeText(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
+    await fireEvent.changeText(screen.getByLabelText("Révision Hugging Face immuable"), "");
     await user.type(screen.getByLabelText("Révision Hugging Face immuable"), "main");
     expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
     expect(screen.getByText(/Une branche ou une étiquette mobile est refusée/)).toBeOnTheScreen();
     await user.clear(screen.getByLabelText("Révision Hugging Face immuable"));
-    await user.type(
+    await fireEvent.changeText(
       screen.getByLabelText("Révision Hugging Face immuable"),
       "a".repeat(40),
     );
@@ -256,8 +376,9 @@ describe("LocalModelScreen", () => {
 
     await screen.findByText(/Choisis un modèle local/);
     await user.press(screen.getByRole("button", { name: "Runtime MLX" }));
-    await user.type(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
-    await user.type(
+    await fireEvent.changeText(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
+    await fireEvent.changeText(screen.getByLabelText("Révision Hugging Face immuable"), "");
+    await fireEvent.changeText(
       screen.getByLabelText("Révision Hugging Face immuable"),
       "a".repeat(40),
     );
@@ -284,8 +405,9 @@ describe("LocalModelScreen", () => {
 
     await screen.findByText(/Choisis un modèle local/);
     await user.press(screen.getByRole("button", { name: "Runtime MLX" }));
-    await user.type(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
-    await user.type(
+    await fireEvent.changeText(screen.getByLabelText("Dépôt Hugging Face"), "mlx-community/test-model");
+    await fireEvent.changeText(screen.getByLabelText("Révision Hugging Face immuable"), "");
+    await fireEvent.changeText(
       screen.getByLabelText("Révision Hugging Face immuable"),
       "a".repeat(40),
     );

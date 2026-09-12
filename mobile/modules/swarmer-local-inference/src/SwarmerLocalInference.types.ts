@@ -17,6 +17,15 @@ export type LocalModel = {
   importedAt: string;
 };
 
+export type LocalModelDownloadInput = {
+  repoId: string;
+  revision: string;
+  filename: string;
+  sha256: string;
+  sizeBytes: number;
+  displayName: string;
+};
+
 export type LocalInferenceStatus = {
   state: "idle" | "loading" | "ready" | "generating" | "cancelling" | "failed";
   runtime: LocalInferenceRuntime | null;

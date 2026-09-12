@@ -1,13 +1,26 @@
 version: 1
+verified_on: "2026-09-12"
 profiles:
   ubuntu-vram-8gb:
     max_active_llm_models: 2
     default_context_tokens: 8192
-    notes: "Keep orchestrator active; load workers on demand."
+    notes: "Share Hermes across planner/evaluator; load the G9 worker on demand. Aliases require an operator-launched local server."
+  iphone-edge:
+    max_active_llm_models: 1
+    default_context_tokens: 4096
+    default_output_tokens: 256
+    default_temperature: 0.1
+    max_output_tokens: 512
+    notes: "Dolphin3.0 3B is the compact iteration preset; Core ML has a 2048-token context. Device memory, latency, and quality still require an iPhone test."
 
 models:
   - id: hermes3_3b_abliterated_orchestrator
     hf: mradermacher/Hermes-3-Llama-3.2-3B-abliterated-GGUF
+    hf_revision: 403aef223f9fecdd5326e4a1fdabb28b935fff77
+    file: Hermes-3-Llama-3.2-3B-abliterated.Q4_K_M.gguf
+    sha256: d615e591caa346a07814684daa6fd4b52fc2b254b3e50a02c007f42289bb3c8e
+    size_bytes: 2019374240
+    served_model_id: Hermes-3-Llama-3.2-3B-abliterated
     quant: Q4_K_M
     role: orchestrator
     abliterated: true
@@ -15,6 +28,7 @@ models:
     endpoint: http://127.0.0.1:8711/v1
     context_tokens: 8192
     active_by_default: true
+    notes: "Default orchestrator, planner, and evaluator; blank role overrides inherit this alias. Summarizer/synthesizer routes are metadata for deterministic aggregation."
     allowed_outputs:
       - final_answer
       - plan
@@ -25,6 +39,11 @@ models:
 
   - id: g9v3_3b_heretic_abliterated_worker
     hf: mradermacher/G9v3-3B-Heretic-Abliterated-GGUF
+    hf_revision: 22d1fca3a4705b8c701daa2fbad9cc27c181a2c7
+    file: G9v3-3B-Heretic-Abliterated.Q4_K_M.gguf
+    sha256: 37f15ab2c98ba8c06158c3b2c9c08d441a3e4c56f2a27157729bff1905bb2dfe
+    size_bytes: 1843805248
+    served_model_id: G9v3-3B-Heretic-Abliterated
     quant: Q4_K_M
     role: fast_worker
     abliterated: true
@@ -32,9 +51,15 @@ models:
     endpoint: http://127.0.0.1:8712/v1
     context_tokens: 8192
     active_by_default: false
+    notes: "Default Python proposal-worker preset; registration and local inference setup remain explicit. Existing project-worker 30B overrides are preserved."
 
   - id: dolphin3_llama32_3b_fallback
     hf: bartowski/Dolphin3.0-Llama3.2-3B-GGUF
+    hf_revision: ac6b1ee98e3864ebd5998216f800a07d74b166b5
+    file: Dolphin3.0-Llama3.2-3B-Q4_K_M.gguf
+    sha256: 5d6d02eeefa1ab5dbf23f97afdf5c2c95ad3d946dc3b6e9ab72e6c1637d54177
+    size_bytes: 2019382400
+    served_model_id: Dolphin3.0-Llama3.2-3B
     quant: Q4_K_M
     role: chat_fallback
     abliterated: false
@@ -42,6 +67,7 @@ models:
     endpoint: http://127.0.0.1:8713/v1
     context_tokens: 8192
     active_by_default: false
+    notes: "Uncensored fine-tune, not an abliterated model. Optional fallback preset; no automatic model failover."
 
   - id: plano_orchestrator_4b_reference
     hf: katanemo/Plano-Orchestrator-4B
@@ -51,6 +77,38 @@ models:
     runtime: transformers_or_gguf
     active_by_default: false
     notes: "Reference model for routing quality; not part of full-abliterated mode."
+
+on_device:
+  source:
+    hf: dphn/Dolphin3.0-Llama3.2-3B
+    hf_revision: 392a6f57223e7ccfe6ef4ebdb2ff101a42d57364
+    parameters: 3212755968
+    abliterated: false
+    notes: "Selected common Dolphin lineage across GGUF, MLX and Core ML; the slightly newer Qwen2.5-3B variant lacks a matching Core ML preset. No claim of benchmark superiority."
+  gguf:
+    model_ref: dolphin3_llama32_3b_fallback
+    context_tokens: 4096
+    runtime: llama_cpp
+    validation: requires_iphone_inference_validation
+  mlx:
+    hf: mlx-community/dolphin3.0-llama3.2-3B-4Bit
+    hf_revision: cdc777b578ff86a69f1b05c9bc00df0cdc2f52d1
+    weights_size_bytes: 1807499734
+    quant: 4bit
+    context_tokens: 4096
+    runtime: mlx
+    validation: requires_iphone_inference_validation
+  coreml:
+    hf: ales27pm/Dolphin3.0-CoreML
+    hf_revision: c786a7060b183baa9ce8f8b11dded70f6d88e021
+    file: Dolphin3.0-Llama3.2-3B-stateful-int4.mlpackage
+    package_size_bytes: 1808547525
+    quant: int4
+    context_tokens: 2048
+    prefill_chunk_tokens: 512
+    runtime: coreml
+    validation: requires_iphone_inference_validation
+    notes: "Native adapter implements the published FP16 causalMask and stateful contract. Import requires the matching tokenizer and generation configuration. A full app build and physical-device generation remain to be qualified."
 
 embeddings:
   default:

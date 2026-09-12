@@ -43,6 +43,15 @@ struct ImportModelOptions: Record, Sendable {
   @Field var displayName: String? = nil
 }
 
+struct DownloadModelOptions: Record, Sendable {
+  @Field var repoId: String = ""
+  @Field var revision: String = ""
+  @Field var filename: String = ""
+  @Field var sha256: String = ""
+  @Field var sizeBytes: Int64 = 0
+  @Field var displayName: String = ""
+}
+
 struct LoadModelOptions: Record, Sendable {
   @Field var runtime: String = ""
   @Field var modelId: String = ""
@@ -135,6 +144,10 @@ enum LocalInferenceError: LocalizedError, Sendable {
   case modelNotFound(String)
   case metadataCorrupt
   case invalidDisplayName
+  case invalidDownloadMetadata
+  case downloadSizeMismatch
+  case downloadChecksumMismatch
+  case modelDownloadFailed
   case immutableRevisionRequired
   case runtimeMismatch
   case modelNotLoaded
@@ -175,6 +188,14 @@ enum LocalInferenceError: LocalizedError, Sendable {
       return "The local model index is unreadable."
     case .invalidDisplayName:
       return "The model display name is invalid."
+    case .invalidDownloadMetadata:
+      return "Model downloads require a Hugging Face repository, a full commit SHA, one GGUF filename, and a SHA-256 checksum."
+    case .downloadSizeMismatch:
+      return "The downloaded model does not match its pinned file size."
+    case .downloadChecksumMismatch:
+      return "The downloaded model failed SHA-256 verification."
+    case .modelDownloadFailed:
+      return "Hugging Face could not deliver the pinned model file."
     case .immutableRevisionRequired:
       return "Remote MLX models require a full 40-character commit SHA; mutable branches are rejected."
     case .runtimeMismatch:

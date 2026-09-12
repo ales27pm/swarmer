@@ -6,6 +6,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.services.message_board import _validate_redis_transport_url
+from app.services.swarm_contracts import ModelIdentifier
 
 DEFAULT_PERMISSIONS_PATH = Path(__file__).resolve().parents[2] / "configs" / "permissions.yaml"
 
@@ -31,11 +32,12 @@ class Settings(BaseSettings):
     control_plane_heartbeat_seconds: int = Field(default=10, ge=2, le=300)
     maintenance_lease_seconds: int = Field(default=45, ge=10, le=900)
     llm_base_url: str = "http://127.0.0.1:8711/v1"
-    orchestrator_model: str = "Hermes-3-Llama-3.2-3B-abliterated"
-    planner_model: str | None = None
-    evaluator_model: str | None = None
-    summarizer_model: str | None = None
-    synthesizer_model: str | None = None
+    orchestrator_model: ModelIdentifier = "Hermes-3-Llama-3.2-3B-abliterated"
+    # Unset roles share the orchestrator, keeping the default to one loaded model.
+    planner_model: ModelIdentifier | None = None
+    evaluator_model: ModelIdentifier | None = None
+    summarizer_model: ModelIdentifier | None = None
+    synthesizer_model: ModelIdentifier | None = None
     goal_max_steps: int = Field(default=20, ge=1, le=20)
     goal_max_replans: int = Field(default=3, ge=0, le=10)
     goal_max_parallelism: int = Field(default=3, ge=1, le=3)
@@ -70,6 +72,15 @@ class Settings(BaseSettings):
     agent_job_max_attempts: int = Field(default=3, ge=1, le=20)
     agent_score_refresh_seconds: int = Field(default=60, ge=10, le=3600)
     iphone_capability_grant_ttl_seconds: int = Field(default=90, ge=30, le=300)
+
+    @field_validator(
+        "planner_model", "evaluator_model", "summarizer_model", "synthesizer_model", mode="before"
+    )
+    @classmethod
+    def inherit_unset_model_role(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("pairing_bootstrap_token")
     @classmethod

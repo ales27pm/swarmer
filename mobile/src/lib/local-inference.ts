@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
 
 import type { ToolProposalInput } from "@/lib/api/types";
+import type { GgufDownload } from "@/lib/local-model-presets";
 
 export const LOCAL_INFERENCE_MODULE_NAME = "SwarmerLocalInference";
 
@@ -52,6 +53,8 @@ type NativeLocalInferenceModule = {
     uri: string;
     displayName?: string;
   }): Promise<unknown>;
+  downloadAndImportModel(input: GgufDownload): Promise<unknown>;
+  cancelModelDownload(): Promise<unknown>;
   pickAndImportDirectory(runtime: "coreml" | "mlx"): Promise<unknown>;
   listModels(): Promise<unknown>;
   loadModel(input: {
@@ -520,6 +523,18 @@ export async function pickAndImportLocalModelDirectory(
   runtime: "coreml" | "mlx",
 ): Promise<LocalModel> {
   return parseLocalModel(await requireModule().pickAndImportDirectory(runtime));
+}
+
+export async function downloadLocalGgufModel(input: GgufDownload): Promise<LocalModel> {
+  const module = requireModule();
+  if (typeof module.downloadAndImportModel !== "function") {
+    throw new Error("Mets à jour la version iOS de Swarmer pour télécharger un modèle dans l’app.");
+  }
+  return parseLocalModel(await module.downloadAndImportModel(input));
+}
+
+export async function cancelLocalModelDownload(): Promise<void> {
+  await requireModule().cancelModelDownload();
 }
 
 export async function listLocalModels(): Promise<LocalModel[]> {

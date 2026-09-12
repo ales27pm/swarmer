@@ -317,8 +317,8 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     generator = CodeGenerator(
-        os.environ["MONGARS_CODE_MODEL_URL"],
-        os.environ["MONGARS_CODE_MODEL_ID"],
+        os.environ.get("MONGARS_CODE_MODEL_URL", "http://127.0.0.1:8712/v1"),
+        os.environ.get("MONGARS_CODE_MODEL_ID", "G9v3-3B-Heretic-Abliterated"),
         timeout_seconds=float(os.environ.get("MONGARS_CODE_TIMEOUT_SECONDS", "90")),
     )
     while True:

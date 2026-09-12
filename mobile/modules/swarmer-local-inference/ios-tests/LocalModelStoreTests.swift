@@ -85,6 +85,9 @@ private struct LocalModelStoreTests {
       ("nested symbolic-link rejection", testSymbolicLinkRejection),
       ("staging and orphan cleanup", testRecoveryCleanup),
       ("cancelled import cleanup", testCancellationCleanup),
+      ("pinned GGUF download metadata validation", testDownloadMetadataValidation),
+      ("download size and SHA-256 verification", testDownloadVerification),
+      ("cancelled download exits before network or import", testDownloadCancellation),
     ]
 
     var failures: [String] = []
@@ -148,6 +151,119 @@ private struct LocalModelStoreTests {
     try expect(isWithin(resolved.runtimeURL, root: workspace.models), "resolved GGUF escaped private storage")
   }
 
+  private static func download(
+    repoId: String = "example/Dolphin-3B-GGUF",
+    revision: String = String(repeating: "a", count: 40),
+    filename: String = "Dolphin-Q4_K_M.gguf",
+    sha256: String = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    sizeBytes: Int64 = 3,
+    displayName: String = "Dolphin 3B"
+  ) throws -> LocalModelDownload {
+    try LocalModelDownload(
+      repoId: repoId,
+      revision: revision,
+      filename: filename,
+      sha256: sha256,
+      sizeBytes: sizeBytes,
+      displayName: displayName
+    )
+  }
+
+  private static func testDownloadMetadataValidation() async throws {
+    let descriptor = try download(revision: String(repeating: "A", count: 40))
+    try expect(
+      descriptor.url.absoluteString == "https://huggingface.co/example/Dolphin-3B-GGUF/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Dolphin-Q4_K_M.gguf",
+      "download URL was not pinned to an immutable HTTPS file"
+    )
+    let invalidMetadata: [() throws -> LocalModelDownload] = [
+      { try download(repoId: "https://example.org/model") },
+      { try download(repoId: "../escape") },
+      { try download(revision: "main") },
+      { try download(filename: "../escape.gguf") },
+      { try download(filename: "nested/model.gguf") },
+      { try download(filename: "model.gguf?download=1") },
+      { try download(filename: "model.safetensors") },
+      { try download(sha256: String(repeating: "x", count: 64)) },
+      { try download(sha256: String(repeating: "a", count: 63)) },
+    ]
+    for make in invalidMetadata {
+      do {
+        _ = try make()
+        throw TestFailure("unsafe download metadata was accepted")
+      } catch LocalInferenceError.invalidDownloadMetadata {
+        // Expected.
+      }
+    }
+    for size in [Int64(0), Int64(-1), LocalModelDownload.maximumBytes + 1] {
+      do {
+        _ = try download(sizeBytes: size)
+        throw TestFailure("download accepted an invalid byte budget")
+      } catch LocalInferenceError.importTooLarge {
+        // Expected.
+      }
+    }
+  }
+
+  private static func testDownloadVerification() async throws {
+    let workspace = try TestWorkspace(name: "download-verification")
+    defer { workspace.remove() }
+    let file = workspace.source.appendingPathComponent("Dolphin-Q4_K_M.gguf")
+    let descriptor = try download()
+    // SHA-256("abc") is the standard independently known test vector.
+    try write("abc", to: file)
+    try descriptor.verifyDownloadedFile(at: file)
+    let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let imported = try await store.importModel(
+      runtime: .llamaCpp, uri: file.absoluteString, displayName: descriptor.displayName
+    )
+    try expect(imported.sizeBytes == 3, "verified file could not be imported into private storage")
+
+    try write("abd", to: file)
+    do {
+      try descriptor.verifyDownloadedFile(at: file)
+      throw TestFailure("same-size tampering passed checksum verification")
+    } catch LocalInferenceError.downloadChecksumMismatch {
+      // Expected.
+    }
+    try write("ab", to: file)
+    do {
+      try descriptor.verifyDownloadedFile(at: file)
+      throw TestFailure("truncated download passed size verification")
+    } catch LocalInferenceError.downloadSizeMismatch {
+      // Expected.
+    }
+    try write("abcd", to: file)
+    do {
+      try descriptor.verifyDownloadedFile(at: file)
+      throw TestFailure("oversized download passed size verification")
+    } catch LocalInferenceError.downloadSizeMismatch {
+      // Expected.
+    }
+  }
+
+  private static func testDownloadCancellation() async throws {
+    let workspace = try TestWorkspace(name: "download-cancel")
+    defer { workspace.remove() }
+    let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let gate = ImportCheckpointGate()
+    let descriptor = try download()
+    let task = Task {
+      await gate.pauseAfterStagingCreation()
+      return try await descriptor.downloadAndImport(into: store)
+    }
+    await gate.waitUntilReached()
+    task.cancel()
+    await gate.release()
+    do {
+      _ = try await task.value
+      throw TestFailure("cancelled download did not throw cancellation")
+    } catch is CancellationError {
+      // Reaching this without a network request also proves preflight cancellation.
+    }
+    let records = try await store.list()
+    try expect(records.isEmpty, "cancelled download modified the model index")
+  }
+
   private static func testCoreMLFilteringAndSidecars() async throws {
     let workspace = try TestWorkspace(name: "coreml")
     defer { workspace.remove() }
@@ -158,6 +274,7 @@ private struct LocalModelStoreTests {
     try write("compiled model", to: packageData.appendingPathComponent("model.mlmodel"))
     try write("{}", to: source.appendingPathComponent("tokenizer.json"))
     try write("{}", to: source.appendingPathComponent("tokenizer_config.json"))
+    try write("{\"eos_token_id\":[128001,128008,128009]}", to: source.appendingPathComponent("generation_config.json"))
     try write("merge rules", to: source.appendingPathComponent("merges.txt"))
     try write("must not be imported", to: source.appendingPathComponent("notes.md"))
     let unrelated = source.appendingPathComponent("Unrelated", isDirectory: true)
@@ -177,6 +294,7 @@ private struct LocalModelStoreTests {
     try expect(resolved.runtimeURL.lastPathComponent == "Language.mlpackage", "wrong Core ML model resolved")
     try expect(fileExists(importedRoot.appendingPathComponent("tokenizer.json")), "tokenizer.json was not copied")
     try expect(fileExists(importedRoot.appendingPathComponent("tokenizer_config.json")), "tokenizer_config.json was not copied")
+    try expect(fileExists(importedRoot.appendingPathComponent("generation_config.json")), "generation_config.json stop-token metadata was not copied")
     try expect(fileExists(importedRoot.appendingPathComponent("merges.txt")), "allowed tokenizer sidecar was not copied")
     try expect(!fileExists(importedRoot.appendingPathComponent("notes.md")), "unselected Core ML file was copied")
     try expect(!fileExists(importedRoot.appendingPathComponent("Unrelated")), "unselected Core ML directory was copied")

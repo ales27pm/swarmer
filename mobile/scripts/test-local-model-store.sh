@@ -21,6 +21,7 @@ xcrun swiftc \
   -parse-as-library \
   "$MODULE_DIR/ios-tests/LocalModelStoreTestSupport.swift" \
   "$MODULE_DIR/ios/LocalModelStore.swift" \
+  "$MODULE_DIR/ios/LocalModelDownload.swift" \
   "$MODULE_DIR/ios-tests/LocalModelStoreTests.swift" \
   -o "$TEST_BINARY"
 

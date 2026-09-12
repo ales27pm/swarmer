@@ -6,6 +6,7 @@ import type {
   LocalInferenceRuntime,
   LocalInferenceStatus,
   LocalModel,
+  LocalModelDownloadInput,
 } from "./SwarmerLocalInference.types";
 
 declare class SwarmerLocalInferenceModule extends NativeModule {
@@ -15,6 +16,8 @@ declare class SwarmerLocalInferenceModule extends NativeModule {
     uri: string;
     displayName?: string;
   }): Promise<LocalModel>;
+  downloadAndImportModel(input: LocalModelDownloadInput): Promise<LocalModel>;
+  cancelModelDownload(): Promise<void>;
   pickAndImportDirectory(runtime: "coreml" | "mlx"): Promise<LocalModel>;
   listModels(): Promise<LocalModel[]>;
   loadModel(input: {

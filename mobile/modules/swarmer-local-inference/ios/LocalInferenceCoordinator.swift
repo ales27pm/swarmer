@@ -26,6 +26,7 @@ actor LocalInferenceCoordinator {
 
   private struct ImportOperation: Sendable {
     let id: UUID
+    let isDownload: Bool
     let task: Task<StoredLocalModel, Error>
   }
 
@@ -75,7 +76,43 @@ actor LocalInferenceCoordinator {
         displayName: displayName
       )
     }
-    importOperation = ImportOperation(id: operationId, task: task)
+    return try await finishImport(task, operationId: operationId, isDownload: false)
+  }
+
+  func downloadAndImportModel(options: DownloadModelOptions) async throws -> LocalModelRecord {
+    let download = try LocalModelDownload(
+      repoId: options.repoId,
+      revision: options.revision,
+      filename: options.filename,
+      sha256: options.sha256,
+      sizeBytes: options.sizeBytes,
+      displayName: options.displayName
+    )
+    guard !isSuspended,
+          importOperation == nil,
+          loadOperation == nil,
+          generationOperation == nil,
+          state != "cancelling" else {
+      throw LocalInferenceError.generationInProgress
+    }
+    let operationId = UUID()
+    let task = Task.detached(priority: .utility) { [store] in
+      try await download.downloadAndImport(into: store)
+    }
+    return try await finishImport(task, operationId: operationId, isDownload: true)
+  }
+
+  func cancelModelDownload() async {
+    guard importOperation?.isDownload == true else { return }
+    await cancelImport()
+  }
+
+  private func finishImport(
+    _ task: Task<StoredLocalModel, Error>,
+    operationId: UUID,
+    isDownload: Bool
+  ) async throws -> LocalModelRecord {
+    importOperation = ImportOperation(id: operationId, isDownload: isDownload, task: task)
     do {
       let imported = try await task.value
       if importOperation?.id == operationId {

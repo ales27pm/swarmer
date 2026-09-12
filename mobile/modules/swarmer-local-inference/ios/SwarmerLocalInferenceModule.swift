@@ -15,6 +15,14 @@ public final class SwarmerLocalInferenceModule: Module {
       try await coordinator.importModel(options: options)
     }
 
+    AsyncFunction("downloadAndImportModel") { [coordinator] (options: DownloadModelOptions) async throws -> LocalModelRecord in
+      try await coordinator.downloadAndImportModel(options: options)
+    }
+
+    AsyncFunction("cancelModelDownload") { [coordinator] () async -> Void in
+      await coordinator.cancelModelDownload()
+    }
+
     AsyncFunction("pickAndImportDirectory") { [weak self, coordinator] (runtime: String, promise: Promise) in
       guard runtime == LocalRuntime.coreML.rawValue || runtime == LocalRuntime.mlx.rawValue else {
         promise.reject("ERR_LOCAL_MODEL_RUNTIME", "Only Core ML and MLX use directory import.")

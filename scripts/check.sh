@@ -89,6 +89,7 @@ printf 'check: running mobile type, lint, test, and Expo health gates\n'
 if command -v xcrun >/dev/null 2>&1; then
   printf 'check: running strict Swift local-model store tests\n'
   "$MOBILE_DIR/scripts/test-local-model-store.sh"
+  "$MOBILE_DIR/scripts/test-coreml-dolphin-support.sh"
 else
   printf 'check: skipping Swift local-model store tests (xcrun unavailable)\n'
 fi

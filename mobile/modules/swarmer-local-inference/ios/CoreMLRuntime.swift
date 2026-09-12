@@ -82,11 +82,17 @@ actor CoreMLRuntime {
     let logitsName: String
     let sequenceShape: SequenceShape
     let stateful: Bool
+    let dolphinCausalMask: Bool
+
+    var contextLength: Int {
+      dolphinCausalMask ? CoreMLDolphinSupport.contextLength : sequenceShape.maximum
+    }
   }
 
   private var model: LoadedModel?
   private var tokenizer: (any Tokenizer)?
   private var contract: Contract?
+  private var stopTokenIDs = Set<Int>()
   private var cancelRequested = false
   private var generating = false
 
@@ -112,8 +118,14 @@ actor CoreMLRuntime {
     try checkCancellation()
     let loadedContract = try Self.validate(model: loadedModel)
     let loadedTokenizer = try await AutoTokenizer.from(modelFolder: tokenizerURL, strict: true)
+    var loadedStopTokenIDs = try CoreMLDolphinSupport.configuredStopTokenIDs(in: tokenizerURL)
+    if let eosTokenID = loadedTokenizer.eosTokenId { loadedStopTokenIDs.insert(eosTokenID) }
+    if loadedContract.dolphinCausalMask {
+      loadedStopTokenIDs.formUnion(CoreMLDolphinSupport.stopTokenIDs)
+    }
     try checkCancellation()
 
+    stopTokenIDs = loadedStopTokenIDs
     model = LoadedModel(loadedModel)
     contract = loadedContract
     tokenizer = loadedTokenizer
@@ -130,14 +142,17 @@ actor CoreMLRuntime {
       cancelRequested = false
     }
 
-    var allTokens = tokenizer.encode(text: prompt, addSpecialTokens: true)
+    var allTokens = contract.dolphinCausalMask
+      ? try tokenizer.applyChatTemplate(messages: [["role": "user", "content": prompt]])
+      : tokenizer.encode(text: prompt, addSpecialTokens: true)
     guard !allTokens.isEmpty, allTokens.allSatisfy({ Int32(exactly: $0) != nil }) else {
       throw LocalInferenceError.inferenceFailed("the tokenizer returned invalid token IDs")
     }
-    guard allTokens.count + maxTokens <= contract.sequenceShape.maximum else {
+    guard maxTokens > 0, allTokens.count <= contract.contextLength,
+          maxTokens <= contract.contextLength - allTokens.count else {
       throw LocalInferenceError.contextExceeded
     }
-    if contract.stateful {
+    if contract.stateful && !contract.dolphinCausalMask {
       guard contract.sequenceShape.accepts(allTokens.count), contract.sequenceShape.accepts(1) else {
         throw LocalInferenceError.unsupportedCoreMLContract(
           "stateful models must accept both the complete prompt length and one-token extension inputs"
@@ -145,6 +160,10 @@ actor CoreMLRuntime {
       }
     }
 
+    let prefillRanges = contract.dolphinCausalMask
+      ? try CoreMLDolphinSupport.prefillRanges(tokenCount: allTokens.count, maxNewTokens: maxTokens)
+      : [0..<allTokens.count]
+    let generationStopTokenIDs = stopTokenIDs
     let predictionContext = model.makePredictionContext(stateful: contract.stateful)
     var generatedTokens: [Int] = []
     generatedTokens.reserveCapacity(maxTokens)
@@ -164,38 +183,68 @@ actor CoreMLRuntime {
       } else {
         predictionTokens = allTokens
       }
-      let targetLength = contract.stateful
-        ? predictionTokens.count
-        : try contract.sequenceShape.paddedLength(for: predictionTokens.count)
-      let paddingCount = targetLength - predictionTokens.count
-      let paddedTokens = predictionTokens.map(Int32.init) + [Int32](repeating: 0, count: paddingCount)
-      var inputs = [
-        contract.inputIdsName: MLTensor(shape: [1, targetLength], scalars: paddedTokens)
-      ]
-      if let attentionMaskName = contract.attentionMaskName {
-        let mask = [Int32](repeating: 1, count: predictionTokens.count)
-          + [Int32](repeating: 0, count: paddingCount)
-        inputs[attentionMaskName] = MLTensor(shape: [1, targetLength], scalars: mask)
-      }
+      // Only the last prefill chunk predicts a response token. Every chunk uses
+      // the same fresh conversation state and its absolute end position.
+      let chunks = step == 0 ? prefillRanges : [0..<predictionTokens.count]
+      var finalLogits: MLTensor?
+      var finalTokenIndex = 0
+      for chunk in chunks {
+        let queryTokens = Array(predictionTokens[chunk])
+        let targetLength = contract.stateful
+          ? queryTokens.count
+          : try contract.sequenceShape.paddedLength(for: queryTokens.count)
+        let paddingCount = targetLength - queryTokens.count
+        let paddedTokens = queryTokens.map(Int32.init) + [Int32](repeating: 0, count: paddingCount)
+        var inputs = [
+          contract.inputIdsName: MLTensor(shape: [1, targetLength], scalars: paddedTokens)
+        ]
+        if let attentionMaskName = contract.attentionMaskName {
+          let mask = [Int32](repeating: 1, count: queryTokens.count)
+            + [Int32](repeating: 0, count: paddingCount)
+          inputs[attentionMaskName] = MLTensor(shape: [1, targetLength], scalars: mask)
+        }
+        if contract.dolphinCausalMask {
+          let absoluteEnd = step == 0 ? chunk.upperBound : allTokens.count + step
+          let mask = try CoreMLDolphinSupport.causalMask(
+            queryCount: queryTokens.count, absoluteEnd: absoluteEnd
+          )
+          #if arch(arm64)
+          inputs["causalMask"] = MLTensor(
+            shape: [1, 1, queryTokens.count, absoluteEnd], scalars: mask.map(Float16.init(bitPattern:))
+          )
+          #else
+          throw LocalInferenceError.unsupportedModel("Dolphin Core ML requires an Apple-silicon device")
+          #endif
+        }
 
-      let outputs = try await predictionContext.predict(from: inputs)
-      if cancelRequested || Task.isCancelled {
-        return RuntimeGenerationResult(
-          text: tokenizer.decode(tokens: generatedTokens, skipSpecialTokens: true),
-          finishReason: "cancelled",
-          tokenCount: generatedTokens.count
-        )
+        let outputs = try await predictionContext.predict(from: inputs)
+        if cancelRequested || Task.isCancelled {
+          return RuntimeGenerationResult(
+            text: tokenizer.decode(tokens: generatedTokens, skipSpecialTokens: true),
+            finishReason: "cancelled",
+            tokenCount: generatedTokens.count
+          )
+        }
+        guard let logits = outputs[contract.logitsName] else {
+          throw LocalInferenceError.unsupportedCoreMLContract("the prediction omitted logits")
+        }
+        if contract.dolphinCausalMask {
+          guard logits.rank == 3, logits.shape == [1, queryTokens.count, CoreMLDolphinSupport.vocabularySize] else {
+            throw LocalInferenceError.unsupportedCoreMLContract("Dolphin returned an unexpected logits shape")
+          }
+        }
+        finalLogits = logits
+        finalTokenIndex = queryTokens.count - 1
       }
-
-      guard let logits = outputs[contract.logitsName] else {
-        throw LocalInferenceError.unsupportedCoreMLContract("the prediction omitted logits")
+      guard let finalLogits else {
+        throw LocalInferenceError.inferenceFailed("the Core ML prompt produced no predictions")
       }
       let nextToken = try await Self.sample(
-        logits: logits,
-        tokenIndex: predictionTokens.count - 1,
+        logits: finalLogits,
+        tokenIndex: finalTokenIndex,
         temperature: temperature
       )
-      if nextToken == tokenizer.eosTokenId {
+      if generationStopTokenIDs.contains(nextToken) {
         return RuntimeGenerationResult(
           text: tokenizer.decode(tokens: generatedTokens, skipSpecialTokens: true),
           finishReason: "stop",
@@ -222,6 +271,7 @@ actor CoreMLRuntime {
     model = nil
     tokenizer = nil
     contract = nil
+    stopTokenIDs.removeAll()
   }
 
   private func checkCancellation() throws {
@@ -251,7 +301,8 @@ actor CoreMLRuntime {
       throw LocalInferenceError.unsupportedCoreMLContract("the attention mask must use Int32")
     }
 
-    let allowedInputs = Set(inputIdNames + attentionNames)
+    let dolphinCausalMask = inputs["causalMask"] != nil
+    let allowedInputs = Set(inputIdNames + attentionNames + (dolphinCausalMask ? ["causalMask"] : []))
     let unexpectedInputs = Set(inputs.keys).subtracting(allowedInputs)
     guard unexpectedInputs.isEmpty else {
       throw LocalInferenceError.unsupportedCoreMLContract(
@@ -271,7 +322,8 @@ actor CoreMLRuntime {
       throw LocalInferenceError.unsupportedCoreMLContract("logits must use a floating-point type")
     }
     let logitsShape = logitsConstraint.shape.map(\.intValue)
-    guard logitsShape.count == 3, logitsShape[0] == 1 else {
+    guard (dolphinCausalMask && logitsShape.isEmpty)
+      || (logitsShape.count == 3 && logitsShape[0] == 1) else {
       throw LocalInferenceError.unsupportedCoreMLContract(
         "logits must have shape [1, sequence, vocabulary]"
       )
@@ -332,13 +384,54 @@ actor CoreMLRuntime {
       }
     }
 
+    if dolphinCausalMask {
+      guard inputIdNames == ["inputIds"], attentionNames.isEmpty,
+            stateNames == camelState,
+            logitsConstraint.dataType == .float16,
+            (logitsShape.isEmpty || logitsShape[2] == CoreMLDolphinSupport.vocabularySize),
+            matchesRanges(inputConstraint, bounds: [1...1, 1...CoreMLDolphinSupport.queryLength]),
+            let mask = inputs["causalMask"]?.multiArrayConstraint,
+            mask.dataType == .float16,
+            matchesRanges(mask, bounds: [1...1, 1...1, 1...CoreMLDolphinSupport.queryLength,
+                                         1...CoreMLDolphinSupport.contextLength]) else {
+        throw LocalInferenceError.unsupportedCoreMLContract(
+          "Dolphin requires Int32 inputIds, a dynamic FP16 causalMask, and FP16 vocabulary logits"
+        )
+      }
+      for name in camelState {
+        guard let state = description.stateDescriptionsByName[name]?.stateConstraint,
+              state.dataType == .float16,
+              state.bufferShape == CoreMLDolphinSupport.cacheShape else {
+          throw LocalInferenceError.unsupportedCoreMLContract(
+            "Dolphin requires FP16 keyCache/valueCache shaped [28, 1, 8, 2048, 128]"
+          )
+        }
+      }
+    }
+
     return Contract(
       inputIdsName: inputIdNames[0],
       attentionMaskName: attentionNames.first,
       logitsName: "logits",
       sequenceShape: sequenceShape,
-      stateful: stateful
+      stateful: stateful,
+      dolphinCausalMask: dolphinCausalMask
     )
+  }
+
+  private static func matchesRanges(
+    _ constraint: MLMultiArrayConstraint,
+    bounds: [ClosedRange<Int>]
+  ) -> Bool {
+    guard constraint.shape.count == bounds.count,
+          constraint.shapeConstraint.type == .range else { return false }
+    let ranges = constraint.shapeConstraint.sizeRangeForDimension
+    guard ranges.count == bounds.count else { return false }
+    return zip(ranges, bounds).allSatisfy { value, expected in
+      let range = value.rangeValue
+      return range.location == expected.lowerBound
+        && range.length == expected.upperBound - expected.lowerBound + 1
+    }
   }
 
   private static func sample(logits: MLTensor, tokenIndex: Int, temperature: Double) async throws -> Int {
