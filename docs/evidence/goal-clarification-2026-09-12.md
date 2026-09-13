@@ -43,9 +43,38 @@ identifier. No automatic message retry is introduced.
   replays, not evidence of actual project execution or general model quality.
 - One additional Python inventory replay preserved SKU identifiers, stock levels
   and CSV import, selected `code.build_project`, and introduced no CRM features.
-  It returned HTTP 200 in 4.559 s. No further model replays were run.
+  It returned HTTP 200 in 4.559 s. No further evaluator replays were run.
 - No replay modified a goal, job, approval, conversation, or live model binding.
 
 Deployment, recovery of the existing paused goal, IPA validation, upload, and
 physical-device behavior require their own evidence; passing tests alone does
 not establish those outcomes.
+
+## Deployment and submission outcome
+
+The server was deployed at `f5854de3175c6df58968af6b3faaefb4ca19e409` after
+1,072 server tests and 413 worker tests passed (9 and 5 explicit skips).
+Ruff, mypy, Bandit and the committed OpenAPI checks passed. Health, installed
+source identity, fresh worker heartbeat and unchanged protected tables were
+verified. Schema 23 and explicit model bindings were preserved.
+
+One audited operator replan reused the existing saved reply. A separate real
+planner rehearsal still produced empty synthesis; production skipped that
+proposal and normal evaluation dispatched the project worker. The repeated
+question is no longer pending, and historical messages were preserved. The
+first worker attempt timed out; bounded continuation subsequently produced files
+and check receipts. Project implementation was still being repaired at the last
+observation; resumption is not a completion claim. No file approval was supplied.
+
+iOS build `20260913000200` is committed but **not uploaded**. EAS refused cloud
+creation after the monthly iOS quota was exhausted. Local signing was repaired
+with an isolated temporary keychain, but ExpoModulesJSI failed to compile under
+the installed Xcode 26.3. Expo SDK 57 requires Xcode 26.4+; those toolchains
+require macOS Tahoe 26.2+, while this host runs macOS 15.7.9. No IPA was produced,
+temporary signing credentials were removed, and the original keychain search
+list was restored. App Store Connect still lists `20260912232600` as valid and
+in internal beta testing. Further submission needs restored EAS capacity or a
+compatible build host; no subscription purchase or OS upgrade was performed.
+
+References: [Expo SDK requirements](https://docs.expo.dev/versions/latest/),
+[Apple toolchain requirements](https://developer.apple.com/xcode/system-requirements/).
