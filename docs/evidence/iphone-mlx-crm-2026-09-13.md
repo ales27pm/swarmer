@@ -95,5 +95,41 @@ files, modified artifacts, cancellation and interrupted publication. Migration
 tests cover SQLite/Files URI agreement with spaces and Unicode. A real SQLite
 WAL backup comparison on the Mac passed; it is not physical iPhone migration
 evidence. The complete mobile suite passes 469 tests across 35 suites, with
-TypeScript, ESLint and diff checks passing. The new build and end-to-end CRM
-result are still pending.
+TypeScript, ESLint and diff checks passing. Installed dependencies are consistent
+and Expo Doctor passes 20/20 checks.
+
+## Development archive ready; device retest blocked
+
+Development build `20260913223250` was compiled from source
+`d9da64b082f6b698f0fc878ae6011de8fafb777c`, mobile tree
+`1d9df9005ecd70a22bed6da6066a5293e676ea8b`. Xcode completed the Release archive
+successfully in 1,796.53 seconds. The signed app has both Files flags enabled,
+iOS 18 as its minimum target, the intended development profile and native
+MLX/Core ML/GGUF/FileSystem components. App and llama dSYM UUIDs match their
+binaries. An audit helper expected a different llama dSYM filename; a separate
+audit used the actual `llama.dSYM` without changing or recompiling the app.
+
+The builder was restored with no errors, its temporary dependency alias was
+removed and associated build processes exited. Prior release artifacts remain
+unchanged. The development IPA is 19,871,264 bytes with SHA-256
+`5275867c0b3b2a995240b5480d1302cc45d091977e6705729d3163d7420b0a0d`.
+Detailed checks and the installable app are retained under
+`/private/tmp/swarmer-local-planner-development-20260913223250/`.
+
+Both GitHub and Vibecode were verified at the source commit. GitHub Actions run
+`34788465351` could not start its job because the account is locked due to a
+billing issue; it did not run or fail the source tests.
+
+The iPhone remains paired but unavailable in a fresh CoreDevice listing. Its
+development tunnel and DDI services could not be reached; no pairing, network
+settings or system services were changed. Unlocking the phone on the same
+network has been requested. This build has **not** been installed, launched or
+uploaded. Its on-device database migration, Files folder, local initial plan
+and CRM execution remain unverified. The existing TestFlight build remains
+`20260913203646`; a successful archive is not a new TestFlight submission.
+
+The before/after database verification procedure is prepared at
+`/private/tmp/swarmer-replica-device-verification-20260913/README.md`, and the
+functional sequence is at
+`/private/tmp/swarmer-physical-validation-20260913223250.md`. No private database
+copy was taken while the device was unavailable.
