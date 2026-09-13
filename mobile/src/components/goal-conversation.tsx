@@ -21,6 +21,7 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState<GoalReplyAttempt | null>(null);
   const busy = useRef(false);
+  const deferredRefresh = useRef(false);
   const epoch = useRef(0);
   const mounted = useRef(true);
   const authorityEpoch = useRef(0);
@@ -29,20 +30,22 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
     const unsubscribe = subscribeConnectionChanges(() => {
       authorityEpoch.current += 1;
       epoch.current += 1;
+      deferredRefresh.current = false;
       setSession(null); setInput(""); setPending(null); setLoading(false);
       setNotice("Le jumelage a changé. Actualisez la conversation de cette connexion.");
     });
     return () => { mounted.current = false; unsubscribe(); };
   }, []);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (clearError = true) => {
+    deferredRefresh.current = false;
     const current = ++epoch.current;
     setLoading(true);
     try {
       const next = await getGoalConversation(goal.id);
       if (current === epoch.current) {
         setSession(next);
-        setError(null);
+        if (clearError) setError(null);
       }
     } catch (cause) {
       if (current === epoch.current) {
@@ -55,11 +58,17 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
   }, [goal.id]);
 
   useEffect(() => {
-    if (!disabled && !busy.current) {
-      void reload();
+    if (!disabled) {
+      if (busy.current) deferredRefresh.current = true;
+      else void reload();
     }
     return () => { epoch.current += 1; };
   }, [disabled, goal.updated_at, reload]);
+
+  useEffect(() => {
+    // Parent refreshes can invalidate a reload while the reply is still sending.
+    if (!disabled && !sending && deferredRefresh.current) void reload(false);
+  }, [disabled, reload, sending]);
 
   const send = async () => {
     if (disabled || loading || busy.current || !session || (!pending && !input.trim())) return;

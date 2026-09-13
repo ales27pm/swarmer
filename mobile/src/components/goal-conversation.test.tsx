@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, userEvent } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { GoalConversation } from "@/components/goal-conversation";
-import { ApiError, getGoalConversation, type GoalDetail } from "@/lib/api/client";
+import { ApiError, getGoalConversation, type GoalConversationSession, type GoalDetail } from "@/lib/api/client";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { projectGoalFixture } from "@/testing/project-fixtures";
 
@@ -63,6 +63,39 @@ describe("GoalConversation", () => {
     expect(updated).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Message enregistré dans le projet.")).toBeOnTheScreen();
   });
+  it("recovers a reply reload interrupted by a parent refresh without sending twice", async () => {
+    const user = userEvent.setup();
+    let resolveReload!: (value: GoalConversationSession) => void;
+    const answer = "Fiches clients, soumissions/projet, courriels, calendrier";
+    const answered = {
+      ...conversation,
+      messages: [...conversation.messages, { ...question, id: "answer_1", role: "user" as const, content: answer }],
+      pending_question_id: null,
+    };
+    load.mockResolvedValueOnce({ conversation, prepareReply });
+    load.mockImplementationOnce(() => new Promise((done) => { resolveReload = done; }));
+    load.mockResolvedValueOnce({ conversation: answered, prepareReply });
+    const view = await render(<GoalConversation {...props} />);
+    await screen.findByText(question.content);
+    await fireEvent.changeText(screen.getByLabelText("Réponse à la question du projet"), answer);
+    await user.press(screen.getByRole("button", { name: "Répondre à la question" }));
+    expect(load).toHaveBeenCalledTimes(2);
+
+    await view.rerender(<GoalConversation {...props} disabled />);
+    await view.rerender(<GoalConversation {...props} disabled={false} />);
+    await act(async () => resolveReload({ conversation, prepareReply }));
+
+    expect(await screen.findByLabelText("Message pour le projet")).toHaveProp("value", "");
+    expect(screen.getByText(answer)).toBeOnTheScreen();
+    expect(screen.queryByText(/Une précision est demandée/)).not.toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Actualiser la conversation" })).toBeEnabled();
+    await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute une recherche.");
+    expect(screen.getByRole("button", { name: "Envoyer au projet" })).toBeEnabled();
+    expect(prepareReply).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(updated).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(3);
+  });
   it("opens the linked new run when continuing a terminal goal", async () => {
     const user = userEvent.setup();
     load.mockResolvedValue({ conversation: { ...conversation, pending_question_id: null }, prepareReply });
@@ -83,6 +116,28 @@ describe("GoalConversation", () => {
     expect(await screen.findByText(/son identifiant reste inchangé/)).toBeOnTheScreen();
     expect(send).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Réponse à la question du projet")).toHaveProp("editable", false);
+    await user.press(screen.getByRole("button", { name: "Réessayer le même envoi" }));
+    expect(prepareReply).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it("preserves the uncertain reply and warning while recovering a deferred refresh", async () => {
+    const user = userEvent.setup();
+    let rejectSend!: (error: Error) => void;
+    send.mockImplementationOnce(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const view = await render(<GoalConversation {...props} />);
+    await screen.findByText(question.content);
+    await fireEvent.changeText(screen.getByLabelText("Réponse à la question du projet"), "Une interface web.");
+    await user.press(screen.getByRole("button", { name: "Répondre à la question" }));
+    await view.rerender(<GoalConversation {...props} disabled />);
+    await view.rerender(<GoalConversation {...props} disabled={false} />);
+    await act(async () => rejectSend(new Error("Connexion interrompue")));
+
+    expect(await screen.findByText(/son identifiant reste inchangé/)).toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("Réponse à la question du projet")).toHaveProp("value", "Une interface web.");
+    expect(screen.getByLabelText("Réponse à la question du projet")).toHaveProp("editable", false);
+    expect(screen.getByRole("button", { name: "Réessayer le même envoi" })).toBeEnabled();
+    expect(send).toHaveBeenCalledTimes(1);
     await user.press(screen.getByRole("button", { name: "Réessayer le même envoi" }));
     expect(prepareReply).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(2);
