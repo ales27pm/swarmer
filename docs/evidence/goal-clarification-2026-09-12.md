@@ -72,9 +72,27 @@ with an isolated temporary keychain, but ExpoModulesJSI failed to compile under
 the installed Xcode 26.3. Expo SDK 57 requires Xcode 26.4+; those toolchains
 require macOS Tahoe 26.2+, while this host runs macOS 15.7.9. No IPA was produced,
 temporary signing credentials were removed, and the original keychain search
-list was restored. App Store Connect still lists `20260912232600` as valid and
-in internal beta testing. Further submission needs restored EAS capacity or a
-compatible build host; no subscription purchase or OS upgrade was performed.
+list was restored. At that checkpoint, App Store Connect listed `20260912232600` as valid and
+in internal beta testing. That SDK 57 submission remained blocked; no
+subscription purchase or OS upgrade was performed.
 
 References: [Expo SDK requirements](https://docs.expo.dev/versions/latest/),
 [Apple toolchain requirements](https://developer.apple.com/xcode/system-requirements/).
+
+## Follow-up evidence
+
+A read-only snapshot at 2026-09-13 00:49:17 UTC found the recovered CRM goal
+`budget_exhausted` at 30/30 model calls and 14/20 steps. Twelve project-worker
+jobs were recorded: eleven completed and the last cancelled. Revision 11
+retained `requirements.txt` and `tests/test_clients.py`; saved install and
+compile receipts passed, but pytest failed with exit 5. No apply task or file
+approval exists. The duplicate question is not pending, and the preserved
+history contains normal progress messages. The fix restored execution; the
+CRM application did not finish successfully. No further runtime mutation was
+performed. Local and HTTPS health remained 200 at source `f5854de`.
+
+The user then requested an Expo downgrade for the installed Xcode. SDK 55
+compiled and exported successfully with Xcode 26.3, preserving this mobile
+conversation fix. Build `20260913004000` supersedes the unuploaded SDK 57
+release attempt. Its source, IPA verification and submission status are in
+[the SDK 55 release evidence](expo55-xcode263-2026-09-12.md).
