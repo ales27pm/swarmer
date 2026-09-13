@@ -370,7 +370,8 @@ utilisateur ferme les tâches enfants actives et fence leurs résultats tardifs.
 
 ### Evaluator et replan
 
-L'évaluateur reçoit un `GoalEvaluationContext` borné: critères, états/résumés
+L'évaluateur reçoit un `GoalEvaluationContext` borné: objectif, critères,
+conversation expurgée avec sa révision et la dernière réponse, états/résumés
 des nœuds, budgets restants, temps écoulé et fingerprint d'état. Il peut
 proposer `continue`, `replan`, `done`, `failed` ou `needs_user`. Les nœuds
 suggérés repassent par le même validateur de DAG et de policy. `done` sans

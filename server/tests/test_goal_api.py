@@ -279,7 +279,7 @@ def test_goal_api_replan_appends_a_validated_public_node(
     )
     assert started.status_code == 200, started.text
     assert started.json()["goal"]["status"] == "running"
-    assert started.json()["nodes"][0]["status"] == "completed"
+    assert started.json()["nodes"][0]["status"] == "skipped"
 
     replan_proposal = _plan(
         objective,
@@ -302,7 +302,7 @@ def test_goal_api_replan_appends_a_validated_public_node(
     assert detail["goal"]["replan_count"] == 1
     assert detail["goal"]["planner_source"] == "manual"
     assert len(detail["nodes"]) == 2
-    assert all(node["status"] == "completed" for node in detail["nodes"])
+    assert all(node["status"] == "skipped" for node in detail["nodes"])
     _assert_public_projection(detail)
 
     nodes = client.get(f"/goals/{goal_id}/nodes", headers=paired_headers)

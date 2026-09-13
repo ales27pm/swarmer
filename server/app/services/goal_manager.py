@@ -60,6 +60,7 @@ from app.services.result_aggregator import (
 from app.services.state_service import StateService
 from app.services.swarm_contracts import (
     AutonomyProfile,
+    EvaluationConversationMessage,
     EvaluationNodeResult,
     EvaluationStatus,
     GoalCreateRequest,
@@ -1465,8 +1466,8 @@ class GoalManager:
                     INSERT INTO plan_nodes(
                         id,goal_run_id,parent_node_id,node_type,title,objective,required_skill,
                         status,priority,depends_on_json,expected_output,planner_metadata_json,
-                        created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        created_at,updated_at,conversation_revision
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         node_id,
@@ -1483,6 +1484,7 @@ class GoalManager:
                         json.dumps(metadata, separators=(",", ":"), sort_keys=True),
                         now,
                         now,
+                        int(current["conversation_revision"] or 0),
                     ),
                 )
                 for dependency in hard_dependencies:
@@ -1621,6 +1623,18 @@ class GoalManager:
             maintenance_guard=maintenance_guard,
         )
 
+    @staticmethod
+    def _completed_input_summary(record: Mapping[str, Any]) -> str:
+        if record["status"] != "completed":
+            return ""
+        # Older releases persisted this diagnostic as successful output.
+        # It must not become evidence through a dependent synthesis.
+        return "\n".join(
+            line
+            for line in str(record.get("result_summary") or "").splitlines()
+            if line.strip() != "No evidence summary was available for synthesis."
+        ).strip()
+
     async def _complete_deterministic_synthesis(
         self,
         node: Mapping[str, Any],
@@ -1631,11 +1645,20 @@ class GoalManager:
         summaries: list[str] = []
         for dependency in dependencies:
             record = await self.graph.get_node(str(dependency))
-            if record is not None and record.get("result_summary"):
-                summaries.append(str(record["result_summary"])[:2_000])
+            if record is not None:
+                evidence = self._completed_input_summary(record)
+                if evidence:
+                    summaries.append(evidence[:2_000])
         summary = "\n".join(summaries)[:4_000]
         if not summary:
-            summary = "No evidence summary was available for synthesis."
+            await self.graph.transition_node(
+                str(node["id"]),
+                expected="ready",
+                target="skipped",
+                error_summary="Synthesis skipped because no completed input provided evidence.",
+                maintenance_guard=maintenance_guard,
+            )
+            return
         try:
             await self.graph.complete_synthesis_node(
                 str(node["id"]),
@@ -2405,11 +2428,18 @@ class GoalManager:
                     if not (
                         node["node_type"] == PlanNodeType.SYNTHESIS.value
                         and node["status"] == PlanNodeStatus.COMPLETED.value
-                        and node.get("depends_on") == []
+                        and (
+                            node.get("depends_on") == [] or not self._completed_input_summary(node)
+                        )
                     )
                 ],
                 known_node_ids=[str(node["id"]) for node in nodes],
                 available_skills=await self._available_worker_skills(),
+                conversation_revision=int(goal.get("conversation_revision") or 0),
+                conversation=[
+                    EvaluationConversationMessage.model_validate(message)
+                    for message in await self.recent_conversation(goal_run_id)
+                ],
                 remaining_step_budget=max(0, int(goal["max_steps"]) - int(goal["step_count"])),
                 remaining_model_call_budget=max(
                     0, int(goal["max_model_calls"]) - int(goal["model_call_count"])
@@ -2794,8 +2824,9 @@ class GoalManager:
             await db.execute(
                 """INSERT INTO plan_nodes(
                 id,goal_run_id,node_type,title,objective,required_skill,status,priority,
-                depends_on_json,expected_output,planner_metadata_json,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                depends_on_json,expected_output,planner_metadata_json,created_at,updated_at,
+                conversation_revision
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     node_id,
                     goal["id"],
@@ -2813,6 +2844,7 @@ class GoalManager:
                     ),
                     now,
                     now,
+                    int(goal.get("conversation_revision") or 0),
                 ),
             )
             for dependency in hard_dependencies:
@@ -3232,7 +3264,8 @@ class GoalManager:
             await db.execute("BEGIN IMMEDIATE")
             current = await (
                 await db.execute(
-                    """SELECT replan_count,max_replans,status,plan_fingerprint,max_steps
+                    """SELECT replan_count,max_replans,status,plan_fingerprint,max_steps,
+                              conversation_revision
                     FROM goal_runs WHERE id=?""",
                     (goal["id"],),
                 )
@@ -3279,8 +3312,9 @@ class GoalManager:
                 await db.execute(
                     """INSERT INTO plan_nodes(
                     id,goal_run_id,node_type,title,objective,required_skill,status,priority,
-                    depends_on_json,expected_output,planner_metadata_json,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    depends_on_json,expected_output,planner_metadata_json,created_at,updated_at,
+                    conversation_revision
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         node_id,
                         goal["id"],
@@ -3298,6 +3332,7 @@ class GoalManager:
                         ),
                         now,
                         now,
+                        int(current["conversation_revision"] or 0),
                     ),
                 )
                 for dependency in hard_dependencies:
@@ -3327,6 +3362,10 @@ class GoalManager:
                     now,
                     goal["id"],
                 ),
+            )
+            await db.execute(
+                f"UPDATE goal_runs SET {RESUME_RUNTIME_SQL} WHERE id=?",  # nosec B608
+                (now, goal["id"]),
             )
             if model_call_id is not None:
                 cursor = await db.execute(

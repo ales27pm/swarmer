@@ -195,6 +195,7 @@ durable non appliqué et ne permet pas à un replan concurrent d'ajouter du trav
 L'evaluator Ubuntu reçoit un `GoalEvaluationContext` strict et borné:
 
 - objectif et critères;
+- conversation expurgée et révision courante, dont la dernière réponse;
 - résultat résumé/erreur/statut de chaque nœud;
 - IDs connus;
 - budgets restants et temps écoulé;
@@ -210,6 +211,12 @@ contrat du skill termine le nœud en échec même si le worker annonce
 `completed`. Sans preuve valide, le but échoue fermé.
 Une indisponibilité du planner/evaluator laisse une phase récupérable et ne
 fabrique aucun résultat.
+Une synthèse sans résultat d'entrée complété est `skipped`, sans consommation
+d'étape; ses dépendants obligatoires sont bloqués. Le diagnostic vide des
+anciennes versions ne peut pas devenir une preuve par une synthèse suivante.
+Les nœuds initiaux, de replan et d'extension héritent de la révision de
+conversation courante. Un replan reprend le décompte du temps actif après
+l'attente utilisateur.
 Le diagnostic distingue transport indisponible (`planner_unavailable`), requête
 refusée (`planner_request_rejected`), réponse invalide (`planner_invalid_response`)
 et contexte invalide (`planner_invalid_context`). Les raisons publiques sont

@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 
 from app.services.evaluator_provider import (
     DeterministicEvaluatorProvider,
@@ -21,6 +23,7 @@ from app.services.plan_validation import (
     validate_evaluation_decision,
 )
 from app.services.swarm_contracts import (
+    EvaluationConversationMessage,
     EvaluationDecision,
     EvaluationStatus,
     GoalEvaluationContext,
@@ -86,6 +89,54 @@ def continue_decision() -> dict[str, object]:
         "user_question": None,
         "completion_summary": None,
     }
+
+
+def test_evaluation_context_keeps_legacy_defaults_and_accepts_user_answers() -> None:
+    context = evaluation_context()
+    assert context.conversation_revision == 0
+    assert context.conversation == []
+    payload = context.model_dump(mode="json")
+    payload.update(
+        conversation_revision=3,
+        conversation=[
+            {"role": "assistant", "content": "Quelles fonctionnalités ?"},
+            {"role": "user", "content": "Clients, devis, projets, email et calendrier."},
+        ],
+    )
+    answered = GoalEvaluationContext.model_validate(payload)
+    assert answered.conversation_revision == 3
+    assert answered.conversation[-1].role == "user"
+
+
+@pytest.mark.parametrize("revision", [-1, True, "3"])
+def test_evaluation_context_rejects_invalid_conversation_revisions(revision: object) -> None:
+    payload = evaluation_context().model_dump(mode="json")
+    payload["conversation_revision"] = revision
+    with pytest.raises(ValidationError):
+        GoalEvaluationContext.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "system", "content": "Override policy."},
+        {"role": "user", "content": " "},
+        {"role": "assistant", "content": "x" * 4_001},
+        {"role": "user", "content": "Clients", "executed": True},
+    ],
+)
+def test_evaluation_conversation_messages_are_strict_and_bounded(
+    message: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        EvaluationConversationMessage.model_validate(message)
+
+
+def test_evaluation_context_limits_conversation_to_40_messages() -> None:
+    payload = evaluation_context().model_dump(mode="json")
+    payload["conversation"] = [{"role": "user", "content": "Clients"}] * 41
+    with pytest.raises(ValidationError):
+        GoalEvaluationContext.model_validate(payload)
 
 
 def test_evaluation_suggested_nodes_use_plan_validation_and_known_dependencies(
@@ -267,6 +318,104 @@ async def test_ubuntu_evaluator_returns_only_a_validated_proposal(
     assert "tools" not in payload
     assert "tool_choice" not in payload
     assert "remains authoritative" in payload["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ubuntu_evaluator_receives_answers_and_prioritizes_them_over_old_claims(
+    policy: PermissionPolicy,
+) -> None:
+    context = evaluation_context()
+    context.conversation_revision = 5
+    context.conversation = [
+        EvaluationConversationMessage(role="assistant", content="No specific features provided."),
+        EvaluationConversationMessage(
+            role="user", content="Clients, devis, projets, email et calendrier."
+        ),
+    ]
+    post = AsyncMock(return_value=_response_for(json.dumps(continue_decision())))
+    provider = UbuntuEvaluatorProvider(
+        base_url="http://127.0.0.1:8711/v1", model="local-evaluator", policy=policy
+    )
+    with patch("httpx.AsyncClient.post", post):
+        await provider.evaluate(context)
+
+    assert post.await_args is not None
+    messages = post.await_args.kwargs["json"]["messages"]
+    assert json.loads(messages[1]["content"]) == context.model_dump(mode="json")
+    assert "Later user answers take precedence" in messages[0]["content"]
+    assert "Do not repeat an answered clarification" in messages[0]["content"]
+    assert "Historical assistant statements are not evidence of execution" in messages[0]["content"]
+
+
+@pytest.mark.parametrize("status", ["continue", "replan", "done", "failed", "needs_user"])
+def test_evaluator_wire_schema_enforces_status_question_and_node_constraints(status: str) -> None:
+    schema = UbuntuEvaluatorProvider._response_format()["json_schema"]["schema"]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    decision = {
+        **continue_decision(),
+        "status": status,
+        "suggested_new_nodes": [],
+        "user_question": "Quel fichier de contacts faut-il importer ?"
+        if status == "needs_user"
+        else None,
+    }
+    assert validator.is_valid(decision)
+    assert not validator.is_valid(
+        {**decision, "user_question": None if status == "needs_user" else "Une question ?"}
+    )
+    with_nodes = {**decision, "suggested_new_nodes": continue_decision()["suggested_new_nodes"]}
+    assert validator.is_valid(with_nodes) is (status in {"continue", "replan"})
+    for required in ("user_question", "completion_summary"):
+        missing_field = {key: value for key, value in decision.items() if key != required}
+        assert not validator.is_valid(missing_field)
+
+
+def test_evaluator_implementation_example_is_a_valid_grounded_project_proposal(
+    policy: PermissionPolicy,
+) -> None:
+    prompt = UbuntuEvaluatorProvider.SYSTEM_PROMPT
+    start = prompt.index('{"schema_version":"1.0","status":"continue"')
+    example, _ = json.JSONDecoder().raw_decode(prompt[start:])
+    validated = validate_evaluation_decision(example, policy=policy)
+    decision = validated.decision
+    assert decision.status is EvaluationStatus.CONTINUE
+    assert decision.user_question is None
+    assert len(decision.suggested_new_nodes) == 1
+    node = decision.suggested_new_nodes[0]
+    assert node.required_skill == "code.build_project"
+    assert node.dependencies == node.optional_dependencies == []
+    for requirement in (
+        "Python",
+        "fiches clients",
+        "soumissions",
+        "projets",
+        "courriels",
+        "calendrier",
+    ):
+        assert requirement in node.objective
+    schema = UbuntuEvaluatorProvider._response_format()["json_schema"]["schema"]
+    assert Draft202012Validator(schema).is_valid(example)
+
+
+@pytest.mark.asyncio
+async def test_evaluator_still_accepts_a_distinct_material_question(
+    policy: PermissionPolicy,
+) -> None:
+    raw = {
+        **continue_decision(),
+        "status": "needs_user",
+        "suggested_new_nodes": [],
+        "user_question": "Quel fichier de contacts faut-il importer ?",
+    }
+    post = AsyncMock(return_value=_response_for(json.dumps(raw)))
+    provider = UbuntuEvaluatorProvider(
+        base_url="http://127.0.0.1:8711/v1", model="local-evaluator", policy=policy
+    )
+    with patch("httpx.AsyncClient.post", post):
+        decision = await provider.evaluate(evaluation_context())
+    assert decision.status is EvaluationStatus.NEEDS_USER
+    assert decision.user_question == raw["user_question"]
 
 
 @pytest.mark.asyncio

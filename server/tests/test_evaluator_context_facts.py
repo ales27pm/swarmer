@@ -148,16 +148,19 @@ async def test_real_evaluator_context_uses_fresh_policy_allowed_worker_facts(
     assert len(evaluator.contexts) == 1
     context = evaluator.contexts[0]
     assert context.available_skills == expected
-    assert context.node_results == []
+    assert len(context.node_results) == 1
+    assert context.node_results[0].status == "skipped"
+    assert context.node_results[0].result_summary is None
+    assert context.node_results[0].failure_reason is not None
     stored_nodes = await manager.graph.list_nodes(str(goal["id"]))
     assert context.known_node_ids == [stored_nodes[0]["id"]]
     assert stored_nodes[0]["node_type"] == "synthesis"
-    assert stored_nodes[0]["status"] == "completed"
+    assert stored_nodes[0]["status"] == "skipped"
     assert stored_nodes[0]["title"] == "Missing Execution Capabilities"
-    assert stored_nodes[0]["result_summary"] == "No evidence summary was available for synthesis."
+    assert stored_nodes[0]["result_summary"] is None
     saved_goal = await manager.graph.get_goal(str(goal["id"]))
     assert saved_goal is not None
-    assert saved_goal["step_count"] == 1
+    assert saved_goal["step_count"] == 0
     assert saved_goal["model_call_count"] == 2  # One normal planner and one evaluator credit.
     async with aiosqlite.connect(manager.db_path) as db:
         row = await (

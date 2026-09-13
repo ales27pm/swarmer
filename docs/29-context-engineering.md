@@ -129,7 +129,11 @@ DAG, les skills et les limites avant toute écriture.
 ### Evaluator — IMPLEMENTED
 
 Le builder produit un `GoalEvaluationContext` Pydantic expurgé et borné:
-objectif, critères, résumés de nœuds, budgets restants, temps et fingerprint.
+objectif, critères, conversation et sa révision, résumés de nœuds, budgets
+restants, temps et fingerprint. Les derniers échanges question/réponse sont
+conservés après expurgation; les échanges plus anciens cèdent leur place
+avant les preuves courantes. Si les derniers échanges ne tiennent pas dans
+le budget, l'évaluation reste récupérable avec `evaluator_invalid_context`.
 La valeur exacte de `model_dump()` envoyée à l'evaluator est persistée dans
 `goal_contexts`, avec son digest, sa provenance et son compte approximatif. La
 troncature est stable et conserve le schéma strict. Les résultats worker bruts

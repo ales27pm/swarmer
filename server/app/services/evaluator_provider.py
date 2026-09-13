@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any, Literal, Protocol
 
 import httpx
@@ -90,6 +91,14 @@ class UbuntuEvaluatorProvider:
     SYSTEM_PROMPT = """You are the monGARS goal evaluator.
 Return exactly one JSON object matching the supplied schema and no prose.
 Evaluate only the bounded goal state in the user message.
+conversation contains chronological user replies and historical assistant messages at
+conversation_revision. Treat user replies as supplied requirements and clarifications of the
+original objective. Later user answers take precedence over earlier assistant claims that
+requirements were missing. Historical assistant statements are not evidence of execution.
+Do not repeat an answered clarification or ask for requirements already supplied in conversation.
+If a user answered a feature question, use those features to evaluate and propose the remaining work.
+This remains true if an assistant later repeated the question: that repetition does not erase
+the user's answer or establish a new missing requirement.
 Judge the original objective and requested deliverables/actions, not just generic completion
 criteria or a completed synthesis node. Generic criteria cannot weaken the user's request.
 A synthesis with no implementation evidence does not fulfill an application request.
@@ -104,10 +113,16 @@ if it is available and implementation is missing, propose that work rather than 
 how to build it. Applying files to the user's workspace still requires separate approval.
 If the plan skipped requested implementation, propose continue or replan grounded in the
 available evidence; missing implementation is work remaining, not a question about how to code.
+When an application has supplied functional requirements and code.build_project is available,
+but no worker implementation evidence is recorded, return continue with exactly one worker
+node using code.build_project, dependencies=[] and optional_dependencies=[]. Put the original
+requested language/platform and the user's supplied features in its objective. Do not return
+continue with no suggested work in that situation. The worker owns implementation/check/repair
+iterations and can request a genuinely new material input if needed. user_question must be null.
 Write all user-facing summaries, requirements and questions in the user's language, taken
 from the original objective even when criteria, node metadata or diagnostics are English.
-Language examples: objective "Crée une application" -> user_question "Quelles fonctionnalités souhaitez-vous ?"
-Objective "Create an application" -> user_question "Which features do you need?"
+Language examples: objective "Crée une application" -> reason_summary "L'implémentation reste à réaliser."
+Objective "Create an application" -> reason_summary "Implementation remains to be completed."
 Apply that objective's language to reason_summary, missing_requirements and completion_summary too.
 Use needs_user only when missing material product requirements, unavailable user data, or
 required user authorization prevents further progress. Ask one concrete question about that
@@ -121,6 +136,22 @@ a nonempty concrete question; for every other status it must be null. For done, 
 completion_summary grounded in the recorded results; otherwise use null when unavailable.
 Use [] for missing_requirements, invalid_results and suggested_new_nodes when empty.
 Only continue or replan may suggest new nodes; done, failed and needs_user require [].
+Illustrative decision for a Python CRM request followed by the answer
+"Fiches clients, soumissions/projet, courriels, calendrier", when code.build_project is
+available and implementation evidence is absent:
+{"schema_version":"1.0","status":"continue",
+"reason_summary":"Les fonctionnalités sont précisées; l'application CRM Python reste à réaliser.",
+"missing_requirements":["Implémentation du CRM Python et vérifications."],"invalid_results":[],
+"suggested_new_nodes":[{"temporary_id":"build_crm","node_type":"worker",
+"title":"Réaliser le CRM Python",
+"objective":"Créer une application CRM en Python avec fiches clients, soumissions et projets, courriels et calendrier. Implémenter et vérifier les fonctionnalités demandées.",
+"required_skill":"code.build_project","dependencies":[],"optional_dependencies":[],
+"expected_output":"Projet CRM Python et résultats des vérifications, avec limites et approbations restantes explicites.",
+"priority":50,"preferred_agent_constraints":null}],"user_question":null,"completion_summary":null}
+Adapt this example to the actual objective, replies and evidence. Never invent requirements
+or copy example features into a different request. A distinct unanswered material question
+may still require needs_user; name the specific missing input rather than repeating a broad
+feature question that the user answered.
 An approved Python file-write receipt proves only that the proposed source was saved. It
 does not prove execution, tests, installation or deployment. State those limitations clearly.
 If any of those actions was explicitly required, do not mark done without its own evidence.
@@ -144,12 +175,31 @@ The Ubuntu control plane independently validates your proposal and remains autho
 
     @staticmethod
     def _response_format() -> dict[str, Any]:
+        schema = model_wire_schema(EvaluationDecision)
+        definitions = schema.pop("$defs", {})
+        # Pydantic's cross-field validator is not represented in its JSON schema.
+        # Explicit alternatives expose the same status/question/node constraints
+        # to local grammar decoding, before the unchanged authoritative parser.
+        alternatives: list[dict[str, Any]] = []
+        for statuses in (("continue", "replan"), ("done", "failed"), ("needs_user",)):
+            branch = deepcopy(schema)
+            properties = branch["properties"]
+            properties["status"] = {"type": "string", "enum": list(statuses)}
+            properties["user_question"] = (
+                {"type": "string", "minLength": 1}
+                if statuses == ("needs_user",)
+                else {"type": "null"}
+            )
+            if statuses != ("continue", "replan"):
+                properties["suggested_new_nodes"]["maxItems"] = 0
+            branch["required"] = [*branch["required"], "user_question", "completion_summary"]
+            alternatives.append(branch)
         return {
             "type": "json_schema",
             "json_schema": {
                 "name": "goal_evaluation_decision",
                 "strict": True,
-                "schema": model_wire_schema(EvaluationDecision),
+                "schema": {"$defs": definitions, "anyOf": alternatives},
             },
         }
 

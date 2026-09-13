@@ -78,8 +78,11 @@ class GoalConversationService:
             ).fetchall()
             question = await (
                 await db.execute(
-                    """SELECT id FROM goal_messages WHERE goal_run_id=? AND is_question=1
-                    AND answered_by_message_id IS NULL ORDER BY rowid DESC LIMIT 1""",
+                    """SELECT m.id FROM goal_messages m JOIN goal_runs g ON g.id=m.goal_run_id
+                    WHERE m.goal_run_id=? AND m.is_question=1
+                    AND m.answered_by_message_id IS NULL
+                    AND g.status='waiting_permission' AND g.current_phase='needs_user'
+                    ORDER BY m.rowid DESC LIMIT 1""",
                     (link["active_goal_id"],),
                 )
             ).fetchone()
@@ -135,10 +138,16 @@ class GoalConversationService:
                 raise GoalConversationConflict("active goal not found")
             audit_task_id = str(goal["root_task_id"])
             terminal = goal["status"] in {"completed", "failed", "cancelled", "budget_exhausted"}
+            waiting_for_reply = (
+                goal["status"] == "waiting_permission" and goal["current_phase"] == "needs_user"
+            )
             question = await (
                 await db.execute(
-                    """SELECT id FROM goal_messages WHERE goal_run_id=? AND is_question=1
-                    AND answered_by_message_id IS NULL ORDER BY rowid DESC LIMIT 1""",
+                    """SELECT m.id FROM goal_messages m JOIN goal_runs g ON g.id=m.goal_run_id
+                    WHERE m.goal_run_id=? AND m.is_question=1
+                    AND m.answered_by_message_id IS NULL
+                    AND g.status='waiting_permission' AND g.current_phase='needs_user'
+                    ORDER BY m.rowid DESC LIMIT 1""",
                     (active_id,),
                 )
             ).fetchone()
@@ -208,7 +217,7 @@ class GoalConversationService:
                     now,
                 ),
             )
-            if not terminal and goal["current_phase"] == "needs_user":
+            if waiting_for_reply:
                 if question is not None:
                     await db.execute(
                         "UPDATE goal_messages SET answered_by_message_id=? WHERE id=?",

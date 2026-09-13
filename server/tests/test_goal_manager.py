@@ -615,7 +615,7 @@ async def test_done_without_completed_worker_evidence_is_rejected(tmp_path: Path
 
     assert detail["goal"]["status"] == "failed"
     assert detail["result"] is not None
-    assert "1/1 completed" in detail["result"]["answer"]
+    assert "0/1 completed" in detail["result"]["answer"]
     assert detail["goal"]["failure_reason"] == (
         "evaluator completion lacked acceptable worker evidence"
     )

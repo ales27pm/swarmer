@@ -17,7 +17,11 @@ from app.services.agent_liveness import (
     agent_is_fresh,
 )
 from app.services.feedback_dataset import redact_dataset_text
-from app.services.swarm_contracts import EvaluationNodeResult, GoalEvaluationContext
+from app.services.swarm_contracts import (
+    EvaluationConversationMessage,
+    EvaluationNodeResult,
+    GoalEvaluationContext,
+)
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _WHITESPACE = re.compile(r"\s+")
@@ -279,12 +283,27 @@ class ContextBuilder:
         candidates.extend(_episode_card(row) for row in episodes)
         candidates.extend(_memory_card(row) for row in memories)
         max_non_agent_cards = self.max_items if self.max_items is not None else len(candidates)
+        agent_candidates = [_agent_card(row) for row in agents]
+        minimum_context = tuple(_minimum_card(card) for card in candidates[:max_non_agent_cards])
+        reserved_agents: list[ContextCard] = []
+        for agent in agent_candidates:
+            if (
+                _payload_tokens(
+                    _card_model_payload(purpose, (*minimum_context, *reserved_agents, agent))
+                )
+                > self.max_tokens
+            ):
+                break
+            reserved_agents.append(agent)
+        # Reserve complete capability descriptions before expanding narrative
+        # summaries. A truncated agent name alone cannot establish its skills.
+        # Tiny budgets retain the existing mandatory goal-card priority.
         non_agent_cards = self._bounded_cards(
             candidates,
             max_cards=max_non_agent_cards,
             purpose=purpose,
+            reserved_cards=tuple(reserved_agents),
         )
-        agent_candidates = [_agent_card(row) for row in agents]
         cards = self._append_with_token_budget(
             non_agent_cards,
             agent_candidates,
@@ -575,19 +594,26 @@ class ContextBuilder:
         *,
         max_cards: int,
         purpose: str,
+        reserved_cards: tuple[ContextCard, ...] = (),
     ) -> tuple[ContextCard, ...]:
         selected = list(candidates[:max_cards])
         while (
             selected
             and _payload_tokens(
-                _card_model_payload(purpose, tuple(_minimum_card(card) for card in selected))
+                _card_model_payload(
+                    purpose,
+                    (*(_minimum_card(card) for card in selected), *reserved_cards),
+                )
             )
             > self.max_tokens
         ):
             selected.pop()
         bounded: list[ContextCard] = []
         for index, candidate in enumerate(selected):
-            reserved = tuple(_minimum_card(card) for card in selected[index + 1 :])
+            reserved = (
+                *(_minimum_card(card) for card in selected[index + 1 :]),
+                *reserved_cards,
+            )
             card = _fit_card_for_payload(
                 candidate,
                 prefix=tuple(bounded),
@@ -727,8 +753,8 @@ class ContextBuilder:
                    COALESCE(s.composite_score,0.0) AS observed_score
             FROM agents AS a
             LEFT JOIN agent_score_snapshots AS s ON s.agent_id=a.id
-            WHERE a.status IN ('online','draining')
-            ORDER BY CASE a.status WHEN 'online' THEN 0 ELSE 1 END,
+            WHERE a.status IN ('online','busy','draining')
+            ORDER BY CASE a.status WHEN 'online' THEN 0 WHEN 'busy' THEN 1 ELSE 2 END,
                      observed_score DESC,a.id ASC
             """
         ) as cursor:
@@ -885,7 +911,9 @@ def _budgets_card(goal: aiosqlite.Row) -> ContextCard:
 
 def _goal_failure_cards(goal: aiosqlite.Row) -> list[ContextCard]:
     failure = goal["failure_reason"]
-    evaluator = goal["evaluator_summary"]
+    # The pending user reply has not yet been evaluated. An earlier claim about
+    # missing requirements must not contradict that reply in the planner input.
+    evaluator = goal["evaluator_summary"] if not goal["pending_message_revision"] else None
     if failure is None and evaluator is None:
         return []
     return [
@@ -1101,7 +1129,9 @@ def bound_evaluation_context(
     Node identifiers remain available for validating model-proposed dependency
     references. If the configured budget is too small even for the identifiers
     and minimally redacted fields, evaluation fails closed instead of silently
-    exceeding the configured limit.
+    exceeding the configured limit. The latest question and user answer remain
+    whole after redaction: older conversation is dropped before shrinking other
+    fields, and a budget too small for that exchange fails closed.
     """
 
     if not 64 <= max_tokens <= 32_768:
@@ -1111,7 +1141,26 @@ def bound_evaluation_context(
         bounded = safe_context_text(value, max_chars=max(1, limit))
         return bounded or safe_context_text(fallback, max_chars=max(1, limit)) or "…"
 
-    def candidate(char_limit: int, node_limit: int) -> GoalEvaluationContext:
+    conversation = [
+        EvaluationConversationMessage(
+            role=message.role,
+            content=text(message.content, limit=4_000, fallback="redacted message"),
+        )
+        for message in context.conversation
+    ]
+    protected_start = max(0, len(conversation) - 1)
+    for index in range(len(conversation) - 1, -1, -1):
+        if conversation[index].role == "user":
+            protected_start = index
+            for previous in range(index - 1, -1, -1):
+                if conversation[previous].role == "assistant":
+                    protected_start = previous
+                    break
+            break
+
+    def candidate(
+        char_limit: int, node_limit: int, conversation_start: int = protected_start
+    ) -> GoalEvaluationContext:
         nodes: list[EvaluationNodeResult] = []
         for node in context.node_results[:node_limit]:
             result = (
@@ -1152,6 +1201,8 @@ def bound_evaluation_context(
             schema_version="1.0",
             goal_run_id=context.goal_run_id,
             objective=text(context.objective, limit=char_limit, fallback="redacted objective"),
+            conversation_revision=context.conversation_revision,
+            conversation=conversation[conversation_start:],
             completion_criteria=[
                 text(
                     criterion,
@@ -1170,6 +1221,13 @@ def bound_evaluation_context(
             elapsed_seconds=context.elapsed_seconds,
             state_fingerprint=context.state_fingerprint,
         )
+
+    # Keep older messages only while the complete current goal/evidence fits.
+    # Never trade away the latest answer to retain an older model narrative.
+    for conversation_start in range(protected_start + 1):
+        complete = candidate(4_000, len(context.node_results), conversation_start)
+        if _payload_tokens(complete.model_dump(mode="json")) <= max_tokens:
+            return complete
 
     for node_limit in range(len(context.node_results), -1, -1):
         minimum = candidate(1, node_limit)

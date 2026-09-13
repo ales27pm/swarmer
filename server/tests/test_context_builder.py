@@ -9,7 +9,12 @@ import aiosqlite
 import pytest
 
 from app.models import TaskCreate, TaskRecord
-from app.services.context_builder import ContextBuilder, ContextCard
+from app.services.context_builder import (
+    ContextBuilder,
+    ContextCard,
+    bound_evaluation_context,
+    safe_context_text,
+)
 from app.services.state_service import StateService
 from app.services.swarm_contracts import GoalEvaluationContext
 
@@ -671,3 +676,160 @@ async def test_evaluator_payload_is_exactly_recorded_redacted_and_token_bounded(
     assert row is not None
     assert json.loads(str(row[0])) == payload
     assert int(row[1]) == record.approx_token_count
+
+
+def _conversation_evaluation_context(goal_id: str) -> GoalEvaluationContext:
+    return GoalEvaluationContext.model_validate(
+        {
+            "schema_version": "1.0",
+            "goal_run_id": goal_id,
+            "objective": "Créer une application CRM Python.",
+            "conversation_revision": 17,
+            "conversation": [
+                {"role": "assistant" if index % 2 == 0 else "user", "content": "Old " * 1_000}
+                for index in range(38)
+            ]
+            + [
+                {"role": "assistant", "content": "Quelles fonctionnalités souhaitez-vous ?"},
+                {
+                    "role": "user",
+                    "content": "Clients, devis, projets, email et calendrier. "
+                    "password=reply-secret; Aucun envoi automatique.",
+                },
+            ],
+            "completion_criteria": ["Une application avec des vérifications."],
+            "node_results": [],
+            "known_node_ids": [],
+            "remaining_step_budget": 4,
+            "remaining_model_call_budget": 3,
+            "elapsed_seconds": 10,
+            "state_fingerprint": "0" * 64,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluator_preserves_and_records_latest_answer_before_long_older_history(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path, max_tokens=384)
+    await builder.initialize()
+    raw = _conversation_evaluation_context(goal_id)
+
+    bounded, record = await builder.build_evaluation_context(raw)
+
+    assert bounded.conversation_revision == 17
+    assert [message.role for message in bounded.conversation] == ["assistant", "user"]
+    assert [message.content for message in bounded.conversation] == [
+        safe_context_text(message.content) for message in raw.conversation[-2:]
+    ]
+    assert "Aucun envoi automatique." in bounded.conversation[-1].content
+    assert bounded.objective == raw.objective
+    assert record.approx_token_count <= 384
+    restored = await builder.get_record(record.id)
+    assert restored is not None
+    assert restored.payload == record.payload == bounded.model_dump(mode="json")
+    assert "reply-secret" not in json.dumps(restored.payload)
+    assert "Old " not in json.dumps(restored.payload)
+
+
+def test_evaluator_keeps_full_history_when_it_fits() -> None:
+    raw = _conversation_evaluation_context("goal_history")
+    raw.conversation = raw.conversation[-2:]
+    raw.conversation.insert(0, raw.conversation[-1].model_copy(update={"content": "Use Python."}))
+
+    bounded = bound_evaluation_context(raw, max_tokens=2_048)
+
+    assert len(bounded.conversation) == 3
+    assert bounded.conversation[0].content == "Use Python."
+    assert bounded.conversation_revision == raw.conversation_revision
+
+
+@pytest.mark.parametrize("answer", ["Oui.", "Non."])
+def test_short_answer_retains_its_question_under_budget_pressure(answer: str) -> None:
+    raw = _conversation_evaluation_context("goal_short_answer")
+    raw.conversation[-2].content = "Faut-il conserver les données uniquement sur cet appareil ?"
+    raw.conversation[-1].content = answer
+
+    bounded = bound_evaluation_context(raw, max_tokens=320)
+
+    assert bounded.conversation == raw.conversation[-2:]
+
+
+@pytest.mark.asyncio
+async def test_evaluator_fails_before_persistence_if_latest_pair_cannot_fit(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path, max_tokens=256)
+    await builder.initialize()
+    raw = _conversation_evaluation_context(goal_id)
+    raw.conversation[-1].content = "Des besoins précis. " * 190
+
+    with pytest.raises(ValueError, match="cannot fit the configured token budget"):
+        await builder.build_evaluation_context(raw)
+
+    async with aiosqlite.connect(db_path) as db:
+        row = await (await db.execute("SELECT COUNT(*) FROM goal_contexts")).fetchone()
+    assert row is not None and row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_reply_suppresses_stale_evaluation_but_keeps_current_failure(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE goal_runs SET pending_message_revision=1,evaluator_summary=?,"
+            "failure_reason=? WHERE id=?",
+            ("No specific features provided", "Current dependency failed", goal_id),
+        )
+        await db.commit()
+    builder = ContextBuilder(db_path, max_tokens=2_048)
+    await builder.initialize()
+
+    context = await builder.build(
+        goal_run_id=goal_id,
+        additional_cards=[
+            ContextCard("reply:1", "user_guidance", "Clients, devis et calendrier.", (goal_id,))
+        ],
+    )
+
+    payload = json.dumps(context.model_payload())
+    assert "No specific features provided" not in payload
+    assert "Current dependency failed" in payload
+    assert "Clients, devis et calendrier." in payload
+    assert any(card.card_id == "failure:node_failed" for card in context.cards)
+
+
+@pytest.mark.asyncio
+async def test_busy_worker_capabilities_survive_long_narrative_context(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE agents SET status='busy',skills_json=? WHERE id='agent_context'",
+            (json.dumps(["code.build_project"]),),
+        )
+        await db.execute("UPDATE goal_runs SET objective=? WHERE id=?", ("CRM " * 1_000, goal_id))
+        await db.commit()
+    builder = ContextBuilder(db_path, max_tokens=512, max_agent_cards=1)
+    await builder.initialize()
+
+    context = await builder.build(
+        goal_run_id=goal_id,
+        additional_cards=[ContextCard("history:1", "conversation", "Old " * 1_000, (goal_id,))],
+    )
+
+    agent = next(card for card in context.cards if card.kind == "agent_card")
+    assert "status=busy" in agent.summary
+    assert "skills=code.build_project" in agent.summary
+    assert "max_concurrency=1" in agent.summary
+    assert context.approx_token_count <= 512
+    restored = await builder.get_record(context.id)
+    assert restored is not None and restored.payload == context.model_payload()

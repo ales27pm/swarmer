@@ -408,6 +408,13 @@ class EvaluationNodeResult(BaseModel):
     required_skill: StableIdentifier | None = None
 
 
+class EvaluationConversationMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: LongText
+
+
 class GoalEvaluationContext(BaseModel):
     """Bounded, non-authoritative input presented to an evaluator model."""
 
@@ -416,6 +423,8 @@ class GoalEvaluationContext(BaseModel):
     schema_version: Literal["1.0"]
     goal_run_id: StableIdentifier
     objective: LongText
+    conversation_revision: int = Field(default=0, strict=True, ge=0)
+    conversation: list[EvaluationConversationMessage] = Field(default_factory=list, max_length=40)
     completion_criteria: list[ShortText] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     node_results: list[EvaluationNodeResult] = Field(max_length=MAX_PLAN_NODES)
     known_node_ids: list[StableIdentifier] = Field(max_length=MAX_PLAN_NODES)
