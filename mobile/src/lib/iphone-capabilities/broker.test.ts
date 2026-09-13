@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals";
-import * as Calendar from "expo-calendar/legacy";
-import * as Contacts from "expo-contacts/legacy";
+import * as Calendar from "expo-calendar";
+import * as Contacts from "expo-contacts";
 import * as Location from "expo-location";
 import * as MailComposer from "expo-mail-composer";
 import * as SMS from "expo-sms";
@@ -20,23 +20,17 @@ jest.mock("expo-location", () => ({
   getCurrentPositionAsync: jest.fn(),
   requestForegroundPermissionsAsync: jest.fn(),
 }));
-jest.mock("expo-contacts/legacy", () => ({
+jest.mock("expo-contacts", () => ({
   Fields: { Emails: "emails", PhoneNumbers: "phoneNumbers" },
   getContactsAsync: jest.fn(),
   requestPermissionsAsync: jest.fn(),
 }));
-jest.mock("expo-calendar/legacy", () => ({
+jest.mock("expo-calendar", () => ({
   EntityTypes: { EVENT: "event" },
   getCalendarsAsync: jest.fn(),
   getEventsAsync: jest.fn(),
   requestCalendarPermissionsAsync: jest.fn(),
 }));
-jest.mock("expo-contacts", () => {
-  throw new Error("the SDK 57 top-level legacy wrapper must not be imported");
-});
-jest.mock("expo-calendar", () => {
-  throw new Error("the SDK 57 top-level legacy wrapper must not be imported");
-});
 jest.mock("expo-image-picker", () => ({}));
 jest.mock("expo-mail-composer", () => ({
   MailComposerStatus: {
@@ -146,7 +140,7 @@ describe("iPhone capability broker", () => {
     expect(Location.getCurrentPositionAsync).not.toHaveBeenCalled();
   });
 
-  it("uses the SDK 57 Contacts legacy entry point instead of the throwing root wrapper", async () => {
+  it("requests Contacts permission and returns only the approved lookup fields", async () => {
     jest.mocked(Contacts.requestPermissionsAsync).mockResolvedValueOnce({ granted: true } as never);
     jest.mocked(Contacts.getContactsAsync).mockResolvedValueOnce({
       data: [{
@@ -164,14 +158,25 @@ describe("iPhone capability broker", () => {
     } as const;
     const broker = new IPhoneCapabilityBroker({}, () => NOW);
 
-    await expect(broker.execute(request, authorization(request))).resolves.toMatchObject({
+    await expect(broker.execute(request, authorization(request))).resolves.toEqual({
       name: "iphone.contacts.lookup",
       status: "completed",
+      value: [{
+        id: "contact-1",
+        name: "Ada",
+        phoneNumbers: ["+15145550123"],
+        emails: ["ada@example.com"],
+      }],
     });
-    expect(Contacts.getContactsAsync).toHaveBeenCalledWith(expect.objectContaining({ name: "Ada" }));
+    expect(Contacts.requestPermissionsAsync).toHaveBeenCalledTimes(1);
+    expect(Contacts.getContactsAsync).toHaveBeenCalledWith({
+      fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Emails],
+      name: "Ada",
+      pageSize: 25,
+    });
   });
 
-  it("uses the SDK 57 Calendar legacy entry point instead of the throwing root wrapper", async () => {
+  it("requests Calendar permission and reads events within the approved date range", async () => {
     jest.mocked(Calendar.requestCalendarPermissionsAsync).mockResolvedValueOnce({ granted: true } as never);
     jest.mocked(Calendar.getCalendarsAsync).mockResolvedValueOnce([{ id: "calendar-1" }] as never);
     jest.mocked(Calendar.getEventsAsync).mockResolvedValueOnce([{
@@ -189,11 +194,23 @@ describe("iPhone capability broker", () => {
     } as const;
     const broker = new IPhoneCapabilityBroker({}, () => NOW);
 
-    await expect(broker.execute(request, authorization(request))).resolves.toMatchObject({
+    await expect(broker.execute(request, authorization(request))).resolves.toEqual({
       name: "iphone.calendar.events",
       status: "completed",
+      value: [{
+        id: "event-1",
+        title: "Review",
+        start: "2026-09-08T13:00:00.000Z",
+        end: "2026-09-08T14:00:00.000Z",
+      }],
     });
+    expect(Calendar.requestCalendarPermissionsAsync).toHaveBeenCalledTimes(1);
     expect(Calendar.getCalendarsAsync).toHaveBeenCalledWith(Calendar.EntityTypes.EVENT);
+    expect(Calendar.getEventsAsync).toHaveBeenCalledWith(
+      ["calendar-1"],
+      new Date(request.arguments.start),
+      new Date(request.arguments.end),
+    );
   });
 
   it.each([

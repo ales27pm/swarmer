@@ -279,7 +279,9 @@ IMPLEMENTED:
   outbox mobile et résultat natif incertain;
 - diagnostics de transport/outbox/maintenance/leases/quarantaine/vector sans
   payload sensible;
-- triage npm sans `--force` incompatible avec Expo SDK 57.
+- [triage npm v0.11](security/npm-audit-v011.md) conservé comme preuve
+  historique; [relevé SDK 55](security/npm-audit-expo55.md) ajouté après la
+  migration, avec deux avis racines encore ouverts et sans correction forcée.
 
 MANUAL VALIDATION REQUIRED:
 

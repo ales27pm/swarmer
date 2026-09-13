@@ -309,9 +309,14 @@ Sorties fraîches du dernier gate sur l'arbre v0.11 final:
 
 ## NPM audit
 
-Le triage détaillé est dans `docs/security/npm-audit-v011.md`. L'état observé
-est 13 advisories modérées, aucune haute/critique. Aucun `npm audit fix --force`
-incompatible avec Expo SDK 57 n'est accepté comme remédiation.
+Le [relevé v0.11](security/npm-audit-v011.md) conserve le résultat historique
+sous SDK 57: 13 entrées modérées, aucune haute/critique. Le
+[relevé SDK 55 du 12 septembre](security/npm-audit-expo55.md) compte 18 entrées
+modérées et aucune haute/critique, regroupées sous les mêmes deux avis racines
+encore ouverts. Il distingue les chemins de navigation et d'outillage
+observés; ces nombres ne constituent pas une preuve d'absence de risque.
+Une correction hors des plages Expo requiert sa propre qualification;
+`npm audit fix --force` ne la remplace pas.
 
 ## Risques résiduels
 

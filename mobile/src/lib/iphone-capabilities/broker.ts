@@ -1,5 +1,5 @@
-import * as Calendar from "expo-calendar/legacy";
-import * as Contacts from "expo-contacts/legacy";
+import * as Calendar from "expo-calendar";
+import * as Contacts from "expo-contacts";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MailComposer from "expo-mail-composer";

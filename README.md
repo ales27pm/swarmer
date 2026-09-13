@@ -343,9 +343,12 @@ Voir [`docs/28-autonomous-swarm-runtime.md`](docs/28-autonomous-swarm-runtime.md
 
 ### IMPLEMENTED — npm audit triage
 
-- `npm audit` signale toujours 13 avis modérés transitifs. Aucun `--force`
-  incompatible avec Expo SDK 57 n'a été appliqué; la disposition détaillée est
-  dans [`docs/security/npm-audit-v011.md`](docs/security/npm-audit-v011.md).
+- Le relevé Expo SDK 55 du 12 septembre signale 18 entrées npm modérées,
+  aucune haute/critique, regroupées sous deux avis racines encore ouverts.
+  La portée runtime/build et la disposition sont dans
+  [`docs/security/npm-audit-expo55.md`](docs/security/npm-audit-expo55.md);
+  le [relevé v0.11](docs/security/npm-audit-v011.md) conserve les résultats
+  historiques sous SDK 57.
 
 ## Structure du dépôt
 

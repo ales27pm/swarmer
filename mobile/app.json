@@ -19,7 +19,8 @@
                 "name": "SwarmerLlamaBinary",
                 "podspec": "https://raw.githubusercontent.com/ales27pm/swarmer/4f999098fd42993ae87308719bc1261905e46f9e/mobile/modules/swarmer-local-inference/ios/LlamaBinary/SwarmerLlamaBinary.podspec"
               }
-            ]
+            ],
+            "deploymentTarget": "18.0"
           }
         }
       ],
@@ -50,13 +51,13 @@
         {
           "photosPermission": "monGARS ouvre le sélecteur de photos uniquement après votre autorisation explicite."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "org.27pm.mongars",
-      "buildNumber": "20260913000200",
-      "deploymentTarget": "18.0",
+      "buildNumber": "20260913004000",
       "infoPlist": {
         "CFBundleDevelopmentRegion": "fr",
         "CFBundleLocalizations": [

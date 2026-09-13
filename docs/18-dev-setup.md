@@ -12,7 +12,8 @@ prototype Vibecode.
 - `prlimit` (util-linux) disponible exactement à `/usr/bin/prlimit`;
 - Node.js conforme au champ `engines` de `mobile/package.json` (actuellement
   Node 22.13+ ou 24+);
-- Xcode 26.4 ou plus récent pour compiler Expo SDK 57;
+- Xcode 26.2 ou plus récent pour compiler Expo SDK 55; Xcode 26.3 installé
+  sur cet hôte satisfait ce minimum;
 - iOS 18 ou plus récent pour le runtime Core ML local de ce projet;
 - un endpoint local compatible OpenAI pour la planification, par défaut
   `http://127.0.0.1:8711/v1`.
@@ -211,9 +212,16 @@ wrapper binaire llama.cpp téléchargé par CocoaPods avec vérification SHA-256
 L'XCFramework llama.cpp amont
 épinglé contient la tranche iOS arm64, mais pas de tranche iOS Simulator. La
 preuve de compilation et de runtime llama.cpp doit donc utiliser un iPhone
-physique. Sur un hôte qui ne satisfait pas le minimum Xcode d'Expo SDK 57,
-prébuild et analyse statique ne constituent pas une preuve de compilation;
-utiliser EAS Build ou un Mac compatible.
+physique. La [matrice Expo SDK 55](https://docs.expo.dev/versions/v55.0.0/)
+fixe le minimum à Xcode 26.2. Le Xcode 26.3 installé inclut le SDK iOS 26.2,
+selon la [matrice Apple](https://developer.apple.com/xcode/system-requirements/),
+et convient donc à cette version d'Expo. Cette combinaison satisfait aussi le
+minimum de soumission App Store Connect en vigueur depuis le 28 avril 2026:
+[Xcode 26 et SDK iOS 26 ou ultérieurs](https://developer.apple.com/news/upcoming-requirements/).
+La compatibilité de l'outillage ne remplace pas la compilation, la vérification
+de l'IPA signé et son lancement sur appareil. Sur un hôte avec une version de
+Xcode antérieure à 26.2, utiliser EAS Build ou un Mac compatible; prébuild et
+analyse statique seuls ne constituent pas une preuve de compilation.
 
 Le profil EAS `cloud-release` transmet `-skipMacroValidation` à Fastlane/Xcode:
 le macro `MLXHuggingFaceMacros` provient de la version exacte et auditée de
