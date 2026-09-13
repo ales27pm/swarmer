@@ -31,7 +31,7 @@ export const LOCAL_MODEL_PRESETS: Record<LocalInferenceRuntime, LocalModelPreset
     revision: "cdc777b578ff86a69f1b05c9bc00df0cdc2f52d1",
     quantization: "MLX 4 bits",
     downloadSize: "environ 1,82 Go",
-    detail: "Préréglage conseillé pour les itérations sur iPhone. Le premier chargement télécharge les poids et le tokenizer depuis Hugging Face.",
+    detail: "Charger conserve les poids et le tokenizer dans Fichiers, sous Sur mon iPhone › monGARS Swarm › Models. Les fichiers déjà téléchargés sont réutilisés. Décharger libère la mémoire sans supprimer le modèle.",
   },
   "llama.cpp": {
     runtime: "llama.cpp",

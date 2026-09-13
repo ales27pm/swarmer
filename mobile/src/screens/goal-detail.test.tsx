@@ -178,6 +178,22 @@ describe("GoalDetailScreen", () => {
     mockCreateFeedback.mockResolvedValue({ accepted: true });
   });
 
+  it("opens local planning only for a fresh unstarted goal without starting it", async () => {
+    mockGetGoal.mockResolvedValue({ ...waitingForWorkers, goal: { ...waitingForWorkers.goal, started_at: null } });
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("button", { name: "Préparer le plan sur l’iPhone" }));
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/local-model", params: { goalId: "goal_1" } });
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it("hides initial local planning after a server start was requested", async () => {
+    mockGetGoal.mockResolvedValue(waitingForWorkers);
+    await render(<GoalDetailScreen />);
+    await screen.findByText("En attente d’un agent");
+    expect(screen.queryByRole("button", { name: "Préparer le plan sur l’iPhone" })).not.toBeOnTheScreen();
+  });
+
   it("renders only public goal, node, evaluator, and final-result evidence", async () => {
     const user = userEvent.setup();
     const privateDetail = {

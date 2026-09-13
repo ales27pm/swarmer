@@ -6,6 +6,18 @@ enum LocalRuntime: String, Codable, Sendable {
   case llamaCpp = "llama.cpp"
 }
 
+struct StoredModelArtifact: Codable, Equatable, Sendable {
+  let filename: String
+  let sizeBytes: Int64
+  let sha256: String
+}
+
+struct StoredRemoteModelOrigin: Codable, Equatable, Sendable {
+  let repositoryId: String
+  let revision: String
+  let files: [StoredModelArtifact]
+}
+
 struct StoredLocalModel: Codable, Equatable, Sendable {
   let modelId: String
   let runtime: LocalRuntime
@@ -15,6 +27,7 @@ struct StoredLocalModel: Codable, Equatable, Sendable {
   let importedAt: Date
   let runtimeRelativePath: String
   let tokenizerRelativePath: String?
+  var remoteOrigin: StoredRemoteModelOrigin? = nil
 }
 
 struct ResolvedLocalModel: Sendable {

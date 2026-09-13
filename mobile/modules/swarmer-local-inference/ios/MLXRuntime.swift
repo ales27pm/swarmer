@@ -27,19 +27,58 @@ actor MLXRuntime {
     #endif
   }
 
-  func loadRemote(modelId: String, revision: String) async throws {
+  func loadRemote(modelId: String, revision: String, store: LocalModelStore) async throws {
     guard !generating else { throw LocalInferenceError.generationInProgress }
     cancelRequested = false
     unloadRequested = false
     #if targetEnvironment(simulator)
     throw LocalInferenceError.unsupportedModel("MLX inference requires a physical iOS device")
     #else
-    let configuration = ModelConfiguration(id: modelId, revision: revision)
+    let durable: ResolvedLocalModel
+    if let existing = try await store.resolveRemoteMLX(repositoryId: modelId, revision: revision) {
+      durable = existing
+    } else {
+      let components = modelId.split(separator: "/")
+      guard components.count == 2 else { throw LocalInferenceError.invalidDownloadMetadata }
+      let repository = Repo.ID(namespace: String(components[0]), name: String(components[1]))
+      let client = HubClient()
+      guard let cache = client.cache else { throw LocalInferenceError.modelDownloadFailed }
+      let matching = ["*.json", "*.safetensors", "*.model", "*.txt", "*.jinja", "*.tiktoken"]
+      let cachedSnapshot: URL?
+      do {
+        cachedSnapshot = try await client.downloadSnapshot(
+          of: repository, revision: revision, matching: matching, localFilesOnly: true
+        )
+      } catch HubCacheError.cachedPathResolutionFailed(_) {
+        cachedSnapshot = nil
+      }
+      var preserved: ResolvedLocalModel?
+      if let cachedSnapshot {
+        do {
+          preserved = try await store.preserveMLXSnapshot(
+            at: cachedSnapshot, repositoryCacheURL: cache.repoDirectory(repo: repository, kind: .model),
+            repositoryId: modelId, revision: revision
+          )
+        } catch LocalInferenceError.sourceMissing {
+          // A partial cache still reuses its existing blobs when missing sidecars/shards are fetched.
+          preserved = nil
+        }
+      }
+      if let preserved {
+        durable = preserved
+      } else {
+        try Task.checkCancellation()
+        let downloaded = try await client.downloadSnapshot(of: repository, revision: revision, matching: matching)
+        durable = try await store.preserveMLXSnapshot(
+          at: downloaded, repositoryCacheURL: cache.repoDirectory(repo: repository, kind: .model),
+          repositoryId: modelId, revision: revision
+        )
+      }
+    }
+    guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
     let loaded = try await LLMModelFactory.shared.loadContainer(
-      from: #hubDownloader(),
-      using: #huggingFaceTokenizerLoader(),
-      configuration: configuration,
-      useLatest: false
+      from: durable.runtimeURL,
+      using: #huggingFaceTokenizerLoader()
     )
     guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
     container = loaded

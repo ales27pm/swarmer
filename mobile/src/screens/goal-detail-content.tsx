@@ -197,6 +197,7 @@ export type GoalDetailNavigation = {
   openApprovals: () => void;
   openTask: (taskId: string) => void;
   openGoal: (goalId: string) => void;
+  openLocalPlan?: (goalId: string) => void;
 };
 
 export type GoalDetailController = GoalDetailState & {
@@ -521,7 +522,7 @@ function Feedback({ disabled, locked, onScore }: {
   );
 }
 
-function GoalActions({ controller }: { controller: GoalDetailController }) {
+function GoalActions({ controller, navigation }: { controller: GoalDetailController; navigation: GoalDetailNavigation }) {
   const { busy, goal, online } = controller;
   if (!goal || !online) return null;
   const planningAction = PLANNING_PHASES[goal.current_phase]
@@ -529,6 +530,15 @@ function GoalActions({ controller }: { controller: GoalDetailController }) {
     : "Démarrer le but";
   return (
     <>
+      {navigation.openLocalPlan && goal.status === "planning" && !goal.started_at
+        && goal.step_count === 0 && goal.model_call_count === 0 && goal.replan_count === 0
+        && controller.nodes.length === 0 && !controller.result ? (
+          <ActionButton
+            disabled={Boolean(busy)}
+            label="Préparer le plan sur l’iPhone"
+            onPress={() => navigation.openLocalPlan?.(goal.id)}
+          />
+        ) : null}
       {canStartGoal(goal) ? (
         <ActionButton
           busy={busy === "start"}
@@ -616,7 +626,7 @@ function GoalOverview({ controller, navigation }: {
           <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>Échec : {goal.failure_reason}</Text>
         ) : null}
         <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
-        <GoalActions controller={controller} />
+        <GoalActions controller={controller} navigation={navigation} />
       </Card>
     </>
   );

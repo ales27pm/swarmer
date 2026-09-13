@@ -17,6 +17,7 @@ export default function GoalDetailScreen() {
     openApprovals: () => router.push("/approvals"),
     openTask: (taskId: string) => router.push({ pathname: "/task/[id]", params: { id: taskId } }),
     openGoal: (goalId: string) => router.push({ pathname: "/goal/[id]", params: { id: goalId } }),
+    openLocalPlan: (goalId: string) => router.push({ pathname: "/local-model", params: { goalId } }),
   };
 
   return (

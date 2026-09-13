@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 actor LocalModelStore {
   private struct SourceIdentity: Equatable, Sendable {
@@ -62,20 +63,29 @@ actor LocalModelStore {
   private let rootURL: URL
   private let modelsURL: URL
   private let indexURL: URL
+  private let documentsModelsURL: URL
+  private var activeStagingNames: Set<String> = []
   private let importDidCreateStaging: (@Sendable () async -> Void)?
+  private let promotionDidPublish: (@Sendable () throws -> Void)?
 
   init(
     fileManager: FileManager = .default,
     applicationSupportURL: URL? = nil,
-    importDidCreateStaging: (@Sendable () async -> Void)? = nil
+    documentsURL: URL? = nil,
+    importDidCreateStaging: (@Sendable () async -> Void)? = nil,
+    promotionDidPublish: (@Sendable () throws -> Void)? = nil
   ) {
     self.fileManager = fileManager
     self.importDidCreateStaging = importDidCreateStaging
+    self.promotionDidPublish = promotionDidPublish
     let applicationSupport = applicationSupportURL
       ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     rootURL = applicationSupport.appendingPathComponent("SwarmerLocalInference", isDirectory: true)
     modelsURL = rootURL.appendingPathComponent("Models", isDirectory: true)
     indexURL = rootURL.appendingPathComponent("models.json", isDirectory: false)
+    let documents = documentsURL
+      ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    documentsModelsURL = documents.appendingPathComponent("Models", isDirectory: true)
   }
 
   func list() throws -> [StoredLocalModel] {
@@ -103,7 +113,13 @@ actor LocalModelStore {
       throw LocalInferenceError.modelNotFound(modelId)
     }
 
-    let modelRoot = modelsURL.appendingPathComponent(stored.modelId, isDirectory: true)
+    let modelRoot: URL
+    if let origin = stored.remoteOrigin {
+      modelRoot = try durableModelRoot(repositoryId: origin.repositoryId, revision: origin.revision)
+      try verifyDurableModel(stored, at: modelRoot)
+    } else {
+      modelRoot = modelsURL.appendingPathComponent(stored.modelId, isDirectory: true)
+    }
     try rejectSymbolicLinks(in: modelRoot)
     let runtimeURL = try confinedURL(relativePath: stored.runtimeRelativePath, root: modelRoot)
     guard fileManager.fileExists(atPath: runtimeURL.path) else {
@@ -157,6 +173,8 @@ actor LocalModelStore {
 
     let modelId = UUID().uuidString.lowercased()
     let stagingURL = modelsURL.appendingPathComponent(".import-\(modelId)", isDirectory: true)
+    activeStagingNames.insert(stagingURL.lastPathComponent)
+    defer { activeStagingNames.remove(stagingURL.lastPathComponent) }
     let destinationURL = modelsURL.appendingPathComponent(modelId, isDirectory: true)
     try fileManager.createDirectory(
       at: stagingURL,
@@ -214,6 +232,252 @@ actor LocalModelStore {
     }
   }
 
+  /// Finds an already materialized Hub revision without consulting the network or cache.
+  func resolveRemoteMLX(repositoryId: String, revision: String) throws -> ResolvedLocalModel? {
+    let destination = try durableModelRoot(repositoryId: repositoryId, revision: revision)
+    let records = try list()
+    if let record = records.first(where: {
+      $0.remoteOrigin?.repositoryId == repositoryId && $0.remoteOrigin?.revision == revision
+    }) {
+      return try resolve(modelId: record.modelId)
+    }
+    guard fileManager.fileExists(atPath: destination.path) else { return nil }
+    // A Documents manifest is user-editable: only a private pending record can
+    // authorize recovery after publication interrupted the registry write.
+    let pending = pendingRemoteRecordURL(repositoryId: repositoryId, revision: revision)
+    guard fileManager.fileExists(atPath: pending.path) else {
+      throw LocalInferenceError.unsupportedModel("the Documents model has no trusted private registry entry; import it as a local model")
+    }
+    let record = try readStoredRecord(at: pending)
+    try validateMetadata([record])
+    guard record.remoteOrigin?.repositoryId == repositoryId,
+          record.remoteOrigin?.revision == revision else { throw LocalInferenceError.metadataCorrupt }
+    try verifyDurableModel(record, at: destination)
+    guard !records.contains(where: { $0.modelId == record.modelId }) else {
+      throw LocalInferenceError.metadataCorrupt
+    }
+    try persist(records + [record])
+    try? fileManager.removeItem(at: pending)
+    return ResolvedLocalModel(
+      stored: record,
+      runtimeURL: destination.appendingPathComponent("payload"),
+      tokenizerURL: destination.appendingPathComponent("payload")
+    )
+  }
+
+  /// Materializes cache symlinks into independent, protected regular files.
+  func preserveMLXSnapshot(
+    at snapshot: URL,
+    repositoryCacheURL: URL,
+    repositoryId: String,
+    revision: String
+  ) async throws -> ResolvedLocalModel {
+    if let existing = try resolveRemoteMLX(repositoryId: repositoryId, revision: revision) {
+      return existing
+    }
+    let destination = try durableModelRoot(repositoryId: repositoryId, revision: revision)
+    let expectedSnapshot = repositoryCacheURL.appendingPathComponent("snapshots/\(revision)")
+    guard snapshot.standardizedFileURL.path == expectedSnapshot.standardizedFileURL.path else {
+      throw LocalInferenceError.symbolicLinkRejected
+    }
+    for directory in [repositoryCacheURL, expectedSnapshot.deletingLastPathComponent(), snapshot] {
+      try requirePlainDirectory(directory)
+    }
+    let canonicalCache = repositoryCacheURL.resolvingSymlinksInPath()
+    let canonicalSnapshot = snapshot.resolvingSymlinksInPath()
+    var files: [PlannedFile] = []
+    var totalBytes: Int64 = 0
+    let children = try fileManager.contentsOfDirectory(at: snapshot, includingPropertiesForKeys: nil)
+    for child in children where Self.mlxArtifactExtensions.contains(child.pathExtension.lowercased()) {
+      try Task.checkCancellation()
+      let name = try validatedPathComponent(child.lastPathComponent)
+      let source = child.resolvingSymlinksInPath()
+      let parent = source.deletingLastPathComponent()
+      guard parent.path == canonicalCache.appendingPathComponent("blobs").path || parent.path == canonicalSnapshot.path else {
+        throw LocalInferenceError.symbolicLinkRejected
+      }
+      let identity = try sourceIdentity(for: source)
+      try appendPlannedFile(
+        source: source, relativePath: name, size: identity.sizeBytes,
+        files: &files, totalBytes: &totalBytes
+      )
+    }
+    let plan = ImportPlan(directoryPaths: [], files: files.sorted { $0.relativePath < $1.relativePath }, totalBytes: totalBytes)
+    try validateMLXSnapshotPlan(plan)
+    try ensureAvailableStorage(for: totalBytes)
+    try Task.checkCancellation()
+
+    let modelId = UUID().uuidString.lowercased()
+    let staging = modelsURL.appendingPathComponent(".import-\(modelId)")
+    let pending = pendingRemoteRecordURL(repositoryId: repositoryId, revision: revision)
+    var published = false
+    activeStagingNames.insert(staging.lastPathComponent)
+    defer {
+      activeStagingNames.remove(staging.lastPathComponent)
+      try? fileManager.removeItem(at: staging)
+      if !published { try? fileManager.removeItem(at: pending) }
+    }
+    try fileManager.createDirectory(at: staging, withIntermediateDirectories: false, attributes: Self.protectionAttributes)
+    if let importDidCreateStaging { await importDidCreateStaging() }
+    try Task.checkCancellation()
+    let payload = staging.appendingPathComponent("payload")
+    try fileManager.createDirectory(at: payload, withIntermediateDirectories: false, attributes: Self.protectionAttributes)
+    let artifacts = try copy(plan: plan, into: payload, recordDigests: true)
+    _ = try validate(runtime: .mlx, payloadURL: payload)
+    let record = StoredLocalModel(
+      modelId: modelId, runtime: .mlx,
+      displayName: "\(repositoryId.split(separator: "/").last!) · Modèles",
+      source: "Documents/Models · \(repositoryId)@\(revision)",
+      sizeBytes: totalBytes, importedAt: Date(), runtimeRelativePath: "payload", tokenizerRelativePath: "payload",
+      remoteOrigin: StoredRemoteModelOrigin(repositoryId: repositoryId, revision: revision, files: artifacts)
+    )
+    try validateMetadata([record])
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let encodedRecord = try encoder.encode(record)
+    try encodedRecord.write(
+      to: staging.appendingPathComponent("swarmer-model.json"), options: Self.protectedAtomicWriteOptions
+    )
+    try prepareDurableParent(repositoryId: repositoryId)
+    try Task.checkCancellation()
+    try encodedRecord.write(to: pending, options: Self.protectedAtomicWriteOptions)
+    // Application Support and Documents are on the same app-container volume.
+    try fileManager.moveItem(at: staging, to: destination)
+    published = true
+    try promotionDidPublish?()
+    // Read the current registry after the staging await; never overwrite concurrent imports.
+    // The private pending record anchors recovery if this index write is interrupted.
+    try persist(try list() + [record])
+    try? fileManager.removeItem(at: pending)
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    var excludedURL = destination
+    try? excludedURL.setResourceValues(values)
+    return ResolvedLocalModel(stored: record, runtimeURL: destination.appendingPathComponent("payload"), tokenizerURL: destination.appendingPathComponent("payload"))
+  }
+
+  private func durableModelRoot(repositoryId: String, revision: String) throws -> URL {
+    guard repositoryId.range(
+      of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$",
+      options: .regularExpression
+    ) != nil, revision.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil else {
+      throw LocalInferenceError.invalidDownloadMetadata
+    }
+    return documentsModelsURL.appendingPathComponent(repositoryId).appendingPathComponent(revision)
+  }
+
+  private func pendingRemoteRecordURL(repositoryId: String, revision: String) -> URL {
+    let digest = SHA256.hash(data: Data("\(repositoryId)@\(revision)".utf8))
+      .map { String(format: "%02x", $0) }.joined()
+    return rootURL.appendingPathComponent(".pending-mlx-\(digest).json")
+  }
+
+  private func requirePlainDirectory(_ directory: URL) throws {
+    let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+    guard values.isSymbolicLink != true else { throw LocalInferenceError.symbolicLinkRejected }
+    guard values.isDirectory == true else { throw LocalInferenceError.sourceMissing }
+  }
+
+  private func prepareDurableParent(repositoryId: String) throws {
+    var directory = documentsModelsURL.deletingLastPathComponent()
+    try requirePlainDirectory(directory)
+    for component in ["Models"] + repositoryId.split(separator: "/").map(String.init) {
+      directory.appendPathComponent(component)
+      if !fileManager.fileExists(atPath: directory.path) {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: false, attributes: Self.protectionAttributes)
+      }
+      try requirePlainDirectory(directory)
+    }
+  }
+
+  private func validateMLXSnapshotPlan(_ plan: ImportPlan) throws {
+    let byName = Dictionary(uniqueKeysWithValues: plan.files.map { ($0.relativePath, $0) })
+    for required in ["config.json", "tokenizer.json", "tokenizer_config.json"] {
+      guard let file = byName[required] else { throw LocalInferenceError.sourceMissing }
+      _ = try readJSONObject(file.sourceURL)
+    }
+    guard plan.files.contains(where: { $0.relativePath.hasSuffix(".safetensors") }),
+          plan.files.allSatisfy({ $0.sizeBytes > 0 }) else { throw LocalInferenceError.sourceMissing }
+    for index in plan.files where index.relativePath.hasSuffix(".safetensors.index.json") {
+      guard let mapping = try readJSONObject(index.sourceURL)["weight_map"] as? [String: String], !mapping.isEmpty else {
+        throw LocalInferenceError.unsupportedModel("the MLX weight index is invalid")
+      }
+      for filename in Set(mapping.values) {
+        guard filename.hasSuffix(".safetensors"), byName[filename] != nil else {
+          throw LocalInferenceError.sourceMissing
+        }
+      }
+    }
+  }
+
+  private func readJSONObject(_ url: URL) throws -> [String: Any] {
+    guard try sourceIdentity(for: url).sizeBytes <= 64 * 1_024 * 1_024,
+          let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+      throw LocalInferenceError.unsupportedModel("the MLX JSON sidecar is invalid or too large")
+    }
+    return object
+  }
+
+  private func readDurableManifest(at directory: URL) throws -> StoredLocalModel {
+    // Reject parent redirection as well as symlinks within this one model.
+    var parent = directory
+    while parent.path.count >= documentsModelsURL.path.count {
+      try requirePlainDirectory(parent)
+      if parent.path == documentsModelsURL.path { break }
+      parent.deleteLastPathComponent()
+    }
+    return try readStoredRecord(at: directory.appendingPathComponent("swarmer-model.json"))
+  }
+
+  private func readStoredRecord(at url: URL) throws -> StoredLocalModel {
+    guard try sourceIdentity(for: url).sizeBytes <= 16 * 1_024 * 1_024 else {
+      throw LocalInferenceError.metadataCorrupt
+    }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(StoredLocalModel.self, from: Data(contentsOf: url))
+  }
+
+  private func verifyDurableModel(_ record: StoredLocalModel, at directory: URL) throws {
+    guard let origin = record.remoteOrigin, try readDurableManifest(at: directory) == record else {
+      throw LocalInferenceError.metadataCorrupt
+    }
+    let payload = directory.appendingPathComponent("payload")
+    try requirePlainDirectory(payload)
+    let contents = try fileManager.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
+    guard Set(contents.map(\.lastPathComponent)) == Set(origin.files.map(\.filename)) else {
+      throw LocalInferenceError.sourceChangedDuringImport
+    }
+    for artifact in origin.files {
+      try Task.checkCancellation()
+      let file = try confinedURL(relativePath: artifact.filename, root: payload)
+      let identity = try sourceIdentity(for: file)
+      guard identity.sizeBytes == artifact.sizeBytes else { throw LocalInferenceError.sourceChangedDuringImport }
+      let descriptor = Darwin.open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+      guard descriptor >= 0 else { throw LocalInferenceError.sourceChangedDuringImport }
+      let input = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+      defer { try? input.close() }
+      var information = stat()
+      guard fstat(descriptor, &information) == 0, sourceIdentity(from: information) == identity else {
+        throw LocalInferenceError.sourceChangedDuringImport
+      }
+      var hash = SHA256()
+      var count: Int64 = 0
+      while let data = try input.read(upToCount: Self.copyChunkBytes), !data.isEmpty {
+        try Task.checkCancellation()
+        count += Int64(data.count)
+        guard count <= artifact.sizeBytes else { throw LocalInferenceError.sourceChangedDuringImport }
+        hash.update(data: data)
+      }
+      guard count == artifact.sizeBytes,
+            hash.finalize().map({ String(format: "%02x", $0) }).joined() == artifact.sha256,
+            fstat(descriptor, &information) == 0, sourceIdentity(from: information) == identity else {
+        throw LocalInferenceError.sourceChangedDuringImport
+      }
+    }
+  }
+
   private func prepareDirectories() throws {
     try fileManager.createDirectory(
       at: modelsURL,
@@ -229,7 +493,8 @@ actor LocalModelStore {
       at: modelsURL,
       includingPropertiesForKeys: [.isDirectoryKey],
       options: []
-    ) where isStagingDirectoryName(item.lastPathComponent) {
+    ) where isStagingDirectoryName(item.lastPathComponent)
+      && !activeStagingNames.contains(item.lastPathComponent) {
       try fileManager.removeItem(at: item)
     }
   }
@@ -256,6 +521,27 @@ actor LocalModelStore {
             record.tokenizerRelativePath.map(isSafeRelativePath) ?? true,
             record.sizeBytes >= 0 else {
         throw LocalInferenceError.metadataCorrupt
+      }
+      if let origin = record.remoteOrigin {
+        _ = try durableModelRoot(repositoryId: origin.repositoryId, revision: origin.revision)
+        guard record.runtime == .mlx, record.runtimeRelativePath == "payload",
+              record.tokenizerRelativePath == "payload", !origin.files.isEmpty,
+              origin.files.count <= Self.maximumFileCount,
+              Set(origin.files.map(\.filename)).count == origin.files.count else {
+          throw LocalInferenceError.metadataCorrupt
+        }
+        var total: Int64 = 0
+        for file in origin.files {
+          guard file.filename == (try validatedPathComponent(file.filename)),
+                file.sizeBytes > 0,
+                file.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw LocalInferenceError.metadataCorrupt
+          }
+          let (sum, overflow) = total.addingReportingOverflow(file.sizeBytes)
+          guard !overflow, sum <= Self.maximumImportBytes else { throw LocalInferenceError.metadataCorrupt }
+          total = sum
+        }
+        guard total == record.sizeBytes else { throw LocalInferenceError.metadataCorrupt }
       }
     }
   }
@@ -493,7 +779,9 @@ actor LocalModelStore {
     }
   }
 
-  private func copy(plan: ImportPlan, into payload: URL) throws {
+  @discardableResult
+  private func copy(plan: ImportPlan, into payload: URL, recordDigests: Bool = false) throws -> [StoredModelArtifact] {
+    var artifacts: [StoredModelArtifact] = []
     for relativePath in plan.directoryPaths {
       try Task.checkCancellation()
       let destination = try confinedURL(relativePath: relativePath, root: payload)
@@ -533,6 +821,7 @@ actor LocalModelStore {
         try? output.close()
       }
       var fileCopied: Int64 = 0
+      var digest = SHA256()
       while true {
         try Task.checkCancellation()
         guard let data = try input.read(upToCount: Self.copyChunkBytes), !data.isEmpty else { break }
@@ -544,6 +833,7 @@ actor LocalModelStore {
           throw LocalInferenceError.sourceChangedDuringImport
         }
         try output.write(contentsOf: data)
+        if recordDigests { digest.update(data: data) }
         fileCopied = nextFileSize
         totalCopied = nextTotal
       }
@@ -556,10 +846,18 @@ actor LocalModelStore {
             sourceIdentity(from: completedStat) == file.identity else {
         throw LocalInferenceError.sourceChangedDuringImport
       }
+      if recordDigests {
+        artifacts.append(StoredModelArtifact(
+          filename: file.relativePath,
+          sizeBytes: fileCopied,
+          sha256: digest.finalize().map { String(format: "%02x", $0) }.joined()
+        ))
+      }
     }
     guard totalCopied == plan.totalBytes else {
       throw LocalInferenceError.sourceChangedDuringImport
     }
+    return artifacts
   }
 
   private func sourceIdentity(for url: URL) throws -> SourceIdentity {

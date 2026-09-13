@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import CryptoKit
 
 private struct TestFailure: Error, CustomStringConvertible {
   let description: String
@@ -13,12 +14,14 @@ private struct TestWorkspace {
   let root: URL
   let source: URL
   let applicationSupport: URL
+  let documents: URL
 
   init(name: String) throws {
     root = FileManager.default.temporaryDirectory
       .appendingPathComponent("swarmer-store-\(name)-\(UUID().uuidString)", isDirectory: true)
     source = root.appendingPathComponent("Source", isDirectory: true)
     applicationSupport = root.appendingPathComponent("ApplicationSupport", isDirectory: true)
+    documents = root.appendingPathComponent("Documents", isDirectory: true)
     try FileManager.default.createDirectory(
       at: source,
       withIntermediateDirectories: true
@@ -27,6 +30,7 @@ private struct TestWorkspace {
       at: applicationSupport,
       withIntermediateDirectories: true
     )
+    try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
   }
 
   func remove() {
@@ -82,6 +86,12 @@ private struct LocalModelStoreTests {
       ("GGUF import and metadata resolution", testGGUFImportAndResolution),
       ("Core ML filtering and required sidecars", testCoreMLFilteringAndSidecars),
       ("MLX direct artifact filtering", testMLXFiltering),
+      ("cached MLX becomes independent durable files and keeps pinned provenance", testDurableMLXCachePromotion),
+      ("durable MLX rejects changed files and manifest", testDurableMLXIntegrity),
+      ("MLX cache confinement and complete shard index", testDurableMLXRejectsUnsafeCache),
+      ("durable MLX cancellation preserves Files additions and active staging", testDurableMLXCancellation),
+      ("durable MLX recovers its manifest without deleting unregistered Files folders", testDurableMLXRecovery),
+      ("an unregistered Documents manifest cannot claim a pinned Hub revision", testDurableMLXRejectsUntrustedManifest),
       ("nested symbolic-link rejection", testSymbolicLinkRejection),
       ("staging and orphan cleanup", testRecoveryCleanup),
       ("cancelled import cleanup", testCancellationCleanup),
@@ -458,6 +468,210 @@ private struct LocalModelStoreTests {
     let recordsAfterCancellation = try await store.list()
     try expect(recordsAfterCancellation.isEmpty, "cancelled import changed the index")
     try expect(try ownedModelDirectories(in: workspace.models).isEmpty, "cancelled import left owned model data")
+  }
+
+  private static let repositoryId = "example/Dolphin-3B-4bit"
+  private static let revision = String(repeating: "c", count: 40)
+
+  private static func makeCachedMLX(in workspace: TestWorkspace) throws -> (cache: URL, snapshot: URL) {
+    let cache = workspace.source.appendingPathComponent("models--example--Dolphin-3B-4bit")
+    let snapshot = cache.appendingPathComponent("snapshots/\(revision)")
+    let blobs = cache.appendingPathComponent("blobs")
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: blobs, withIntermediateDirectories: true)
+    let files = [
+      "config.json": "{\"model_type\":\"llama\"}",
+      "tokenizer.json": "{\"model\":{}}",
+      "tokenizer_config.json": "{\"chat_template\":\"{{ messages }}\"}",
+      "model.safetensors": "abc",
+      "model.safetensors.index.json": "{\"weight_map\":{\"weight\":\"model.safetensors\"}}",
+      "chat_template.jinja": "{{ messages }}",
+    ]
+    for (name, contents) in files {
+      try write(contents, to: blobs.appendingPathComponent(name))
+      try FileManager.default.createSymbolicLink(
+        atPath: snapshot.appendingPathComponent(name).path,
+        withDestinationPath: "../../blobs/\(name)"
+      )
+    }
+    return (cache, snapshot)
+  }
+
+  private static func durableStore(_ workspace: TestWorkspace) -> LocalModelStore {
+    LocalModelStore(applicationSupportURL: workspace.applicationSupport, documentsURL: workspace.documents)
+  }
+
+  private static func testDurableMLXCachePromotion() async throws {
+    let workspace = try TestWorkspace(name: "mlx-durable")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let store = durableStore(workspace)
+    let result = try await store.preserveMLXSnapshot(
+      at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision
+    )
+    try expect(isWithin(result.runtimeURL, root: workspace.documents.appendingPathComponent("Models")), "MLX was not stored in Documents/Models")
+    try expect(result.stored.source.hasPrefix("Documents/Models"), "durable source is not exposed to the model list")
+    let origin = try required(result.stored.remoteOrigin, "immutable origin was lost")
+    try expect(origin.repositoryId == repositoryId && origin.revision == revision, "pinned repo/revision changed")
+    let weight = try required(origin.files.first(where: { $0.filename == "model.safetensors" }), "weights are not in the manifest")
+    try expect(weight.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "copy did not hash the actual weight bytes")
+    for file in origin.files {
+      let destination = result.runtimeURL.appendingPathComponent(file.filename)
+      let values = try destination.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+      try expect(values.isRegularFile == true && values.isSymbolicLink != true, "durable artifact still depends on a cache symlink")
+      try expect(try Data(contentsOf: destination) == Data(contentsOf: cached.snapshot.appendingPathComponent(file.filename)), "materialized bytes differ from the cache")
+    }
+    try FileManager.default.removeItem(at: cached.cache)
+    let reopened = durableStore(workspace)
+    let records = try await reopened.list()
+    try expect(records.count == 1 && records[0].modelId == result.stored.modelId, "local persistent entry did not survive reopening")
+    let loaded = try required(
+      try await reopened.resolveRemoteMLX(repositoryId: repositoryId, revision: revision),
+      "deleting the entire Hub cache lost the pinned model"
+    )
+    try expect(try String(contentsOf: loaded.runtimeURL.appendingPathComponent("model.safetensors"), encoding: .utf8) == "abc", "durable model no longer resolves independently")
+    let repeated = try await reopened.preserveMLXSnapshot(
+      at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision
+    )
+    try expect(repeated.stored.modelId == result.stored.modelId, "repeat load made another copy or required the deleted cache")
+    let local = try await reopened.resolve(modelId: result.stored.modelId)
+    try expect(local.runtimeURL == loaded.runtimeURL, "local UUID and pinned remote id resolve to different files")
+    let wrongRevision = try await reopened.resolveRemoteMLX(repositoryId: repositoryId, revision: String(repeating: "d", count: 40))
+    try expect(wrongRevision == nil, "a different revision reused the wrong durable model")
+  }
+
+  private static func testDurableMLXIntegrity() async throws {
+    let workspace = try TestWorkspace(name: "mlx-integrity")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let store = durableStore(workspace)
+    let result = try await store.preserveMLXSnapshot(
+      at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision
+    )
+    let weights = result.runtimeURL.appendingPathComponent("model.safetensors")
+    try write("abd", to: weights)
+    // Listing remains metadata-only even if a user changes a large file through Files.
+    let listed = try await store.list()
+    try expect(listed.count == 1, "model listing attempted to hash mutable model files")
+    do {
+      _ = try await store.resolveRemoteMLX(repositoryId: repositoryId, revision: revision)
+      throw TestFailure("same-size changes retained trusted pinned provenance")
+    } catch LocalInferenceError.sourceChangedDuringImport { }
+    try write("abc", to: weights)
+    let manifest = result.runtimeURL.deletingLastPathComponent().appendingPathComponent("swarmer-model.json")
+    let original = try String(contentsOf: manifest, encoding: .utf8)
+    try write(original.replacingOccurrences(of: revision, with: String(repeating: "d", count: 40)), to: manifest)
+    do {
+      _ = try await store.resolve(modelId: result.stored.modelId)
+      throw TestFailure("a Files manifest edit changed privately registered provenance")
+    } catch LocalInferenceError.metadataCorrupt { }
+  }
+
+  private static func testDurableMLXRejectsUnsafeCache() async throws {
+    let workspace = try TestWorkspace(name: "mlx-unsafe")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let store = durableStore(workspace)
+    let weights = cached.snapshot.appendingPathComponent("model.safetensors")
+    try FileManager.default.removeItem(at: weights)
+    let foreign = workspace.source.appendingPathComponent("unrelated-private-file")
+    try write("abc", to: foreign)
+    try FileManager.default.createSymbolicLink(at: weights, withDestinationURL: foreign)
+    do {
+      _ = try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+      throw TestFailure("a cache symlink escaped the expected repository")
+    } catch LocalInferenceError.symbolicLinkRejected { }
+    try FileManager.default.removeItem(at: weights)
+    try FileManager.default.createSymbolicLink(atPath: weights.path, withDestinationPath: "../../blobs/model.safetensors")
+    try write("{\"weight_map\":{\"weight\":\"missing-shard.safetensors\"}}", to: cached.cache.appendingPathComponent("blobs/model.safetensors.index.json"))
+    do {
+      _ = try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+      throw TestFailure("an incomplete sharded model was promoted")
+    } catch LocalInferenceError.sourceMissing { }
+    let records = try await store.list()
+    try expect(records.isEmpty, "rejected cache was published in the model registry")
+    try expect(!fileExists(workspace.documents.appendingPathComponent("Models")), "rejected model published a partial Documents tree")
+    try expect(try ownedModelDirectories(in: workspace.models).isEmpty, "rejected model left private staging")
+  }
+
+  private static func testDurableMLXCancellation() async throws {
+    let workspace = try TestWorkspace(name: "mlx-cancel")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let foreign = workspace.documents.appendingPathComponent("Models/\(UUID().uuidString.lowercased())/notes.txt")
+    try FileManager.default.createDirectory(at: foreign.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try write("user model notes", to: foreign)
+    let checkpoint = ImportCheckpointGate()
+    let store = LocalModelStore(
+      applicationSupportURL: workspace.applicationSupport, documentsURL: workspace.documents,
+      importDidCreateStaging: { await checkpoint.pauseAfterStagingCreation() }
+    )
+    let task = Task {
+      try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+    }
+    await checkpoint.waitUntilReached()
+    let listedDuringCopy = try await store.list()
+    try expect(listedDuringCopy.isEmpty, "incomplete promotion was visible in the registry")
+    try expect(try ownedModelDirectories(in: workspace.models).count == 1, "listing removed active staging during an await")
+    task.cancel()
+    await checkpoint.release()
+    do {
+      _ = try await task.value
+      throw TestFailure("cancelled promotion succeeded")
+    } catch is CancellationError { }
+    try expect(try ownedModelDirectories(in: workspace.models).isEmpty, "cancelled promotion retained staging")
+    try expect(try String(contentsOf: foreign, encoding: .utf8) == "user model notes", "Files content was modified by private cleanup")
+    try expect(fileExists(cached.snapshot.appendingPathComponent("model.safetensors")), "promotion removed the original cache")
+  }
+
+  private static func testDurableMLXRecovery() async throws {
+    let workspace = try TestWorkspace(name: "mlx-recovery")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let store = LocalModelStore(
+      applicationSupportURL: workspace.applicationSupport, documentsURL: workspace.documents,
+      promotionDidPublish: { throw TestFailure("simulated interruption before registry write") }
+    )
+    do {
+      _ = try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+      throw TestFailure("publication interruption was not exercised")
+    } catch let error as TestFailure {
+      try expect(error.description == "simulated interruption before registry write", "promotion failed outside the intended crash window")
+    }
+    let published = workspace.documents.appendingPathComponent("Models/\(repositoryId)/\(revision)/payload")
+    let foreign = workspace.documents.appendingPathComponent("Models/\(UUID().uuidString.lowercased())")
+    try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+    let reopened = durableStore(workspace)
+    let emptyRegistry = try await reopened.list()
+    try expect(emptyRegistry.isEmpty && fileExists(foreign) && fileExists(published), "private cleanup deleted unregistered Documents folders")
+    let recovered = try required(try await reopened.resolveRemoteMLX(repositoryId: repositoryId, revision: revision), "complete manifest was not recovered")
+    try expect(recovered.runtimeURL.path == published.path, "private pending record recovered different model files")
+    let records = try await reopened.list()
+    try expect(records.count == 1 && fileExists(foreign), "manifest recovery changed unrelated Files additions")
+    let privateFiles = try FileManager.default.contentsOfDirectory(atPath: workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference").path)
+    try expect(!privateFiles.contains(where: { $0.hasPrefix(".pending-mlx-") }), "recovery retained a completed pending record")
+  }
+
+  private static func testDurableMLXRejectsUntrustedManifest() async throws {
+    let workspace = try TestWorkspace(name: "mlx-untrusted-manifest")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let store = durableStore(workspace)
+    let result = try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+    try FileManager.default.removeItem(at: workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json"))
+    let manifestURL = result.runtimeURL.deletingLastPathComponent().appendingPathComponent("swarmer-model.json")
+    let modified = Data("abd".utf8)
+    try modified.write(to: result.runtimeURL.appendingPathComponent("model.safetensors"))
+    let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+    let falseHash = SHA256.hash(data: modified).map { String(format: "%02x", $0) }.joined()
+    try write(manifest.replacingOccurrences(
+      of: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", with: falseHash
+    ), to: manifestURL)
+    do {
+      _ = try await durableStore(workspace).resolveRemoteMLX(repositoryId: repositoryId, revision: revision)
+      throw TestFailure("a self-consistent user-edited manifest invented immutable Hub provenance")
+    } catch LocalInferenceError.unsupportedModel { }
+    try expect(fileExists(manifestURL), "untrusted user files were deleted instead of left for explicit import")
   }
 
   private static func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {

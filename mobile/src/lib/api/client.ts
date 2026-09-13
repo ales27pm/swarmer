@@ -56,6 +56,7 @@ import type {
   GoalFeedbackInput,
   GoalRecord,
   GoalResult,
+  GoalStartInput,
   MemoryItem,
   Message,
   PlanNode,
@@ -81,9 +82,12 @@ export type {
   GoalRecord,
   GoalResult,
   GoalStatus,
+  GoalStartInput,
   MemoryItem,
   Message,
   PlanNode,
+  SwarmPlanProposal,
+  SwarmPlanNodeProposal,
   Task,
   TaskDetail,
   TaskMode,
@@ -874,11 +878,55 @@ export function getGoal(
   );
 }
 
-export function startGoal(goalId: string): Promise<GoalDetail> {
+function goalStartBody(input?: GoalStartInput): string {
+  if (input !== undefined && (
+    !input || input.planner_source !== "iphone_local" || !input.plan_proposal
+    || Object.keys(input).some((key) => !["plan_proposal", "planner_source"].includes(key))
+  )) throw new Error("La demande de plan local doit inclure sa proposition et sa provenance iPhone.");
+  return JSON.stringify(input ?? {});
+}
+
+export async function startGoal(goalId: string, input?: GoalStartInput): Promise<GoalDetail> {
+  const body = goalStartBody(input);
   return fencedRequest<GoalDetail>(`/goals/${resourceId(goalId)}/start`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body,
   });
+}
+
+/** Keeps the reviewed context and local plan on one pairing, without exposing its token. */
+export async function createLocalGoalPlanSession() {
+  const connection = await captureRequestConnectionFence();
+  if (!connection.token) throw new Error("Un jumelage authentifié est requis pour le plan local.");
+  const assertCurrent = () => assertRequestConnectionCurrent(connection);
+  async function read<T>(path: string): Promise<T> {
+    await assertCurrent();
+    const value = await requestAt<T>(connection.baseUrl, path, undefined, connection.token);
+    await assertCurrent();
+    return value;
+  }
+  let attempted = false;
+  return {
+    assertCurrent,
+    getGoal: (goalId: string) => read<GoalDetail>(`/goals/${resourceId(goalId)}`),
+    bootstrapSync: async (): Promise<Bootstrap> => {
+      const value = await read<unknown>("/sync/bootstrap");
+      if (!isBootstrapEnvelope(value)) throw new Error("Le contexte des agents est invalide.");
+      return value;
+    },
+    startGoal: async (goalId: string, input: GoalStartInput): Promise<GoalDetail> => {
+      if (attempted) throw new Error("Ce démarrage a déjà été tenté. Vérifiez le but avant une nouvelle planification locale.");
+      if (!input) throw new Error("Une proposition de plan local est requise.");
+      const body = goalStartBody(input);
+      attempted = true;
+      await assertCurrent();
+      const detail = await requestAt<GoalDetail>(connection.baseUrl, `/goals/${resourceId(goalId)}/start`, {
+        method: "POST", body,
+      }, connection.token);
+      await assertCurrent();
+      return detail;
+    },
+  };
 }
 
 export function cancelGoal(goalId: string): Promise<GoalDetail> {

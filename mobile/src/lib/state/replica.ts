@@ -1,4 +1,5 @@
 import * as SQLite from "expo-sqlite";
+import { openReplicaDatabase } from "@/lib/state/database-location";
 
 import type {
   Agent,
@@ -15,7 +16,6 @@ import type {
   ToolCall,
 } from "@/lib/api/types";
 
-let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 type ReplicaTable =
   | "tasks"
   | "approvals"
@@ -42,8 +42,7 @@ export type LocalSwarmSnapshot = {
 };
 
 async function db() {
-  if (!dbPromise) dbPromise = SQLite.openDatabaseAsync("mongars-replica.db");
-  const value = await dbPromise;
+  const value = await openReplicaDatabase();
   await value.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);

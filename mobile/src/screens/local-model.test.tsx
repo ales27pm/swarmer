@@ -28,7 +28,7 @@ jest.mock("@/lib/local-model-settings", () => ({
 
 const mockPush = jest.fn();
 
-jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }) }));
+jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }), useLocalSearchParams: () => ({}) }));
 jest.mock("expo-document-picker", () => ({ getDocumentAsync: jest.fn() }));
 jest.mock("@/lib/api/client", () => ({
   sendChat: jest.fn(),
@@ -155,6 +155,36 @@ describe("LocalModelScreen", () => {
     await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
     expect(await screen.findByText(/Modèle chargé localement/)).toBeOnTheScreen();
     expect(mockLoad).toHaveBeenCalledWith({ runtime: "mlx", modelId: preset.repoId, revision: preset.revision });
+  });
+
+  it("shows the durable Files copy created by a successful MLX load", async () => {
+    const preset = LOCAL_MODEL_PRESETS.mlx;
+    mockLoad.mockResolvedValue({ state: "ready", runtime: "mlx", modelId: preset.repoId, revision: preset.revision });
+    mockListModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{
+      modelId: "durable_mlx", runtime: "mlx", displayName: "Dolphin · Modèles",
+      source: `Documents/Models · ${preset.repoId}@${preset.revision}`,
+      sizeBytes: 1_824_808_562, importedAt: "2026-09-13T22:00:00Z",
+    }]);
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
+    expect(await screen.findByText(/Conservé dans Fichiers/)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Décharger le modèle" })).toBeEnabled();
+    expect(screen.getByLabelText("Dépôt Hugging Face")).toHaveDisplayValue(preset.repoId);
+  });
+
+  it("keeps a confirmed model ready if refreshing its Files listing fails", async () => {
+    const preset = LOCAL_MODEL_PRESETS.mlx;
+    mockLoad.mockResolvedValue({ state: "ready", runtime: "mlx", modelId: preset.repoId, revision: preset.revision });
+    mockListModels.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("Listing unavailable"));
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
+    expect(await screen.findByText(/Modèle chargé localement/)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Décharger le modèle" })).toBeEnabled();
+    expect(screen.queryByText(/Conservé dans Fichiers/)).not.toBeOnTheScreen();
   });
 
   it("keeps the native runtimes usable if saved settings cannot be read", async () => {

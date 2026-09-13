@@ -252,6 +252,37 @@ export type GoalCreateInput = {
   max_model_calls?: number;
 };
 
+export type SwarmPlanNodeProposal = {
+  temporary_id: string;
+  node_type: "worker" | "synthesis";
+  title: string;
+  objective: string;
+  required_skill: string | null;
+  dependencies: string[];
+  optional_dependencies?: string[];
+  expected_output: string;
+  priority: number;
+  preferred_agent_constraints?: {
+    agent_ids?: string[];
+    model_ids?: string[];
+    runtime?: "python" | null;
+  } | null;
+};
+
+export type SwarmPlanProposal = {
+  schema_version: "1.0";
+  objective: string;
+  rationale_summary: string;
+  nodes: SwarmPlanNodeProposal[];
+  completion_criteria: string[];
+  max_parallelism: number;
+};
+
+export type GoalStartInput = {
+  plan_proposal: SwarmPlanProposal;
+  planner_source: "iphone_local";
+};
+
 export type GoalFeedbackInput = {
   score: number;
   note?: string;

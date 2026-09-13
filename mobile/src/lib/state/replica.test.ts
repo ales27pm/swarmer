@@ -20,6 +20,9 @@ import {
 } from "@/lib/state/replica";
 
 jest.mock("expo-sqlite", () => ({ openDatabaseAsync: jest.fn() }));
+jest.mock("@/lib/state/database-location", () => ({
+  openReplicaDatabase: () => jest.requireMock<typeof import("expo-sqlite")>("expo-sqlite").openDatabaseAsync("mongars-replica.db"),
+}));
 
 describe("SQLite bootstrap replica", () => {
   const task = {

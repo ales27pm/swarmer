@@ -414,7 +414,7 @@ actor LocalInferenceCoordinator {
         let runtime = MLXRuntime()
         loaded = .mlx(runtime)
         loading = loaded
-        try await runtime.loadRemote(modelId: modelId, revision: immutableRevision)
+        try await runtime.loadRemote(modelId: modelId, revision: immutableRevision, store: store)
       }
 
       try Task.checkCancellation()

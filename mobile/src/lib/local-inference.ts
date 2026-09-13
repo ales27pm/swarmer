@@ -195,7 +195,7 @@ function parseProcessProposal(value: unknown, summary: string): ToolProposalInpu
   };
 }
 
-function assertUnambiguousJson(text: string): void {
+export function assertUnambiguousJson(text: string): void {
   let offset = 0;
 
   function skipWhitespace() {

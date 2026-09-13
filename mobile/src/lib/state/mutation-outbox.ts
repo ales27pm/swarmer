@@ -1,6 +1,6 @@
 import * as SQLite from "expo-sqlite";
+import { openReplicaDatabase } from "@/lib/state/database-location";
 
-const DATABASE_NAME = "mongars-replica.db";
 const DELIVERY_ERROR = "delivery failed; retry requires the same idempotency key";
 const DELIVERY_TIMEOUT_ERROR = "delivery timed out; retry requires the same idempotency key";
 const INVALID_LOCAL_ERROR = "invalid local mutation; delivery blocked";
@@ -441,7 +441,7 @@ export class MutationOutbox {
   private databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
   constructor(options: MutationOutboxOptions = {}) {
-    this.openDatabase = options.openDatabase ?? (() => SQLite.openDatabaseAsync(DATABASE_NAME));
+    this.openDatabase = options.openDatabase ?? openReplicaDatabase;
     this.createId = options.createId ?? randomIdentifier;
     this.now = options.now ?? (() => new Date().toISOString());
     this.sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
@@ -478,7 +478,7 @@ export class MutationOutbox {
           ON mutation_outbox(origin, completed_at, created_at);
         `);
         return database;
-      });
+      }).catch((cause) => { this.databasePromise = null; throw cause; });
     }
     return this.databasePromise;
   }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { KeyboardInputGroup, KeyboardTextInput, ScreenShell } from "@/components/screen-shell";
 import { LocalModelPresets } from "@/components/local-model-presets";
@@ -13,7 +13,8 @@ import {
   SectionTitle,
   useAccessibilityAnnouncement,
 } from "@/components/swarm-ui";
-import { sendChat, submitToolProposal } from "@/lib/api/client";
+import { createLocalGoalPlanSession, sendChat, submitToolProposal, type GoalDetail, type SwarmPlanProposal } from "@/lib/api/client";
+import { buildLocalSwarmPlanPrompt, parseLocalSwarmPlan, type LocalSwarmPlanContext } from "@/lib/local-swarm-plan";
 import {
   buildLocalProposalPrompt,
   cancelLocalGeneration,
@@ -192,6 +193,11 @@ function ImportedModels({
           <Text selectable style={{ color: COLORS.subtle, fontSize: 11 }}>
             {formattedSize(model.sizeBytes)} · {model.modelId}
           </Text>
+          {model.source.startsWith("Documents/Models") ? (
+            <Text selectable style={{ color: COLORS.accent, fontSize: 12, lineHeight: 18 }}>
+              Conservé dans Fichiers · Sur mon iPhone › monGARS Swarm › Models
+            </Text>
+          ) : null}
         </Pressable>
       ))}
     </View>
@@ -202,10 +208,12 @@ function ProposalEvidence({
   proposal,
   rawText,
   tokenCount,
+  planMode = false,
 }: {
   proposal: LocalToolProposal | null;
   rawText: string | null;
   tokenCount: number | null;
+  planMode?: boolean;
 }) {
   if (rawText === null) return null;
   return (
@@ -217,7 +225,7 @@ function ProposalEvidence({
           selectable
           style={{ color: COLORS.warning, fontSize: 12, fontWeight: "800" }}
         >
-          Proposition locale — non vérifiée et non exécutée
+          {planMode ? "Sortie du plan initial local" : "Proposition locale — non vérifiée et non exécutée"}
         </Text>
         <Text
           selectable
@@ -245,7 +253,58 @@ function ProposalEvidence({
   );
 }
 
+type GoalPlanSession = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
+type GoalPlanSnapshot = { detail: GoalDetail; context: LocalSwarmPlanContext; fingerprint: string };
+
+async function readInitialGoal(session: GoalPlanSession, goalId: string): Promise<GoalPlanSnapshot> {
+  const [detail, bootstrap] = await Promise.all([session.getGoal(goalId), session.bootstrapSync()]);
+  await session.assertCurrent();
+  const goal = detail.goal;
+  if (goal.id !== goalId || goal.status !== "planning" || goal.started_at
+      || goal.step_count !== 0 || goal.model_call_count !== 0 || goal.replan_count !== 0
+      || detail.nodes.length || detail.result) {
+    throw new Error("Ce but a déjà démarré ou changé. Consulte son état avant de préparer un plan initial.");
+  }
+  const agents = bootstrap.agents.map((agent) => ({
+    id: agent.id, status: agent.status, skills: [...agent.skills].sort(), model_id: agent.model_id,
+    runtime: agent.runtime, supported_protocol_version: agent.supported_protocol_version,
+  })).sort((left, right) => left.id.localeCompare(right.id));
+  const context = { goal: {
+    objective: goal.objective, completion_criteria: goal.completion_criteria,
+    max_steps: goal.max_steps, step_count: goal.step_count, max_parallelism: goal.max_parallelism,
+    max_model_calls: goal.max_model_calls, model_call_count: goal.model_call_count,
+  }, agents };
+  return { detail, context, fingerprint: JSON.stringify({ goal, agents }) };
+}
+
+function LocalPlanEvidence({ plan }: { plan: SwarmPlanProposal }) {
+  return (
+    <Card>
+      <Text selectable style={{ color: COLORS.text, fontWeight: "800" }}>Plan initial à relire</Text>
+      <Text selectable style={{ color: COLORS.muted }}>{plan.rationale_summary}</Text>
+      {plan.nodes.map((node, index) => (
+        <View key={node.temporary_id} style={{ gap: 5, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 10 }}>
+          <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>{index + 1}. {node.title}</Text>
+          <Text selectable style={{ color: COLORS.muted }}>{node.objective}</Text>
+          <Text selectable style={{ color: COLORS.subtle }}>Compétence : {node.required_skill ?? "Synthèse"}</Text>
+          <Text selectable style={{ color: COLORS.subtle }}>Sortie attendue : {node.expected_output}</Text>
+          <Text selectable style={{ color: COLORS.subtle }}>Dépendances : {node.dependencies.join(", ") || "Aucune"}</Text>
+        </View>
+      ))}
+      <Text selectable style={{ color: COLORS.muted }}>Critères : {plan.completion_criteria.join(" · ") || "Objectif du but"}</Text>
+      <Text selectable style={{ color: COLORS.subtle }}>Parallélisme maximal : {plan.max_parallelism}</Text>
+    </Card>
+  );
+}
+
 export default function LocalModelScreen() {
+  const { goalId: parameter } = useLocalSearchParams<{ goalId?: string | string[] }>();
+  const value = Array.isArray(parameter) ? parameter[0] : parameter;
+  const goalId = value && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : null;
+  return <LocalModelContent key={value ?? "tool"} goalId={goalId} goalMode={parameter !== undefined} />;
+}
+
+function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMode: boolean }) {
   const router = useRouter();
   const nativeAvailable = isLocalInferenceAvailable();
   const generationVersion = useRef(0);
@@ -259,7 +318,7 @@ export default function LocalModelScreen() {
   const [modelId, setModelId] = useState("");
   const [revision, setRevision] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [maxTokens, setMaxTokens] = useState(String(DEFAULT_GENERATION_SETTINGS.maxTokens));
+  const [maxTokens, setMaxTokens] = useState(goalMode ? "512" : String(DEFAULT_GENERATION_SETTINGS.maxTokens));
   const [temperature, setTemperature] = useState(String(DEFAULT_GENERATION_SETTINGS.temperature));
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<BusyAction | null>(nativeAvailable ? "initial" : null);
@@ -272,6 +331,13 @@ export default function LocalModelScreen() {
   const [rawText, setRawText] = useState<string | null>(null);
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [proposal, setProposal] = useState<LocalToolProposal | null>(null);
+  const goalSession = useRef<GoalPlanSession | null>(null);
+  const startAttempted = useRef(false);
+  const localStartInFlight = useRef(false);
+  const [goalSnapshot, setGoalSnapshot] = useState<GoalPlanSnapshot | null>(null);
+  const [goalLoading, setGoalLoading] = useState(goalMode);
+  const [localPlan, setLocalPlan] = useState<{ plan: SwarmPlanProposal; snapshot: GoalPlanSnapshot } | null>(null);
+  const [startLocked, setStartLocked] = useState(false);
   useAccessibilityAnnouncement(notice);
 
   const runtimeModels = useMemo(
@@ -297,7 +363,28 @@ export default function LocalModelScreen() {
     setRawText(null);
     setTokenCount(null);
     setProposal(null);
+    setLocalPlan(null);
   }, []);
+
+  useEffect(() => {
+    if (!goalMode) return;
+    let active = true;
+    void (async () => {
+      try {
+        if (!goalId) throw new Error("L’identifiant du but est invalide.");
+        const session = await createLocalGoalPlanSession();
+        const snapshot = await readInitialGoal(session, goalId);
+        if (!active) return;
+        goalSession.current = session;
+        setGoalSnapshot(snapshot);
+      } catch (cause) {
+        if (active) setError(errorMessage(cause));
+      } finally {
+        if (active) setGoalLoading(false);
+      }
+    })();
+    return () => { active = false; goalSession.current = null; };
+  }, [goalId, goalMode]);
 
   useEffect(() => {
     if (!nativeAvailable) return;
@@ -323,7 +410,7 @@ export default function LocalModelScreen() {
           setRevision(restore ? saved.revision : nextRuntime === "mlx" ? preset.revision : "");
         }
         if (saved) {
-          setMaxTokens(String(saved.maxTokens));
+          setMaxTokens(goalMode ? "512" : String(saved.maxTokens));
           setTemperature(String(saved.temperature));
         }
         setNotice(
@@ -350,7 +437,7 @@ export default function LocalModelScreen() {
         .catch(() => undefined)
         .then(() => unloadLocalModel().catch(() => undefined));
     };
-  }, [nativeAvailable]);
+  }, [nativeAvailable, goalMode]);
 
   function selectRuntime(nextRuntime: LocalInferenceRuntime) {
     if (locked || loaded || nextRuntime === runtime) return;
@@ -532,6 +619,12 @@ export default function LocalModelScreen() {
       }
       setLoaded(true);
       setNotice("Modèle chargé localement. Aucune exécution n’a encore été demandée.");
+      // Remote MLX loading can materialize a durable model in Documents/Models.
+      // Listing failure must not contradict the native ready result above.
+      const refreshedModels = await listLocalModels().catch(() => null);
+      if (refreshedModels && mounted.current && loadVersion.current === requestVersion) {
+        setModels(refreshedModels);
+      }
     } catch (cause) {
       if (!mounted.current || loadVersion.current !== requestVersion) return;
       setError(errorMessage(cause));
@@ -542,8 +635,8 @@ export default function LocalModelScreen() {
   }
 
   async function generateProposal() {
-    const intent = prompt.trim();
-    if (locked || !loaded || !intent) return;
+    const intent = goalMode ? goalSnapshot?.detail.goal.objective : prompt.trim();
+    if (locked || !loaded || !intent || (goalMode && (goalLoading || startAttempted.current))) return;
     const version = generationVersion.current + 1;
     generationVersion.current = version;
     setBusy("generate");
@@ -551,13 +644,30 @@ export default function LocalModelScreen() {
     setRawText(null);
     setTokenCount(null);
     setProposal(null);
-    setNotice("Le modèle génère une proposition locale non vérifiée…");
+    setLocalPlan(null);
+    setNotice(goalMode ? "Vérification du but avant la génération du plan initial sur l’iPhone…" : "Le modèle génère une proposition locale non vérifiée…");
     try {
+      let snapshot: GoalPlanSnapshot | null = null;
+      if (goalMode) {
+        const session = goalSession.current;
+        if (!session || !goalId || !goalSnapshot) throw new Error("Le contexte authentifié du but n’est pas disponible.");
+        snapshot = await readInitialGoal(session, goalId);
+        if (!mounted.current || generationVersion.current !== version) return;
+        setGoalSnapshot(snapshot);
+        if (snapshot.fingerprint !== goalSnapshot.fingerprint) {
+          throw new Error("Le but ou les capacités ont changé. Relis le contexte actualisé, puis génère un nouveau plan.");
+        }
+        const currentCapabilities = await getLocalInferenceCapabilities();
+        if (!supportsRuntime(currentCapabilities, runtime)) throw new Error("Le runtime local choisi n’est plus disponible.");
+        await session.assertCurrent();
+        if (!mounted.current || generationVersion.current !== version) return;
+        setNotice("Le modèle génère le plan initial sur l’iPhone. Aucun démarrage serveur n’est envoyé…");
+      }
       const result = await generateLocalProposal({
-        prompt: buildLocalProposalPrompt(intent),
-        ...parseGenerationSettings(maxTokens, temperature),
+        prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent),
+        ...parseGenerationSettings(goalMode ? "512" : maxTokens, temperature),
       });
-      if (generationVersion.current !== version) return;
+      if (!mounted.current || generationVersion.current !== version) return;
       setRawText(result.text);
       setTokenCount(result.tokenCount);
       if (result.finishReason !== "stop") {
@@ -566,6 +676,12 @@ export default function LocalModelScreen() {
             ? "Génération annulée; aucune proposition n’a été soumise."
             : "La limite de génération a été atteinte; la sortie incomplète ne peut pas être soumise.",
         );
+        return;
+      }
+      if (snapshot) {
+        const plan = parseLocalSwarmPlan(result.text, snapshot.context);
+        setLocalPlan({ plan, snapshot });
+        setNotice("Plan initial généré sur l’iPhone. Relis les nœuds avant de démarrer explicitement; les évaluations et la suite restent sur Ubuntu.");
         return;
       }
       const parsed = parseLocalToolProposal(result.text);
@@ -578,7 +694,7 @@ export default function LocalModelScreen() {
     } catch (cause) {
       if (generationVersion.current !== version) return;
       setError(errorMessage(cause));
-      setNotice("La sortie locale est rejetée; aucune tâche ni exécution n’a été créée.");
+      setNotice(goalMode ? "Plan local rejeté; aucun démarrage n’a été envoyé." : "La sortie locale est rejetée; aucune tâche ni exécution n’a été créée.");
     } finally {
       if (generationVersion.current === version) setBusy(null);
     }
@@ -655,16 +771,55 @@ export default function LocalModelScreen() {
     }
   }
 
+  async function startWithLocalPlan() {
+    const session = goalSession.current;
+    if (locked || !goalId || !localPlan || !session || startAttempted.current || localStartInFlight.current) return;
+    localStartInFlight.current = true;
+    setBusy("submit");
+    setError(null);
+    try {
+      const snapshot = await readInitialGoal(session, goalId);
+      if (!mounted.current) return;
+      if (snapshot.fingerprint !== localPlan.snapshot.fingerprint) {
+        setGoalSnapshot(snapshot);
+        throw new Error("Le but ou les capacités ont changé depuis la génération. Génère un nouveau plan avant de démarrer.");
+      }
+      // Revalidate the exact reviewed output against the freshly authenticated context.
+      const plan = parseLocalSwarmPlan(rawText ?? "", snapshot.context);
+      await session.assertCurrent();
+      if (!mounted.current) return;
+      startAttempted.current = true;
+      setStartLocked(true);
+      const detail = await session.startGoal(goalId, { plan_proposal: plan, planner_source: "iphone_local" });
+      if (!mounted.current) return;
+      if (detail.goal.id !== goalId || detail.goal.planner_source !== "iphone_local") {
+        throw new Error("Le serveur n’a pas confirmé ce plan initial iPhone.");
+      }
+      setNotice("Le serveur a reçu le plan initial iPhone. Consulte le but pour suivre les agents et les évaluations sur Ubuntu.");
+      router.push({ pathname: "/goal/[id]", params: { id: goalId } });
+    } catch (cause) {
+      if (!mounted.current) return;
+      setError(errorMessage(cause));
+      invalidateProposal();
+      setNotice(startAttempted.current
+        ? "Le résultat du démarrage doit être vérifié dans le but. Aucun renvoi automatique ni nouveau démarrage depuis cet écran."
+        : "Le plan n’a pas été envoyé. Vérifie le but et son contexte avant de générer à nouveau.");
+    } finally {
+      localStartInFlight.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  }
+
   return (
     <ScreenShell
-      subtitle="Core ML, MLX et GGUF s’exécutent sur l’iPhone; toute action passe ensuite par le control plane authentifié."
+      subtitle={goalMode ? "Plan initial sur l’iPhone; agents, évaluations et suite du projet sur Ubuntu." : "Core ML, MLX et GGUF s’exécutent sur l’iPhone; toute action passe ensuite par le control plane authentifié."}
       testID="local-model-screen"
-      title="Modèle local"
+      title={goalMode ? "Plan initial local" : "Modèle local"}
     >
       <ErrorBanner message={error} />
       <Card>
         <Text selectable style={{ color: COLORS.warning, fontWeight: "800" }}>
-          Proposition seulement
+          {goalMode ? "Plan initial à valider" : "Proposition seulement"}
         </Text>
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
           Le module natif ne reçoit ni jeton, ni adresse du control plane. Une génération locale ne prouve jamais qu’une action a réussi.
@@ -673,6 +828,18 @@ export default function LocalModelScreen() {
           {notice}
         </Text>
       </Card>
+
+      {goalMode ? (
+        <Card>
+          <Text selectable style={{ color: COLORS.text, fontWeight: "800" }}>Objectif du but</Text>
+          <Text selectable style={{ color: COLORS.muted }}>{goalSnapshot?.detail.goal.objective ?? (goalLoading ? "Lecture authentifiée du but…" : "But indisponible")}</Text>
+          {goalSnapshot?.detail.goal.completion_criteria.map((criterion, index) => (
+            <Text key={index} selectable style={{ color: COLORS.subtle }}>• {criterion}</Text>
+          ))}
+          <Text selectable style={{ color: COLORS.muted }}>L’objectif est conservé tel qu’enregistré. Le plan local ne démarre rien avant ta validation.</Text>
+          {goalId ? <ActionButton disabled={locked} label="Consulter le but" onPress={() => router.push({ pathname: "/goal/[id]", params: { id: goalId } })} /> : null}
+        </Card>
+      ) : null}
 
       <SectionTitle title="Runtime" />
       <Card>
@@ -790,13 +957,15 @@ export default function LocalModelScreen() {
       <SectionTitle title="Réglages de génération" />
       <Card>
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-          256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime.
+          {goalMode
+            ? "Le plan utilise 512 jetons de sortie, la limite native actuelle. Une sortie tronquée est rejetée. La température reste réglable."
+            : "256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime."}
         </Text>
         <KeyboardInputGroup dismissKeyboard testID="local-model-generation-settings">
           <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–512)</Text>
           <KeyboardTextInput
             accessibilityLabel="Limite de jetons de sortie"
-            editable={!locked}
+            editable={!locked && !goalMode}
             keyboardType="number-pad"
             value={maxTokens}
             onChangeText={(value) => { invalidateProposal(); setMaxTokens(value); }}
@@ -815,10 +984,10 @@ export default function LocalModelScreen() {
         </KeyboardInputGroup>
       </Card>
 
-      <SectionTitle title="Intention" />
+      <SectionTitle title={goalMode ? "Génération du plan initial" : "Intention"} />
       <Card>
         <KeyboardInputGroup testID="local-model-composer">
-          <KeyboardTextInput
+          {goalMode ? null : <KeyboardTextInput
             accessibilityLabel="Intention pour le modèle local"
             editable={!locked}
             multiline
@@ -830,7 +999,7 @@ export default function LocalModelScreen() {
             placeholderTextColor={COLORS.subtle}
             style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 112, maxHeight: 200, padding: 12, textAlignVertical: "top" }}
             value={prompt}
-          />
+          />}
           {busy === "generate" ? (
             <ActionButton
               label="Annuler la génération"
@@ -839,8 +1008,8 @@ export default function LocalModelScreen() {
             />
           ) : (
             <ActionButton
-              disabled={locked || !loaded || !prompt.trim()}
-              label="Générer une proposition locale"
+              disabled={locked || !loaded || (goalMode ? goalLoading || !goalSnapshot || startLocked : !prompt.trim())}
+              label={goalMode ? "Générer le plan initial sur l’iPhone" : "Générer une proposition locale"}
               onPress={() => void generateProposal()}
               variant="accent"
             />
@@ -848,8 +1017,23 @@ export default function LocalModelScreen() {
         </KeyboardInputGroup>
       </Card>
 
-      <ProposalEvidence proposal={proposal} rawText={rawText} tokenCount={tokenCount} />
-      {proposal && isActionableToolProposal(proposal) ? (
+      <ProposalEvidence proposal={proposal} rawText={rawText} tokenCount={tokenCount} planMode={goalMode} />
+      {goalMode && localPlan ? (
+        <>
+          <LocalPlanEvidence plan={localPlan.plan} />
+          <Card>
+            <Text selectable style={{ color: COLORS.warning, lineHeight: 20 }}>Ce bouton transmet le plan initial au serveur authentifié et démarre les agents. Les évaluations et la suite du projet restent sur Ubuntu; les autorisations d’écriture restent applicables.</Text>
+            <ActionButton
+              busy={busy === "submit"}
+              disabled={locked || startLocked}
+              label="Démarrer avec ce plan local"
+              onPress={() => void startWithLocalPlan()}
+              variant="accent"
+            />
+          </Card>
+        </>
+      ) : null}
+      {!goalMode && proposal && isActionableToolProposal(proposal) ? (
         <Card>
           <Text selectable style={{ color: COLORS.warning, lineHeight: 20 }}>
             La soumission crée d’abord une tâche authentifiée, puis transmet cette proposition validée. Les règles serveur et accords uniques restent applicables.

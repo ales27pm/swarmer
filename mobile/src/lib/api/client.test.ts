@@ -9,6 +9,7 @@ import {
   cancelGoal,
   createGoal,
   createGoalFeedback,
+  createLocalGoalPlanSession,
   createIPhoneCapabilityApiSession,
   createEventStreamTicket,
   createTask,
@@ -27,6 +28,7 @@ import {
   type Bootstrap,
   type GoalDetail,
 } from "@/lib/api/client";
+import type { GoalStartInput, SwarmPlanProposal } from "@/lib/api/types";
 import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
 import type {
   CapabilityRequestDetail,
@@ -1255,6 +1257,94 @@ describe("goal API contract and connection fencing", () => {
     mockConnections({
       [CONNECTION_KEY]: storedConnection("https://control.example", "device-token"),
     });
+  });
+
+  function localInput(): GoalStartInput {
+    return { planner_source: "iphone_local", plan_proposal: {
+      schema_version: "1.0", objective: goalDetail.goal.objective,
+      rationale_summary: "Déléguer le projet", max_parallelism: 1,
+      completion_criteria: [...goalDetail.goal.completion_criteria],
+      nodes: [{ temporary_id: "build", node_type: "worker", title: "Construire",
+        objective: goalDetail.goal.objective, required_skill: "code.build_project",
+        dependencies: [], expected_output: "Sources et tests", priority: 1 }],
+    } };
+  }
+
+  it("keeps local-plan reads and explicit start on the captured pairing without exposing credentials", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockResolvedValueOnce(successfulJson(goalDetail))
+      .mockResolvedValueOnce(successfulJson(verifiedBootstrap))
+      .mockResolvedValueOnce(successfulJson(goalDetail));
+    expect(await session.getGoal("goal_1")).toEqual(goalDetail);
+    expect(await session.bootstrapSync()).toEqual(verifiedBootstrap);
+    await session.assertCurrent();
+    await expect(session.startGoal("goal_1", localInput())).resolves.toEqual(goalDetail);
+    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "startGoal"]);
+    expect(mockApplyBootstrap).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://control.example/goals/goal_1", "https://control.example/sync/bootstrap", "https://control.example/goals/goal_1/start",
+    ]);
+    await expect(session.startGoal("goal_1", localInput())).rejects.toThrow("déjà été tenté");
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["https://control.example", "https://other.example"])("fences local-plan submission after credentials change at %s", async (baseUrl) => {
+    const session = await createLocalGoalPlanSession();
+    mockConnections({ [CONNECTION_KEY]: storedConnection(baseUrl, "new-device-token") });
+    await expect(session.startGoal("goal_1", localInput())).rejects.toThrow("connexion jumelée a changé");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rejects local-plan context received after the pairing changes in flight", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockImplementationOnce(async () => {
+      mockConnections({ [CONNECTION_KEY]: storedConnection("https://control.example", "replacement-token") });
+      return successfulJson(goalDetail);
+    });
+    await expect(session.getGoal("goal_1")).rejects.toThrow("connexion jumelée a changé");
+  });
+
+  it("does not retry an uncertain local-plan start or replace it with server planning", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockRejectedValueOnce(new Error("connection lost"));
+    await expect(session.startGoal("goal_1", localInput())).rejects.toThrow("connection lost");
+    await expect(session.startGoal("goal_1", localInput())).rejects.toThrow("déjà été tenté");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(localInput()));
+  });
+
+  it("rejects malformed worker context without caching it or starting a goal", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockResolvedValueOnce(successfulJson({ agents: [] }));
+    await expect(session.bootstrapSync()).rejects.toThrow("contexte des agents est invalide");
+    expect(mockApplyBootstrap).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits the explicit iPhone plan on the goal route without requesting a server plan", async () => {
+    const plan: SwarmPlanProposal = {
+      schema_version: "1.0", objective: goalDetail.goal.objective,
+      rationale_summary: "Confier le projet à l’agent disponible.",
+      completion_criteria: ["Tests réels réussis"], max_parallelism: 1,
+      nodes: [{ temporary_id: "build", node_type: "worker", title: "Construire",
+        objective: goalDetail.goal.objective, required_skill: "code.build_project",
+        dependencies: [], expected_output: "Sources et tests", priority: 1 }],
+    };
+    request.mockResolvedValueOnce(successfulJson(goalDetail));
+    const input: GoalStartInput = { plan_proposal: plan, planner_source: "iphone_local" };
+    await startGoal("goal/one", input);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("https://control.example/goals/goal%2Fone/start", expect.objectContaining({
+      method: "POST", body: JSON.stringify(input),
+      headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
+    }));
+  });
+
+  it("rejects an incomplete or relabelled local plan before sending a request", async () => {
+    for (const input of [{ planner_source: "iphone_local" }, { plan_proposal: {}, planner_source: "ubuntu_local" }]) {
+      await expect(startGoal("goal_1", input as GoalStartInput)).rejects.toThrow("plan local");
+    }
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("uses the v0.12 goal routes and exact public request bodies", async () => {
