@@ -3,7 +3,7 @@ import { Pressable, Text, TextInput, View } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { useRouter } from "expo-router";
 
-import { ScreenShell } from "@/components/screen-shell";
+import { KeyboardInputGroup, KeyboardTextInput, ScreenShell } from "@/components/screen-shell";
 import { LocalModelPresets } from "@/components/local-model-presets";
 import {
   ActionButton,
@@ -792,56 +792,60 @@ export default function LocalModelScreen() {
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
           256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime.
         </Text>
-        <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–512)</Text>
-        <TextInput
-          accessibilityLabel="Limite de jetons de sortie"
-          editable={!locked}
-          keyboardType="number-pad"
-          value={maxTokens}
-          onChangeText={(value) => { invalidateProposal(); setMaxTokens(value); }}
-          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
-        />
-        <Text style={{ color: COLORS.text, fontWeight: "700" }}>Température (0–2)</Text>
-        <TextInput
-          accessibilityLabel="Température de génération"
-          editable={!locked}
-          keyboardType="decimal-pad"
-          value={temperature}
-          onChangeText={(value) => { invalidateProposal(); setTemperature(value); }}
-          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
-        />
-        <ActionButton label="Enregistrer les réglages" disabled={locked || !nativeAvailable} busy={busy === "save"} onPress={() => void saveSettings()} />
+        <KeyboardInputGroup dismissKeyboard testID="local-model-generation-settings">
+          <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–512)</Text>
+          <KeyboardTextInput
+            accessibilityLabel="Limite de jetons de sortie"
+            editable={!locked}
+            keyboardType="number-pad"
+            value={maxTokens}
+            onChangeText={(value) => { invalidateProposal(); setMaxTokens(value); }}
+            style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
+          />
+          <Text style={{ color: COLORS.text, fontWeight: "700" }}>Température (0–2)</Text>
+          <KeyboardTextInput
+            accessibilityLabel="Température de génération"
+            editable={!locked}
+            keyboardType="decimal-pad"
+            value={temperature}
+            onChangeText={(value) => { invalidateProposal(); setTemperature(value); }}
+            style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
+          />
+          <ActionButton label="Enregistrer les réglages" disabled={locked || !nativeAvailable} busy={busy === "save"} onPress={() => void saveSettings()} />
+        </KeyboardInputGroup>
       </Card>
 
       <SectionTitle title="Intention" />
       <Card>
-        <TextInput
-          accessibilityLabel="Intention pour le modèle local"
-          editable={!locked}
-          multiline
-          onChangeText={(value) => {
-            invalidateProposal();
-            setPrompt(value);
-          }}
-          placeholder="Décris une proposition à préparer localement"
-          placeholderTextColor={COLORS.subtle}
-          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 112, padding: 12, textAlignVertical: "top" }}
-          value={prompt}
-        />
-        {busy === "generate" ? (
-          <ActionButton
-            label="Annuler la génération"
-            onPress={() => void cancelGeneration()}
-            variant="danger"
+        <KeyboardInputGroup testID="local-model-composer">
+          <KeyboardTextInput
+            accessibilityLabel="Intention pour le modèle local"
+            editable={!locked}
+            multiline
+            onChangeText={(value) => {
+              invalidateProposal();
+              setPrompt(value);
+            }}
+            placeholder="Décris une proposition à préparer localement"
+            placeholderTextColor={COLORS.subtle}
+            style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 112, maxHeight: 200, padding: 12, textAlignVertical: "top" }}
+            value={prompt}
           />
-        ) : (
-          <ActionButton
-            disabled={locked || !loaded || !prompt.trim()}
-            label="Générer une proposition locale"
-            onPress={() => void generateProposal()}
-            variant="accent"
-          />
-        )}
+          {busy === "generate" ? (
+            <ActionButton
+              label="Annuler la génération"
+              onPress={() => void cancelGeneration()}
+              variant="danger"
+            />
+          ) : (
+            <ActionButton
+              disabled={locked || !loaded || !prompt.trim()}
+              label="Générer une proposition locale"
+              onPress={() => void generateProposal()}
+              variant="accent"
+            />
+          )}
+        </KeyboardInputGroup>
       </Card>
 
       <ProposalEvidence proposal={proposal} rawText={rawText} tokenCount={tokenCount} />

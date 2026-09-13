@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Text, TextInput, View } from "react-native";
+import { Text, View } from "react-native";
 
+import { KeyboardInputGroup, KeyboardTextInput } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle } from "@/components/swarm-ui";
 import { ApiError, getGoalConversation, type GoalConversationSession, type GoalDetail, type GoalReplyAttempt } from "@/lib/api/client";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
@@ -127,18 +128,20 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
         ))}
         {question ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning }}>Une précision est demandée. Votre réponse sera liée à cette question et permettra de poursuivre le travail sur le projet. L’application des fichiers dans votre espace de travail nécessitera une approbation distincte.</Text> : null}
         {notice ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.accent }}>{notice}</Text> : null}
-        <TextInput
-          accessibilityLabel={question ? "Réponse à la question du projet" : "Message pour le projet"}
-          placeholder={question ? "Votre réponse…" : "Précisez le besoin, demandez un changement ou poursuivez le projet…"}
-          placeholderTextColor={COLORS.subtle}
-          value={input}
-          onChangeText={setInput}
-          multiline
-          editable={!disabled && !sending && !pending}
-          style={{ minHeight: 104, padding: 12, color: COLORS.text, backgroundColor: COLORS.background, borderRadius: 10, textAlignVertical: "top" }}
-        />
-        <Text style={{ color: tooLong ? COLORS.danger : COLORS.subtle }}>{Array.from(input.trim()).length}/4000 caractères</Text>
-        <ActionButton label={pending ? "Réessayer le même envoi" : question ? "Répondre à la question" : "Envoyer au projet"} disabled={unavailable || (!pending && (!input.trim() || tooLong))} busy={sending} onPress={() => void send()} variant="accent" />
+        <KeyboardInputGroup testID="goal-conversation-composer">
+          <KeyboardTextInput
+            accessibilityLabel={question ? "Réponse à la question du projet" : "Message pour le projet"}
+            placeholder={question ? "Votre réponse…" : "Précisez le besoin, demandez un changement ou poursuivez le projet…"}
+            placeholderTextColor={COLORS.subtle}
+            value={input}
+            onChangeText={setInput}
+            multiline
+            editable={!disabled && !sending && !pending}
+            style={{ minHeight: 104, maxHeight: 200, padding: 12, color: COLORS.text, backgroundColor: COLORS.background, borderRadius: 10, textAlignVertical: "top" }}
+          />
+          <Text style={{ color: tooLong ? COLORS.danger : COLORS.subtle }}>{Array.from(input.trim()).length}/4000 caractères</Text>
+          <ActionButton label={pending ? "Réessayer le même envoi" : question ? "Répondre à la question" : "Envoyer au projet"} disabled={unavailable || (!pending && (!input.trim() || tooLong))} busy={sending} onPress={() => void send()} variant="accent" />
+        </KeyboardInputGroup>
         {disabled && !session ? <Text style={{ color: COLORS.subtle }}>Connectez-vous pour lire la conversation et envoyer un message.</Text> : null}
       </Card>
     </>
