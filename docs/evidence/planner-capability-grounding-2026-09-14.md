@@ -77,3 +77,51 @@ Independent reviews covered GoalManager/plan-validation transaction and accounti
 paths, then ContextBuilder/provider trust and schema boundaries. Neither review
 identified a material defect. These were static reviews with test inspection,
 not additional production or physical-device executions.
+
+## Deployment
+
+Source commit `581fb4cbc32a897b17f9b046dd1896eeb8b26370` was pushed without force
+and independently read back on both GitHub and Vibecode `main`. The subsequent
+evidence-only commit does not change the deployed application.
+
+Cutover completed at **03:26:56.186677 UTC**. Ubuntu runs API 0.14.2 from
+`/home/ales27pm/.local/share/swarmer-control-plane/releases/581fb4cbc32a897b17f9b046dd1896eeb8b26370-915ffb011df3`.
+The manifest SHA256 is
+`124a523fb117354d36591a1f6e7b293f75131b58bf31f1809c1bfd9750f0596d`;
+the transfer bundle SHA256 is
+`5cc88f2440f96340736f3da5c4e57a0d72b4a2d3c47407d3dc6c990394dbd237`.
+Git, wheel and installed application sources were compared exactly.
+
+Canonical initialization on a private coherent database copy preserved all 57
+tables, including `sqlite_sequence`, and every schema object and table content.
+The live database stayed at schema 24. The deployment did not run a migration or
+restore a database. Post-start protected-table comparison found no differences.
+
+The existing coupled API and project-worker services restarted with the same
+worker identity, source, credentials and model bindings. The legacy code-worker
+service remains disabled and inactive. Local and HTTPS health returned 200,
+authenticated worker GET returned 200, and unauthenticated private requests
+returned 401. The expired goal and its cancelled, never-claimed job matched the
+fresh terminal baseline exactly. No work or model call was started by deployment.
+
+A second read-only probe, independent of the deployment helper, passed at
+03:27:25 UTC. It verified the exact manifest and process executable, schema 24,
+both health endpoints, an online project worker with a 4.332-second heartbeat age,
+and the original job's zero attempts. Its private receipt is
+`/private/tmp/swarmer-capability-grounding-root-verification.json`.
+
+The stopped-state backup is retained in
+`/home/ales27pm/.local/state/swarmer-control-plane/backups/20260914T032650Z-api-hotfix-581fb4cb`;
+its SQLite SHA256 is
+`a0e19cbbc8b615feed991792d8006ed485f1f830abd9aaa5574fb07cac9a8e35`.
+Private stage, cutover and verification receipts are retained under
+`/private/tmp/swarmer-capability-grounding-release-20260914/backend-kit/release-581fb4cbc32a/`.
+
+[GitHub run 34802298833](https://github.com/ales27pm/swarmer/actions/runs/34802298833)
+did not start its required job because the account is locked for a billing issue.
+The passing local gates and live deployment checks are distinct from that CI run.
+
+This server correction applies to newly accepted plans. It does not establish
+successful implementation of the reported task or add new physical-iPhone
+validation beyond the boundaries recorded in
+[the preceding app release](shared-project-memory-release-2026-09-14.md).
