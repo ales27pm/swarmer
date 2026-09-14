@@ -189,3 +189,8 @@ It remains
 paired with Developer Mode enabled, but its development tunnel was disconnected.
 Automated component tests do not establish that the new screen works on that
 physical device. No catalogue activity or user job was started by these checks.
+
+After the user installed this TestFlight build, the IPv6 development tunnel was
+reconnected and catalogue navigation was exercised on the physical iPhone. The
+observations and a related agent-status correction are recorded in the
+[subsequent device verification](activity-catalog-iphone-2026-09-14.md).
