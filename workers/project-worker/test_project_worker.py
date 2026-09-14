@@ -1009,6 +1009,262 @@ def test_prompt_compaction_fails_instead_of_dropping_an_oversized_latest_user_re
     assert data == original
 
 
+NODE_EMPTY_TAP = (
+    "TAP version 13\n1..0\n# tests 0\n# suites 0\n# pass 0\n# fail 0\n"
+    "# cancelled 0\n# skipped 0\n# todo 0\n"
+)
+
+
+def node_check(command: list[str], output: str, *, code: int = 5) -> dict[str, Any]:
+    return {
+        "command": command,
+        "status": "failed",
+        "exit_code": code,
+        "output": output,
+        "duration_ms": 1,
+    }
+
+
+def capture_project_request(
+    monkeypatch: pytest.MonkeyPatch,
+    data: dict[str, Any],
+    response: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    captured: list[dict[str, Any]] = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            captured.append(json.loads(request.data))
+            return Response(
+                json.dumps(
+                    {
+                        "message": {"content": json.dumps(response or single_file_step())},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(data)
+    assert len(captured) == 1
+    assert (
+        sum(len(m["content"].encode()) for m in captured[0]["messages"]) <= worker.MAX_PROMPT_BYTES
+    )
+    return captured[0]
+
+
+def missing_node_manifest_payload() -> dict[str, Any]:
+    return {
+        **payload(),
+        "files": [{"path": "README.md", "content": "Create an inventory web application."}],
+        "checks": [
+            node_check(["npm", "run", "build"], "FileNotFoundError: package.json", code=1),
+            node_check(["node", "--test"], NODE_EMPTY_TAP),
+        ],
+    }
+
+
+def test_missing_node_manifest_prioritizes_creation_and_preserves_runtime_choice_and_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = capture_project_request(monkeypatch, missing_node_manifest_payload())
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "root package.json is missing" in task
+    assert "before adding tests" in task
+    assert "Python" in task and "static HTML/JS" in task
+    validator = Draft202012Validator(request["format"])
+    Draft202012Validator.check_schema(request["format"])
+    for runtime in ("node", "python_node"):
+        rejected = {
+            **step(runtime=runtime, edits=[{"path": "README.md", "content": "Later"}]),
+            "patches": [],
+            "focus_paths": [],
+        }
+        assert not validator.is_valid(rejected)
+        accepted = {
+            **rejected,
+            "edits": [
+                {
+                    "path": "package.json",
+                    "content": '{"scripts":{"build":"node --check app.js"}}',
+                }
+            ],
+        }
+        assert validator.is_valid(accepted)
+    python = {**single_file_step(), "patches": [], "focus_paths": []}
+    assert validator.is_valid(python)
+    read = {
+        **step(action="continue", runtime="node", edits=[], requested_checks=[]),
+        "patches": [],
+        "focus_paths": ["README.md"],
+    }
+    assert validator.is_valid(read)
+    capture_project_request(monkeypatch, missing_node_manifest_payload(), read)
+    assert all(next(iter(branch["properties"])) == "edits" for branch in request["format"]["oneOf"])
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"edits": [{"path": "README.md", "content": "Will create package later"}]},
+        {"edits": []},
+        {"patches": [{"path": "README.md", "old": "inventory", "new": "stock"}]},
+        {"deletions": ["README.md"]},
+    ],
+)
+def test_missing_node_manifest_rejects_model_that_ignores_creation_constraint(
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, Any],
+) -> None:
+    response = step(
+        runtime="node",
+        edits=[{"path": "package.json", "content": '{"private":true}'}],
+    )
+    response.update(changes)
+    data = missing_node_manifest_payload()
+    if response.get("patches"):
+        addresses = worker.addressed_patch_spans(worker.model_context(data), data)
+        identifier, address = next(iter(addresses.items()))
+        response["patches"] = [
+            {
+                "path": address["path"],
+                "span_id": identifier,
+                "new": "Changed documentation",
+            }
+        ]
+    with pytest.raises(worker.ModelStepError, match="package.json"):
+        capture_project_request(monkeypatch, data, response)
+
+
+@pytest.mark.parametrize("runtime", ["node", "python_node"])
+def test_missing_node_manifest_accepts_model_that_creates_it(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: str,
+) -> None:
+    response = step(
+        runtime=runtime, edits=[{"path": "package.json", "content": '{"private":true}'}]
+    )
+    capture_project_request(monkeypatch, missing_node_manifest_payload(), response)
+
+
+def test_real_empty_node_test_receipt_prioritizes_real_test_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "export function quantity(value) { return Number(value); }"
+    data = {
+        **payload(),
+        "files": [
+            {"path": "package.json", "content": '{"type":"module"}'},
+            {"path": "app.js", "content": source},
+        ],
+        "checks": [node_check(["node", "--test"], NODE_EMPTY_TAP)],
+    }
+    request = capture_project_request(monkeypatch, data)
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "Node test runner collected NO TESTS" in task
+    assert "node:test" in task and "*.test.js" in task and "*.test.mjs" in task
+    assert "real API" in task and "do not invent" in task
+    assert source in request["messages"][-1]["content"]
+    assert next(iter(request["format"]["oneOf"][0]["properties"])) == "edits"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["npm", "run", "build"],
+        ["npm", "install", "--ignore-scripts"],
+        ["python", "-m", "compileall", "-q", "."],
+    ],
+)
+def test_empty_node_tests_do_not_hide_a_failed_build_or_dependency_check(
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+) -> None:
+    diagnostic = "Required application module app.js is missing"
+    data = {
+        **payload(),
+        "files": [{"path": "package.json", "content": "{}"}],
+        "checks": [
+            node_check(command, diagnostic, code=1),
+            node_check(["node", "--test"], NODE_EMPTY_TAP),
+        ],
+    }
+    request = capture_project_request(monkeypatch, data)
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "Node test runner collected NO TESTS" not in task
+    assert diagnostic in task and "node --test" in task
+    assert next(iter(request["format"]["oneOf"][0]["properties"])) == "patches"
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        node_check(
+            ["node", "--test"],
+            NODE_EMPTY_TAP.replace("# tests 0", "# tests 1").replace("# skipped 0", "# skipped 1"),
+        ),
+        node_check(["node", "--test"], NODE_EMPTY_TAP.replace("# fail 0", "# fail 1")),
+        node_check(["node", "--test"], NODE_EMPTY_TAP.replace("# cancelled 0", "# cancelled 1")),
+        node_check(["node", "--test"], NODE_EMPTY_TAP.replace("# todo 0", "# todo 1")),
+        node_check(["node", "--test"], "not ok 1 - import failed\n" + NODE_EMPTY_TAP),
+        node_check(["node", "--test"], "Error: cannot import module"),
+        node_check(["node", "--test"], NODE_EMPTY_TAP, code=1),
+        node_check(["npm", "test"], NODE_EMPTY_TAP),
+        node_check(["node", "--test"], "# fail 1\n" + NODE_EMPTY_TAP),
+        {**node_check(["node", "--test"], NODE_EMPTY_TAP, code=0), "status": "passed"},
+    ],
+)
+def test_node_repair_does_not_misclassify_other_receipts_as_empty_tests(
+    monkeypatch: pytest.MonkeyPatch,
+    check: dict[str, Any],
+) -> None:
+    data = {
+        **payload(),
+        "files": [{"path": "app.js", "content": "export const x = 1;"}],
+        "checks": [check],
+    }
+    request = capture_project_request(monkeypatch, data)
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "Node test runner collected NO TESTS" not in task
+
+
+@pytest.mark.parametrize(
+    "files,check",
+    [
+        (
+            [{"path": "package.json", "content": "{}"}],
+            node_check(["npm", "run", "build"], "syntax error", code=1),
+        ),
+        (
+            [{"path": "app.py", "content": "print('hello')"}],
+            node_check(["python", "-m", "pytest", "-q"], "no tests ran"),
+        ),
+        (
+            [{"path": "README.md", "content": "Project"}],
+            {**node_check(["npm", "run", "build"], "ok", code=0), "status": "passed"},
+        ),
+    ],
+)
+def test_other_repairs_do_not_impose_a_node_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    files: list[dict[str, str]],
+    check: dict[str, Any],
+) -> None:
+    request = capture_project_request(monkeypatch, {**payload(), "files": files, "checks": [check]})
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "root package.json is missing" not in task
+    response = {
+        **step(runtime="node", edits=[{"path": "app.js", "content": "export const x=1;"}]),
+        "patches": [],
+        "focus_paths": [],
+    }
+    assert Draft202012Validator(request["format"]).is_valid(response)
+
+
 @pytest.mark.parametrize("displayed", ["app.py", "./app.py", "/workspace/project/app.py"])
 def test_source_fragment_uses_exact_runner_or_relative_traceback_paths(displayed: str) -> None:
     item = {"path": "app.py", "content": "line\n" * 3_000}

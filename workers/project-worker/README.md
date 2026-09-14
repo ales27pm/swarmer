@@ -114,6 +114,15 @@ Python projects provide pytest-compatible tests and may declare exact
 accepted; source builds, URL/git/local dependencies and custom indexes are denied.
 Node projects provide exact package versions, an npm `build` script and tests for
 Node's built-in `node --test` runner. Both profiles run for `python_node`.
+After a failed npm build with no root `package.json`, an iteration that retains
+`node` or `python_node` must create that manifest as its single file change.
+Source inspection remains available; Python applications serving static HTML/JS
+can retain the Python runtime without acquiring a Node dependency. A genuine
+empty Node TAP test run prioritizes new `node:test` files using the application's
+real API when no other check has failed. Skipped, cancelled, failing or ambiguous
+test reports stay on the normal repair path. These rules guide the next charged
+iteration; they do not prove
+feature completeness or bypass build/test checks and goal budgets.
 Dependency installation uses sanitized manifests, `npm --ignore-scripts`, and a
 disposable internal Docker network. A credential-free proxy allows CONNECT only
 to public IPs for pypi.org, files.pythonhosted.org and registry.npmjs.org. No project

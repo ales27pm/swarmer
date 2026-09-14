@@ -463,6 +463,33 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
     return spans
 
 
+def missing_node_manifest(payload: dict[str, Any]) -> bool:
+    return not any(item["path"] == "package.json" for item in payload["files"]) and any(
+        check.get("command") == ["npm", "run", "build"]
+        and check.get("status") == "failed"
+        and check.get("exit_code") not in {None, 0}
+        for check in payload["checks"]
+    )
+
+
+def node_collected_no_tests(check: dict[str, Any]) -> bool:
+    if (
+        check.get("command") != ["node", "--test"]
+        or check.get("status") != "failed"
+        or check.get("exit_code") != 5
+    ):
+        return False
+    output = str(check.get("output", ""))
+    if not re.search(r"(?m)^TAP version 13\r?$", output) or re.search(r"(?m)^\s*not ok\b", output):
+        return False
+    # Require one unambiguous empty TAP summary; skips, failures, cancellations,
+    # missing summaries and duplicate counters remain ordinary repair diagnostics.
+    return all(
+        re.findall(rf"(?m)^# {field} ([0-9]+)\r?$", output) == ["0"]
+        for field in ("tests", "pass", "fail", "cancelled", "skipped", "todo")
+    )
+
+
 def constrained_step_schema(
     schema: dict[str, Any],
     context: dict[str, Any],
@@ -495,6 +522,20 @@ def constrained_step_schema(
     else:
         mutation["properties"]["patches"]["maxItems"] = 0
     branches = [mutation]
+    if missing_node_manifest(payload):
+        node = copy.deepcopy(mutation)
+        node["properties"]["runtime"]["enum"] = ["node", "python_node"]
+        node["properties"]["edits"]["minItems"] = 1
+        node["properties"]["edits"]["maxItems"] = 1
+        node["properties"]["edits"]["items"]["properties"]["path"] = {
+            "type": "string",
+            "enum": ["package.json"],
+        }
+        for field in ("patches", "deletions"):
+            node["properties"][field]["maxItems"] = 0
+        python = copy.deepcopy(mutation)
+        python["properties"]["runtime"]["enum"] = ["python"]
+        branches = [node, python]
     if payload["files"]:
         read = copy.deepcopy(schema)
         read["properties"]["action"]["enum"] = ["continue"]
@@ -760,6 +801,13 @@ class ProjectGenerator:
             and re.search(r"(?m)^no tests ran(?: in [0-9.]+s)?\r?$", check["output"])
             for check in payload["checks"]
         )
+        needs_node_manifest = missing_node_manifest(payload)
+        needs_node_tests = any(
+            node_collected_no_tests(check) for check in payload["checks"]
+        ) and all(
+            check["status"] != "failed" or node_collected_no_tests(check)
+            for check in payload["checks"]
+        )
         schema = copy.deepcopy(STEP_SCHEMA)
         existing_paths = [item["path"] for item in payload["files"]]
         if existing_paths:
@@ -779,12 +827,34 @@ class ProjectGenerator:
                 schema["properties"]["edits"]["minItems"] = 1
             if needs_repair:
                 schema["properties"]["deletions"]["maxItems"] = 0
-            first_field = "patches" if payload["files"] and not needs_tests else "edits"
+            needs_creation = needs_tests or needs_node_manifest or needs_node_tests
+            first_field = "patches" if payload["files"] and not needs_creation else "edits"
             schema["properties"] = {
                 first_field: schema["properties"][first_field],
                 **schema["properties"],
             }
-        if needs_tests:
+        if needs_node_manifest:
+            current_task = (
+                "The actual npm build failed and the root package.json is missing. "
+                "If this application needs Node, create package.json in this iteration before "
+                "adding tests: one complete file in edits, with exact dependency versions and "
+                "a real npm build script. Keep runtime node or python_node only when needed. "
+                "Do not patch README.md again or merely promise the missing manifest. "
+                "If Python serves static HTML/JS assets without a Node build, keep runtime "
+                "python and implement that application instead; do not add Node just for assets. "
+                "Preserve the user's requirements and existing working source."
+            )
+        elif needs_node_tests:
+            current_task = (
+                "The actual Node test runner collected NO TESTS. Create real tests now using "
+                "node:test in new *.test.js or *.test.mjs files through edits. Exercise the "
+                "existing application's real API, requested operations and persistence. Read "
+                "the shown application source; do not invent a different API or add fake tests. "
+                "If that source is not visible, use focus_paths to read it first. Editing "
+                "README.md or package.json alone does not create tests. Preserve the user's "
+                "requirements and working behavior."
+            )
+        elif needs_tests:
             current_task = (
                 "The actual pytest run collected NO TESTS. Create pytest test files now using "
                 "edits with new tests/test_*.py paths and complete test code. Exercise the existing "
@@ -948,6 +1018,20 @@ class ProjectGenerator:
                     "Return a smaller complete JSON file-edit batch in the next iteration."
                 )
             step = parse_step(resolve_model_patches(transport._parse_json(content), addresses))
+            if (
+                needs_node_manifest
+                and step["runtime"] in {"node", "python_node"}
+                and not step["focus_paths"]
+                and (
+                    [edit["path"] for edit in step["edits"]] != ["package.json"]
+                    or step["patches"]
+                    or step["deletions"]
+                )
+            ):
+                raise ModelStepError(
+                    "The Node build has no root package.json. This repair must create exactly "
+                    "package.json, or read the existing source first. No edits were accepted."
+                )
             if len(step["edits"]) > 1:
                 raise ModelStepError(
                     "The model batch exceeded one full-file edit. No edits were accepted. "
