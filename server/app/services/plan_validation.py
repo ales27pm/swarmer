@@ -94,9 +94,12 @@ def _parse_json_object(text: str) -> Mapping[str, object]:
     return value
 
 
-def parse_swarm_plan_json(text: str) -> SwarmPlanProposal:
+def parse_swarm_plan_json(
+    text: str, *, available_skills: Sequence[str] | None = None
+) -> SwarmPlanProposal:
     proposal = _coerce_model(SwarmPlanProposal, _parse_json_object(text))
     _validate_project_plan_shape(proposal.nodes)
+    validate_worker_capabilities(proposal.nodes, available_skills=available_skills)
     return proposal
 
 
@@ -134,15 +137,35 @@ def _validate_worker_policy(node: SwarmPlanNodeProposal, policy: PermissionPolic
         )
 
 
+def validate_worker_capabilities(
+    nodes: Sequence[SwarmPlanNodeProposal], *, available_skills: Sequence[str] | None
+) -> None:
+    """Ground workers in an authoritative snapshot without changing the proposal.
+
+    None retains the legacy unknown-capability contract. An empty known snapshot
+    permits synthesis, but cannot authorize any worker capability.
+    """
+    if available_skills is None:
+        return
+    available = frozenset(available_skills)
+    for node in nodes:
+        if node.node_type is PlanNodeType.WORKER and node.required_skill not in available:
+            raise PlanValidationError(
+                f"node {node.temporary_id} requests a worker skill absent from available capabilities"
+            )
+
+
 def _validate_node_graph(
     nodes: Sequence[SwarmPlanNodeProposal],
     *,
     policy: PermissionPolicy,
     known_dependency_ids: frozenset[str] = frozenset(),
+    available_skills: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
     if len(nodes) > MAX_PLAN_NODES:
         raise PlanValidationError(f"plans cannot contain more than {MAX_PLAN_NODES} nodes")
     _validate_project_plan_shape(nodes)
+    validate_worker_capabilities(nodes, available_skills=available_skills)
 
     by_id: dict[str, SwarmPlanNodeProposal] = {}
     for node in nodes:
@@ -277,13 +300,14 @@ def validate_swarm_plan(
     policy: PermissionPolicy,
     max_nodes: int = MAX_PLAN_NODES,
     max_parallelism: int = MAX_PLAN_PARALLELISM,
+    available_skills: Sequence[str] | None = None,
 ) -> ValidatedSwarmPlan:
     proposal = _coerce_model(SwarmPlanProposal, raw)
     if len(proposal.nodes) > min(max_nodes, MAX_PLAN_NODES):
         raise PlanValidationError(f"plan exceeds the configured {max_nodes}-node budget")
     if proposal.max_parallelism > min(max_parallelism, MAX_PLAN_PARALLELISM):
         raise PlanValidationError("plan exceeds the configured parallelism budget")
-    order = _validate_node_graph(proposal.nodes, policy=policy)
+    order = _validate_node_graph(proposal.nodes, policy=policy, available_skills=available_skills)
     return ValidatedSwarmPlan(
         proposal=proposal,
         topological_order=order,
@@ -296,6 +320,7 @@ def validate_evaluation_decision(
     *,
     policy: PermissionPolicy,
     known_node_ids: Sequence[str] = (),
+    available_skills: Sequence[str] | None = None,
 ) -> ValidatedEvaluationDecision:
     decision = _coerce_model(EvaluationDecision, raw)
     if (
@@ -312,6 +337,7 @@ def validate_evaluation_decision(
         decision.suggested_new_nodes,
         policy=policy,
         known_dependency_ids=known,
+        available_skills=available_skills,
     )
     return ValidatedEvaluationDecision(
         decision=decision,

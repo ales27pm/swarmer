@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -49,8 +49,13 @@ from app.services.plan_validation import (
     PlanValidationError,
     validate_evaluation_decision,
     validate_swarm_plan,
+    validate_worker_capabilities,
 )
-from app.services.planner_provider import SwarmPlannerProvider, SwarmPlannerProviderError
+from app.services.planner_provider import (
+    SwarmPlannerProvider,
+    SwarmPlannerProviderError,
+    advertised_worker_skills,
+)
 from app.services.project_contracts import ProjectMemoryContext
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
@@ -485,7 +490,17 @@ class GoalManager:
         proposal, source, call_id = await self._obtain_plan(
             goal, GoalStartRequest(), maintenance_guard=maintenance_guard
         )
-        await self._append_replan_nodes(goal, proposal, source=source, model_call_id=call_id)
+        try:
+            await self._append_replan_nodes(goal, proposal, source=source, model_call_id=call_id)
+        except _PlannerProposalRejected:
+            if call_id is not None:
+                await self._record_planner_failure(
+                    goal_id,
+                    call_id,
+                    category="invalid_response",
+                    maintenance_guard=maintenance_guard,
+                )
+            raise
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """UPDATE goal_runs SET pending_message_revision=0 WHERE id=?
@@ -750,7 +765,12 @@ class GoalManager:
                 nodes or goal["status"] != "planning" or goal["started_at"] is not None
             ):
                 raise GoalManagerConflict("goal changed before its local plan could start")
-            if not nodes and goal["status"] == "planning" and memory_fingerprint is None:
+            if (
+                not nodes
+                and goal["status"] == "planning"
+                and memory_fingerprint is None
+                and request.plan_proposal is None
+            ):
                 goal = await self._mark_start_requested(
                     goal_run_id,
                     maintenance_guard=maintenance_guard,
@@ -1066,6 +1086,11 @@ class GoalManager:
                 goal_id,
                 purpose="planner",
                 additional_cards=tuple(additional_cards),
+                **(
+                    {"allowed_skills": await self._available_worker_skills() or []}
+                    if self.require_execution_workers
+                    else {}
+                ),
             )
             context_id = str(built.id)
             context_payload = built.model_payload()
@@ -1133,11 +1158,23 @@ class GoalManager:
                 )
             raise
         try:
+            presented_skills = (
+                advertised_worker_skills(context_payload)
+                if self.require_execution_workers
+                else None
+            )
             remaining = self._remaining_runtime_seconds(goal)
             if remaining <= 0:
                 raise TimeoutError("goal runtime budget exhausted")
             async with asyncio.timeout(remaining):
                 proposal = await self.planner.propose(context_payload)
+            try:
+                validate_worker_capabilities(proposal.nodes, available_skills=presented_skills)
+            except PlanValidationError as exc:
+                raise SwarmPlannerProviderError(
+                    "planner proposed a worker absent from its available capabilities",
+                    category="invalid_response",
+                ) from exc
         except TimeoutError as exc:
             changed = await self._record_model_timeout(
                 str(goal["id"]), call_id, maintenance_guard=maintenance_guard
@@ -1514,6 +1551,7 @@ class GoalManager:
                 await self._assert_local_memory_current(
                     str(goal["id"]), memory_context_fingerprint, db=db
                 )
+            await self._require_current_worker_capabilities_locked(db, proposal.nodes)
             current = await (
                 await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal["id"],))
             ).fetchone()
@@ -2428,26 +2466,31 @@ class GoalManager:
 
     async def _available_worker_skills(self) -> list[str] | None:
         """Current permitted capabilities, independent of temporarily occupied slots."""
-        scheduler = self.agent_dispatcher.scheduler
-        now = self.agent_dispatcher.clock()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN")
-            snapshot = await self.agent_dispatcher.worker_skill_policy.load_locked(
-                db, now=now.isoformat()
-            )
-            if snapshot is None:
-                return None
-            rows = await (
-                await db.execute(
-                    """SELECT status,skills_json,last_seen_at,supported_protocol_version
-                    FROM agents WHERE status IN ('online','busy')
-                    AND supported_protocol_version=?""",
-                    (SUPPORTED_AGENT_PROTOCOL,),
-                )
-            ).fetchall()
+            skills = await self._available_worker_skills_locked(db)
             # Context collection must not persist even an optional policy bootstrap.
             await db.rollback()
+        return skills
+
+    async def _available_worker_skills_locked(self, db: aiosqlite.Connection) -> list[str] | None:
+        """Read after the caller acquires its lock; never finish its transaction."""
+        scheduler = self.agent_dispatcher.scheduler
+        now = self.agent_dispatcher.clock()
+        snapshot = await self.agent_dispatcher.worker_skill_policy.load_locked(
+            db, now=now.isoformat()
+        )
+        if snapshot is None:
+            return None
+        rows = await (
+            await db.execute(
+                """SELECT status,skills_json,last_seen_at,supported_protocol_version
+                FROM agents WHERE status IN ('online','busy')
+                AND supported_protocol_version=?""",
+                (SUPPORTED_AGENT_PROTOCOL,),
+            )
+        ).fetchall()
         skills: set[str] = set()
         for row in rows:
             if not scheduler.is_fresh(dict(row), now=now):
@@ -2459,6 +2502,17 @@ class GoalManager:
                 raise ValueError("worker skills are not a string list")
             skills.update(set(declared) & SUPPORTED_AGENT_SKILLS & snapshot.allowed_skills)
         return sorted(skills)
+
+    async def _require_current_worker_capabilities_locked(
+        self, db: aiosqlite.Connection, proposals: Sequence[SwarmPlanNodeProposal]
+    ) -> None:
+        if not self.require_execution_workers:
+            return
+        available = await self._available_worker_skills_locked(db)
+        try:
+            validate_worker_capabilities(proposals, available_skills=available or [])
+        except PlanValidationError as exc:
+            raise _PlannerProposalRejected(str(exc)) from exc
 
     async def _evaluate_if_quiescent(
         self,
@@ -2608,6 +2662,9 @@ class GoalManager:
                 decision,
                 policy=self.permission_policy,
                 known_node_ids=context.known_node_ids,
+                available_skills=context.available_skills
+                if self.require_execution_workers
+                else None,
             )
         except TimeoutError:
             await self._record_model_timeout(
@@ -2667,6 +2724,20 @@ class GoalManager:
                 model_call_id=call_id,
                 maintenance_guard=maintenance_guard,
             )
+        except _PlannerProposalRejected:
+            await self._record_evaluator_failure(
+                goal_run_id,
+                EvaluatorProviderError(
+                    "evaluator worker capabilities changed before acceptance",
+                    category="invalid_response",
+                    diagnostic="graph",
+                ),
+                call_id=call_id,
+                conversation_revision=int(context.conversation_revision),
+                state_fingerprint=state_fingerprint,
+                maintenance_guard=maintenance_guard,
+            )
+            return
         except (GoalManagerConflict, GoalStateConflict) as exc:
             await self._finish_model_call(
                 call_id,
@@ -2910,6 +2981,7 @@ class GoalManager:
         count_replan: bool,
         now: str,
     ) -> None:
+        await self._require_current_worker_capabilities_locked(db, proposals)
         by_temp = {proposal.temporary_id: f"node_{uuid4().hex}" for proposal in proposals}
         known = {str(node["id"]) for node in existing}
         for proposal in proposals:
@@ -3334,6 +3406,12 @@ class GoalManager:
                     source=source,
                     model_call_id=call_id,
                 )
+            except _PlannerProposalRejected:
+                if call_id is not None:
+                    await self._record_planner_failure(
+                        goal_run_id, call_id, category="invalid_response"
+                    )
+                raise
             except BaseException:
                 if call_id is not None:
                     await self._finish_model_call(call_id, status="failed")
@@ -3397,6 +3475,7 @@ class GoalManager:
                 raise GoalManagerConflict("replan exceeds the goal step budget")
             if model_call_id is not None:
                 await self._require_current_model_call_locked(db, model_call_id, now=now)
+            await self._require_current_worker_capabilities_locked(db, proposal.nodes)
             if int(goal.get("pending_message_revision") or 0):
                 await db.execute(
                     """UPDATE plan_nodes SET status='skipped',updated_at=?,completed_at=?,

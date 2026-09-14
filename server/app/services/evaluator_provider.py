@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from copy import deepcopy
 from typing import Any, Literal, Protocol
 
@@ -16,6 +17,7 @@ from app.services.plan_validation import (
     parse_evaluation_json,
     validate_evaluation_decision,
 )
+from app.services.planner_provider import worker_node_array_schema
 from app.services.swarm_contracts import (
     EvaluationDecision,
     EvaluationStatus,
@@ -111,6 +113,7 @@ required_skill to distinguish synthesis from worker results; null means unknown 
 available_skills is the control plane's current fresh online-or-busy, protocol-compatible,
 policy-allowed worker capability snapshot. null means unknown; [] means none observed. A busy worker can still
 provide a skill. This snapshot proves availability, not execution, successful checks or approval.
+When available_skills is a list, never suggest a worker skill absent from that list.
 Do not infer missing capabilities from a planner's title when available_skills lists them.
 For a requested application, code.build_project can implement and check a private project;
 if it is available and implementation is missing, propose that work rather than asking the user
@@ -178,9 +181,14 @@ The Ubuntu control plane independently validates your proposal and remains autho
         self.timeout_seconds = timeout_seconds
 
     @staticmethod
-    def _response_format() -> dict[str, Any]:
+    def _response_format(available_skills: Sequence[str] | None = None) -> dict[str, Any]:
         schema = model_wire_schema(EvaluationDecision)
         definitions = schema.pop("$defs", {})
+        schema["properties"]["suggested_new_nodes"] = worker_node_array_schema(
+            schema["properties"]["suggested_new_nodes"],
+            definitions["SwarmPlanNodeProposal"],
+            available_skills=available_skills,
+        )
         # Pydantic's cross-field validator is not represented in its JSON schema.
         # Explicit alternatives expose the same status/question/node constraints
         # to local grammar decoding, before the unchanged authoritative parser.
@@ -208,6 +216,9 @@ The Ubuntu control plane independently validates your proposal and remains autho
         }
 
     async def evaluate(self, context: GoalEvaluationContext) -> EvaluationDecision:
+        available_skills = (
+            None if context.available_skills is None else tuple(context.available_skills)
+        )
         payload = {
             "model": self.model,
             "messages": [
@@ -225,7 +236,7 @@ The Ubuntu control plane independently validates your proposal and remains autho
             ],
             "temperature": 0.0,
             "stream": False,
-            "response_format": self._response_format(),
+            "response_format": self._response_format(available_skills),
         }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -278,6 +289,7 @@ The Ubuntu control plane independently validates your proposal and remains autho
                 decision,
                 policy=self.policy,
                 known_node_ids=context.known_node_ids,
+                available_skills=available_skills,
             )
         except PlanValidationError as exc:
             raise EvaluatorProviderError(

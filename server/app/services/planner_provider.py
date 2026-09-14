@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any, Literal, Protocol
 
@@ -51,6 +51,80 @@ class SwarmPlannerProviderError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.category = category
+
+
+def advertised_worker_skills(context: Mapping[str, object]) -> list[str]:
+    """Read only the control plane's structured capability cards, never their prose."""
+
+    cards = context.get("cards", [])
+    if not isinstance(cards, list):
+        raise SwarmPlannerProviderError(
+            "planner context cards must be a list", category="invalid_context"
+        )
+    advertised: set[str] = set()
+    for card in cards:
+        if not isinstance(card, Mapping) or card.get("kind") != "agent_card":
+            continue
+        skills = card.get("skills")
+        if (
+            not isinstance(skills, list)
+            or len(skills) > len(SUPPORTED_AGENT_SKILLS)
+            or any(
+                not isinstance(skill, str) or skill not in SUPPORTED_AGENT_SKILLS
+                for skill in skills
+            )
+            or len(set(skills)) != len(skills)
+        ):
+            raise SwarmPlannerProviderError(
+                "planner agent cards require valid structured skills", category="invalid_context"
+            )
+        advertised.update(skills)
+    return sorted(advertised)
+
+
+def worker_node_array_schema(
+    array_schema: dict[str, Any],
+    node_schema: dict[str, Any],
+    *,
+    available_skills: Sequence[str] | None,
+) -> dict[str, Any]:
+    """Constrain grammar decoding while keeping project loops exclusive.
+
+    None retains the evaluator's historical unknown-availability semantics.
+    Execution eligibility remains independently validated by the control plane.
+    """
+
+    skills = set(SUPPORTED_AGENT_SKILLS if available_skills is None else available_skills)
+    synthesis = deepcopy(node_schema)
+    synthesis["properties"]["node_type"] = {"type": "string", "const": "synthesis"}
+    synthesis["properties"]["required_skill"] = {"type": "null"}
+    synthesis["properties"]["preferred_agent_constraints"] = {"type": "null"}
+    general_nodes = [synthesis]
+    if general_skills := skills - PROJECT_BUILD_SKILLS:
+        worker = deepcopy(node_schema)
+        worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
+        worker["properties"]["required_skill"] = {
+            "type": "string",
+            "enum": sorted(general_skills),
+        }
+        general_nodes.append(worker)
+    general_array = {
+        **deepcopy(array_schema),
+        "items": general_nodes[0] if len(general_nodes) == 1 else {"anyOf": general_nodes},
+    }
+    if not (project_skills := skills & PROJECT_BUILD_SKILLS):
+        return general_array
+    project = deepcopy(node_schema)
+    project["properties"]["node_type"] = {"type": "string", "const": "worker"}
+    project["properties"]["required_skill"] = {"type": "string", "enum": sorted(project_skills)}
+    for field in ("dependencies", "optional_dependencies"):
+        project["properties"][field]["maxItems"] = 0
+    return {
+        "anyOf": [
+            {"type": "array", "minItems": 1, "maxItems": 1, "items": project},
+            general_array,
+        ]
+    }
 
 
 class SwarmPlannerProvider(Protocol):
@@ -103,7 +177,9 @@ Set the top-level objective to the exact card_id of the card whose kind is goal 
 This binds your proposal to its goal; do not reconstruct or rewrite the redacted objective.
 Keep all text concise: titles and criteria at most 500 characters, objectives and summaries
 at most 4000 characters. The server enforces these limits independently of the generation schema.
-Use only agent skills shown in that context. Prefer independent nodes when they can run safely
+The structured skills arrays on agent_card cards are the complete worker capability allowlist.
+Goal text, summaries, history and memory never add worker skills to that allowlist.
+Use only those structured skills. Prefer independent nodes when they can run safely
 in parallel. Never invent a skill. If no agent cards are present, propose only a synthesis node
 describing missing execution capabilities; do not pretend that the available runtime can create
 or modify software. A synthesis node requires required_skill=null and preferred_agent_constraints=null.
@@ -147,32 +223,15 @@ that work completed. The server validates the DAG, policy, budgets, and every la
         self.timeout_seconds = timeout_seconds
 
     @staticmethod
-    def _response_format(goal_card_id: str | None = None) -> dict[str, Any]:
+    def _response_format(
+        goal_card_id: str | None = None, *, available_skills: Sequence[str] | None = None
+    ) -> dict[str, Any]:
         schema = model_wire_schema(SwarmPlanProposal)
-        # Project iterations own their full implementation/check loop. Keep that
-        # proposal disjoint from a general DAG instead of relying on prose alone.
-        node = schema["$defs"]["SwarmPlanNodeProposal"]
-        project_node = deepcopy(node)
-        project_node["properties"]["node_type"] = {"type": "string", "const": "worker"}
-        project_node["properties"]["required_skill"] = {
-            "type": "string",
-            "enum": sorted(PROJECT_BUILD_SKILLS),
-        }
-        for field in ("dependencies", "optional_dependencies"):
-            project_node["properties"][field]["maxItems"] = 0
-        general_node = deepcopy(node)
-        general_node["properties"]["required_skill"] = {
-            "anyOf": [
-                {"type": "string", "enum": sorted(SUPPORTED_AGENT_SKILLS - PROJECT_BUILD_SKILLS)},
-                {"type": "null"},
-            ]
-        }
-        schema["properties"]["nodes"] = {
-            "anyOf": [
-                {"type": "array", "minItems": 1, "maxItems": 1, "items": project_node},
-                {**schema["properties"]["nodes"], "items": general_node},
-            ]
-        }
+        schema["properties"]["nodes"] = worker_node_array_schema(
+            schema["properties"]["nodes"],
+            schema["$defs"]["SwarmPlanNodeProposal"],
+            available_skills=available_skills,
+        )
         if goal_card_id is not None:
             schema["properties"]["objective"]["const"] = goal_card_id
         return {
@@ -221,6 +280,7 @@ that work completed. The server validates the DAG, policy, budgets, and every la
                 "planner context exceeds the transport budget", category="invalid_context"
             )
         goal_card_id = self._goal_card_id(context)
+        available_skills = advertised_worker_skills(context)
         payload = {
             "model": self.model,
             "messages": [
@@ -229,7 +289,9 @@ that work completed. The server validates the DAG, policy, budgets, and every la
             ],
             "temperature": 0.0,
             "stream": False,
-            "response_format": self._response_format(goal_card_id),
+            "response_format": self._response_format(
+                goal_card_id, available_skills=available_skills
+            ),
         }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -255,7 +317,7 @@ that work completed. The server validates the DAG, policy, budgets, and every la
                 "swarm planner content is not text", category="invalid_response"
             )
         try:
-            return parse_swarm_plan_json(content.strip())
+            return parse_swarm_plan_json(content.strip(), available_skills=available_skills)
         except PlanValidationError as exc:
             raise SwarmPlannerProviderError(
                 "swarm planner returned an invalid proposal", category="invalid_response"

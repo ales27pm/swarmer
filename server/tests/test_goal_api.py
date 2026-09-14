@@ -153,6 +153,23 @@ def test_goal_api_lifecycle_result_and_feedback_are_public_safe(
     paired_headers: dict[str, str],
     test_app: FastAPI,
 ) -> None:
+    registration = client.post(
+        "/agents/register",
+        headers=paired_headers,
+        json={
+            "name": "Workspace worker",
+            "endpoint": "https://worker.invalid",
+            "skills": ["workspace.list_dir"],
+        },
+    )
+    assert registration.status_code == 201
+    agent = registration.json()
+    heartbeat = client.post(
+        f"/agents/{agent['id']}/heartbeat",
+        headers={"Authorization": f"Bearer {agent['credential']}"},
+        json={"status": "online"},
+    )
+    assert heartbeat.status_code == 200
     objective = "Inspect the repository through a bounded worker"
     created = _create_goal(
         client,

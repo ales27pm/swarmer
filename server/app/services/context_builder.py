@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import aiosqlite
 
+from app.services.agent_card import SUPPORTED_AGENT_PROTOCOL, SUPPORTED_AGENT_SKILLS
 from app.services.agent_liveness import (
     DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
     agent_is_fresh,
@@ -72,20 +73,28 @@ class ContextCard:
     kind: str
     summary: str
     provenance_ids: tuple[str, ...]
+    skills: tuple[str, ...] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["provenance_ids"] = list(self.provenance_ids)
+        if self.skills is None:
+            value.pop("skills")
+        else:
+            value["skills"] = list(self.skills)
         return value
 
-    def as_model_dict(self) -> dict[str, str]:
+    def as_model_dict(self) -> dict[str, Any]:
         """Return only the bounded material presented to a model."""
 
-        return {
+        value: dict[str, Any] = {
             "card_id": self.card_id,
             "kind": self.kind,
             "summary": self.summary,
         }
+        if self.skills is not None:
+            value["skills"] = list(self.skills)
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +215,7 @@ class ContextBuilder:
         node_id: str | None = None,
         purpose: str = "planner",
         additional_cards: Sequence[ContextCard] = (),
+        allowed_skills: Sequence[str] | None = None,
     ) -> GoalContext:
         goal_run_id = _validated_identifier(goal_run_id, "goal_run_id")
         node_id = _validated_optional_identifier(node_id, "node_id")
@@ -240,7 +250,9 @@ class ContextBuilder:
                     goal_run_id,
                     limit=self.max_episode_items,
                 )
-                agents = await self._agents_locked(db, limit=self.max_agent_cards)
+                agents = await self._agents_locked(
+                    db, limit=self.max_agent_cards, allowed_skills=allowed_skills
+                )
                 failures = await self._failures_locked(db, goal_run_id, node_id)
             finally:
                 await db.rollback()
@@ -289,7 +301,7 @@ class ContextBuilder:
         candidates.extend(_episode_card(row) for row in episodes)
         candidates.extend(_memory_card(row) for row in memories)
         max_non_agent_cards = self.max_items if self.max_items is not None else len(candidates)
-        agent_candidates = [_agent_card(row) for row in agents]
+        agent_candidates = [_agent_card(row, allowed_skills=allowed_skills) for row in agents]
         minimum_context = tuple(_minimum_card(card) for card in candidates[:max_non_agent_cards])
         reserved_agents: list[ContextCard] = []
         for agent in agent_candidates:
@@ -384,12 +396,14 @@ class ContextBuilder:
         node_id: str | None = None,
         purpose: str = "planner",
         additional_cards: Sequence[ContextCard] = (),
+        allowed_skills: Sequence[str] | None = None,
     ) -> GoalContext:
         return await self.build(
             goal_run_id=goal_run_id,
             node_id=node_id,
             purpose=purpose,
             additional_cards=additional_cards,
+            allowed_skills=allowed_skills,
         )
 
     async def build_evaluation_context(
@@ -527,8 +541,20 @@ class ContextBuilder:
             if not isinstance(value, dict) or set(value) not in (
                 {"card_id", "kind", "summary"},
                 {"card_id", "kind", "summary", "provenance_ids"},
+                {"card_id", "kind", "summary", "skills"},
+                {"card_id", "kind", "summary", "provenance_ids", "skills"},
             ):
                 raise RuntimeError("stored context card is corrupted")
+            skills = value.get("skills")
+            if "skills" in value and (
+                value["kind"] != "agent_card"
+                or not isinstance(skills, list)
+                or not all(
+                    isinstance(item, str) and item in SUPPORTED_AGENT_SKILLS for item in skills
+                )
+                or len(set(skills)) != len(skills)
+            ):
+                raise RuntimeError("stored context agent capabilities are corrupted")
             provenances = value.get(
                 "provenance_ids",
                 raw_card_provenance.get(str(value["card_id"])),
@@ -543,6 +569,7 @@ class ContextBuilder:
                     kind=str(value["kind"]),
                     summary=str(value["summary"]),
                     provenance_ids=tuple(provenances),
+                    skills=tuple(skills) if skills is not None else None,
                 )
             )
         source_ids = provenance_payload.get("source_ids")
@@ -765,6 +792,7 @@ class ContextBuilder:
         db: aiosqlite.Connection,
         *,
         limit: int,
+        allowed_skills: Sequence[str] | None = None,
     ) -> list[aiosqlite.Row]:
         if limit == 0:
             return []
@@ -777,13 +805,16 @@ class ContextBuilder:
                    COALESCE(s.composite_score,0.0) AS observed_score
             FROM agents AS a
             LEFT JOIN agent_score_snapshots AS s ON s.agent_id=a.id
-            WHERE a.status IN ('online','busy','draining')
+            WHERE a.status IN ('online','busy') AND a.supported_protocol_version=?
             ORDER BY CASE a.status WHEN 'online' THEN 0 WHEN 'busy' THEN 1 ELSE 2 END,
                      observed_score DESC,a.id ASC
-            """
+            """,
+            (SUPPORTED_AGENT_PROTOCOL,),
         ) as cursor:
             async for row in cursor:
-                if agent_is_fresh(dict(row), now=now, timeout_seconds=self.offline_timeout_seconds):
+                if agent_is_fresh(
+                    dict(row), now=now, timeout_seconds=self.offline_timeout_seconds
+                ) and _permitted_agent_skills(row, allowed_skills):
                     agents.append(row)
                     if len(agents) == limit:
                         break
@@ -1026,8 +1057,17 @@ def _memory_card(row: aiosqlite.Row) -> ContextCard:
     )
 
 
-def _agent_card(row: aiosqlite.Row) -> ContextCard:
-    skills = _safe_json_string_list(row["skills_json"])
+def _permitted_agent_skills(
+    row: aiosqlite.Row, allowed_skills: Sequence[str] | None
+) -> tuple[str, ...]:
+    allowed = SUPPORTED_AGENT_SKILLS if allowed_skills is None else set(allowed_skills)
+    return tuple(
+        sorted(set(_safe_json_string_list(row["skills_json"])) & SUPPORTED_AGENT_SKILLS & allowed)
+    )
+
+
+def _agent_card(row: aiosqlite.Row, *, allowed_skills: Sequence[str] | None = None) -> ContextCard:
+    skills = _permitted_agent_skills(row, allowed_skills)
     card_version = safe_context_text(str(row["version"]), max_chars=64)
     summary = safe_context_text(
         f"Agent {row['name']}; status={row['status']}; runtime={row['runtime']}; "
@@ -1040,6 +1080,7 @@ def _agent_card(row: aiosqlite.Row) -> ContextCard:
         kind="agent_card",
         summary=summary,
         provenance_ids=(str(row["id"]),),
+        skills=skills,
     )
 
 
@@ -1064,6 +1105,8 @@ def _normalized_additional_cards(cards: Sequence[ContextCard]) -> tuple[ContextC
             raise TypeError("additional context cards must be ContextCard values")
         card_id = _validated_identifier(card.card_id, "card_id")
         kind = _validated_identifier(card.kind, "kind")
+        if kind == "agent_card" or card.skills is not None:
+            raise ValueError("additional cards cannot supply agent capabilities")
         if card_id in seen:
             raise ValueError("additional context card IDs must be unique")
         seen.add(card_id)
@@ -1105,6 +1148,7 @@ def _minimum_card(card: ContextCard) -> ContextCard:
         kind=card.kind,
         summary="…",
         provenance_ids=card.provenance_ids,
+        skills=card.skills,
     )
 
 
@@ -1131,6 +1175,7 @@ def _fit_card_for_payload(
             kind=card.kind,
             summary=safe_context_text(card.summary, max_chars=midpoint),
             provenance_ids=card.provenance_ids,
+            skills=card.skills,
         )
         if (
             _payload_tokens(_card_model_payload(purpose, (*prefix, candidate, *suffix)))

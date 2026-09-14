@@ -139,6 +139,25 @@ def test_waiting_goal_does_not_hide_later_ready_plan_at_recovery_limit(
     ready_id = _create(client, paired_headers)
     manager = test_app.state.goal_manager
     assert client.portal is not None
+    registration = client.post(
+        "/agents/register",
+        headers=paired_headers,
+        json={
+            "name": "Previously available reader",
+            "endpoint": "https://worker.invalid",
+            "skills": ["workspace.list_dir"],
+        },
+    )
+    assert registration.status_code == 201
+    agent = registration.json()
+    assert (
+        client.post(
+            f"/agents/{agent['id']}/heartbeat",
+            headers={"Authorization": f"Bearer {agent['credential']}"},
+            json={"status": "online"},
+        ).status_code
+        == 200
+    )
 
     async def crash_before_dispatch(*args: object, **kwargs: object) -> None:
         raise RuntimeError("simulated exit after plan commit")
@@ -156,6 +175,16 @@ def test_waiting_goal_does_not_hide_later_ready_plan_at_recovery_limit(
             )
     before = client.get(f"/goals/{ready_id}", headers=paired_headers).json()
     assert before["nodes"][0]["status"] == "ready"
+    # Capabilities existed when this plan was accepted. Later unavailability
+    # must not hide its durable recovery work behind a goal awaiting a worker.
+    assert (
+        client.post(
+            f"/agents/{agent['id']}/heartbeat",
+            headers={"Authorization": f"Bearer {agent['credential']}"},
+            json={"status": "offline"},
+        ).status_code
+        == 200
+    )
     with sqlite3.connect(test_app.state.settings.db_path) as db:
         db.execute(
             "UPDATE goal_runs SET updated_at='2000-01-01T00:00:00+00:00' WHERE id=?",
@@ -247,12 +276,14 @@ def test_online_agent_without_execution_skills_does_not_consume_goal_budget(
     assert finite_planner.calls == 0
 
 
-def test_explicit_manual_plan_remains_valid_without_registered_workers(
+def test_explicit_manual_worker_plan_is_rejected_without_registered_capabilities(
     client: TestClient,
     paired_headers: dict[str, str],
     finite_planner: _FinitePlanner,
+    test_app: FastAPI,
 ) -> None:
     goal_id = _create(client, paired_headers)
+    before = client.get(f"/goals/{goal_id}", headers=paired_headers).json()
 
     response = client.post(
         f"/goals/{goal_id}/start",
@@ -263,9 +294,9 @@ def test_explicit_manual_plan_remains_valid_without_registered_workers(
         },
     )
 
-    assert response.status_code == 200
-    detail = response.json()
-    assert detail["goal"]["status"] == "running"
-    assert detail["goal"]["model_call_count"] == 0
-    assert detail["nodes"][0]["status"] == "dispatched"
+    assert response.status_code == 409
+    assert "available capabilities" in response.json()["detail"]
+    assert client.get(f"/goals/{goal_id}", headers=paired_headers).json() == before
     assert finite_planner.calls == 0
+    with sqlite3.connect(test_app.state.settings.db_path) as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_jobs").fetchone() == (0,)

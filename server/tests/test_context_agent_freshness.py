@@ -100,7 +100,8 @@ async def test_stale_agent_does_not_consume_card_limit_or_enter_persisted_contex
             (NOW - timedelta(seconds=1)).astimezone(timezone(timedelta(hours=-4))).isoformat(),
             True,
         ),
-        ("draining", (NOW - timedelta(seconds=1)).isoformat(), True),
+        ("busy", (NOW - timedelta(seconds=1)).isoformat(), True),
+        ("draining", (NOW - timedelta(seconds=1)).isoformat(), False),
         ("offline", (NOW - timedelta(seconds=1)).isoformat(), False),
     ],
 )
@@ -213,6 +214,14 @@ def test_stale_worker_waiting_goal_does_not_hide_ready_goal_at_recovery_limit(
     _assert_waiting(_start(client, paired_headers, waiting_id))
     ready_id = _create(client, paired_headers)
     assert client.portal is not None
+    _stale_agent(test_app)
+    # The committed plan was valid before its worker disappeared during the crash.
+    with sqlite3.connect(test_app.state.settings.db_path) as db:
+        db.execute(
+            """UPDATE agents SET last_seen_at=?,supported_protocol_version=?
+            WHERE id='agent_stale'""",
+            (datetime.now(UTC).isoformat(), "mongars-worker-v0.9"),
+        )
 
     async def crash_before_dispatch(*args: object, **kwargs: object) -> None:
         raise RuntimeError("simulated exit after plan commit")
@@ -227,8 +236,8 @@ def test_stale_worker_waiting_goal_does_not_hide_ready_goal_at_recovery_limit(
                     plan_proposal=_plan(OBJECTIVE), planner_source=PlannerSource.MANUAL
                 ),
             )
-    _stale_agent(test_app)
     with sqlite3.connect(test_app.state.settings.db_path) as db:
+        db.execute("UPDATE agents SET last_seen_at='2000-01-01T00:00:00+00:00'")
         db.execute(
             "UPDATE goal_runs SET updated_at='2000-01-01T00:00:00+00:00' WHERE id=?", (waiting_id,)
         )

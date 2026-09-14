@@ -78,11 +78,13 @@ async def test_planner_wire_prioritizes_user_goal_over_legacy_generic_criterion(
                 "card_id": "agent:legacy:1",
                 "kind": "agent_card",
                 "summary": "status=online; skills=code.generate_python",
+                "skills": ["code.generate_python"],
             },
             {
                 "card_id": "agent:project:1",
                 "kind": "agent_card",
                 "summary": "status=online; skills=code.build_project",
+                "skills": ["code.build_project"],
             },
         ],
     }

@@ -320,6 +320,98 @@ async def test_ubuntu_evaluator_returns_only_a_validated_proposal(
     assert "remains authoritative" in payload["messages"][0]["content"]
 
 
+@pytest.mark.parametrize("skills", [[], ["code.build_project"], ["workspace.read_text"], None])
+def test_evaluator_schema_limits_workers_but_preserves_unknown_availability(
+    skills: list[str] | None,
+) -> None:
+    schema = UbuntuEvaluatorProvider._response_format(skills)["json_schema"]["schema"]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    for required_skill in ["code.build_project", "code.generate_python", "workspace.read_text"]:
+        raw = continue_decision()
+        assert isinstance(raw["suggested_new_nodes"], list)
+        raw["suggested_new_nodes"][0].update(required_skill=required_skill, dependencies=[])
+        assert validator.is_valid(raw) is (skills is None or required_skill in skills)
+    raw = continue_decision()
+    assert isinstance(raw["suggested_new_nodes"], list)
+    raw["suggested_new_nodes"][0].update(node_type="synthesis", required_skill=None)
+    assert validator.is_valid(raw)
+    assert validator.is_valid({**raw, "suggested_new_nodes": []})
+
+
+def test_evaluator_schema_preserves_project_exclusivity() -> None:
+    schema = UbuntuEvaluatorProvider._response_format(
+        ["code.build_project", "workspace.read_text"]
+    )["json_schema"]["schema"]
+    raw = continue_decision()
+    assert isinstance(raw["suggested_new_nodes"], list)
+    raw["suggested_new_nodes"][0].update(required_skill="code.build_project", dependencies=[])
+    assert Draft202012Validator(schema).is_valid(raw)
+    raw["suggested_new_nodes"].append(continue_decision()["suggested_new_nodes"][0])
+    assert not Draft202012Validator(schema).is_valid(raw)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skills", [[], ["code.build_project"], ["workspace.read_text"], None])
+async def test_evaluator_rejects_unadvertised_skill_without_retry_or_rewrite(
+    policy: PermissionPolicy,
+    skills: list[str] | None,
+) -> None:
+    context = evaluation_context()
+    context.available_skills = skills
+    post = AsyncMock(return_value=_response_for(json.dumps(continue_decision())))
+    provider = UbuntuEvaluatorProvider(
+        base_url="http://127.0.0.1:8711/v1", model="local-evaluator", policy=policy
+    )
+    with patch("httpx.AsyncClient.post", post):
+        if skills is None or "workspace.read_text" in skills:
+            decision = await provider.evaluate(context)
+            assert decision.suggested_new_nodes[0].required_skill == "workspace.read_text"
+        else:
+            with pytest.raises(EvaluatorProviderError) as raised:
+                await provider.evaluate(context)
+            assert raised.value.category == "invalid_response"
+            assert raised.value.diagnostic == "graph"
+    assert post.await_count == 1
+    assert post.await_args is not None
+    payload = post.await_args.kwargs["json"]
+    assert json.loads(payload["messages"][1]["content"])["available_skills"] == skills
+    schema = payload["response_format"]["json_schema"]["schema"]
+    assert Draft202012Validator(schema).is_valid(continue_decision()) is (
+        skills is None or "workspace.read_text" in skills
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluator_validates_against_the_skills_sent_before_http(
+    policy: PermissionPolicy,
+) -> None:
+    context = evaluation_context()
+    context.available_skills = ["code.build_project"]
+
+    async def changed_context(*args: object, **kwargs: object) -> httpx.Response:
+        assert context.available_skills is not None
+        context.available_skills.append("workspace.read_text")
+        return _response_for(json.dumps(continue_decision()))
+
+    post = AsyncMock(side_effect=changed_context)
+    provider = UbuntuEvaluatorProvider(
+        base_url="http://127.0.0.1:8711/v1", model="local-evaluator", policy=policy
+    )
+    with (
+        patch("httpx.AsyncClient.post", post),
+        pytest.raises(EvaluatorProviderError) as raised,
+    ):
+        await provider.evaluate(context)
+    assert raised.value.category == "invalid_response"
+    assert post.await_args is not None
+    payload = post.await_args.kwargs["json"]
+    assert json.loads(payload["messages"][1]["content"])["available_skills"] == [
+        "code.build_project"
+    ]
+    assert post.await_count == 1
+
+
 @pytest.mark.asyncio
 async def test_ubuntu_evaluator_receives_answers_and_prioritizes_them_over_old_claims(
     policy: PermissionPolicy,
