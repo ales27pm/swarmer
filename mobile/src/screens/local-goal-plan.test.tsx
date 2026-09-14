@@ -2,7 +2,7 @@ import { act, render, screen, userEvent } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 import LocalModelScreen from "@/../app/local-model";
-import { createLocalGoalPlanSession, sendChat, submitToolProposal, type Agent, type Bootstrap, type GoalDetail } from "@/lib/api/client";
+import { createLocalGoalPlanSession, sendChat, submitToolProposal, type Agent, type Bootstrap, type GoalDetail, type GoalMemoryContext } from "@/lib/api/client";
 import { buildLocalSwarmPlanPrompt } from "@/lib/local-swarm-plan";
 import { cancelLocalGeneration, generateLocalProposal, getLocalInferenceCapabilities, isLocalInferenceAvailable, listLocalModels, loadLocalModel, unloadLocalModel } from "@/lib/local-inference";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
@@ -26,6 +26,7 @@ jest.mock("@/lib/local-inference", () => ({
 
 type Session = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
 const getGoal = jest.fn<Session["getGoal"]>();
+const memoryContext = jest.fn<Session["memoryContext"]>();
 const bootstrapSync = jest.fn<Session["bootstrapSync"]>();
 const assertCurrent = jest.fn<Session["assertCurrent"]>();
 const startGoal = jest.fn<Session["startGoal"]>();
@@ -51,6 +52,13 @@ const agent: Agent = {
 const bootstrap: Bootstrap = {
   server_time: "2026-09-13T22:30:00Z", agents: [agent], tasks: [], approvals: [], tool_calls: [],
   conversations: [], pinned_memory: [], cursor: "1", counts: { tasks: 0, messages: 0, agents: 1, approvals_pending: 0, memory_items: 0, audit_events: 0 },
+};
+const memory: GoalMemoryContext = {
+  schema_version: "1.0", goal_id: "goal_crm", project_id: "project_crm", conversation_revision: 1,
+  base_revision_id: "revision_1", provider_fingerprint: "a".repeat(64), context_fingerprint: "b".repeat(64),
+  mode: "semantic", reason: "semantic_match", items: [{ id: "mem_1", source_id: "revision_1", summary: "CRM en Python, courriels en brouillon.", score: 0.8 }],
+  embedding: { configured: true, model: "embedding-model", model_revision: "c".repeat(40), storage: "ubuntu_sqlite" },
+  local_planning_eligible: true, planning_embedding_call_count: 0, recent_conversation: [],
 };
 const plan = {
   schema_version: "1.0", objective: detail.goal.objective, rationale_summary: "Construire puis vérifier le CRM.",
@@ -87,10 +95,11 @@ describe("initial local goal plan", () => {
     jest.resetAllMocks();
     mockParams = { goalId: "goal_crm" };
     getGoal.mockResolvedValue(detail);
+    memoryContext.mockResolvedValue(memory);
     bootstrapSync.mockResolvedValue(bootstrap);
     assertCurrent.mockResolvedValue();
     startGoal.mockResolvedValue({ ...detail, goal: { ...detail.goal, status: "running", planner_source: "iphone_local" } });
-    jest.mocked(createLocalGoalPlanSession).mockResolvedValue({ getGoal, bootstrapSync, assertCurrent, startGoal });
+    jest.mocked(createLocalGoalPlanSession).mockResolvedValue({ getGoal, memoryContext, bootstrapSync, assertCurrent, startGoal });
     jest.mocked(readLocalModelSettings).mockResolvedValue(null);
     jest.mocked(isLocalInferenceAvailable).mockReturnValue(true);
     jest.mocked(getLocalInferenceCapabilities).mockResolvedValue({ coreml: true, mlx: true, llamaCpp: true, platform: "ios" });
@@ -110,20 +119,87 @@ describe("initial local goal plan", () => {
     expect(loadLocalModel).not.toHaveBeenCalled();
     expect(generateLocalProposal).not.toHaveBeenCalled();
     expect(startGoal).not.toHaveBeenCalled();
+    expect(screen.getByText("Mémoire du projet · Ubuntu · SQLite")).toBeOnTheScreen();
+    expect(screen.getByText(/Recherche sémantique · 1 extrait/)).toBeOnTheScreen();
+    expect(screen.getByText(/Embeddings configurés sur Ubuntu : embedding-model/)).toBeOnTheScreen();
+  });
+
+  it("shows confirmed empty memory separately from retrieval failure", async () => {
+    memoryContext.mockResolvedValue({ ...memory, project_id: null, mode: "lexical", reason: "no_linked_project", items: [],
+      embedding: { configured: false, model: null, model_revision: null, storage: "ubuntu_sqlite" } });
+    await render(<LocalModelScreen />);
+    expect(await screen.findByText("Aucun projet lié : aucun historique disponible pour ce but.")).toBeOnTheScreen();
+    expect(screen.getByText(/Recherche lexicale · 0 extrait/)).toBeOnTheScreen();
+    expect(screen.getByText("Embeddings configurés sur Ubuntu : non configurés")).toBeOnTheScreen();
+  });
+
+  it("does not infer without a successful memory receipt", async () => {
+    memoryContext.mockRejectedValue(new Error("Mémoire indisponible"));
+    await render(<LocalModelScreen />);
+    expect(await screen.findByText("Mémoire indisponible")).toBeOnTheScreen();
+    expect(screen.queryByTestId("goal-memory-status")).not.toBeOnTheScreen();
+    expect(generateLocalProposal).not.toHaveBeenCalled();
+    expect(startGoal).not.toHaveBeenCalled();
+  });
+
+  it("shows and sends the latest CRM answer even when project memory is empty", async () => {
+    const answer = "Fiches clients, soumissions/projet, courriels, calendrier.";
+    memoryContext.mockResolvedValue({ ...memory, items: [], recent_conversation: [
+      { role: "assistant", content: "Quelles fonctionnalités ?" }, { role: "user", content: answer },
+    ] });
+    const user = await loadedScreen();
+    expect(screen.getByText("Dernière réponse utilisateur")).toBeOnTheScreen();
+    expect(screen.getByText(answer)).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" }));
+    await screen.findByText("Plan initial à relire");
+    const sent = JSON.parse(jest.mocked(generateLocalProposal).mock.calls[0][0].prompt.split("\n").at(-1)!);
+    expect(sent.recent_conversation.messages.at(-1)).toEqual({ role: "user", content: answer });
+    expect(sent.memory_context.excerpts).toEqual([]);
+  });
+
+  it("accepts only the server's traced embedding credits and re-reads the resulting goal", async () => {
+    const credited = { ...detail, goal: { ...detail.goal, model_call_count: 1, updated_at: "2026-09-13T22:30:01Z" } };
+    getGoal.mockResolvedValueOnce(detail).mockResolvedValue(credited);
+    memoryContext.mockResolvedValue({ ...memory, planning_embedding_call_count: 1 });
+    const user = await loadedScreen();
+    await user.press(screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" }));
+    await screen.findByText("Plan initial à relire");
+    expect(getGoal).toHaveBeenCalledTimes(4);
+    const sent = JSON.parse(jest.mocked(generateLocalProposal).mock.calls[0][0].prompt.split("\n").at(-1)!);
+    expect(sent.goal.model_call_count).toBe(1);
+    expect(sent.limits.remaining_model_calls).toBe(29);
+  });
+
+  it.each([false, true])("rejects untraced model calls even with eligibility=%s", async (eligible) => {
+    getGoal.mockResolvedValue({ ...detail, goal: { ...detail.goal, model_call_count: 2 } });
+    memoryContext.mockResolvedValue({ ...memory, local_planning_eligible: eligible, planning_embedding_call_count: 1 });
+    await render(<LocalModelScreen />);
+    expect(await screen.findByText(/n’est plus admissible/)).toBeOnTheScreen();
+    expect(generateLocalProposal).not.toHaveBeenCalled();
+  });
+
+  it("rejects a goal changed during memory retrieval", async () => {
+    getGoal.mockResolvedValueOnce(detail).mockResolvedValue({ ...detail, goal: { ...detail.goal, completion_criteria: ["Changé pendant la recherche"] } });
+    await render(<LocalModelScreen />);
+    expect(await screen.findByText(/Le but a changé pendant la lecture mémoire/)).toBeOnTheScreen();
+    expect(generateLocalProposal).not.toHaveBeenCalled();
   });
 
   it("generates from fresh context on-device, reviews actual nodes and only starts on the explicit second action", async () => {
     const user = await generatedScreen();
-    expect(getGoal).toHaveBeenCalledTimes(2);
+    expect(getGoal).toHaveBeenCalledTimes(4);
     expect(bootstrapSync).toHaveBeenCalledTimes(2);
-    expect(generateLocalProposal).toHaveBeenCalledWith({ prompt: buildLocalSwarmPlanPrompt({ goal: promptGoal, agents: [agent] }), maxTokens: 512, temperature: 0.1 });
+    expect(memoryContext).toHaveBeenCalledTimes(2);
+    expect(memoryContext).toHaveBeenCalledWith("goal_crm", detail.goal.updated_at);
+    expect(generateLocalProposal).toHaveBeenCalledWith({ prompt: buildLocalSwarmPlanPrompt({ goal: promptGoal, agents: [agent], memory }), maxTokens: 512, temperature: 0.1 });
     expect(screen.getByText("1. Construire le CRM Python")).toBeOnTheScreen();
     expect(startGoal).not.toHaveBeenCalled();
     expect(sendChat).not.toHaveBeenCalled();
     await user.press(screen.getByRole("button", { name: "Démarrer avec ce plan local" }));
     expect(startGoal).toHaveBeenCalledTimes(1);
-    expect(startGoal).toHaveBeenCalledWith("goal_crm", { plan_proposal: plan, planner_source: "iphone_local" });
-    expect(getGoal).toHaveBeenCalledTimes(3);
+    expect(startGoal).toHaveBeenCalledWith("goal_crm", { plan_proposal: plan, planner_source: "iphone_local", memory_context_fingerprint: memory.context_fingerprint });
+    expect(getGoal).toHaveBeenCalledTimes(6);
+    expect(memoryContext).toHaveBeenCalledTimes(3);
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_crm" } });
     expect(submitToolProposal).not.toHaveBeenCalled();
   });
@@ -161,6 +237,23 @@ describe("initial local goal plan", () => {
     await user.press(screen.getByRole("button", { name: "Démarrer avec ce plan local" }));
     expect(await screen.findByText(/ont changé depuis la génération/)).toBeOnTheScreen();
     expect(startGoal).not.toHaveBeenCalled();
+  });
+
+  it("requires a new review before inference when memory changes since the screen opened", async () => {
+    const user = await loadedScreen();
+    memoryContext.mockResolvedValue({ ...memory, context_fingerprint: "d".repeat(64) });
+    await user.press(screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" }));
+    expect(await screen.findByText(/Relis le contexte actualisé/)).toBeOnTheScreen();
+    expect(generateLocalProposal).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a reviewed plan if the memory receipt changes before start", async () => {
+    const user = await generatedScreen();
+    memoryContext.mockResolvedValue({ ...memory, context_fingerprint: "d".repeat(64) });
+    await user.press(screen.getByRole("button", { name: "Démarrer avec ce plan local" }));
+    expect(await screen.findByText(/ont changé depuis la génération/)).toBeOnTheScreen();
+    expect(startGoal).not.toHaveBeenCalled();
+    expect(screen.queryByText("Plan initial à relire")).not.toBeOnTheScreen();
   });
 
   it("rejects an invalidated pairing before start", async () => {

@@ -13,7 +13,7 @@ import {
   SectionTitle,
   useAccessibilityAnnouncement,
 } from "@/components/swarm-ui";
-import { createLocalGoalPlanSession, sendChat, submitToolProposal, type GoalDetail, type SwarmPlanProposal } from "@/lib/api/client";
+import { createLocalGoalPlanSession, sendChat, submitToolProposal, type GoalDetail, type GoalMemoryContext, type SwarmPlanProposal } from "@/lib/api/client";
 import { buildLocalSwarmPlanPrompt, parseLocalSwarmPlan, type LocalSwarmPlanContext } from "@/lib/local-swarm-plan";
 import {
   buildLocalProposalPrompt,
@@ -254,16 +254,30 @@ function ProposalEvidence({
 }
 
 type GoalPlanSession = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
-type GoalPlanSnapshot = { detail: GoalDetail; context: LocalSwarmPlanContext; fingerprint: string };
+type GoalPlanSnapshot = { detail: GoalDetail; context: LocalSwarmPlanContext & { memory: GoalMemoryContext }; fingerprint: string };
 
 async function readInitialGoal(session: GoalPlanSession, goalId: string): Promise<GoalPlanSnapshot> {
-  const [detail, bootstrap] = await Promise.all([session.getGoal(goalId), session.bootstrapSync()]);
+  const [before, bootstrap] = await Promise.all([session.getGoal(goalId), session.bootstrapSync()]);
+  await session.assertCurrent();
+  const structurallyInitial = (detail: GoalDetail) => detail.goal.id === goalId
+    && detail.goal.status === "planning" && !detail.goal.started_at
+    && detail.goal.step_count === 0 && detail.goal.replan_count === 0
+    && !detail.nodes.length && !detail.result;
+  if (!structurallyInitial(before)) {
+    throw new Error("Ce but a déjà démarré ou changé. Consulte son état avant de préparer un plan initial.");
+  }
+  const memory = await session.memoryContext(goalId, before.goal.updated_at);
+  // Retrieval can reserve one model call. Only the server's traced planning credits allow it.
+  const detail = await session.getGoal(goalId);
   await session.assertCurrent();
   const goal = detail.goal;
-  if (goal.id !== goalId || goal.status !== "planning" || goal.started_at
-      || goal.step_count !== 0 || goal.model_call_count !== 0 || goal.replan_count !== 0
-      || detail.nodes.length || detail.result) {
-    throw new Error("Ce but a déjà démarré ou changé. Consulte son état avant de préparer un plan initial.");
+  const logicalGoal = (value: GoalDetail["goal"]) => ({ ...value, updated_at: null, model_call_count: 0 });
+  if (!structurallyInitial(detail) || !memory.local_planning_eligible
+      || goal.model_call_count !== memory.planning_embedding_call_count
+      || before.goal.model_call_count > goal.model_call_count
+      || JSON.stringify(logicalGoal(before.goal)) !== JSON.stringify(logicalGoal(goal))
+      || (before.goal.model_call_count === goal.model_call_count && before.goal.updated_at !== goal.updated_at)) {
+    throw new Error("Le but a changé pendant la lecture mémoire ou n’est plus admissible à un plan initial. Consulte son état.");
   }
   const agents = bootstrap.agents.map((agent) => ({
     id: agent.id, status: agent.status, skills: [...agent.skills].sort(), model_id: agent.model_id,
@@ -273,8 +287,9 @@ async function readInitialGoal(session: GoalPlanSession, goalId: string): Promis
     objective: goal.objective, completion_criteria: goal.completion_criteria,
     max_steps: goal.max_steps, step_count: goal.step_count, max_parallelism: goal.max_parallelism,
     max_model_calls: goal.max_model_calls, model_call_count: goal.model_call_count,
-  }, agents };
-  return { detail, context, fingerprint: JSON.stringify({ goal, agents }) };
+  }, agents, memory };
+  return { detail, context, fingerprint: JSON.stringify({ goal, agents, memory: memory.context_fingerprint,
+    provider: memory.provider_fingerprint }) };
 }
 
 function LocalPlanEvidence({ plan }: { plan: SwarmPlanProposal }) {
@@ -655,7 +670,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         if (!mounted.current || generationVersion.current !== version) return;
         setGoalSnapshot(snapshot);
         if (snapshot.fingerprint !== goalSnapshot.fingerprint) {
-          throw new Error("Le but ou les capacités ont changé. Relis le contexte actualisé, puis génère un nouveau plan.");
+          throw new Error("Le but, la mémoire ou les capacités ont changé. Relis le contexte actualisé, puis génère un nouveau plan.");
         }
         const currentCapabilities = await getLocalInferenceCapabilities();
         if (!supportsRuntime(currentCapabilities, runtime)) throw new Error("Le runtime local choisi n’est plus disponible.");
@@ -782,7 +797,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       if (!mounted.current) return;
       if (snapshot.fingerprint !== localPlan.snapshot.fingerprint) {
         setGoalSnapshot(snapshot);
-        throw new Error("Le but ou les capacités ont changé depuis la génération. Génère un nouveau plan avant de démarrer.");
+        throw new Error("Le but, la mémoire ou les capacités ont changé depuis la génération. Génère un nouveau plan avant de démarrer.");
       }
       // Revalidate the exact reviewed output against the freshly authenticated context.
       const plan = parseLocalSwarmPlan(rawText ?? "", snapshot.context);
@@ -790,7 +805,8 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       if (!mounted.current) return;
       startAttempted.current = true;
       setStartLocked(true);
-      const detail = await session.startGoal(goalId, { plan_proposal: plan, planner_source: "iphone_local" });
+      const detail = await session.startGoal(goalId, { plan_proposal: plan, planner_source: "iphone_local",
+        memory_context_fingerprint: snapshot.context.memory.context_fingerprint });
       if (!mounted.current) return;
       if (detail.goal.id !== goalId || detail.goal.planner_source !== "iphone_local") {
         throw new Error("Le serveur n’a pas confirmé ce plan initial iPhone.");
@@ -837,6 +853,32 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
             <Text key={index} selectable style={{ color: COLORS.subtle }}>• {criterion}</Text>
           ))}
           <Text selectable style={{ color: COLORS.muted }}>L’objectif est conservé tel qu’enregistré. Le plan local ne démarre rien avant ta validation.</Text>
+          <Text selectable style={{ color: COLORS.subtle }}>Planificateur : iPhone · {runtime} · {loaded ? "modèle chargé" : "modèle non chargé"}</Text>
+          {modelId ? <Text selectable style={{ color: COLORS.subtle }}>{modelId}{revision ? ` @ ${revision}` : ""}</Text> : null}
+          {goalSnapshot?.context.memory ? (
+            <View testID="goal-memory-status" style={{ gap: 5 }}>
+              <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>Mémoire du projet · Ubuntu · SQLite</Text>
+              <Text selectable style={{ color: COLORS.muted }}>
+                Recherche {goalSnapshot.context.memory.mode === "semantic" ? "sémantique" : "lexicale"} · {goalSnapshot.context.memory.items.length} extrait(s)
+              </Text>
+              <Text selectable style={{ color: COLORS.subtle }}>
+                Embeddings configurés sur Ubuntu : {goalSnapshot.context.memory.embedding.configured
+                  ? (goalSnapshot.context.memory.embedding.model ?? "modèle configuré non précisé") : "non configurés"}
+                {goalSnapshot.context.memory.embedding.model_revision ? ` @ ${goalSnapshot.context.memory.embedding.model_revision}` : ""}
+              </Text>
+              {!goalSnapshot.context.memory.items.length ? (
+                <Text selectable style={{ color: COLORS.muted }}>{goalSnapshot.context.memory.reason === "no_linked_project"
+                  ? "Aucun projet lié : aucun historique disponible pour ce but."
+                  : "Aucun extrait pertinent retrouvé dans la mémoire de ce projet."}</Text>
+              ) : <Text selectable style={{ color: COLORS.subtle }}>Les extraits historiques complètent le but courant sans remplacer ses exigences.</Text>}
+              {goalSnapshot.context.memory.recent_conversation.some((message) => message.role === "user") ? (
+                <View style={{ gap: 5 }}>
+                  <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>Dernière réponse utilisateur</Text>
+                  <Text selectable style={{ color: COLORS.muted }}>{goalSnapshot.context.memory.recent_conversation.findLast((message) => message.role === "user")?.content}</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
           {goalId ? <ActionButton disabled={locked} label="Consulter le but" onPress={() => router.push({ pathname: "/goal/[id]", params: { id: goalId } })} /> : null}
         </Card>
       ) : null}

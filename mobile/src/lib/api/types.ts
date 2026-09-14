@@ -281,6 +281,29 @@ export type SwarmPlanProposal = {
 export type GoalStartInput = {
   plan_proposal: SwarmPlanProposal;
   planner_source: "iphone_local";
+  memory_context_fingerprint?: string;
+};
+
+export type GoalMemoryContext = {
+  schema_version: "1.0";
+  goal_id: string;
+  project_id: string | null;
+  conversation_revision: number;
+  base_revision_id: string | null;
+  provider_fingerprint: string;
+  context_fingerprint: string;
+  mode: "semantic" | "lexical";
+  reason: string;
+  items: { id: string; source_id: string; summary: string; score: number }[];
+  embedding: {
+    configured: boolean;
+    model: string | null;
+    model_revision: string | null;
+    storage: "ubuntu_sqlite";
+  };
+  local_planning_eligible: boolean;
+  planning_embedding_call_count: number;
+  recent_conversation: { role: "user" | "assistant"; content: string }[];
 };
 
 export type GoalFeedbackInput = {

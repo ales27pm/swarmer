@@ -28,7 +28,7 @@ import {
   type Bootstrap,
   type GoalDetail,
 } from "@/lib/api/client";
-import type { GoalStartInput, SwarmPlanProposal } from "@/lib/api/types";
+import type { GoalMemoryContext, GoalStartInput, SwarmPlanProposal } from "@/lib/api/types";
 import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
 import type {
   CapabilityRequestDetail,
@@ -1279,13 +1279,58 @@ describe("goal API contract and connection fencing", () => {
     expect(await session.bootstrapSync()).toEqual(verifiedBootstrap);
     await session.assertCurrent();
     await expect(session.startGoal("goal_1", localInput())).resolves.toEqual(goalDetail);
-    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "startGoal"]);
+    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "memoryContext", "startGoal"]);
     expect(mockApplyBootstrap).not.toHaveBeenCalled();
     expect(request.mock.calls.map(([url]) => String(url))).toEqual([
       "https://control.example/goals/goal_1", "https://control.example/sync/bootstrap", "https://control.example/goals/goal_1/start",
     ]);
     await expect(session.startGoal("goal_1", localInput())).rejects.toThrow("déjà été tenté");
     expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  const emptyMemory: GoalMemoryContext = {
+    schema_version: "1.0", goal_id: "goal_1", project_id: null, conversation_revision: 0,
+    base_revision_id: null, provider_fingerprint: "a".repeat(64), context_fingerprint: "b".repeat(64),
+    mode: "lexical", reason: "no_linked_project", items: [],
+    embedding: { configured: false, model: null, model_revision: null, storage: "ubuntu_sqlite" },
+    local_planning_eligible: true, planning_embedding_call_count: 0, recent_conversation: [],
+  };
+
+  it("retrieves planner memory at the exact goal version and submits its receipt with the reviewed plan", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockResolvedValueOnce(successfulJson(emptyMemory)).mockResolvedValueOnce(successfulJson(goalDetail));
+    expect(await session.memoryContext("goal_1", goalDetail.goal.updated_at)).toEqual(emptyMemory);
+    expect(request).toHaveBeenNthCalledWith(1, "https://control.example/goals/goal_1/memory-context", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ purpose: "planner", expected_goal_updated_at: goalDetail.goal.updated_at }),
+      headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
+    }));
+    const input = { ...localInput(), memory_context_fingerprint: emptyMemory.context_fingerprint };
+    await session.startGoal("goal_1", input);
+    expect(request.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(input));
+  });
+
+  it("fences memory receipts after re-pairing in flight and before any further memory request", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockImplementationOnce(async () => {
+      mockConnections({ [CONNECTION_KEY]: storedConnection("https://control.example", "replacement-token") });
+      return successfulJson(emptyMemory);
+    });
+    await expect(session.memoryContext("goal_1", goalDetail.goal.updated_at)).rejects.toThrow("connexion jumelée a changé");
+    await expect(session.memoryContext("goal_1", goalDetail.goal.updated_at)).rejects.toThrow("connexion jumelée a changé");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops on a memory conflict without blind retry or an empty-history fallback", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ detail: "goal changed" }) } as never);
+    await expect(session.memoryContext("goal_1", goalDetail.goal.updated_at)).rejects.toMatchObject({ status: 409 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(mockApplyBootstrap).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid memory provenance before starting", async () => {
+    await expect(startGoal("goal_1", { ...localInput(), memory_context_fingerprint: "not-a-digest" })).rejects.toThrow("plan local");
+    expect(request).not.toHaveBeenCalled();
   });
 
   it.each(["https://control.example", "https://other.example"])("fences local-plan submission after credentials change at %s", async (baseUrl) => {

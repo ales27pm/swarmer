@@ -106,7 +106,7 @@ from app.services.orchestrator_service import OrchestratorError, OrchestratorSer
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.planner_provider import UbuntuLLMPlannerProvider, UbuntuSwarmPlannerProvider
 from app.services.project_contracts import ProjectApplication, ProjectApplyRequest, ProjectPreview
-from app.services.project_memory import ProjectMemoryService
+from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.result_aggregator import ResultAggregator
 from app.services.state_service import StateConflict, StateService
@@ -117,6 +117,8 @@ from app.services.swarm_contracts import (
     GoalDetail,
     GoalFeedbackRecord,
     GoalFeedbackRequest,
+    GoalMemoryContextRequest,
+    GoalMemoryContextResponse,
     GoalMessageRequest,
     GoalMessagesResponse,
     GoalRecord,
@@ -399,6 +401,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     )
     if goal_manager.project_applications is not None:
         goal_manager.project_applications.memory = project_memory
+    goal_manager.project_memory = project_memory
     consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)
     agent_scoring = AgentScoringService(
         settings.db_path,
@@ -604,6 +607,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.swarm_planner = swarm_planner
     app.state.evaluator = evaluator
     app.state.goal_manager = goal_manager
+    app.state.project_memory = project_memory
     app.state.vector_projection = vector_projection
     app.state.websocket_notifications = websocket_notifications
     app.state.run_maintenance_cycle = run_distributed_runtime_maintenance_cycle
@@ -1336,6 +1340,26 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if detail is None:
             raise HTTPException(status_code=404, detail="goal not found")
         return detail
+
+    @app.post("/goals/{goal_id}/memory-context", response_model=GoalMemoryContextResponse)
+    async def goal_memory_context(
+        goal_id: str,
+        request: GoalMemoryContextRequest,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        # Paired devices share this control plane's goals; project scope is server-derived.
+        del principal
+        try:
+            context = await project_memory.retrieve_for_goal(
+                goal_id, request.purpose, expected_goal_updated_at=request.expected_goal_updated_at
+            )
+        except ProjectMemoryConflict as exc:
+            raise HTTPException(
+                status_code=404 if str(exc) == "goal not found" else 409, detail=str(exc)
+            ) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return context
 
     @app.get("/goals/{goal_id}/messages", response_model=GoalMessagesResponse)
     async def goal_messages(

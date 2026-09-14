@@ -194,6 +194,15 @@ describe("GoalDetailScreen", () => {
     expect(screen.queryByRole("button", { name: "Préparer le plan sur l’iPhone" })).not.toBeOnTheScreen();
   });
 
+  it("allows opening the eligibility check after a planning embedding call without starting the goal", async () => {
+    mockGetGoal.mockResolvedValue({ ...waitingForWorkers, goal: { ...waitingForWorkers.goal, started_at: null, model_call_count: 1 } });
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("button", { name: "Préparer le plan sur l’iPhone" }));
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/local-model", params: { goalId: "goal_1" } });
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
   it("renders only public goal, node, evaluator, and final-result evidence", async () => {
     const user = userEvent.setup();
     const privateDetail = {

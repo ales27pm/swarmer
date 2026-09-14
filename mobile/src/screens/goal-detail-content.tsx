@@ -531,7 +531,7 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
   return (
     <>
       {navigation.openLocalPlan && goal.status === "planning" && !goal.started_at
-        && goal.step_count === 0 && goal.model_call_count === 0 && goal.replan_count === 0
+        && goal.step_count === 0 && goal.replan_count === 0
         && controller.nodes.length === 0 && !controller.result ? (
           <ActionButton
             disabled={Boolean(busy)}

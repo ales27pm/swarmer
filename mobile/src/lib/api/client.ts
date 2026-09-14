@@ -11,6 +11,7 @@ import {
 } from "@/lib/api/project";
 
 import { notifyConnectionChanged } from "@/lib/connection-events";
+import { MEMORY_FINGERPRINT, parseGoalMemoryContext } from "@/lib/api/goal-memory";
 import {
   parseCodeProposalApplication,
   parseGoalCodeProposal,
@@ -54,6 +55,7 @@ import type {
   GoalCreateInput,
   GoalDetail,
   GoalFeedbackInput,
+  GoalMemoryContext,
   GoalRecord,
   GoalResult,
   GoalStartInput,
@@ -78,6 +80,7 @@ export type {
   GoalCreateInput,
   GoalDetail,
   GoalFeedbackInput,
+  GoalMemoryContext,
   GoalNodeStatus,
   GoalRecord,
   GoalResult,
@@ -881,7 +884,10 @@ export function getGoal(
 function goalStartBody(input?: GoalStartInput): string {
   if (input !== undefined && (
     !input || input.planner_source !== "iphone_local" || !input.plan_proposal
-    || Object.keys(input).some((key) => !["plan_proposal", "planner_source"].includes(key))
+    || Object.keys(input).some((key) => !["plan_proposal", "planner_source", "memory_context_fingerprint"].includes(key))
+    || (input.memory_context_fingerprint !== undefined && (
+      typeof input.memory_context_fingerprint !== "string" || !MEMORY_FINGERPRINT.test(input.memory_context_fingerprint)
+    ))
   )) throw new Error("La demande de plan local doit inclure sa proposition et sa provenance iPhone.");
   return JSON.stringify(input ?? {});
 }
@@ -909,6 +915,16 @@ export async function createLocalGoalPlanSession() {
   return {
     assertCurrent,
     getGoal: (goalId: string) => read<GoalDetail>(`/goals/${resourceId(goalId)}`),
+    memoryContext: async (goalId: string, expectedGoalUpdatedAt: string): Promise<GoalMemoryContext> => {
+      if (typeof expectedGoalUpdatedAt !== "string" || expectedGoalUpdatedAt.length > 100
+          || !Number.isFinite(Date.parse(expectedGoalUpdatedAt))) throw new Error("La version du but est invalide.");
+      await assertCurrent();
+      const value = await requestAt<unknown>(connection.baseUrl, `/goals/${resourceId(goalId)}/memory-context`, {
+        method: "POST", body: JSON.stringify({ purpose: "planner", expected_goal_updated_at: expectedGoalUpdatedAt }),
+      }, connection.token);
+      await assertCurrent();
+      return parseGoalMemoryContext(value, goalId);
+    },
     bootstrapSync: async (): Promise<Bootstrap> => {
       const value = await read<unknown>("/sync/bootstrap");
       if (!isBootstrapEnvelope(value)) throw new Error("Le contexte des agents est invalide.");

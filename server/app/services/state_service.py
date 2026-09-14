@@ -47,7 +47,7 @@ from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -640,6 +640,30 @@ CREATE TABLE IF NOT EXISTS project_memory_queries (
     completed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_project_memory_queries_goal ON project_memory_queries(goal_run_id,node_id);
+CREATE TABLE IF NOT EXISTS goal_memory_queries (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES coding_projects(id),
+    goal_run_id TEXT NOT NULL REFERENCES goal_runs(id),
+    purpose TEXT NOT NULL CHECK(purpose IN ('planner','evaluator')),
+    conversation_revision INTEGER NOT NULL,
+    base_revision_id TEXT REFERENCES project_revisions(id),
+    provider_identity TEXT NOT NULL,
+    logical_fingerprint TEXT NOT NULL,
+    query_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+    embedding_requested INTEGER NOT NULL DEFAULT 0 CHECK(embedding_requested IN (0,1)),
+    query_dimensions INTEGER,
+    query_vector_json TEXT,
+    query_vector_fingerprint TEXT,
+    context_json TEXT,
+    context_fingerprint TEXT,
+    error_category TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_goal_memory_queries_goal ON goal_memory_queries(goal_run_id,purpose);
+CREATE INDEX IF NOT EXISTS idx_goal_memory_queries_context ON goal_memory_queries(goal_run_id,purpose,context_fingerprint);
 CREATE TABLE IF NOT EXISTS goal_conversations (
     id TEXT PRIMARY KEY, active_goal_id TEXT NOT NULL REFERENCES goal_runs(id)
 );
@@ -935,8 +959,9 @@ class StateService:
                 """
             )
             if version < SCHEMA_VERSION:
-                await db.execute("DELETE FROM pairing_codes")
-                await db.execute("DELETE FROM pairing_candidates")
+                if version < 23:
+                    await db.execute("DELETE FROM pairing_codes")
+                    await db.execute("DELETE FROM pairing_candidates")
                 await db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             interrupted = [
                 (str(row[0]), str(row[1]), "running")

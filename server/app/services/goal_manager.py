@@ -7,7 +7,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import aiosqlite
@@ -51,6 +51,8 @@ from app.services.plan_validation import (
     validate_swarm_plan,
 )
 from app.services.planner_provider import SwarmPlannerProvider, SwarmPlannerProviderError
+from app.services.project_contracts import ProjectMemoryContext
+from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.result_aggregator import (
     ResultAggregator,
@@ -125,6 +127,10 @@ class _PlannerProposalRejected(GoalManagerConflict):
     """A returned proposal failed validation before any graph mutation."""
 
 
+class _ProjectMemoryContextChanged(GoalManagerConflict):
+    """Retrieval is in flight or its authoritative context changed; defer work."""
+
+
 class GoalManager:
     """Code-controlled goal/DAG runtime.
 
@@ -148,6 +154,7 @@ class GoalManager:
         permission_policy: PermissionPolicy,
         context_builder: Any | None = None,
         strategy_retrieval: Any | None = None,
+        project_memory: ProjectMemoryService | None = None,
         episode_memory: Any | None = None,
         result_aggregator: Any | None = None,
         default_max_steps: int = 20,
@@ -168,6 +175,7 @@ class GoalManager:
         self.permission_policy = permission_policy
         self.context_builder = context_builder
         self.strategy_retrieval = strategy_retrieval
+        self.project_memory = project_memory
         self.episode_memory = episode_memory
         self.result_aggregator = result_aggregator or ResultAggregator(db_path)
         self.instance_id = instance_id or f"goal-manager-{uuid4().hex}"
@@ -713,20 +721,28 @@ class GoalManager:
                 raise GoalManagerConflict("goal not found")
             if goal["status"] in self.graph.GOAL_TERMINAL:
                 raise GoalManagerConflict("terminal goal cannot be started")
-            await self._resume_evaluator_retry(goal_run_id, maintenance_guard=maintenance_guard)
-            await self._resume_pending_conversation(
-                goal_run_id, maintenance_guard=maintenance_guard
-            )
+            memory_fingerprint = request.memory_context_fingerprint
+            if memory_fingerprint is not None:
+                await self._assert_local_memory_current(goal_run_id, memory_fingerprint)
+            else:
+                await self._resume_evaluator_retry(goal_run_id, maintenance_guard=maintenance_guard)
+                await self._resume_pending_conversation(
+                    goal_run_id, maintenance_guard=maintenance_guard
+                )
             goal = await self.graph.get_goal(goal_run_id)
             if goal is None:
                 raise GoalManagerConflict("goal not found")
             nodes = await self.graph.list_nodes(goal_run_id)
-            if not nodes and goal["status"] == "planning":
+            if memory_fingerprint is not None and (
+                nodes or goal["status"] != "planning" or goal["started_at"] is not None
+            ):
+                raise GoalManagerConflict("goal changed before its local plan could start")
+            if not nodes and goal["status"] == "planning" and memory_fingerprint is None:
                 goal = await self._mark_start_requested(
                     goal_run_id,
                     maintenance_guard=maintenance_guard,
                 )
-            if self._runtime_expired(goal):
+            if memory_fingerprint is None and self._runtime_expired(goal):
                 await self._terminate_goal(
                     goal_run_id,
                     status="budget_exhausted",
@@ -756,7 +772,7 @@ class GoalManager:
                 refreshed_goal = await self.graph.get_goal(goal_run_id)
                 if refreshed_goal is None:
                     raise GoalManagerConflict("goal disappeared while its plan was generated")
-                if self._runtime_expired(refreshed_goal):
+                if memory_fingerprint is None and self._runtime_expired(refreshed_goal):
                     if call_id is not None:
                         await self._finish_model_call(
                             call_id,
@@ -779,6 +795,7 @@ class GoalManager:
                         proposal,
                         source=source,
                         model_call_id=call_id,
+                        memory_context_fingerprint=memory_fingerprint,
                         maintenance_guard=maintenance_guard,
                     )
                 except _PlannerProposalRejected:
@@ -818,6 +835,43 @@ class GoalManager:
             if detail is None:
                 raise RuntimeError("started goal disappeared")
             return detail
+
+    async def _assert_local_memory_current(
+        self,
+        goal_id: str,
+        fingerprint: str,
+        *,
+        db: aiosqlite.Connection | None = None,
+    ) -> None:
+        if self.project_memory is None:
+            raise GoalManagerConflict("project memory is unavailable")
+        try:
+            await self.project_memory.assert_context_current(goal_id, "planner", fingerprint, db=db)
+        except ProjectMemoryConflict as exc:
+            raise GoalManagerConflict(str(exc)) from exc
+
+    async def _shared_project_memory(
+        self, goal: Mapping[str, Any], purpose: Literal["planner", "evaluator"]
+    ) -> tuple[dict[str, Any], ProjectMemoryContext | None]:
+        if self.project_memory is None:
+            return dict(goal), None
+        try:
+            receipt = await self.project_memory.retrieve_for_goal(
+                str(goal["id"]), purpose, expected_goal_updated_at=str(goal["updated_at"])
+            )
+        except ProjectMemoryConflict as exc:
+            raise _ProjectMemoryContextChanged(str(exc)) from exc
+        # Retrieval may reserve one embedding call. Generation must see the
+        # resulting budget, and must not consume a different conversation.
+        refreshed = await self.graph.get_goal(str(goal["id"]))
+        if refreshed is None or int(refreshed.get("conversation_revision") or 0) != int(
+            receipt["conversation_revision"]
+        ):
+            raise _ProjectMemoryContextChanged("goal changed while project memory was retrieved")
+        memory = ProjectMemoryContext.model_validate(
+            {key: receipt[key] for key in ("mode", "reason", "items")}
+        )
+        return refreshed, memory
 
     async def _has_online_worker_locked(self, db: aiosqlite.Connection) -> bool:
         now = self.agent_dispatcher.clock()
@@ -914,6 +968,7 @@ class GoalManager:
                 raise GoalManagerConflict("manual plan source is missing")
             return request.plan_proposal, PlannerSource(request.planner_source), None
         goal_id = str(goal["id"])
+        goal, project_memory = await self._shared_project_memory(goal, "planner")
         additional_cards: list[ContextCard] = []
         recent = [
             message
@@ -975,6 +1030,23 @@ class GoalManager:
                                 provenance_ids=(source_id,),
                             )
                         )
+        if project_memory is not None:
+            remaining_chars = 2_400
+            for item in project_memory.items:
+                if remaining_chars <= 0:
+                    break
+                summary = safe_context_text(item.summary, max_chars=min(600, remaining_chars))
+                if not summary:
+                    continue
+                additional_cards.append(
+                    ContextCard(
+                        card_id=f"project-memory:{item.id}",
+                        kind="project_memory_hint",
+                        summary=summary,
+                        provenance_ids=(item.id, item.source_id),
+                    )
+                )
+                remaining_chars -= len(summary)
         context_id: str | None = None
         if self.context_builder is not None:
             built = await self.context_builder.build_for_goal(
@@ -1402,6 +1474,7 @@ class GoalManager:
         *,
         source: PlannerSource,
         model_call_id: str | None,
+        memory_context_fingerprint: str | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
@@ -1424,6 +1497,10 @@ class GoalManager:
             await db.execute("BEGIN IMMEDIATE")
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
+            if memory_context_fingerprint is not None:
+                await self._assert_local_memory_current(
+                    str(goal["id"]), memory_context_fingerprint, db=db
+                )
             current = await (
                 await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal["id"],))
             ).fetchone()
@@ -1538,6 +1615,7 @@ class GoalManager:
                     "planner_source": source.value,
                     "node_count": len(proposal.nodes),
                     "plan_fingerprint": validated.fingerprint,
+                    "memory_context_fingerprint": memory_context_fingerprint,
                 },
                 actor_type="control-plane",
                 actor_id="goal-manager",
@@ -2402,6 +2480,7 @@ class GoalManager:
                     return
         elapsed = int(active_runtime_seconds(goal))
         try:
+            goal, project_memory = await self._shared_project_memory(goal, "evaluator")
             context = GoalEvaluationContext(
                 schema_version="1.0",
                 goal_run_id=goal_run_id,
@@ -2436,6 +2515,7 @@ class GoalManager:
                 known_node_ids=[str(node["id"]) for node in nodes],
                 available_skills=await self._available_worker_skills(),
                 conversation_revision=int(goal.get("conversation_revision") or 0),
+                project_memory=project_memory,
                 conversation=[
                     EvaluationConversationMessage.model_validate(message)
                     for message in await self.recent_conversation(goal_run_id)
@@ -2450,9 +2530,16 @@ class GoalManager:
             builder = self.context_builder or ContextBuilder(self.db_path, max_tokens=2_048)
             context, recorded = await builder.build_evaluation_context(
                 context,
-                provenance_ids=(goal_run_id, *(str(node["id"]) for node in nodes)),
+                provenance_ids=(
+                    goal_run_id,
+                    *(str(node["id"]) for node in nodes),
+                ),
             )
             context_id = str(recorded.id)
+        except _ProjectMemoryContextChanged:
+            # A concurrent retrieval or reply is not a malformed model context.
+            # Maintenance will retry the current state without a manual pause.
+            return
         except (TypeError, ValueError, RuntimeError, aiosqlite.Error):
             await self._record_evaluator_failure(
                 goal_run_id,

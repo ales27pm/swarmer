@@ -85,6 +85,30 @@ test output are not indexed. Content hashes, embedding model revision, provider,
 prefixes, and vector dimensions prevent reuse of incompatible vectors. Restarted
 processes can reuse persisted query receipts and compatible embeddings.
 
+The iPhone MLX planner, Ubuntu planner, evaluator, and project workers retrieve
+from this same project-scoped projection. Embeddings and vector storage stay on
+Ubuntu; the phone receives bounded historical excerpts and generates its plan
+locally. This does not enable the separate general or episodic embedding stores.
+The local-plan screen identifies the embedding model, actual retrieval mode,
+and number of received excerpts. A new goal without a linked project returns
+an explicit `no_linked_project` result with no items.
+
+`POST /goals/{goal_id}/memory-context` requires device authentication and the
+expected goal update timestamp. The server derives the project and search query
+from authoritative goal/conversation records. Planning and evaluation retrievals
+have durable receipts, separate from worker-node receipts. The response binds
+the provider, conversation revision, project revision, and selected content to
+a fingerprint. The phone includes this fingerprint when starting its plan;
+the server checks it before starting and again in the plan-write transaction.
+Changed context rejects the plan without creating nodes or marking it started.
+Successful receipt validation is recorded with the accepted plan.
+
+Historical excerpts cannot override the objective, current user answers or
+execution evidence. Planner hints use at most 2,400 characters. The evaluator
+includes hints only in space left after its current goal, conversation and
+worker evidence. Neither local inference nor a retrieved historical summary
+is evidence that a worker executed or a check passed.
+
 An uncached retrieval reserves one model-call credit before its bounded embedding
 request, leaving a credit for generation. Cached retrieval does not charge again.
 Missing embeddings, exhausted retrieval budget, or provider failure use explicitly
@@ -172,7 +196,11 @@ source on the host.
 
 Schema 22 adds project revisions, conversation linkage/messages, reply fencing,
 and active-runtime pause accounting. Schema 23 adds private project memory and
-idempotent retrieval receipts. Back up the stopped database, environment,
+idempotent retrieval receipts. Schema 24 adds `goal_memory_queries` for shared
+planner/evaluator retrieval receipts and preserves existing pairing records.
+The schema-23 server cannot reopen schema 24: after accepting this migration,
+recover forward with a compatible server; do not perform a code-only rollback.
+Back up the stopped database, environment,
 policy, and release link before cutover; rehearse migration and foreign-key/
 integrity checks against a copy. An older worker-policy epoch continues to deny
 the new skill until explicit reload. Enable only the project worker after its

@@ -208,6 +208,35 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /goals/{goal_id}/memory-context:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    post:
+      tags: [Goals]
+      summary: Retrieve bounded project memory for the current goal
+      description: |
+        Reads only the goal's linked project and current conversation. May reserve
+        one bounded embedding call while preserving a generation credit; repeated
+        identical requests reuse the server receipt. Does not create a project or
+        plan node. Historical hints cannot override current user answers. The
+        context fingerprint must remain current when starting an iPhone plan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalMemoryContextRequest'}
+      responses:
+        '200':
+          description: Current project memory, conversation and embedding provenance
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalMemoryContextResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /goals/{goal_id}/start:
     parameters:
       - $ref: '#/components/parameters/GoalId'
@@ -2091,6 +2120,204 @@ components:
         planner_source:
           type: [string, 'null']
           enum: [iphone_local, manual, null]
+        memory_context_fingerprint:
+          type: [string, 'null']
+          pattern: '^[a-f0-9]{64}$'
+      allOf:
+        - if:
+            required: [memory_context_fingerprint]
+            properties:
+              memory_context_fingerprint: {type: string}
+          then:
+            required: [plan_proposal, planner_source]
+            properties:
+              planner_source: {const: iphone_local}
+    GoalMemoryContextRequest:
+      properties:
+        purpose:
+          type: string
+          enum:
+          - planner
+          - evaluator
+          title: Purpose
+        expected_goal_updated_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Expected Goal Updated At
+      additionalProperties: false
+      type: object
+      required:
+      - purpose
+      - expected_goal_updated_at
+      title: GoalMemoryContextRequest
+    GoalMemoryContextResponse:
+      properties:
+        mode:
+          type: string
+          enum:
+          - semantic
+          - lexical
+          title: Mode
+        reason:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Reason
+        items:
+          items:
+            $ref: '#/components/schemas/ProjectMemoryItem'
+          type: array
+          maxItems: 4
+          title: Items
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+          default: '1.0'
+        goal_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Id
+        project_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Project Id
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        base_revision_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Base Revision Id
+        provider_fingerprint:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Provider Fingerprint
+        context_fingerprint:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Context Fingerprint
+        embedding:
+          $ref: '#/components/schemas/GoalMemoryEmbeddingStatus'
+        local_planning_eligible:
+          type: boolean
+          title: Local Planning Eligible
+        planning_embedding_call_count:
+          type: integer
+          minimum: 0.0
+          title: Planning Embedding Call Count
+        recent_conversation:
+          items:
+            $ref: '#/components/schemas/EvaluationConversationMessage'
+          type: array
+          maxItems: 40
+          title: Recent Conversation
+      additionalProperties: false
+      type: object
+      required:
+      - mode
+      - reason
+      - items
+      - goal_id
+      - project_id
+      - conversation_revision
+      - base_revision_id
+      - provider_fingerprint
+      - context_fingerprint
+      - embedding
+      - local_planning_eligible
+      - planning_embedding_call_count
+      title: GoalMemoryContextResponse
+    ProjectMemoryItem:
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Id
+        summary:
+          type: string
+          maxLength: 1200
+          minLength: 1
+          title: Summary
+        score:
+          type: number
+          maximum: 1.0
+          minimum: -1.0
+          title: Score
+        source_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Source Id
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - summary
+      - score
+      - source_id
+      title: ProjectMemoryItem
+    GoalMemoryEmbeddingStatus:
+      properties:
+        configured:
+          type: boolean
+          title: Configured
+        model:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Model
+        model_revision:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Model Revision
+        storage:
+          type: string
+          const: ubuntu_sqlite
+          title: Storage
+          default: ubuntu_sqlite
+      additionalProperties: false
+      type: object
+      required:
+      - configured
+      - model
+      - model_revision
+      title: GoalMemoryEmbeddingStatus
+    EvaluationConversationMessage:
+      properties:
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+          title: Role
+        content:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Content
+      additionalProperties: false
+      type: object
+      required:
+      - role
+      - content
+      title: EvaluationConversationMessage
     GoalReplanRequest:
       type: object
       additionalProperties: false

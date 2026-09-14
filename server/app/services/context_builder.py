@@ -17,6 +17,7 @@ from app.services.agent_liveness import (
     agent_is_fresh,
 )
 from app.services.feedback_dataset import redact_dataset_text
+from app.services.project_contracts import ProjectMemoryContext, ProjectMemoryItem
 from app.services.swarm_contracts import (
     EvaluationConversationMessage,
     EvaluationNodeResult,
@@ -251,7 +252,12 @@ class ContextBuilder:
             candidates.append(_node_card(node, max_result_chars=self.max_result_chars_per_node))
         candidates.append(_constraints_card(goal, node))
         candidates.append(_budgets_card(goal))
-        candidates.extend(normalized_additional)
+        project_hints = tuple(
+            card for card in normalized_additional if card.kind == "project_memory_hint"
+        )
+        candidates.extend(
+            card for card in normalized_additional if card.kind != "project_memory_hint"
+        )
         candidates.extend(_goal_failure_cards(goal))
         candidates.extend(_failure_cards(failures, max_result_chars=self.max_result_chars_per_node))
 
@@ -309,6 +315,14 @@ class ContextBuilder:
             agent_candidates,
             purpose=purpose,
         )
+        # Historical project hints may use remaining room only. Reserving even
+        # their minimum cards above would displace current failure/evidence.
+        hint_slots = (
+            len(project_hints)
+            if self.max_items is None
+            else max(0, self.max_items - len(non_agent_cards))
+        )
+        cards = self._append_with_token_budget(cards, project_hints[:hint_slots], purpose=purpose)
         provenance_ids = _stable_unique(
             provenance for card in cards for provenance in card.provenance_ids
         )
@@ -392,8 +406,18 @@ class ContextBuilder:
         token_count = _payload_tokens(payload)
         if token_count > self.max_tokens:  # pragma: no cover - guarded by bounding
             raise RuntimeError("evaluation context token budget invariant failed")
+        memory_provenance = (
+            tuple(
+                source
+                for item in bounded.project_memory.items
+                for source in (item.id, item.source_id)
+            )
+            if bounded.project_memory is not None
+            else ()
+        )
         normalized_provenance = _stable_unique(
-            _validated_identifier(item, "source_id") for item in provenance_ids
+            _validated_identifier(item, "source_id")
+            for item in (*provenance_ids, *memory_provenance)
         )
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -1141,6 +1165,30 @@ def bound_evaluation_context(
         bounded = safe_context_text(value, max_chars=max(1, limit))
         return bounded or safe_context_text(fallback, max_chars=max(1, limit)) or "…"
 
+    def with_optional_memory(candidate: GoalEvaluationContext) -> GoalEvaluationContext:
+        # Preserve the selected goal, conversation and execution evidence in
+        # full. Historical retrieval may use only the remaining context space.
+        if context.project_memory is None:
+            return candidate
+        items: list[ProjectMemoryItem] = []
+        best = candidate
+        for item in context.project_memory.items:
+            summary = safe_context_text(item.summary, max_chars=600)
+            if not summary:
+                continue
+            items.append(item.model_copy(update={"summary": summary}))
+            memory = ProjectMemoryContext(
+                mode=context.project_memory.mode,
+                reason=safe_context_text(context.project_memory.reason, max_chars=100)
+                or "historical_context",
+                items=list(items),
+            )
+            enriched = candidate.model_copy(update={"project_memory": memory})
+            if _payload_tokens(enriched.model_dump(mode="json")) > max_tokens:
+                break
+            best = enriched
+        return best
+
     conversation = [
         EvaluationConversationMessage(
             role=message.role,
@@ -1227,7 +1275,7 @@ def bound_evaluation_context(
     for conversation_start in range(protected_start + 1):
         complete = candidate(4_000, len(context.node_results), conversation_start)
         if _payload_tokens(complete.model_dump(mode="json")) <= max_tokens:
-            return complete
+            return with_optional_memory(complete)
 
     for node_limit in range(len(context.node_results), -1, -1):
         minimum = candidate(1, node_limit)
@@ -1244,7 +1292,7 @@ def bound_evaluation_context(
                 low = midpoint + 1
             else:
                 high = midpoint - 1
-        return best
+        return with_optional_memory(best)
     raise ValueError("evaluation context cannot fit the configured token budget")
 
 

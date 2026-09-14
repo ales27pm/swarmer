@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import aiosqlite
 
@@ -17,6 +17,7 @@ from app.services.context_builder import safe_context_text
 from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
 from app.services.goal_limits import runtime_expired
 from app.services.project_contracts import ProjectMemoryContext
+from app.services.swarm_contracts import GoalMemoryContextResponse
 
 MAX_ITEMS = 512
 MAX_EMBED_DOCUMENTS = 24
@@ -26,6 +27,12 @@ _CODE_LINE = re.compile(
     r"^\s*(?:def |class |import |from \S+ import |function |(?:export )?(?:const|let|var) "
     r"|return |#include|[{}\[\]]|\w+\s*(?:=|:=))"
 )
+
+MemoryPurpose = Literal["worker", "planner", "evaluator"]
+
+
+class ProjectMemoryConflict(RuntimeError):
+    """The requested project memory no longer matches its goal or trusted receipt."""
 
 
 def _digest(value: object) -> str:
@@ -107,6 +114,7 @@ class ProjectMemoryService:
         if not 0 < timeout_seconds <= 10:
             raise ValueError("project memory timeout must be at most ten seconds")
         self.db_path, self.embedding_service = db_path, embedding_service
+        self.model_revision = model_revision
         self.query_prefix, self.document_prefix = query_prefix, document_prefix
         self.timeout_seconds = timeout_seconds
         self.provider_identity = _digest(
@@ -126,6 +134,371 @@ class ProjectMemoryService:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("SELECT 1 FROM project_memory_items LIMIT 1")
             await db.execute("SELECT 1 FROM project_memory_queries LIMIT 1")
+            await db.execute("SELECT 1 FROM goal_memory_queries LIMIT 1")
+
+    @staticmethod
+    def _logical_goal(goal: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: goal[key]
+            for key in (
+                "id",
+                "objective",
+                "completion_criteria_json",
+                "autonomy_profile",
+                "max_steps",
+                "max_replans",
+                "max_parallelism",
+                "max_runtime_seconds",
+                "max_model_calls",
+            )
+        }
+
+    @staticmethod
+    async def _goal_snapshot(db: aiosqlite.Connection, goal_id: str) -> dict[str, Any]:
+        db.row_factory = aiosqlite.Row
+        row = await (
+            await db.execute(
+                """SELECT g.*,l.project_id,
+            (SELECT r.id FROM project_revisions r WHERE r.project_id=l.project_id
+             ORDER BY revision DESC LIMIT 1) AS revision_id,
+            (SELECT r.sha256 FROM project_revisions r WHERE r.project_id=l.project_id
+             ORDER BY revision DESC LIMIT 1) AS revision_sha256
+            FROM goal_runs g LEFT JOIN goal_project_links l ON l.goal_run_id=g.id WHERE g.id=?""",
+                (goal_id,),
+            )
+        ).fetchone()
+        if row is None:
+            raise ProjectMemoryConflict("goal not found")
+        goal = dict(row)
+        if goal["status"] in _TERMINAL or runtime_expired(goal):
+            raise ProjectMemoryConflict("goal is not active")
+        history = await (
+            await db.execute(
+                """SELECT m.role,m.content FROM goal_messages m JOIN goal_conversation_links l
+            ON l.conversation_id=m.conversation_id WHERE l.goal_run_id=?
+            ORDER BY m.rowid DESC LIMIT 40""",
+                (goal_id,),
+            )
+        ).fetchall()
+        goal["recent_conversation"] = [
+            {"role": row["role"], "content": safe_context_text(row["content"], max_chars=4_000)}
+            for row in reversed(list(history))
+        ]
+        latest_user = next((row["content"] for row in history if row["role"] == "user"), "")
+        goal["memory_query"] = _summary(f"{latest_user}\n{goal['objective']}")
+        return goal
+
+    def _logical_fingerprint(self, goal: Mapping[str, Any], purpose: MemoryPurpose) -> str:
+        return _digest(
+            {
+                "goal": self._logical_goal(goal),
+                "purpose": purpose,
+                "project_id": goal["project_id"],
+                "conversation_revision": goal["conversation_revision"],
+                "revision_id": goal["revision_id"],
+                "revision_sha256": goal["revision_sha256"],
+                "provider": self.provider_identity,
+                "query": goal["memory_query"],
+                "recent_conversation": goal["recent_conversation"],
+            }
+        )
+
+    @staticmethod
+    async def _planning_eligibility(
+        db: aiosqlite.Connection, goal: Mapping[str, Any]
+    ) -> tuple[bool, int]:
+        row = await (
+            await db.execute(
+                """SELECT
+            (SELECT COALESCE(SUM(embedding_requested),0) FROM goal_memory_queries
+             WHERE goal_run_id=? AND purpose='planner'),
+            (SELECT COUNT(*) FROM plan_nodes WHERE goal_run_id=?),
+            (SELECT COUNT(*) FROM goal_model_calls WHERE goal_run_id=?)""",
+                (goal["id"], goal["id"], goal["id"]),
+            )
+        ).fetchone()
+        credits = int(row[0]) if row else 0
+        eligible = bool(
+            row
+            and goal["status"] == "planning"
+            and goal["started_at"] is None
+            and int(goal["step_count"]) == 0
+            and int(goal["replan_count"]) == 0
+            and row[1] == 0
+            and row[2] == 0
+            and int(goal["model_call_count"]) == credits
+        )
+        return eligible, credits
+
+    def _response(
+        self,
+        goal: Mapping[str, Any],
+        purpose: MemoryPurpose,
+        memory: dict[str, Any],
+        *,
+        eligible: bool,
+        credits: int,
+    ) -> dict[str, Any]:
+        fingerprint = _digest(
+            {"logical": self._logical_fingerprint(goal, purpose), "memory": memory}
+        )
+        return GoalMemoryContextResponse.model_validate(
+            {
+                **memory,
+                "schema_version": "1.0",
+                "goal_id": goal["id"],
+                "project_id": goal["project_id"],
+                "conversation_revision": int(goal["conversation_revision"]),
+                "base_revision_id": goal["revision_id"],
+                "provider_fingerprint": self.provider_identity,
+                "context_fingerprint": fingerprint,
+                "embedding": {
+                    "configured": self.embedding_service is not None,
+                    "model": getattr(self.embedding_service, "model", None),
+                    "model_revision": self.model_revision,
+                    "storage": "ubuntu_sqlite",
+                },
+                "local_planning_eligible": eligible,
+                "planning_embedding_call_count": credits,
+                "recent_conversation": goal["recent_conversation"],
+            }
+        ).model_dump(mode="json")
+
+    def _request_id(
+        self,
+        goal: Mapping[str, Any],
+        node_id: str | None,
+        query_sha: str,
+        base_revision_id: str | None,
+        purpose: MemoryPurpose,
+        logical_fingerprint: str,
+    ) -> str:
+        identity = [
+            goal["project_id"],
+            goal["id"],
+            node_id,
+            goal["conversation_revision"],
+            base_revision_id,
+            query_sha,
+            self.provider_identity,
+        ]
+        if purpose != "worker":
+            identity += [purpose, logical_fingerprint]
+        return ("pmq_" if purpose == "worker" else "gmq_") + _digest(identity)[:48]
+
+    async def retrieve_for_goal(
+        self,
+        goal_id: str,
+        purpose: Literal["planner", "evaluator"],
+        *,
+        expected_goal_updated_at: str | None = None,
+    ) -> dict[str, Any]:
+        if purpose not in {"planner", "evaluator"}:
+            raise ProjectMemoryConflict("invalid memory purpose")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN")
+            goal = await self._goal_snapshot(db, goal_id)
+            if (
+                expected_goal_updated_at is not None
+                and goal["updated_at"] != expected_goal_updated_at
+            ):
+                raise ProjectMemoryConflict("goal context changed")
+            if purpose == "evaluator" and goal["started_at"] is None:
+                raise ProjectMemoryConflict("goal evaluation has not started")
+            eligible, credits = await self._planning_eligibility(db, goal)
+            if goal["project_id"] is None:
+                return self._response(
+                    goal,
+                    purpose,
+                    _context("lexical", "no_linked_project", []),
+                    eligible=eligible,
+                    credits=credits,
+                )
+            logical = self._logical_fingerprint(goal, purpose)
+            request_id = self._request_id(
+                goal, None, _digest(goal["memory_query"]), goal["revision_id"], purpose, logical
+            )
+            cached = await (
+                await db.execute("SELECT * FROM goal_memory_queries WHERE id=?", (request_id,))
+            ).fetchone()
+            if cached is not None and cached["context_json"] is not None:
+                response = self._parse_receipt(cached["context_json"])
+                await self._assert_response_current(
+                    db, goal, purpose, response, cached["logical_fingerprint"]
+                )
+                response.update(
+                    local_planning_eligible=eligible, planning_embedding_call_count=credits
+                )
+                return response
+        memory = await self.retrieve(
+            goal_id,
+            None,
+            str(goal["memory_query"]),
+            base_revision_id=goal["revision_id"],
+            conversation_revision=int(goal["conversation_revision"]),
+            purpose=purpose,
+            logical_fingerprint=logical,
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            current = await self._goal_snapshot(db, goal_id)
+            if self._logical_fingerprint(current, purpose) != logical:
+                raise ProjectMemoryConflict("goal context changed")
+            eligible, credits = await self._planning_eligibility(db, current)
+            response = self._response(current, purpose, memory, eligible=eligible, credits=credits)
+            await self._assert_response_current(db, current, purpose, response, logical)
+            now = datetime.now(UTC).isoformat()
+            # Lexical/no-budget results also receive an immutable, zero-charge receipt.
+            await db.execute(
+                """INSERT OR IGNORE INTO goal_memory_queries(id,project_id,goal_run_id,purpose,
+                conversation_revision,base_revision_id,provider_identity,logical_fingerprint,
+                query_sha256,status,embedding_requested,created_at,expires_at,completed_at)
+                VALUES(?,?,?,?,?,?,?,?,?,'completed',0,?,?,?)""",
+                (
+                    request_id,
+                    current["project_id"],
+                    goal_id,
+                    purpose,
+                    current["conversation_revision"],
+                    current["revision_id"],
+                    self.provider_identity,
+                    logical,
+                    _digest(current["memory_query"]),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            # A concurrent in-flight query must finish before its result is reviewable.
+            if memory["reason"] == "embedding_in_progress":
+                raise ProjectMemoryConflict("project memory is still being prepared")
+            await db.execute(
+                "UPDATE goal_memory_queries SET context_json=?,context_fingerprint=? WHERE id=? AND context_json IS NULL",
+                (
+                    json.dumps(
+                        response, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                    ),
+                    response["context_fingerprint"],
+                    request_id,
+                ),
+            )
+            persisted = await (
+                await db.execute(
+                    "SELECT context_json FROM goal_memory_queries WHERE id=?", (request_id,)
+                )
+            ).fetchone()
+            if persisted is None or persisted[0] is None:
+                raise ProjectMemoryConflict("project memory receipt unavailable")
+            await db.commit()
+            # Concurrent callers share the first completed immutable result.
+            result = self._parse_receipt(persisted[0])
+            result.update(local_planning_eligible=eligible, planning_embedding_call_count=credits)
+            return result
+
+    @staticmethod
+    def _parse_receipt(value: str) -> dict[str, Any]:
+        try:
+            return GoalMemoryContextResponse.model_validate_json(value).model_dump(mode="json")
+        except ValueError as exc:
+            raise ProjectMemoryConflict("project memory receipt is invalid") from exc
+
+    async def _assert_response_current(
+        self,
+        db: aiosqlite.Connection,
+        goal: Mapping[str, Any],
+        purpose: MemoryPurpose,
+        response: dict[str, Any],
+        logical_fingerprint: str,
+    ) -> None:
+        memory = ProjectMemoryContext.model_validate(
+            {key: response[key] for key in ("mode", "reason", "items")}
+        ).model_dump(mode="json")
+        if (
+            logical_fingerprint != self._logical_fingerprint(goal, purpose)
+            or response["goal_id"] != goal["id"]
+            or response["project_id"] != goal["project_id"]
+            or response["provider_fingerprint"] != self.provider_identity
+            or response["conversation_revision"] != goal["conversation_revision"]
+            or response["base_revision_id"] != goal["revision_id"]
+            or response["recent_conversation"] != goal["recent_conversation"]
+            or response["context_fingerprint"]
+            != _digest({"logical": logical_fingerprint, "memory": memory})
+        ):
+            raise ProjectMemoryConflict("project memory context changed")
+        for item in memory["items"]:
+            # Resolve provenance from authoritative source rows, never a mutable vector projection.
+            row = await (
+                await db.execute(
+                    "SELECT source_kind,source_id FROM project_memory_items WHERE id=? AND project_id=?",
+                    (item["id"], goal["project_id"]),
+                )
+            ).fetchone()
+            if row is None or row["source_id"] != item["source_id"]:
+                raise ProjectMemoryConflict("project memory source changed")
+            if row["source_kind"] == "message":
+                source = await (
+                    await db.execute(
+                        """SELECT m.content FROM goal_messages m JOIN goal_conversation_links l
+                    ON l.conversation_id=m.conversation_id JOIN goal_project_links p ON p.goal_run_id=l.goal_run_id
+                    WHERE m.id=? AND l.goal_run_id=? AND p.project_id=?""",
+                        (item["source_id"], goal["id"], goal["project_id"]),
+                    )
+                ).fetchone()
+                summary = _summary(str(source[0])) if source else None
+            else:
+                source = await (
+                    await db.execute(
+                        "SELECT json_extract(snapshot_json,'$.plan') FROM project_revisions WHERE id=? AND project_id=?",
+                        (item["source_id"], goal["project_id"]),
+                    )
+                ).fetchone()
+                plan = json.loads(str(source[0] or "[]")) if source else None
+                summary = (
+                    _summary("\n".join(str(value) for value in plan))
+                    if isinstance(plan, list)
+                    else None
+                )
+            if summary != item["summary"]:
+                raise ProjectMemoryConflict("project memory source changed")
+
+    async def assert_context_current(
+        self,
+        goal_id: str,
+        purpose: Literal["planner", "evaluator"],
+        fingerprint: str,
+        *,
+        db: aiosqlite.Connection | None = None,
+    ) -> None:
+        if db is None:
+            async with aiosqlite.connect(self.db_path) as connection:
+                await connection.execute("BEGIN")
+                await self.assert_context_current(goal_id, purpose, fingerprint, db=connection)
+                return
+        goal = await self._goal_snapshot(db, goal_id)
+        eligible, credits = await self._planning_eligibility(db, goal)
+        if purpose == "planner" and not eligible:
+            raise ProjectMemoryConflict("goal is no longer eligible for initial local planning")
+        if goal["project_id"] is None:
+            expected = self._response(
+                goal,
+                purpose,
+                _context("lexical", "no_linked_project", []),
+                eligible=eligible,
+                credits=credits,
+            )
+            if expected["context_fingerprint"] != fingerprint:
+                raise ProjectMemoryConflict("project memory context changed")
+            return
+        row = await (
+            await db.execute(
+                "SELECT * FROM goal_memory_queries WHERE goal_run_id=? AND purpose=? AND context_fingerprint=?",
+                (goal_id, purpose, fingerprint),
+            )
+        ).fetchone()
+        if row is None or row["context_json"] is None:
+            raise ProjectMemoryConflict("project memory receipt unavailable")
+        response = self._parse_receipt(row["context_json"])
+        await self._assert_response_current(db, goal, purpose, response, row["logical_fingerprint"])
 
     async def _read_sources(
         self,
@@ -298,33 +671,52 @@ class ProjectMemoryService:
     async def _reserve(
         self,
         goal: Mapping[str, Any],
-        node_id: str,
+        node_id: str | None,
         request_id: str,
         query_sha: str,
         base_revision_id: str | None,
+        *,
+        purpose: MemoryPurpose = "worker",
+        logical_fingerprint: str = "",
     ) -> tuple[dict[str, Any] | None, str]:
         now = datetime.now(UTC)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             existing = await (
-                await db.execute("SELECT * FROM project_memory_queries WHERE id=?", (request_id,))
+                await db.execute(
+                    "SELECT * FROM project_memory_queries WHERE id=?"
+                    if purpose == "worker"
+                    else "SELECT * FROM goal_memory_queries WHERE id=?",
+                    (request_id,),
+                )
             ).fetchone()
             if existing:
                 return dict(existing), "cached"
-            current = await (
-                await db.execute(
-                    """SELECT g.*,n.status AS node_status,n.task_id AS node_task_id
+            if purpose == "worker":
+                current = await (
+                    await db.execute(
+                        """SELECT g.*,n.status AS node_status,n.task_id AS node_task_id
                 FROM goal_runs g JOIN plan_nodes n ON n.goal_run_id=g.id
                 WHERE g.id=? AND n.id=? AND n.required_skill='code.build_project'""",
-                    (goal["id"], node_id),
-                )
-            ).fetchone()
+                        (goal["id"], node_id),
+                    )
+                ).fetchone()
+            else:
+                current = await (
+                    await db.execute(
+                        """SELECT g.*,'ready' AS node_status,NULL AS node_task_id
+                    FROM goal_runs g JOIN goal_project_links l ON l.goal_run_id=g.id
+                    WHERE g.id=? AND l.project_id=?""",
+                        (goal["id"], goal["project_id"]),
+                    )
+                ).fetchone()
             if (
                 current is None
                 or current["status"] in _TERMINAL
                 or current["node_status"] not in {"ready", "dispatched"}
                 or int(current["conversation_revision"]) != int(goal["conversation_revision"])
+                or self._logical_goal(dict(current)) != self._logical_goal(goal)
                 or runtime_expired(dict(current))
             ):
                 return None, "context_changed"
@@ -341,23 +733,44 @@ class ProjectMemoryService:
                 current["max_model_calls"]
             ):
                 return None, "embedding_budget_unavailable"
-            await db.execute(
-                """INSERT INTO project_memory_queries(id,project_id,goal_run_id,node_id,
+            if purpose == "worker":
+                await db.execute(
+                    """INSERT INTO project_memory_queries(id,project_id,goal_run_id,node_id,
                 conversation_revision,base_revision_id,provider_identity,query_sha256,status,
                 created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,'started',?,?)""",
-                (
-                    request_id,
-                    goal["project_id"],
-                    goal["id"],
-                    node_id,
-                    goal["conversation_revision"],
-                    base_revision_id,
-                    self.provider_identity,
-                    query_sha,
-                    now.isoformat(),
-                    (now + timedelta(seconds=self.timeout_seconds)).isoformat(),
-                ),
-            )
+                    (
+                        request_id,
+                        goal["project_id"],
+                        goal["id"],
+                        node_id,
+                        goal["conversation_revision"],
+                        base_revision_id,
+                        self.provider_identity,
+                        query_sha,
+                        now.isoformat(),
+                        (now + timedelta(seconds=self.timeout_seconds)).isoformat(),
+                    ),
+                )
+            else:
+                await db.execute(
+                    """INSERT INTO goal_memory_queries(id,project_id,goal_run_id,purpose,
+                    conversation_revision,base_revision_id,provider_identity,logical_fingerprint,
+                    query_sha256,status,embedding_requested,created_at,expires_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,'started',1,?,?)""",
+                    (
+                        request_id,
+                        goal["project_id"],
+                        goal["id"],
+                        purpose,
+                        goal["conversation_revision"],
+                        base_revision_id,
+                        self.provider_identity,
+                        logical_fingerprint,
+                        query_sha,
+                        now.isoformat(),
+                        (now + timedelta(seconds=self.timeout_seconds)).isoformat(),
+                    ),
+                )
             await db.execute(
                 "UPDATE goal_runs SET model_call_count=model_call_count+1 WHERE id=?", (goal["id"],)
             )
@@ -383,11 +796,13 @@ class ProjectMemoryService:
     async def retrieve(
         self,
         goal_id: str,
-        node_id: str,
+        node_id: str | None,
         query: str,
         *,
         base_revision_id: str | None,
         conversation_revision: int | None = None,
+        purpose: MemoryPurpose = "worker",
+        logical_fingerprint: str = "",
     ) -> dict[str, Any]:
         query = _summary(query)
         source = await self._read_sources(goal_id, base_revision_id)
@@ -411,21 +826,18 @@ class ProjectMemoryService:
         if self.embedding_service is None:
             return await fallback("embedding_not_configured")
         query_sha = _digest(query)
-        request_id = (
-            "pmq_"
-            + _digest(
-                [
-                    goal["project_id"],
-                    goal_id,
-                    node_id,
-                    goal["conversation_revision"],
-                    base_revision_id,
-                    query_sha,
-                    self.provider_identity,
-                ]
-            )[:48]
+        request_id = self._request_id(
+            goal, node_id, query_sha, base_revision_id, purpose, logical_fingerprint
         )
-        cached, state = await self._reserve(goal, node_id, request_id, query_sha, base_revision_id)
+        cached, state = await self._reserve(
+            goal,
+            node_id,
+            request_id,
+            query_sha,
+            base_revision_id,
+            purpose=purpose,
+            logical_fingerprint=logical_fingerprint,
+        )
         if state in {"context_changed", "project_revision_changed"}:
             return _context("lexical", state, [])
         query_vector: list[float] | None = None
@@ -449,7 +861,14 @@ class ProjectMemoryService:
                 if any(len(vector) != len(query_vector) for vector in vectors):
                     raise EmbeddingServiceError("inconsistent embedding dimensions")
                 if not await self._persist_vectors(
-                    goal, node_id, request_id, base_revision_id, query_vector, missing, vectors[1:]
+                    goal,
+                    node_id,
+                    request_id,
+                    base_revision_id,
+                    query_vector,
+                    missing,
+                    vectors[1:],
+                    purpose=purpose,
                 ):
                     return _context("lexical", "project_context_changed", [])
                 for item, vector in zip(missing, vectors[1:], strict=True):
@@ -469,7 +888,7 @@ class ProjectMemoryService:
                 TypeError,
                 OverflowError,
             ):
-                await self._fail_request(request_id, "embedding_unavailable")
+                await self._fail_request(request_id, "embedding_unavailable", purpose=purpose)
                 return await fallback("embedding_unavailable")
         elif cached is not None and cached["status"] == "completed":
             try:
@@ -489,7 +908,7 @@ class ProjectMemoryService:
                 and cached["status"] == "started"
                 and cached["expires_at"] <= datetime.now(UTC).isoformat()
             ):
-                await self._fail_request(request_id, "embedding_interrupted")
+                await self._fail_request(request_id, "embedding_interrupted", purpose=purpose)
                 return await fallback("embedding_interrupted")
             return await fallback(
                 "embedding_in_progress"
@@ -537,6 +956,7 @@ class ProjectMemoryService:
             row is not None
             and row["status"] not in _TERMINAL
             and int(row["conversation_revision"]) == int(goal["conversation_revision"])
+            and self._logical_goal(dict(row)) == self._logical_goal(goal)
             and row["revision_id"] == base_revision_id
             and not runtime_expired(dict(row))
         )
@@ -544,12 +964,14 @@ class ProjectMemoryService:
     async def _persist_vectors(
         self,
         goal: Mapping[str, Any],
-        node_id: str,
+        node_id: str | None,
         request_id: str,
         base_revision_id: str | None,
         query_vector: list[float],
         items: list[dict[str, Any]],
         vectors: list[list[float]],
+        *,
+        purpose: MemoryPurpose = "worker",
     ) -> bool:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
@@ -560,19 +982,24 @@ class ProjectMemoryService:
                     """SELECT g.*,
                 (SELECT r.id FROM project_revisions r WHERE r.project_id=l.project_id ORDER BY revision DESC LIMIT 1) AS revision_id
                 FROM goal_runs g JOIN goal_project_links l ON l.goal_run_id=g.id
-                JOIN plan_nodes n ON n.goal_run_id=g.id WHERE g.id=? AND n.id=? AND l.project_id=?""",
-                    (goal["id"], node_id, goal["project_id"]),
+                WHERE g.id=? AND l.project_id=? AND (? IS NULL OR EXISTS
+                (SELECT 1 FROM plan_nodes n WHERE n.goal_run_id=g.id AND n.id=?))""",
+                    (goal["id"], goal["project_id"], node_id, node_id),
                 )
             ).fetchone()
             receipt = await (
                 await db.execute(
-                    "SELECT status,expires_at FROM project_memory_queries WHERE id=?", (request_id,)
+                    "SELECT status,expires_at FROM project_memory_queries WHERE id=?"
+                    if purpose == "worker"
+                    else "SELECT status,expires_at FROM goal_memory_queries WHERE id=?",
+                    (request_id,),
                 )
             ).fetchone()
             if (
                 current is None
                 or current["status"] in _TERMINAL
                 or int(current["conversation_revision"]) != int(goal["conversation_revision"])
+                or self._logical_goal(dict(current)) != self._logical_goal(goal)
                 or current["revision_id"] != base_revision_id
                 or runtime_expired(dict(current))
                 or receipt is None
@@ -580,7 +1007,9 @@ class ProjectMemoryService:
                 or receipt["expires_at"] <= now
             ):
                 await db.execute(
-                    "UPDATE project_memory_queries SET status='failed',error_category='context_changed',completed_at=? WHERE id=?",
+                    "UPDATE project_memory_queries SET status='failed',error_category='context_changed',completed_at=? WHERE id=?"
+                    if purpose == "worker"
+                    else "UPDATE goal_memory_queries SET status='failed',error_category='context_changed',completed_at=? WHERE id=?",
                     (now, request_id),
                 )
                 await db.commit()
@@ -610,6 +1039,9 @@ class ProjectMemoryService:
                 )
             await db.execute(
                 """UPDATE project_memory_queries SET status='completed',query_dimensions=?,query_vector_json=?,
+                query_vector_fingerprint=?,completed_at=? WHERE id=? AND status='started'"""
+                if purpose == "worker"
+                else """UPDATE goal_memory_queries SET status='completed',query_dimensions=?,query_vector_json=?,
                 query_vector_fingerprint=?,completed_at=? WHERE id=? AND status='started'""",
                 (
                     len(query_vector),
@@ -622,10 +1054,14 @@ class ProjectMemoryService:
             await db.commit()
         return True
 
-    async def _fail_request(self, request_id: str, category: str) -> None:
+    async def _fail_request(
+        self, request_id: str, category: str, *, purpose: MemoryPurpose = "worker"
+    ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE project_memory_queries SET status='failed',error_category=?,completed_at=? WHERE id=? AND status='started'",
+                "UPDATE project_memory_queries SET status='failed',error_category=?,completed_at=? WHERE id=? AND status='started'"
+                if purpose == "worker"
+                else "UPDATE goal_memory_queries SET status='failed',error_category=?,completed_at=? WHERE id=? AND status='started'",
                 (category, datetime.now(UTC).isoformat(), request_id),
             )
             await db.commit()

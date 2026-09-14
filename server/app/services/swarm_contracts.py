@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.project_contracts import ProjectMemoryContext
 
 SCHEMA_VERSION = "1.0"
 MAX_PLAN_NODES = 20
@@ -139,12 +140,47 @@ class GoalStartRequest(BaseModel):
 
     plan_proposal: SwarmPlanProposal | None = None
     planner_source: Literal["iphone_local", "manual"] | None = None
+    memory_context_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
     def validate_supplied_plan_source(self) -> GoalStartRequest:
         if (self.plan_proposal is None) != (self.planner_source is None):
             raise ValueError("plan_proposal and planner_source must be supplied together")
+        if self.memory_context_fingerprint is not None and self.planner_source != "iphone_local":
+            raise ValueError("memory_context_fingerprint requires an iPhone plan")
         return self
+
+
+class GoalMemoryContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    purpose: Literal["planner", "evaluator"]
+    expected_goal_updated_at: Timestamp
+
+
+class GoalMemoryEmbeddingStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configured: bool
+    model: str | None = Field(max_length=500)
+    model_revision: str | None = Field(max_length=128)
+    storage: Literal["ubuntu_sqlite"] = "ubuntu_sqlite"
+
+
+class GoalMemoryContextResponse(ProjectMemoryContext):
+    schema_version: Literal["1.0"] = "1.0"
+    goal_id: StableIdentifier
+    project_id: StableIdentifier | None
+    conversation_revision: int = Field(strict=True, ge=0)
+    base_revision_id: StableIdentifier | None
+    provider_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    context_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    embedding: GoalMemoryEmbeddingStatus
+    local_planning_eligible: bool
+    planning_embedding_call_count: int = Field(strict=True, ge=0)
+    recent_conversation: list[EvaluationConversationMessage] = Field(
+        default_factory=list, max_length=40
+    )
 
 
 class GoalReplanRequest(BaseModel):
@@ -425,6 +461,7 @@ class GoalEvaluationContext(BaseModel):
     objective: LongText
     conversation_revision: int = Field(default=0, strict=True, ge=0)
     conversation: list[EvaluationConversationMessage] = Field(default_factory=list, max_length=40)
+    project_memory: ProjectMemoryContext | None = None
     completion_criteria: list[ShortText] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     node_results: list[EvaluationNodeResult] = Field(max_length=MAX_PLAN_NODES)
     known_node_ids: list[StableIdentifier] = Field(max_length=MAX_PLAN_NODES)
