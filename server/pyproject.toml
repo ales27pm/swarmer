@@ -40,6 +40,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"app/data/activity_catalog.json" = "app/data/activity_catalog.json"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
