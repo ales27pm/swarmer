@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, renderHook, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { Alert } from "react-native";
 
@@ -192,6 +192,47 @@ describe("GoalDetailScreen", () => {
     await render(<GoalDetailScreen />);
     await screen.findByText("En attente d’un agent");
     expect(screen.queryByRole("button", { name: "Préparer le plan sur l’iPhone" })).not.toBeOnTheScreen();
+  });
+
+  it("resumes a persisted local continuation without exposing an automatic server start", async () => {
+    mockGetGoal.mockResolvedValue({ ...waitingForWorkers, goal: { ...waitingForWorkers.goal,
+      started_at: null, current_phase: "awaiting_local_plan" } });
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    const resume = await screen.findByRole("button", { name: "Reprendre le plan sur l’iPhone" });
+    expect(screen.getByText("Phase : Plan iPhone attendu")).toBeOnTheScreen();
+    expect(screen.queryByTestId("start-goal-button")).not.toBeOnTheScreen();
+    await user.press(resume);
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/local-model", params: { goalId: "goal_1" } });
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it("routes a terminal linked project's explicit continuation straight to the iPhone planner", async () => {
+    const next: GoalDetail = { ...waitingForWorkers, goal: { ...waitingForWorkers.goal,
+      id: "goal_next", started_at: null, current_phase: "awaiting_local_plan" } };
+    const send = jest.fn(async () => next);
+    const prepareReply = jest.fn(() => ({ clientMessageId: "local_reply", send }));
+    jest.mocked(getGoalConversation).mockResolvedValue({ conversation: {
+      messages: [], active_goal_id: "goal_1", pending_question_id: null, project_id: "project_1",
+    }, prepareReply });
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await screen.findByRole("button", { name: "Planifier la suite sur l’iPhone" });
+    await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute une recherche aux clients existants.");
+    await user.press(screen.getByRole("button", { name: "Planifier la suite sur l’iPhone" }));
+    expect(prepareReply).toHaveBeenCalledWith("Ajoute une recherche aux clients existants.", { planningMode: "iphone_local" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/local-model", params: { goalId: "goal_next" } });
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it("also fences the controller's generic start for a goal awaiting its local plan", async () => {
+    mockGetGoal.mockResolvedValue({ ...waitingForWorkers, goal: { ...waitingForWorkers.goal,
+      started_at: null, current_phase: "awaiting_local_plan" } });
+    const { result } = await renderHook(() => useGoalDetailController("goal_1"));
+    await waitFor(() => expect(result.current.goal?.current_phase).toBe("awaiting_local_plan"));
+    await act(async () => result.current.start());
+    expect(mockStartGoal).not.toHaveBeenCalled();
   });
 
   it("allows opening the eligibility check after a planning embedding call without starting the goal", async () => {

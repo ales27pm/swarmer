@@ -13,10 +13,14 @@ const load = jest.mocked(getGoalConversation);
 const send = jest.fn<() => Promise<GoalDetail>>();
 const prepareReply = jest.fn(() => ({ clientMessageId: "reply_stable_1234567890", send }));
 const openGoal = jest.fn();
+const openLocalPlan = jest.fn();
 const updated = jest.fn<() => Promise<void>>();
 const question = { id: "question_1", goal_run_id: "goal_1", role: "assistant" as const, content: "Application web ou mobile?", created_at: "2030-01-01T00:01:00Z" };
 const conversation = { messages: [question], active_goal_id: "goal_1", pending_question_id: "question_1" };
 const props = { goal: projectGoalFixture.goal, disabled: false, onOpenGoal: openGoal, onUpdated: updated };
+const localContinuation: GoalDetail = { ...projectGoalFixture, goal: { ...projectGoalFixture.goal,
+  id: "goal_next", status: "planning", started_at: null, current_phase: "awaiting_local_plan",
+  step_count: 0, replan_count: 0, model_call_count: 0 }, nodes: [], result: null };
 beforeEach(() => {
   jest.clearAllMocks();
   load.mockResolvedValue({ conversation, prepareReply });
@@ -105,6 +109,66 @@ describe("GoalConversation", () => {
     await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute une recherche aux contacts existants.");
     await user.press(screen.getByRole("button", { name: "Envoyer au projet" }));
     expect(openGoal).toHaveBeenCalledWith("goal_next");
+  });
+
+  it("offers explicit local planning for a terminal linked project and opens the new waiting goal", async () => {
+    const user = userEvent.setup();
+    load.mockResolvedValue({ conversation: { ...conversation, pending_question_id: null, project_id: "project_1" }, prepareReply });
+    send.mockResolvedValue(localContinuation);
+    await render(<GoalConversation {...props} goal={{ ...props.goal, status: "completed" }} onOpenLocalPlan={openLocalPlan} />);
+    await screen.findByText(question.content);
+    expect(screen.getByRole("button", { name: "Planifier la suite sur l’iPhone" })).toBeDisabled();
+    await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute une recherche aux clients existants.");
+    await user.press(screen.getByRole("button", { name: "Planifier la suite sur l’iPhone" }));
+    expect(prepareReply).toHaveBeenCalledWith("Ajoute une recherche aux clients existants.", { planningMode: "iphone_local" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(openLocalPlan).toHaveBeenCalledWith("goal_next");
+    expect(openGoal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "running" as const, project_id: "project_1", active_goal_id: "goal_1" },
+    { status: "completed" as const, project_id: null, active_goal_id: "goal_1" },
+    { status: "completed" as const, project_id: undefined, active_goal_id: "goal_1" },
+    { status: "completed" as const, project_id: "project_1", active_goal_id: "goal_newer" },
+  ])("does not offer a local continuation for unavailable context %j", async ({ status, project_id, active_goal_id }) => {
+    load.mockResolvedValue({ conversation: { ...conversation, project_id, active_goal_id }, prepareReply });
+    await render(<GoalConversation {...props} goal={{ ...props.goal, status }} onOpenLocalPlan={openLocalPlan} />);
+    await screen.findByText(question.content);
+    expect(screen.queryByRole("button", { name: "Planifier la suite sur l’iPhone" })).not.toBeOnTheScreen();
+  });
+
+  it("keeps the local continuation mode when explicitly retrying an uncertain creation", async () => {
+    const user = userEvent.setup();
+    load.mockResolvedValue({ conversation: { ...conversation, pending_question_id: null, project_id: "project_1" }, prepareReply });
+    send.mockRejectedValueOnce(new Error("Réponse perdue"));
+    send.mockResolvedValueOnce(localContinuation);
+    await render(<GoalConversation {...props} goal={{ ...props.goal, status: "completed" }} onOpenLocalPlan={openLocalPlan} />);
+    await screen.findByText(question.content);
+    await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute le calendrier.");
+    await user.press(screen.getByRole("button", { name: "Planifier la suite sur l’iPhone" }));
+    await screen.findByText(/son identifiant reste inchangé/);
+    expect(screen.queryByRole("button", { name: "Planifier la suite sur l’iPhone" })).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Réessayer le même envoi" }));
+    expect(prepareReply).toHaveBeenCalledTimes(1);
+    expect(prepareReply).toHaveBeenCalledWith("Ajoute le calendrier.", { planningMode: "iphone_local" });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(openLocalPlan).toHaveBeenCalledWith("goal_next");
+    expect(openGoal).not.toHaveBeenCalled();
+  });
+
+  it("preserves a stale local continuation instruction after 409 without another POST", async () => {
+    const user = userEvent.setup();
+    load.mockResolvedValue({ conversation: { ...conversation, pending_question_id: null, project_id: "project_1" }, prepareReply });
+    send.mockRejectedValueOnce(new ApiError(409, "newer goal is active"));
+    await render(<GoalConversation {...props} goal={{ ...props.goal, status: "completed" }} onOpenLocalPlan={openLocalPlan} />);
+    await screen.findByText(question.content);
+    await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute le calendrier.");
+    await user.press(screen.getByRole("button", { name: "Planifier la suite sur l’iPhone" }));
+    await screen.findByText(/Relisez la question actuelle/);
+    expect(screen.getByLabelText("Message pour le projet")).toHaveProp("value", "Ajoute le calendrier.");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(openLocalPlan).not.toHaveBeenCalled();
   });
   it("keeps the same pending attempt for explicit uncertain retry", async () => {
     const user = userEvent.setup();

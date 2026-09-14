@@ -26,15 +26,28 @@ the deployed system before this change.
   server instance accepting a plan first; neither case advances the stale plan.
 - Historical hints cannot displace existing planner/evaluator evidence.
   An in-flight embedding lookup defers evaluation without a manual-retry pause.
+- A terminal goal with a linked project accepts an explicit `iphone_local`
+  continuation. The new goal inherits its project and conversation, remains
+  unstarted, and has no pending automatic dispatch credit. Restart reconciliation
+  leaves it untouched. Additional messages invalidate an earlier memory receipt
+  without changing the selected planning mode. Starting it requires the reviewed
+  local plan and its current memory receipt.
+- The continuation test creates its project through ordinary worker dispatch,
+  records a user decision through the message service, terminates that run, and
+  starts its linked continuation with a local plan. Both the local planning
+  context and the subsequent worker payload contain the same historical source.
+  Duplicate messages retain their original planning mode across phase changes;
+  stale or missing-project continuation requests leave relevant state unchanged.
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
-| Full mobile Jest suite | 508 passed, 36 suites |
+| Full mobile Jest suite | 527 passed, 36 suites |
 | Mobile TypeScript, ESLint, installed dependencies | Passed |
 | Expo Doctor | 20/20 passed |
-| Full server pytest suite | 1,094 passed, 9 skipped |
+| Full server pytest suite | 1,106 passed, 1 timing-sensitive failure, 9 skipped |
+| Isolated notification suite, unchanged tests | 10 passed, including the failing case |
 | Worker suites | 413 passed, 5 skipped |
 | Python formatting, Ruff, strict app typing | Passed; 61 application modules typed |
 | Bandit application scan | No findings |
@@ -43,9 +56,29 @@ the deployed system before this change.
 | Native model-store harness | 15/15 passed |
 | Core ML Dolphin support harness | Passed |
 
-The final memory-specific rerun covers the literal SQL alternatives introduced
-after the full server suite started. Existing optional integration skips remain
-skips, not runtime evidence.
+The complete server run failed the notification test's 50-millisecond deadline
+while Xcode was compiling. Its event was already set in the timeout traceback.
+The unchanged notification suite then passed all ten tests in isolation.
+The relevant broadcast, database relay and authentication functions are identical
+to the deployed release. This is consistent with host contention; the full run
+is still recorded as a failure rather than relabelled green. No test timeout was
+relaxed. Existing optional integration skips remain skips, not runtime evidence.
+
+## Real embedding provider qualification
+
+A private migrated copy used the actual Ubuntu model
+`swarmer-embeddinggemma:300m-cpu-85462619ee72`, digest
+`a3a329bf4947e5a7acfc3044a9cbfc0ab0001f75c070d2804361bf370b1009ec`.
+One HTTP call produced two 768-dimensional vectors in 1.256 seconds and returned
+two project-isolated semantic items. A second retrieval used the cache with no
+HTTP call, budget credit or database change. No live database was opened by this
+qualification and no job or generation was launched.
+
+The copied goal was already started and therefore correctly rejected local
+initial planning. The reachable continuation test above covers eligibility
+separately with a deterministic embedding fixture. The qualification result
+JSON is retained; the post-test SQLite copy was not retained with its WAL and
+cannot be used for independent offline reproduction of the final database.
 
 ## Database migration rehearsal
 

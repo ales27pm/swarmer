@@ -10,17 +10,18 @@ type Props = {
   goal: GoalDetail["goal"];
   disabled: boolean;
   onOpenGoal: (goalId: string) => void;
+  onOpenLocalPlan?: (goalId: string) => void;
   onUpdated: () => Promise<void>;
 };
 
-export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Props) {
+export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, onUpdated }: Props) {
   const [session, setSession] = useState<GoalConversationSession | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
-  const [pending, setPending] = useState<GoalReplyAttempt | null>(null);
+  const [pending, setPending] = useState<{ attempt: GoalReplyAttempt; mode: "automatic" | "iphone_local" } | null>(null);
   const busy = useRef(false);
   const deferredRefresh = useRef(false);
   const epoch = useRef(0);
@@ -71,22 +72,28 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
     if (!disabled && !sending && deferredRefresh.current) void reload(false);
   }, [disabled, reload, sending]);
 
-  const send = async () => {
+  const canPlanLocal = Boolean(onOpenLocalPlan) && Boolean(session?.conversation.project_id)
+    && ["completed", "failed", "cancelled", "budget_exhausted"].includes(goal.status)
+    && session?.conversation.active_goal_id === goal.id;
+  const send = async (requestedMode: "automatic" | "iphone_local" = "automatic") => {
     if (disabled || loading || busy.current || !session || (!pending && !input.trim())) return;
+    if (!pending && requestedMode === "iphone_local" && !canPlanLocal) return;
     busy.current = true;
     setSending(true);
     setError(null);
-    let attempt = pending;
+    let attempt = pending?.attempt;
+    const mode = pending?.mode ?? requestedMode;
     const authority = authorityEpoch.current;
     try {
-      attempt = attempt ?? session.prepareReply(input);
-      setPending(attempt);
+      attempt = attempt ?? (mode === "iphone_local" ? session.prepareReply(input, { planningMode: "iphone_local" }) : session.prepareReply(input));
+      setPending({ attempt, mode });
       const result = await attempt.send();
       if (!mounted.current || authority !== authorityEpoch.current) return;
       setInput("");
       setPending(null);
-      setNotice(result.goal.id === goal.id ? "Message enregistré dans le projet." : "Un nouveau travail lié au même projet a été créé.");
-      if (result.goal.id !== goal.id) onOpenGoal(result.goal.id);
+      setNotice(mode === "iphone_local" ? "La suite du projet attend le plan initial sur l’iPhone." : result.goal.id === goal.id ? "Message enregistré dans le projet." : "Un nouveau travail lié au même projet a été créé.");
+      if (mode === "iphone_local") onOpenLocalPlan?.(result.goal.id);
+      else if (result.goal.id !== goal.id) onOpenGoal(result.goal.id);
       else {
         await reload();
         await onUpdated();
@@ -141,6 +148,8 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onUpdated }: Prop
           />
           <Text style={{ color: tooLong ? COLORS.danger : COLORS.subtle }}>{Array.from(input.trim()).length}/4000 caractères</Text>
           <ActionButton label={pending ? "Réessayer le même envoi" : question ? "Répondre à la question" : "Envoyer au projet"} disabled={unavailable || (!pending && (!input.trim() || tooLong))} busy={sending} onPress={() => void send()} variant="accent" />
+          {canPlanLocal && !pending ? <ActionButton label="Planifier la suite sur l’iPhone" disabled={unavailable || !input.trim() || tooLong} onPress={() => void send("iphone_local")} /> : null}
+          {canPlanLocal ? <Text style={{ color: COLORS.subtle }}>La suite locale conserve le projet et attendra ton plan iPhone avant de lancer les agents.</Text> : null}
         </KeyboardInputGroup>
         {disabled && !session ? <Text style={{ color: COLORS.subtle }}>Connectez-vous pour lire la conversation et envoyer un message.</Text> : null}
       </Card>

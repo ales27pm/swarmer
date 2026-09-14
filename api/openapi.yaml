@@ -3737,60 +3737,78 @@ components:
       - created_at
       title: GoalMessageRecord
     GoalMessageRequest:
+      additionalProperties: false
       properties:
         message:
-          type: string
           maxLength: 4000
           minLength: 1
           title: Message
-        client_message_id:
           type: string
+        client_message_id:
           maxLength: 128
           minLength: 1
           pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
           title: Client Message Id
+          type: string
         reply_to_message_id:
           anyOf:
-          - type: string
-            maxLength: 128
+          - maxLength: 128
             minLength: 1
             pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+            type: string
           - type: 'null'
+          default: null
           title: Reply To Message Id
-      additionalProperties: false
-      type: object
+        planning_mode:
+          default: automatic
+          enum:
+          - automatic
+          - iphone_local
+          title: Planning Mode
+          type: string
       required:
       - message
       - client_message_id
       title: GoalMessageRequest
+      type: object
     GoalMessagesResponse:
+      additionalProperties: false
       properties:
         messages:
           items:
             $ref: '#/components/schemas/GoalMessageRecord'
-          type: array
           maxItems: 100
           title: Messages
+          type: array
         active_goal_id:
-          type: string
           maxLength: 128
           minLength: 1
           pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
           title: Active Goal Id
+          type: string
         pending_question_id:
           anyOf:
-          - type: string
-            maxLength: 128
+          - maxLength: 128
             minLength: 1
             pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+            type: string
           - type: 'null'
+          default: null
           title: Pending Question Id
-      additionalProperties: false
-      type: object
+        project_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+            type: string
+          - type: 'null'
+          default: null
+          title: Project Id
       required:
       - messages
       - active_goal_id
       title: GoalMessagesResponse
+      type: object
     ProjectApplication:
       properties:
         task_id:

@@ -58,6 +58,56 @@ describe("project conversation transport", () => {
     expect(() => session.prepareReply("x".repeat(4001))).toThrow();
     expect(request).toHaveBeenCalledTimes(2);
   });
+
+  const localConversation = { ...conversation, active_goal_id: "goal_1", pending_question_id: null, project_id: "project_1" };
+  const localGoal = { ...projectGoalFixture, goal: { ...projectGoalFixture.goal, id: "goal_next", status: "planning",
+    current_phase: "awaiting_local_plan", started_at: null, step_count: 0, replan_count: 0, model_call_count: 0 }, nodes: [], result: null };
+  it("creates the explicit local continuation with an immutable mode and idempotency key across retry", async () => {
+    request.mockResolvedValueOnce(response(localConversation)).mockRejectedValueOnce(new Error("reply lost")).mockResolvedValueOnce(response(localGoal));
+    const session = await getGoalConversation("goal_1");
+    const attempt = session.prepareReply("Ajoute une recherche aux contacts existants.", { planningMode: "iphone_local" });
+    await expect(attempt.send()).rejects.toThrow("reply lost");
+    await expect(attempt.send()).resolves.toEqual(localGoal);
+    expect(request.mock.calls[1][0]).toBe("https://control.example/goals/goal_1/messages");
+    expect(JSON.parse(request.mock.calls[1][1]?.body as string)).toEqual({
+      message: "Ajoute une recherche aux contacts existants.", client_message_id: attempt.clientMessageId,
+      reply_to_message_id: null, planning_mode: "iphone_local",
+    });
+    expect(request.mock.calls[2]).toEqual(request.mock.calls[1]);
+    await attempt.send();
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([null, undefined])("does not send a local continuation without a confirmed project (%s)", async (projectId) => {
+    request.mockResolvedValueOnce(response({ ...localConversation, project_id: projectId }));
+    const session = await getGoalConversation("goal_1");
+    expect(() => session.prepareReply("Ajoute une recherche.", { planningMode: "iphone_local" })).toThrow("Aucun projet lié");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not redirect local continuation creation to a newer active goal", async () => {
+    request.mockResolvedValueOnce(response({ ...localConversation, active_goal_id: "goal_newer" }));
+    const session = await getGoalConversation("goal_1");
+    expect(() => session.prepareReply("Ajoute une recherche.", { planningMode: "iphone_local" })).toThrow("travail le plus récent");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { id: "goal_1" }, { started_at: "2030-01-01T00:01:00Z" }, { current_phase: "project_continue" }, { model_call_count: 1 },
+  ])("does not accept an automatically started or wrong-goal local continuation %j", async (changed) => {
+    request.mockResolvedValueOnce(response(localConversation)).mockResolvedValueOnce(response({ ...localGoal, goal: { ...localGoal.goal, ...changed } }));
+    const session = await getGoalConversation("goal_1");
+    await expect(session.prepareReply("Ajoute une recherche.", { planningMode: "iphone_local" }).send()).rejects.toThrow("n’a pas confirmé");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("fences a local continuation response when pairing changes in flight", async () => {
+    request.mockResolvedValueOnce(response(localConversation));
+    const attempt = (await getGoalConversation("goal_1")).prepareReply("Ajoute une recherche.", { planningMode: "iphone_local" });
+    request.mockImplementationOnce(async () => { connection.token = "replacement"; return response(localGoal); });
+    await expect(attempt.send()).rejects.toThrow("connexion jumelée a changé");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("project review transport", () => {
@@ -107,6 +157,9 @@ describe("private project validation", () => {
     expect(() => parseProjectPreview({ ...projectFixture, revision: 0 })).toThrow();
     expect(() => parseProjectPreview({ ...projectFixture, checks: [{ ...projectFixture.checks[0], exit_code: 1 }] })).toThrow();
     expect(() => parseGoalConversation({ ...conversation, pending_question_id: "missing" })).toThrow();
+    expect(() => parseGoalConversation({ ...conversation, project_id: "../wrong" })).toThrow();
+    expect(parseGoalConversation({ ...conversation, project_id: null }).project_id).toBeNull();
+    expect(parseGoalConversation({ ...conversation, project_id: "project_1" }).project_id).toBe("project_1");
   });
   it("preserves real failed checks and bounded UTF-8 source", () => {
     const parsed = parseProjectPreview({ ...projectFixture, state: "building", files: [{ path: "app.py", content: "é".repeat(32000) }], checks: [{ ...projectFixture.checks[0], status: "failed", exit_code: 1 }] });

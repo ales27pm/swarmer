@@ -1008,9 +1008,16 @@ export async function getGoalConversation(goalId: string): Promise<GoalConversat
   const questionId = conversation.pending_question_id;
   return {
     conversation,
-    prepareReply: (message) => {
+    prepareReply: (message, options) => {
+      if (options && (options.planningMode !== "iphone_local" || Object.keys(options).some((key) => key !== "planningMode"))) {
+        throw new Error("Le mode de planification de la suite est invalide.");
+      }
+      const local = options?.planningMode === "iphone_local";
+      if (local && activeGoal !== goalId) throw new Error("Ouvrez le travail le plus récent avant de préparer une suite locale.");
+      if (local && !conversation.project_id) throw new Error("Aucun projet lié n’est disponible pour cette suite locale.");
       const clientMessageId = newGoalMessageId();
-      const body = JSON.stringify({ message: validateGoalReply(message), client_message_id: clientMessageId, reply_to_message_id: questionId });
+      const body = JSON.stringify({ message: validateGoalReply(message), client_message_id: clientMessageId,
+        reply_to_message_id: questionId, ...(local ? { planning_mode: "iphone_local" } : {}) });
       let inFlight = false;
       let receipt: GoalDetail | null = null;
       return {
@@ -1024,6 +1031,12 @@ export async function getGoalConversation(goalId: string): Promise<GoalConversat
             const result = await requestAt<GoalDetail>(connection.baseUrl, `/goals/${resourceId(activeGoal)}/messages`, { method: "POST", body }, connection.token);
             await assertRequestConnectionCurrent(connection);
             projectIdentifier(result?.goal?.id);
+            if (local && (result.goal.id === activeGoal || result.goal.status !== "planning" || result.goal.started_at
+                || result.goal.current_phase !== "awaiting_local_plan" || result.goal.step_count !== 0
+                || result.goal.replan_count !== 0 || result.goal.model_call_count !== 0
+                || !Array.isArray(result.nodes) || result.nodes.length || result.result)) {
+              throw new Error("Le serveur n’a pas confirmé une nouvelle suite en attente du plan iPhone. Vérifiez le but avant de poursuivre.");
+            }
             receipt = result;
             return result;
           } finally {

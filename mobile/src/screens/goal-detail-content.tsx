@@ -39,6 +39,10 @@ const GOAL_LABELS: Record<GoalStatus, string> = {
 };
 
 const PLANNING_PHASES: Record<string, { label: string; description: string }> = {
+  awaiting_local_plan: {
+    label: "Plan iPhone attendu",
+    description: "Cette suite conserve le projet et attend le plan initial de l’iPhone. Reprenez la planification locale pour lire sa mémoire et préparer les agents.",
+  },
   waiting_for_workers: {
     label: "En attente d’un agent",
     description: "Aucun agent d’exécution n’est en ligne. Connectez un agent d’exécution, puis réessayez. Aucun appel modèle n’est lancé pendant cette attente.",
@@ -294,6 +298,7 @@ function canMutate(state: GoalDetailState) {
 }
 
 function canStartGoal(goal: GoalDetail["goal"] | null | undefined) {
+  if (goal?.current_phase === "awaiting_local_plan") return false;
   return goal?.status === "planning"
     || (goal?.autonomy_profile === "manual" && goal.status === "running")
     || awaitsEvaluatorRetry(goal);
@@ -535,7 +540,7 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
         && controller.nodes.length === 0 && !controller.result ? (
           <ActionButton
             disabled={Boolean(busy)}
-            label="Préparer le plan sur l’iPhone"
+            label={goal.current_phase === "awaiting_local_plan" ? "Reprendre le plan sur l’iPhone" : "Préparer le plan sur l’iPhone"}
             onPress={() => navigation.openLocalPlan?.(goal.id)}
           />
         ) : null}
@@ -696,6 +701,7 @@ function GoalBody({ controller, navigation }: {
           goal={controller.goal}
           disabled={!controller.online || Boolean(controller.busy)}
           onOpenGoal={navigation.openGoal}
+          onOpenLocalPlan={navigation.openLocalPlan}
           onUpdated={() => controller.refresh(false)}
         />
         {controller.nodes.some((node) => node.required_skill === "code.build_project") ? (

@@ -93,6 +93,17 @@ The local-plan screen identifies the embedding model, actual retrieval mode,
 and number of received excerpts. A new goal without a linked project returns
 an explicit `no_linked_project` result with no items.
 
+For an existing terminal project, enter the next instruction in its conversation
+and choose **Planifier la suite sur l’iPhone**. The message request sets
+`planning_mode: "iphone_local"`; the new linked goal waits in
+`awaiting_local_plan` with no automatic dispatch credit. Its memory and recent
+conversation are available to the local model before generation. Ordinary
+messages keep their existing automatic behavior, while additional messages to
+an already waiting local continuation preserve that choice. A server restart
+does not start it. After leaving the screen, use **Reprendre le plan sur l’iPhone**
+to return to the pending local plan. Starting that continuation requires its
+reviewed iPhone plan and current memory fingerprint.
+
 `POST /goals/{goal_id}/memory-context` requires device authentication and the
 expected goal update timestamp. The server derives the project and search query
 from authoritative goal/conversation records. Planning and evaluation retrievals

@@ -35,11 +35,12 @@ export type GoalConversation = {
   messages: GoalMessage[];
   active_goal_id: string;
   pending_question_id: string | null;
+  project_id?: string | null;
 };
 export type GoalReplyAttempt = { clientMessageId: string; send: () => Promise<GoalDetail> };
 export type GoalConversationSession = {
   conversation: GoalConversation;
-  prepareReply: (message: string) => GoalReplyAttempt;
+  prepareReply: (message: string, options?: { planningMode: "iphone_local" }) => GoalReplyAttempt;
 };
 
 function invalid(): never { throw new Error("Les données du projet reçues sont invalides ou dépassent les limites."); }
@@ -150,7 +151,8 @@ export function parseGoalConversation(value: unknown): GoalConversation {
   });
   const pending = item.pending_question_id === null ? null : projectIdentifier(item.pending_question_id);
   if (pending && !messages.some((message) => message.id === pending && message.role === "assistant")) return invalid();
-  return { messages, active_goal_id: projectIdentifier(item.active_goal_id), pending_question_id: pending };
+  return { messages, active_goal_id: projectIdentifier(item.active_goal_id), pending_question_id: pending,
+    ...(item.project_id === undefined ? {} : { project_id: item.project_id === null ? null : projectIdentifier(item.project_id) }) };
 }
 
 export function validateGoalReply(value: string): string {

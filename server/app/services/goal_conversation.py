@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import aiosqlite
@@ -61,8 +61,10 @@ class GoalConversationService:
             db.row_factory = aiosqlite.Row
             link = await (
                 await db.execute(
-                    """SELECT c.id,c.active_goal_id FROM goal_conversation_links l
-                    JOIN goal_conversations c ON c.id=l.conversation_id WHERE l.goal_run_id=?""",
+                    """SELECT c.id,c.active_goal_id,p.project_id FROM goal_conversation_links l
+                    JOIN goal_conversations c ON c.id=l.conversation_id
+                    LEFT JOIN goal_project_links p ON p.goal_run_id=c.active_goal_id
+                    WHERE l.goal_run_id=?""",
                     (goal_id,),
                 )
             ).fetchone()
@@ -89,6 +91,7 @@ class GoalConversationService:
         return {
             "messages": [dict(row) for row in rows],
             "active_goal_id": str(link["active_goal_id"]),
+            "project_id": str(link["project_id"]) if link["project_id"] else None,
             "pending_question_id": str(question[0]) if question else None,
         }
 
@@ -100,6 +103,7 @@ class GoalConversationService:
         client_message_id: str,
         reply_to_message_id: str | None,
         actor_id: str,
+        planning_mode: Literal["automatic", "iphone_local"] = "automatic",
     ) -> str:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
@@ -116,15 +120,25 @@ class GoalConversationService:
                 raise GoalConversationConflict("goal not found")
             replay = await (
                 await db.execute(
-                    """SELECT goal_run_id,content,reply_to_message_id FROM goal_messages
+                    """SELECT id,goal_run_id,content,reply_to_message_id FROM goal_messages
                     WHERE conversation_id=? AND actor_id=? AND client_message_id=?""",
                     (link["id"], actor_id, client_message_id),
                 )
             ).fetchone()
             if replay is not None:
+                accepted = await (
+                    await db.execute(
+                        """SELECT json_extract(payload_json,'$.planning_mode') FROM audit_events
+                        WHERE event_type='goal.message.accepted' AND trace_id=?
+                        AND json_extract(payload_json,'$.message_id')=? ORDER BY id DESC LIMIT 1""",
+                        (replay["goal_run_id"], replay["id"]),
+                    )
+                ).fetchone()
+                original_mode = accepted[0] if accepted and accepted[0] else "automatic"
                 if (
                     replay["content"] != message
                     or replay["reply_to_message_id"] != reply_to_message_id
+                    or original_mode != planning_mode
                 ):
                     raise GoalConversationConflict(
                         "client_message_id is bound to a different reply"
@@ -138,6 +152,23 @@ class GoalConversationService:
                 raise GoalConversationConflict("active goal not found")
             audit_task_id = str(goal["root_task_id"])
             terminal = goal["status"] in {"completed", "failed", "cancelled", "budget_exhausted"}
+            awaiting_local_plan = (
+                goal["status"] == "planning"
+                and goal["started_at"] is None
+                and goal["current_phase"] == "awaiting_local_plan"
+            )
+            if planning_mode == "iphone_local":
+                project = await (
+                    await db.execute(
+                        "SELECT project_id FROM goal_project_links WHERE goal_run_id=?",
+                        (active_id,),
+                    )
+                ).fetchone()
+                if project is None or not (terminal or awaiting_local_plan):
+                    raise GoalConversationConflict(
+                        "local continuation requires an existing project with no active work"
+                    )
+                awaiting_local_plan = True
             waiting_for_reply = (
                 goal["status"] == "waiting_permission" and goal["current_phase"] == "needs_user"
             )
@@ -175,9 +206,22 @@ class GoalConversationService:
                     completion_criteria_json,current_phase,created_at,updated_at,started_at)
                     SELECT ?,?,objective,'planning',autonomy_profile,planner_source,max_steps,
                     max_parallelism,max_replans,max_runtime_seconds,max_model_calls,
-                    completion_criteria_json,'continuation_pending',?,?,? FROM goal_runs WHERE id=?""",
-                    (active_id, root.id, now, now, now, goal["id"]),
+                    completion_criteria_json,?,?,?,? FROM goal_runs WHERE id=?""",
+                    (
+                        active_id,
+                        root.id,
+                        "awaiting_local_plan" if awaiting_local_plan else "continuation_pending",
+                        now,
+                        now,
+                        None if awaiting_local_plan else now,
+                        goal["id"],
+                    ),
                 )
+                if awaiting_local_plan:
+                    await db.execute(
+                        "UPDATE goal_runs SET planner_source='iphone_local' WHERE id=?",
+                        (active_id,),
+                    )
                 await db.execute(
                     "INSERT INTO goal_conversation_links VALUES(?,?,?)",
                     (active_id, link["id"], goal["id"]),
@@ -231,8 +275,9 @@ class GoalConversationService:
                 )
             await db.execute(
                 """UPDATE goal_runs SET conversation_revision=conversation_revision+1,
-                pending_message_revision=conversation_revision+1,reply_dispatch_credit=1,updated_at=? WHERE id=?""",
-                (now, active_id),
+                pending_message_revision=CASE WHEN ? THEN 0 ELSE conversation_revision+1 END,
+                reply_dispatch_credit=?,updated_at=? WHERE id=?""",
+                (awaiting_local_plan, 0 if awaiting_local_plan else 1, now, active_id),
             )
             # A model reading an older conversation cannot publish a new plan/evaluation.
             await db.execute(
@@ -243,7 +288,11 @@ class GoalConversationService:
             await append_audit_event(
                 db,
                 "goal.message.accepted",
-                {"goal_run_id": active_id, "message_id": message_id},
+                {
+                    "goal_run_id": active_id,
+                    "message_id": message_id,
+                    "planning_mode": planning_mode,
+                },
                 actor_type="device",
                 actor_id=actor_id,
                 task_id=audit_task_id,

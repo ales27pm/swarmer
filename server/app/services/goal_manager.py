@@ -284,7 +284,7 @@ class GoalManager:
         self, goal_id: str, request: GoalMessageRequest, *, actor_id: str
     ) -> dict[str, Any]:
         # Seed a prior single-file artifact before creating its linked project continuation.
-        if self.project_applications is not None:
+        if self.project_applications is not None and request.planning_mode == "automatic":
             async with aiosqlite.connect(self.db_path) as db:
                 legacy = await (
                     await db.execute(
@@ -305,6 +305,7 @@ class GoalManager:
                 client_message_id=request.client_message_id,
                 reply_to_message_id=request.reply_to_message_id,
                 actor_id=actor_id,
+                planning_mode=request.planning_mode,
             )
         except GoalConversationConflict as exc:
             raise GoalManagerConflict(str(exc)) from exc
@@ -331,6 +332,12 @@ class GoalManager:
         """Prepare the next iteration only after previous work and grants settle."""
         goal = await self.graph.get_goal(goal_id)
         if goal is None or goal["status"] in self.graph.GOAL_TERMINAL:
+            return
+        if (
+            goal["status"] == "planning"
+            and goal["started_at"] is None
+            and goal["current_phase"] == "awaiting_local_plan"
+        ):
             return
         pending = int(goal.get("pending_message_revision") or 0) > 0
         if not pending and goal["current_phase"] != "project_continue":
@@ -722,6 +729,12 @@ class GoalManager:
             if goal["status"] in self.graph.GOAL_TERMINAL:
                 raise GoalManagerConflict("terminal goal cannot be started")
             memory_fingerprint = request.memory_context_fingerprint
+            if goal["current_phase"] == "awaiting_local_plan" and (
+                request.planner_source != "iphone_local"
+                or request.plan_proposal is None
+                or memory_fingerprint is None
+            ):
+                raise GoalManagerConflict("this continuation requires its reviewed iPhone plan")
             if memory_fingerprint is not None:
                 await self._assert_local_memory_current(goal_run_id, memory_fingerprint)
             else:

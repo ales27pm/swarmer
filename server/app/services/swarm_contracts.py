@@ -202,6 +202,7 @@ class GoalMessageRequest(BaseModel):
     message: LongText
     client_message_id: StableIdentifier
     reply_to_message_id: StableIdentifier | None = None
+    planning_mode: Literal["automatic", "iphone_local"] = "automatic"
 
 
 class GoalMessageRecord(BaseModel):
@@ -218,6 +219,7 @@ class GoalMessagesResponse(BaseModel):
     messages: list[GoalMessageRecord] = Field(max_length=100)
     active_goal_id: StableIdentifier
     pending_question_id: StableIdentifier | None = None
+    project_id: StableIdentifier | None = None
 
 
 class GoalCancelRequest(BaseModel):
