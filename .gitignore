@@ -26,6 +26,10 @@ server/.env*
 # Runtime state / secrets
 data/
 server/data/
+# The public catalogue ships with the application; other data stays excluded.
+!/server/app/data/
+/server/app/data/*
+!/server/app/data/activity_catalog.json
 *.db
 *.db-shm
 *.db-wal

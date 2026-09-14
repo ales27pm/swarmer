@@ -408,6 +408,10 @@ export default function SwarmScreen() {
             : "Aucun agent n’exécute actuellement un nœud."}
         </Text>
         <ActionButton
+          label="Explorer le catalogue d’agents"
+          onPress={() => creation.router.push("/catalog")}
+        />
+        <ActionButton
           label="Voir le registre des agents"
           onPress={() => creation.router.push("/agents")}
         />

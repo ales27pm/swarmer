@@ -33,6 +33,7 @@ describe("MainLayout", () => {
     const screens = new Map(mockTabScreen.mock.calls.map(([props]) => [props.name, props]));
     expect(screens.get("swarm")).toMatchObject({ options: { title: "Swarm" } });
     expect(screens.get("agents")).toMatchObject({ options: { href: null, title: "Agents" } });
+    expect(screens.get("catalog")).toMatchObject({ options: { href: null, title: "Catalogue" } });
     expect(screens.get("settings")).toMatchObject({ options: { href: null } });
   });
 });

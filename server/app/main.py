@@ -47,6 +47,11 @@ from app.models import (
     TaskRecord,
     TaskStatus,
 )
+from app.services.activity_catalog import (
+    ActivityCatalogError,
+    ActivityCatalogResponse,
+    ActivityCatalogService,
+)
 from app.services.agent_card import AgentCardPolicyError, validate_agent_registration
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
@@ -299,6 +304,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
         outbox_publication_lease_seconds=settings.outbox_publication_lease_seconds,
         agent_offline_timeout_seconds=settings.agent_offline_timeout_seconds,
         permission_policy=permission_policy,
+    )
+    activity_catalog = ActivityCatalogService(
+        settings.db_path,
+        permission_policy,
+        offline_timeout_seconds=settings.agent_offline_timeout_seconds,
     )
     agent_lease_reaper = AgentLeaseReaper(
         settings.db_path,
@@ -591,6 +601,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.planner_provider = planner_provider
     app.state.message_board = message_board
     app.state.agent_dispatcher = agent_dispatcher
+    app.state.activity_catalog = activity_catalog
     app.state.agent_lease_reaper = agent_lease_reaper
     app.state.iphone_capability_service = iphone_capability_service
     app.state.control_plane_instance = control_plane_instance
@@ -1857,6 +1868,19 @@ def create_app(config: Settings | None = None) -> FastAPI:
     ) -> None:
         if not await state_service.delete_memory(memory_id, str(principal["id"])):
             raise HTTPException(status_code=404, detail="memory not found")
+
+    @app.get("/catalog/activities", response_model=ActivityCatalogResponse)
+    async def get_activity_catalog(
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> ActivityCatalogResponse:
+        del principal
+        try:
+            catalog = await activity_catalog.get_catalog()
+            response.headers["Cache-Control"] = "no-store"
+            return catalog
+        except ActivityCatalogError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/agents")
     async def list_agents(

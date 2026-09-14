@@ -827,6 +827,47 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /catalog/activities:
+    get:
+      summary: Get Activity Catalog
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityCatalogResponse'
+          headers:
+            Cache-Control:
+              description: Availability is a current snapshot and must not be cached.
+              schema:
+                type: string
+                const: no-store
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '503':
+          description: Packaged activity catalogue unavailable or invalid.
+      tags:
+      - Agents
+      security:
+      - bearerAuth: []
   /agents:
     get:
       tags: [Agents]
@@ -1749,6 +1790,215 @@ components:
           schema: {$ref: '#/components/schemas/HTTPValidationError'}
 
   schemas:
+    ActivityCatalogAvailability:
+      properties:
+        state:
+          type: string
+          enum:
+          - goal_ready
+          - parameters_required
+          - worker_unavailable
+          - iphone_request
+          - planned
+          - policy_denied
+          - unknown
+          title: State
+        agent_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 250
+          title: Agent Ids
+        reason:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - state
+      - agent_ids
+      - reason
+      title: ActivityCatalogAvailability
+    ActivityCatalogDomain:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z][a-z0-9._-]{0,127}$
+          title: Id
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+        description:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Description
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - title
+      - description
+      title: ActivityCatalogDomain
+    ActivityCatalogExecution:
+      properties:
+        kind:
+          type: string
+          enum:
+          - worker
+          - iphone
+          - planned
+          title: Kind
+        target:
+          anyOf:
+          - type: string
+            pattern: ^[a-z][a-z0-9._-]{0,127}$
+          - type: 'null'
+          title: Target
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - target
+      title: ActivityCatalogExecution
+    ActivityCatalogResponse:
+      properties:
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        domains:
+          items:
+            $ref: '#/components/schemas/ActivityCatalogDomain'
+          type: array
+          title: Domains
+        skills:
+          items:
+            $ref: '#/components/schemas/ActivityCatalogSkillStatus'
+          type: array
+          title: Skills
+        roles:
+          items:
+            $ref: '#/components/schemas/ActivityCatalogRole'
+          type: array
+          title: Roles
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - generated_at
+      - domains
+      - skills
+      - roles
+      title: ActivityCatalogResponse
+    ActivityCatalogRole:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z][a-z0-9._-]{0,127}$
+          title: Id
+        domain_id:
+          type: string
+          pattern: ^[a-z][a-z0-9._-]{0,127}$
+          title: Domain Id
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+        description:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Description
+        skill_ids:
+          items:
+            type: string
+            pattern: ^[a-z][a-z0-9._-]{0,127}$
+          type: array
+          maxItems: 64
+          minItems: 1
+          title: Skill Ids
+        examples:
+          items:
+            type: string
+            maxLength: 2000
+            minLength: 1
+          type: array
+          maxItems: 12
+          minItems: 1
+          title: Examples
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - domain_id
+      - title
+      - description
+      - skill_ids
+      - examples
+      title: ActivityCatalogRole
+    ActivityCatalogSkillStatus:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z][a-z0-9._-]{0,127}$
+          title: Id
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+        description:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Description
+        inputs:
+          items:
+            type: string
+            maxLength: 1000
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Inputs
+        output:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Output
+        execution:
+          $ref: '#/components/schemas/ActivityCatalogExecution'
+        requirements:
+          items:
+            type: string
+            maxLength: 1000
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Requirements
+        availability:
+          $ref: '#/components/schemas/ActivityCatalogAvailability'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - title
+      - description
+      - inputs
+      - output
+      - execution
+      - requirements
+      - availability
+      title: ActivityCatalogSkillStatus
     Error:
       type: object
       required: [detail]

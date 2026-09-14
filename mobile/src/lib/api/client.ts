@@ -11,6 +11,7 @@ import {
 } from "@/lib/api/project";
 
 import { notifyConnectionChanged } from "@/lib/connection-events";
+import { parseActivityCatalog, type ActivityCatalog } from "@/lib/api/activity-catalog";
 import { MEMORY_FINGERPRINT, parseGoalMemoryContext } from "@/lib/api/goal-memory";
 import {
   parseCodeProposalApplication,
@@ -1249,6 +1250,18 @@ export function deleteMemory(id: string): Promise<void> {
 
 export function listAgents(): Promise<Agent[]> {
   return request<Agent[]>("/agents");
+}
+
+export async function getActivityCatalog(): Promise<ActivityCatalog> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    return parseActivityCatalog(await request<unknown>("/catalog/activities", {
+      cache: "no-store", signal: controller.signal,
+    }));
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function listAudit(limit = 30): Promise<AuditEvent[]> {

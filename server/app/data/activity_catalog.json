@@ -1,0 +1,1884 @@
+{
+  "schema_version": "1.0",
+  "domains": [
+    {
+      "id": "software",
+      "title": "Développement logiciel",
+      "description": "Construire, comprendre et améliorer des applications dans un périmètre défini."
+    },
+    {
+      "id": "infrastructure",
+      "title": "Infrastructure et exploitation",
+      "description": "Diagnostiquer des environnements et préparer des opérations traçables."
+    },
+    {
+      "id": "research",
+      "title": "Recherche et connaissances",
+      "description": "Trouver des sources, comparer des informations et suivre un sujet."
+    },
+    {
+      "id": "data",
+      "title": "Fichiers et données",
+      "description": "Explorer des fichiers et préparer des données exploitables."
+    },
+    {
+      "id": "writing",
+      "title": "Rédaction et documents",
+      "description": "Structurer, rédiger, traduire et réviser des documents."
+    },
+    {
+      "id": "design",
+      "title": "Design et création",
+      "description": "Concevoir des parcours, des interfaces et des supports visuels."
+    },
+    {
+      "id": "projects",
+      "title": "Projets et coordination",
+      "description": "Définir le travail, suivre ses dépendances et rendre les décisions visibles."
+    },
+    {
+      "id": "customers",
+      "title": "Clients et ventes",
+      "description": "Préparer des dossiers clients, des suivis et des soumissions."
+    },
+    {
+      "id": "communication",
+      "title": "Communications et réunions",
+      "description": "Préparer des échanges et transformer les réunions en décisions et actions."
+    },
+    {
+      "id": "daily_life",
+      "title": "Agenda et quotidien",
+      "description": "Organiser le temps et les tâches professionnelles ou personnelles."
+    },
+    {
+      "id": "administration",
+      "title": "Budget et administration",
+      "description": "Organiser les montants, les justificatifs et les démarches."
+    },
+    {
+      "id": "learning",
+      "title": "Apprentissage et habitudes",
+      "description": "Apprendre un sujet et organiser une progression adaptée à ses objectifs."
+    },
+    {
+      "id": "travel",
+      "title": "Déplacements et logistique",
+      "description": "Préparer des trajets, des achats et leur organisation pratique."
+    }
+  ],
+  "skills": [
+    {
+      "id": "code.build_project",
+      "title": "Construire un projet",
+      "description": "Développer une révision de projet Python ou Node et recueillir les résultats des vérifications dans le runtime prévu.",
+      "inputs": [
+        "Objectif et critères de réussite",
+        "Sources et dernières instructions"
+      ],
+      "output": "Révision de projet, résultats des vérifications et instructions de lancement.",
+      "execution": {
+        "kind": "worker",
+        "target": "code.build_project"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Runtime de projet configuré ; publication des fichiers soumise à l’approbation prévue."
+      ]
+    },
+    {
+      "id": "code.generate_python",
+      "title": "Proposer un fichier Python",
+      "description": "Produire une proposition app.py limitée à la bibliothèque standard ; cette opération ne lance ni tests ni application.",
+      "inputs": [
+        "Besoin fonctionnel borné"
+      ],
+      "output": "Fichier Python proposé et résumé de ses limites.",
+      "execution": {
+        "kind": "worker",
+        "target": "code.generate_python"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Revue et approbation distinctes avant enregistrement du fichier."
+      ]
+    },
+    {
+      "id": "code_review.git_status",
+      "title": "Examiner l’état Git",
+      "description": "Lister l’état des fichiers d’un dépôt dans le périmètre autorisé.",
+      "inputs": [
+        "Dépôt autorisé"
+      ],
+      "output": "État Git du dépôt sans modification.",
+      "execution": {
+        "kind": "worker",
+        "target": "code_review.git_status"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Dépôt accessible au worker de revue."
+      ]
+    },
+    {
+      "id": "code_review.git_diff",
+      "title": "Examiner un diff",
+      "description": "Lire les changements Git sélectionnés pour préparer une revue.",
+      "inputs": [
+        "Dépôt autorisé",
+        "Sélection de changements"
+      ],
+      "output": "Diff borné et provenance de la lecture.",
+      "execution": {
+        "kind": "worker",
+        "target": "code_review.git_diff"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Dépôt accessible au worker de revue."
+      ]
+    },
+    {
+      "id": "code_review.git_show",
+      "title": "Lire une révision Git",
+      "description": "Consulter le contenu Git demandé sans changer la révision de travail.",
+      "inputs": [
+        "Dépôt autorisé",
+        "Référence Git et chemins"
+      ],
+      "output": "Contenu borné de la révision demandée.",
+      "execution": {
+        "kind": "worker",
+        "target": "code_review.git_show"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Dépôt accessible au worker de revue."
+      ]
+    },
+    {
+      "id": "code_review.static_analysis",
+      "title": "Analyser du code statiquement",
+      "description": "Appliquer l’analyse statique prévue par le worker aux fichiers sélectionnés.",
+      "inputs": [
+        "Dépôt autorisé",
+        "Fichiers sélectionnés"
+      ],
+      "output": "Diagnostic statique avec les limites de l’analyse.",
+      "execution": {
+        "kind": "worker",
+        "target": "code_review.static_analysis"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Analyseurs pris en charge et fichiers accessibles ; aucune preuve d’exécution de l’application."
+      ]
+    },
+    {
+      "id": "software.specify",
+      "title": "Préciser une application",
+      "description": "Transformer un besoin en fonctionnalités, contraintes et critères observables.",
+      "inputs": [
+        "Besoin utilisateur",
+        "Contraintes de plateforme et de données"
+      ],
+      "output": "Spécification fonctionnelle révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Réponses utilisateur et périmètre de livraison."
+      ]
+    },
+    {
+      "id": "software.test_design",
+      "title": "Concevoir des scénarios de test",
+      "description": "Définir les cas attendus, erreurs et données nécessaires à une vérification.",
+      "inputs": [
+        "Fonctionnalités",
+        "Critères de réussite"
+      ],
+      "output": "Scénarios de test avec résultats attendus.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Spécification ou comportement existant à examiner."
+      ]
+    },
+    {
+      "id": "software.dependency_review",
+      "title": "Examiner les dépendances",
+      "description": "Comparer les dépendances déclarées et relever les contraintes de compatibilité à vérifier.",
+      "inputs": [
+        "Manifestes et verrous de dépendances",
+        "Environnement cible"
+      ],
+      "output": "Rapport de compatibilité et questions à vérifier.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Sources de versions et de compatibilité datées."
+      ]
+    },
+    {
+      "id": "infrastructure.log_diagnosis",
+      "title": "Analyser des journaux",
+      "description": "Corréler des erreurs et des événements dans des journaux fournis.",
+      "inputs": [
+        "Journaux sélectionnés",
+        "Période et symptôme"
+      ],
+      "output": "Hypothèses de panne reliées aux événements observés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Journaux accessibles et contexte d’exploitation."
+      ]
+    },
+    {
+      "id": "infrastructure.health_review",
+      "title": "Examiner l’état d’un service",
+      "description": "Rapprocher des résultats de santé, de ressources et de disponibilité.",
+      "inputs": [
+        "Mesures et résultats de contrôles",
+        "Service concerné"
+      ],
+      "output": "Bilan de santé daté et anomalies.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Collecteur de mesures ou connecteur machine autorisé."
+      ]
+    },
+    {
+      "id": "infrastructure.configuration_compare",
+      "title": "Comparer des configurations",
+      "description": "Repérer des écarts entre deux configurations sans exposer leurs secrets.",
+      "inputs": [
+        "Configurations expurgées",
+        "Configuration de référence"
+      ],
+      "output": "Écarts classés et modifications proposées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Référence identifiée et données sensibles retirées."
+      ]
+    },
+    {
+      "id": "infrastructure.release_plan",
+      "title": "Préparer une livraison",
+      "description": "Décrire les prérequis, vérifications et étapes d’une livraison déterminée.",
+      "inputs": [
+        "Artefact ou révision",
+        "Environnement cible"
+      ],
+      "output": "Procédure de livraison révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Identité vérifiée des sources et de la cible ; exécution séparée."
+      ]
+    },
+    {
+      "id": "infrastructure.rollback_plan",
+      "title": "Préparer un retour arrière",
+      "description": "Définir comment revenir à un état compatible en préservant les données.",
+      "inputs": [
+        "Version précédente",
+        "Contrats de données et sauvegardes"
+      ],
+      "output": "Procédure de récupération et conditions d’arrêt.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Sauvegardes vérifiables et compatibilité des données."
+      ]
+    },
+    {
+      "id": "research.query",
+      "title": "Rechercher des sources",
+      "description": "Interroger l’adaptateur de recherche configuré et recevoir des titres, liens et extraits bornés.",
+      "inputs": [
+        "Question de recherche",
+        "Nombre maximal de résultats"
+      ],
+      "output": "Résultats sourcés, à évaluer avant utilisation.",
+      "execution": {
+        "kind": "worker",
+        "target": "research.query"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Adaptateur HTTPS de recherche configuré par l’opérateur."
+      ]
+    },
+    {
+      "id": "research.source_compare",
+      "title": "Comparer des sources",
+      "description": "Rapprocher les affirmations et divergences de documents identifiés.",
+      "inputs": [
+        "Documents ou extraits",
+        "Question de comparaison"
+      ],
+      "output": "Tableau des accords, divergences et limites.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Sources accessibles avec leur provenance."
+      ]
+    },
+    {
+      "id": "research.reading_digest",
+      "title": "Résumer un dossier documentaire",
+      "description": "Extraire les points utiles d’un ensemble de documents choisis.",
+      "inputs": [
+        "Documents sélectionnés",
+        "Question ou usage visé"
+      ],
+      "output": "Synthèse avec références aux documents.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Lecture documentaire et provenance conservée."
+      ]
+    },
+    {
+      "id": "research.watch_scope",
+      "title": "Définir une veille",
+      "description": "Décrire les sujets, sources, fréquence et critères d’intérêt d’une veille.",
+      "inputs": [
+        "Sujet et objectifs",
+        "Sources et fréquence souhaitées"
+      ],
+      "output": "Plan de veille révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Sources identifiées ; toute surveillance récurrente nécessite un mécanisme dédié."
+      ]
+    },
+    {
+      "id": "research.watch_compare",
+      "title": "Comparer deux relevés de veille",
+      "description": "Repérer ce qui a changé entre deux ensembles de résultats datés.",
+      "inputs": [
+        "Relevé précédent",
+        "Nouveau relevé"
+      ],
+      "output": "Nouveautés et changements avec leurs sources.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Stockage des relevés et dates de collecte."
+      ]
+    },
+    {
+      "id": "research.claim_check",
+      "title": "Vérifier des affirmations",
+      "description": "Relier une affirmation à des sources et signaler les éléments non établis.",
+      "inputs": [
+        "Affirmations à vérifier",
+        "Sources disponibles"
+      ],
+      "output": "État de vérification et justification par affirmation.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Accès à des sources pertinentes et datées."
+      ]
+    },
+    {
+      "id": "workspace.list_dir",
+      "title": "Lister un dossier",
+      "description": "Inventorier un dossier dans les limites du workspace autorisé.",
+      "inputs": [
+        "Chemin relatif autorisé"
+      ],
+      "output": "Liste bornée des entrées du dossier.",
+      "execution": {
+        "kind": "worker",
+        "target": "workspace.list_dir"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Workspace configuré et accessible."
+      ]
+    },
+    {
+      "id": "workspace.read_text",
+      "title": "Lire un fichier texte",
+      "description": "Lire un fichier texte borné dans le workspace autorisé.",
+      "inputs": [
+        "Chemin relatif autorisé"
+      ],
+      "output": "Contenu texte et provenance de la lecture.",
+      "execution": {
+        "kind": "worker",
+        "target": "workspace.read_text"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Workspace configuré et fichier texte pris en charge."
+      ]
+    },
+    {
+      "id": "data.profile",
+      "title": "Décrire un jeu de données",
+      "description": "Examiner les colonnes, types, valeurs manquantes et doublons.",
+      "inputs": [
+        "Tableau ou fichier de données"
+      ],
+      "output": "Profil des données et anomalies à traiter.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Import du format choisi et règles de confidentialité."
+      ]
+    },
+    {
+      "id": "data.clean_csv",
+      "title": "Préparer le nettoyage d’un CSV",
+      "description": "Normaliser un tableau selon des règles explicites en conservant la source.",
+      "inputs": [
+        "Fichier CSV",
+        "Règles de nettoyage"
+      ],
+      "output": "CSV nettoyé et relevé des transformations.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Copie source préservée et règles de transformation validées."
+      ]
+    },
+    {
+      "id": "data.merge_tables",
+      "title": "Rapprocher des tableaux",
+      "description": "Joindre des tableaux sur des clés définies et isoler les correspondances incertaines.",
+      "inputs": [
+        "Tableaux à rapprocher",
+        "Clés et règle de priorité"
+      ],
+      "output": "Tableau rapproché et liste des conflits.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Schémas compatibles et clés identifiées."
+      ]
+    },
+    {
+      "id": "data.chart",
+      "title": "Préparer un graphique",
+      "description": "Choisir et produire une représentation adaptée aux données fournies.",
+      "inputs": [
+        "Données",
+        "Question à illustrer"
+      ],
+      "output": "Graphique et description de ses axes et unités.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Données vérifiées et moteur d’export graphique."
+      ]
+    },
+    {
+      "id": "data.filing_plan",
+      "title": "Préparer un classement",
+      "description": "Proposer une organisation et des noms de fichiers sans déplacer les originaux.",
+      "inputs": [
+        "Inventaire de fichiers",
+        "Règles de classement souhaitées"
+      ],
+      "output": "Plan de classement et liste des changements proposés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Inventaire accessible ; déplacement éventuel à intégrer séparément."
+      ]
+    },
+    {
+      "id": "writing.outline",
+      "title": "Structurer un document",
+      "description": "Construire un plan adapté au lecteur et à l’objectif.",
+      "inputs": [
+        "Sujet et objectif",
+        "Public visé"
+      ],
+      "output": "Plan avec sections et points à développer.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Brief et longueur souhaitée."
+      ]
+    },
+    {
+      "id": "writing.draft",
+      "title": "Rédiger un brouillon",
+      "description": "Transformer des notes en texte cohérent selon un ton défini.",
+      "inputs": [
+        "Notes et faits fournis",
+        "Ton et destinataire"
+      ],
+      "output": "Brouillon révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Faits de référence et éléments à ne pas divulguer."
+      ]
+    },
+    {
+      "id": "writing.edit",
+      "title": "Réviser un texte",
+      "description": "Améliorer la clarté, la cohérence et la correction d’un texte.",
+      "inputs": [
+        "Texte source",
+        "Consignes de révision"
+      ],
+      "output": "Texte révisé et changements significatifs expliqués.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Texte accessible et intention de l’auteur."
+      ]
+    },
+    {
+      "id": "writing.translate",
+      "title": "Traduire un texte",
+      "description": "Préparer une traduction en conservant le sens et les contraintes de terminologie.",
+      "inputs": [
+        "Texte source",
+        "Langue et public cibles"
+      ],
+      "output": "Traduction révisable avec ambiguïtés signalées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Langues définies et références terminologiques éventuelles."
+      ]
+    },
+    {
+      "id": "writing.terminology",
+      "title": "Harmoniser la terminologie",
+      "description": "Repérer les termes incohérents et appliquer un vocabulaire convenu.",
+      "inputs": [
+        "Documents",
+        "Glossaire ou préférences"
+      ],
+      "output": "Glossaire et corrections proposées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Terminologie de référence approuvée."
+      ]
+    },
+    {
+      "id": "writing.format_document",
+      "title": "Mettre en forme un document",
+      "description": "Organiser un contenu dans un modèle et préparer son export.",
+      "inputs": [
+        "Contenu révisé",
+        "Modèle et format cible"
+      ],
+      "output": "Document exporté et contrôlé visuellement.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Moteur documentaire adapté au format demandé."
+      ]
+    },
+    {
+      "id": "design.user_flow",
+      "title": "Concevoir un parcours",
+      "description": "Décrire les étapes, écrans et états nécessaires à un usage.",
+      "inputs": [
+        "Objectif utilisateur",
+        "Contraintes du produit"
+      ],
+      "output": "Parcours et états à prévoir.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Usages et contraintes identifiés."
+      ]
+    },
+    {
+      "id": "design.wireframe",
+      "title": "Préparer une maquette fonctionnelle",
+      "description": "Organiser les contenus et actions d’un écran sans finaliser son identité visuelle.",
+      "inputs": [
+        "Parcours",
+        "Contenus et actions"
+      ],
+      "output": "Maquette fonctionnelle révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Outil de maquette ou d’export à intégrer."
+      ]
+    },
+    {
+      "id": "design.accessibility_review",
+      "title": "Examiner l’accessibilité d’une interface",
+      "description": "Relever les obstacles observables dans les écrans et parcours fournis.",
+      "inputs": [
+        "Écrans ou interface accessible",
+        "Scénarios d’usage"
+      ],
+      "output": "Observations et corrections proposées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Accès aux écrans ; essais avec technologies d’assistance pour une validation complète."
+      ]
+    },
+    {
+      "id": "design.visual_brief",
+      "title": "Préparer un brief visuel",
+      "description": "Définir le message, la composition et les contraintes d’un support.",
+      "inputs": [
+        "Message et audience",
+        "Références et formats"
+      ],
+      "output": "Brief visuel exploitable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Références et droits d’utilisation identifiés."
+      ]
+    },
+    {
+      "id": "design.image_variants",
+      "title": "Décliner un visuel",
+      "description": "Préparer des variantes adaptées à plusieurs formats ou messages.",
+      "inputs": [
+        "Visuel source",
+        "Formats et modifications souhaités"
+      ],
+      "output": "Variantes et aperçu comparatif.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Outil de création ou de retouche connecté et droits sur les éléments."
+      ]
+    },
+    {
+      "id": "design.asset_export",
+      "title": "Exporter des supports",
+      "description": "Préparer les dimensions, formats et noms des fichiers livrables.",
+      "inputs": [
+        "Créations validées",
+        "Spécifications de sortie"
+      ],
+      "output": "Jeu de fichiers exportés et inventaire.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Moteur d’export et spécifications techniques."
+      ]
+    },
+    {
+      "id": "iphone.photos.pick",
+      "title": "Choisir une photo sur l’iPhone",
+      "description": "Présenter le sélecteur iOS pour recevoir une photo choisie par l’utilisateur.",
+      "inputs": [
+        "Choix explicite dans le sélecteur iOS"
+      ],
+      "output": "Résultat corrélé correspondant à la photo choisie.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.photos.pick"
+      },
+      "requirements": [
+        "iPhone ciblé disponible, demande liée à une tâche autorisée et approbation dans l’app.",
+        "Sélecteur visible ; cette opération ne parcourt pas toute la photothèque."
+      ]
+    },
+    {
+      "id": "projects.scope",
+      "title": "Définir le périmètre d’un projet",
+      "description": "Distinguer résultats attendus, contraintes et éléments hors périmètre.",
+      "inputs": [
+        "Objectif",
+        "Contraintes et parties concernées"
+      ],
+      "output": "Périmètre et critères de réussite révisables.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Décisions et contraintes du responsable du projet."
+      ]
+    },
+    {
+      "id": "projects.breakdown",
+      "title": "Décomposer le travail",
+      "description": "Transformer un périmètre en tâches avec livrables et responsables proposés.",
+      "inputs": [
+        "Périmètre",
+        "Ressources et échéances"
+      ],
+      "output": "Liste de tâches et livrables.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Capacités et disponibilités des intervenants."
+      ]
+    },
+    {
+      "id": "projects.dependencies",
+      "title": "Préparer les dépendances",
+      "description": "Identifier les entrées nécessaires à chaque tâche et les possibilités de parallélisme.",
+      "inputs": [
+        "Tâches et livrables",
+        "Contraintes d’ordre"
+      ],
+      "output": "Dépendances et séquence de travail proposées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Livrables attendus par chaque tâche."
+      ]
+    },
+    {
+      "id": "projects.progress",
+      "title": "Préparer un bilan d’avancement",
+      "description": "Résumer les résultats vérifiés, travaux ouverts et blocages.",
+      "inputs": [
+        "État des tâches",
+        "Résultats et blocages"
+      ],
+      "output": "Bilan daté et prochaines actions proposées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Source d’état autoritative ou relevé fourni."
+      ]
+    },
+    {
+      "id": "projects.risks",
+      "title": "Tenir un registre de risques",
+      "description": "Classer les risques d’un projet et préparer des réponses proportionnées.",
+      "inputs": [
+        "Projet et contraintes",
+        "Risques observés"
+      ],
+      "output": "Registre avec impact, responsable et réponse proposée.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Contexte du projet et critères d’impact."
+      ]
+    },
+    {
+      "id": "projects.decisions",
+      "title": "Organiser les décisions",
+      "description": "Relier les décisions prises à leur contexte, date et conséquences.",
+      "inputs": [
+        "Décisions et notes",
+        "Projet concerné"
+      ],
+      "output": "Journal des décisions et points encore ouverts.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Sources de décision identifiées."
+      ]
+    },
+    {
+      "id": "iphone.contacts.lookup",
+      "title": "Chercher un contact sur l’iPhone",
+      "description": "Rechercher des contacts selon une requête et retourner les champs permis.",
+      "inputs": [
+        "Nom ou requête de recherche"
+      ],
+      "output": "Résultats de contacts bornés et corrélés.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.contacts.lookup"
+      },
+      "requirements": [
+        "iPhone ciblé disponible, demande liée à une tâche autorisée et approbation dans l’app.",
+        "Permission iOS Contacts et champs minimaux prévus par le contrat."
+      ]
+    },
+    {
+      "id": "customers.record",
+      "title": "Préparer une fiche client",
+      "description": "Consolider des données fournies en signalant les informations manquantes ou contradictoires.",
+      "inputs": [
+        "Coordonnées et informations client",
+        "Modèle de fiche"
+      ],
+      "output": "Fiche client proposée.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Source des données autorisée ; connecteur CRM pour synchroniser."
+      ]
+    },
+    {
+      "id": "customers.history",
+      "title": "Résumer une relation client",
+      "description": "Extraire besoins, engagements et questions ouvertes des échanges sélectionnés.",
+      "inputs": [
+        "Échanges fournis",
+        "Client concerné"
+      ],
+      "output": "Historique synthétique avec références.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Accès explicite aux échanges concernés."
+      ]
+    },
+    {
+      "id": "customers.followup",
+      "title": "Préparer un suivi client",
+      "description": "Proposer une prochaine action et un brouillon selon l’état du dossier.",
+      "inputs": [
+        "Dossier client",
+        "État et objectif du suivi"
+      ],
+      "output": "Action proposée et brouillon de suivi.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Historique et consignes de contact ; aucun envoi inclus."
+      ]
+    },
+    {
+      "id": "customers.estimate",
+      "title": "Préparer un chiffrage",
+      "description": "Calculer un estimatif à partir des quantités, tarifs et hypothèses fournis.",
+      "inputs": [
+        "Prestations et quantités",
+        "Tarifs et hypothèses"
+      ],
+      "output": "Estimatif détaillé avec hypothèses.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Tarifs, devise et règles de calcul validés."
+      ]
+    },
+    {
+      "id": "customers.quote",
+      "title": "Rédiger une soumission",
+      "description": "Assembler le périmètre, le chiffrage et les conditions dans un brouillon.",
+      "inputs": [
+        "Périmètre et estimatif",
+        "Conditions et modèle"
+      ],
+      "output": "Soumission révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Montants et conditions approuvés avant partage."
+      ]
+    },
+    {
+      "id": "iphone.mail.compose",
+      "title": "Préparer un courriel sur l’iPhone",
+      "description": "Ouvrir un composeur visible avec les destinataires et le contenu demandés.",
+      "inputs": [
+        "Destinataires",
+        "Sujet et corps"
+      ],
+      "output": "Résultat du composeur, sans garantie de livraison.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.mail.compose"
+      },
+      "requirements": [
+        "iPhone ciblé disponible, demande liée à une tâche autorisée et approbation dans l’app.",
+        "Composeur iOS disponible ; l’utilisateur décide de l’envoi."
+      ]
+    },
+    {
+      "id": "iphone.sms.compose",
+      "title": "Préparer un SMS sur l’iPhone",
+      "description": "Ouvrir le composeur SMS visible avec le texte demandé.",
+      "inputs": [
+        "Destinataires",
+        "Texte du message"
+      ],
+      "output": "Résultat du composeur, sans garantie de livraison.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.sms.compose"
+      },
+      "requirements": [
+        "iPhone ciblé disponible, demande liée à une tâche autorisée et approbation dans l’app.",
+        "SMS disponible sur l’appareil ; l’utilisateur décide de l’envoi."
+      ]
+    },
+    {
+      "id": "communication.reply",
+      "title": "Rédiger une réponse",
+      "description": "Préparer une réponse qui respecte l’intention et les faits fournis.",
+      "inputs": [
+        "Message reçu",
+        "Intention et ton"
+      ],
+      "output": "Brouillon de réponse.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Message sélectionné et destinataire confirmé ; aucun envoi inclus."
+      ]
+    },
+    {
+      "id": "communication.agenda",
+      "title": "Préparer un ordre du jour",
+      "description": "Organiser les sujets, objectifs et temps prévus d’une réunion.",
+      "inputs": [
+        "Sujets et participants",
+        "Durée et décisions attendues"
+      ],
+      "output": "Ordre du jour révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Objectif de la réunion et contraintes des participants."
+      ]
+    },
+    {
+      "id": "communication.minutes",
+      "title": "Préparer un compte rendu",
+      "description": "Transformer des notes ou une transcription fournie en compte rendu.",
+      "inputs": [
+        "Notes ou transcription",
+        "Structure souhaitée"
+      ],
+      "output": "Compte rendu avec décisions et questions ouvertes.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Notes accessibles ; enregistrement ou transcription à intégrer séparément."
+      ]
+    },
+    {
+      "id": "communication.actions",
+      "title": "Extraire les actions d’une réunion",
+      "description": "Identifier les actions, responsables et échéances explicitement mentionnés.",
+      "inputs": [
+        "Compte rendu ou notes"
+      ],
+      "output": "Liste d’actions avec éléments manquants signalés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Source de réunion ; connecteur requis pour créer les tâches ailleurs."
+      ]
+    },
+    {
+      "id": "iphone.calendar.events",
+      "title": "Lire une période du calendrier",
+      "description": "Lire les événements d’une fenêtre bornée selon les permissions iOS.",
+      "inputs": [
+        "Début et fin de période"
+      ],
+      "output": "Événements bornés et corrélés de la période demandée.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.events"
+      },
+      "requirements": [
+        "iPhone ciblé disponible, demande liée à une tâche autorisée et approbation dans l’app.",
+        "Permission iOS Calendrier ; cette opération ne crée aucun événement."
+      ]
+    },
+    {
+      "id": "daily_life.week_plan",
+      "title": "Préparer une semaine",
+      "description": "Répartir des tâches et engagements selon les créneaux et priorités fournis.",
+      "inputs": [
+        "Disponibilités",
+        "Tâches et contraintes"
+      ],
+      "output": "Proposition d’organisation hebdomadaire.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Disponibilités datées ; écriture calendrier à intégrer séparément."
+      ]
+    },
+    {
+      "id": "daily_life.conflicts",
+      "title": "Repérer des conflits d’horaire",
+      "description": "Comparer les engagements et les temps de déplacement nécessaires.",
+      "inputs": [
+        "Événements",
+        "Durées et contraintes de déplacement"
+      ],
+      "output": "Conflits et ajustements proposés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Événements actuels et fuseaux horaires connus."
+      ]
+    },
+    {
+      "id": "daily_life.prioritize",
+      "title": "Prioriser une liste de tâches",
+      "description": "Classer une liste selon l’urgence, l’effort et les objectifs.",
+      "inputs": [
+        "Tâches",
+        "Priorités et disponibilité"
+      ],
+      "output": "Liste ordonnée et justification concise.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Critères de priorité choisis par l’utilisateur."
+      ]
+    },
+    {
+      "id": "daily_life.household",
+      "title": "Préparer une liste pour le quotidien",
+      "description": "Organiser les tâches récurrentes et fournitures d’un foyer ou d’une activité.",
+      "inputs": [
+        "Activité ou besoin domestique",
+        "Contraintes et personnes concernées"
+      ],
+      "output": "Liste de tâches et de fournitures.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Préférences et contraintes fournies ; rappels récurrents à intégrer séparément."
+      ]
+    },
+    {
+      "id": "administration.expense_categories",
+      "title": "Classer des dépenses",
+      "description": "Proposer des catégories pour les lignes d’un relevé fourni.",
+      "inputs": [
+        "Dépenses",
+        "Catégories et règles"
+      ],
+      "output": "Dépenses classées avec cas ambigus.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Import de relevés et règles explicites ; aucune connexion bancaire supposée."
+      ]
+    },
+    {
+      "id": "administration.budget_compare",
+      "title": "Comparer un budget au réalisé",
+      "description": "Calculer les écarts par catégorie et période.",
+      "inputs": [
+        "Budget prévu",
+        "Montants réalisés"
+      ],
+      "output": "Tableau des écarts et explication des calculs.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Devise, période et catégories cohérentes."
+      ]
+    },
+    {
+      "id": "administration.subscriptions",
+      "title": "Examiner des abonnements",
+      "description": "Consolider les coûts et dates d’abonnements à partir des documents fournis.",
+      "inputs": [
+        "Liste ou justificatifs d’abonnements"
+      ],
+      "output": "Inventaire des coûts et échéances.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Documents à jour ; aucune résiliation incluse."
+      ]
+    },
+    {
+      "id": "administration.document_checklist",
+      "title": "Préparer une liste de pièces",
+      "description": "Comparer les pièces disponibles à une liste de documents exigés fournie.",
+      "inputs": [
+        "Liste officielle ou exigences fournies",
+        "Pièces disponibles"
+      ],
+      "output": "Pièces présentes, manquantes ou à vérifier.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Exigences pertinentes et datées."
+      ]
+    },
+    {
+      "id": "administration.deadlines",
+      "title": "Extraire des échéances",
+      "description": "Repérer les dates et actions associées dans des documents choisis.",
+      "inputs": [
+        "Documents sélectionnés"
+      ],
+      "output": "Échéances avec source et ambiguïtés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Lecture documentaire ; création de rappels à intégrer séparément."
+      ]
+    },
+    {
+      "id": "administration.expense_pack",
+      "title": "Préparer un dossier de justificatifs",
+      "description": "Rassembler les dépenses et leurs pièces en conservant la provenance.",
+      "inputs": [
+        "Dépenses",
+        "Justificatifs et format demandé"
+      ],
+      "output": "Dossier préparé et liste des pièces manquantes.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Accès aux pièces et règles du destinataire ; aucun dépôt inclus."
+      ]
+    },
+    {
+      "id": "learning.explain",
+      "title": "Expliquer un sujet",
+      "description": "Adapter une explication au niveau et au contexte de l’apprenant.",
+      "inputs": [
+        "Sujet",
+        "Niveau et questions"
+      ],
+      "output": "Explication et exemples adaptés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Références pertinentes pour le sujet."
+      ]
+    },
+    {
+      "id": "learning.practice",
+      "title": "Préparer des exercices",
+      "description": "Créer des exercices progressifs avec corrigés et critères de réussite.",
+      "inputs": [
+        "Compétence visée",
+        "Niveau et format"
+      ],
+      "output": "Exercices et corrigés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Objectifs d’apprentissage et références."
+      ]
+    },
+    {
+      "id": "learning.plan",
+      "title": "Organiser un parcours d’apprentissage",
+      "description": "Répartir les notions et exercices selon le temps disponible.",
+      "inputs": [
+        "Objectif",
+        "Niveau et disponibilité"
+      ],
+      "output": "Parcours avec étapes et points de contrôle.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Prérequis et ressources accessibles."
+      ]
+    },
+    {
+      "id": "learning.routine",
+      "title": "Préparer une routine",
+      "description": "Construire une routine selon les préférences et contraintes fournies.",
+      "inputs": [
+        "Habitude souhaitée",
+        "Préférences et disponibilité"
+      ],
+      "output": "Routine révisable et critères de suivi.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Objectifs choisis par l’utilisateur ; rappels à intégrer séparément."
+      ]
+    },
+    {
+      "id": "learning.progress",
+      "title": "Examiner une progression",
+      "description": "Comparer des résultats ou observations aux objectifs définis.",
+      "inputs": [
+        "Objectifs",
+        "Observations ou résultats"
+      ],
+      "output": "Bilan et ajustements proposés.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Historique fourni ou stockage de suivi à intégrer."
+      ]
+    },
+    {
+      "id": "iphone.location.current",
+      "title": "Demander la position actuelle",
+      "description": "Obtenir une position ponctuelle au premier plan selon la permission iOS.",
+      "inputs": [
+        "Demande explicite de position ponctuelle"
+      ],
+      "output": "Position corrélée selon le contrat natif.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.location.current"
+      },
+      "requirements": [
+        "iPhone ciblé disponible, demande liée à une tâche autorisée et approbation dans l’app.",
+        "Permission iOS Localisation ; aucun suivi continu."
+      ]
+    },
+    {
+      "id": "travel.options",
+      "title": "Comparer des options de déplacement",
+      "description": "Comparer les options selon les dates, durées, coûts et contraintes.",
+      "inputs": [
+        "Départ, destination et dates",
+        "Budget et préférences"
+      ],
+      "output": "Tableau d’options avec sources datées.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Sources actualisées ou offres fournies ; aucune réservation incluse."
+      ]
+    },
+    {
+      "id": "travel.itinerary",
+      "title": "Préparer un itinéraire",
+      "description": "Assembler les étapes, marges de temps et informations utiles d’un trajet.",
+      "inputs": [
+        "Étapes ou options retenues",
+        "Contraintes et préférences"
+      ],
+      "output": "Itinéraire révisable.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Horaires et conditions vérifiés auprès des sources concernées."
+      ]
+    },
+    {
+      "id": "travel.purchase_compare",
+      "title": "Comparer des achats",
+      "description": "Rapprocher des produits ou devis selon les critères fournis.",
+      "inputs": [
+        "Besoins et critères",
+        "Offres ou produits"
+      ],
+      "output": "Comparaison avec coûts et limites.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Offres datées ; aucun achat ni paiement inclus."
+      ]
+    },
+    {
+      "id": "travel.logistics",
+      "title": "Préparer une liste logistique",
+      "description": "Organiser fournitures, livraisons et points de contrôle d’une activité.",
+      "inputs": [
+        "Activité",
+        "Quantités, dates et contraintes"
+      ],
+      "output": "Liste logistique et points à confirmer.",
+      "execution": {
+        "kind": "planned",
+        "target": null
+      },
+      "requirements": [
+        "Adaptateur métier à développer et à valider.",
+        "Disponibilités et modalités de livraison connues."
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "id": "project_developer",
+      "domain_id": "software",
+      "title": "Développeur de projet",
+      "description": "Préparer et faire évoluer une application à partir de besoins explicites.",
+      "skill_ids": [
+        "software.specify",
+        "code.build_project",
+        "code.generate_python",
+        "software.test_design"
+      ],
+      "examples": [
+        "Créer un catalogue de livres en Python avec recherche et persistance.",
+        "Ajouter un export à une application existante."
+      ]
+    },
+    {
+      "id": "code_reviewer",
+      "domain_id": "software",
+      "title": "Réviseur de code",
+      "description": "Examiner des changements et préciser les problèmes observés.",
+      "skill_ids": [
+        "code_review.git_status",
+        "code_review.git_diff",
+        "code_review.git_show",
+        "code_review.static_analysis",
+        "software.dependency_review",
+        "software.test_design"
+      ],
+      "examples": [
+        "Relire un correctif avant son intégration.",
+        "Examiner les contraintes d’une mise à jour de dépendances."
+      ]
+    },
+    {
+      "id": "systems_diagnostician",
+      "domain_id": "infrastructure",
+      "title": "Diagnosticien système",
+      "description": "Rapprocher mesures, journaux et configurations pour expliquer un dysfonctionnement.",
+      "skill_ids": [
+        "infrastructure.log_diagnosis",
+        "infrastructure.health_review",
+        "infrastructure.configuration_compare"
+      ],
+      "examples": [
+        "Chercher la cause d’erreurs récurrentes dans des journaux fournis.",
+        "Comparer la configuration de deux environnements."
+      ]
+    },
+    {
+      "id": "release_coordinator",
+      "domain_id": "infrastructure",
+      "title": "Responsable de livraison",
+      "description": "Préparer une livraison vérifiable et ses conditions de récupération.",
+      "skill_ids": [
+        "infrastructure.release_plan",
+        "infrastructure.rollback_plan",
+        "infrastructure.configuration_compare"
+      ],
+      "examples": [
+        "Préparer la livraison d’une révision validée.",
+        "Rédiger une procédure de retour arrière qui préserve les données."
+      ]
+    },
+    {
+      "id": "document_researcher",
+      "domain_id": "research",
+      "title": "Documentaliste",
+      "description": "Trouver et organiser les sources utiles à une question.",
+      "skill_ids": [
+        "research.query",
+        "research.source_compare",
+        "research.reading_digest",
+        "research.claim_check"
+      ],
+      "examples": [
+        "Comparer trois documents sur une même question.",
+        "Préparer une synthèse avec les références disponibles."
+      ]
+    },
+    {
+      "id": "watch_analyst",
+      "domain_id": "research",
+      "title": "Analyste de veille",
+      "description": "Définir une veille et distinguer les changements utiles entre deux relevés.",
+      "skill_ids": [
+        "research.watch_scope",
+        "research.query",
+        "research.watch_compare",
+        "research.claim_check"
+      ],
+      "examples": [
+        "Définir une veille sur un standard technique.",
+        "Comparer les nouveaux résultats d’une recherche au relevé précédent."
+      ]
+    },
+    {
+      "id": "file_explorer",
+      "domain_id": "data",
+      "title": "Explorateur de fichiers",
+      "description": "Repérer les fichiers utiles et proposer une organisation compréhensible.",
+      "skill_ids": [
+        "workspace.list_dir",
+        "workspace.read_text",
+        "data.filing_plan"
+      ],
+      "examples": [
+        "Inventorier les documents d’un dossier autorisé.",
+        "Proposer un classement sans déplacer les originaux."
+      ]
+    },
+    {
+      "id": "data_analyst",
+      "domain_id": "data",
+      "title": "Analyste de données",
+      "description": "Préparer des tableaux cohérents et des résultats interprétables.",
+      "skill_ids": [
+        "data.profile",
+        "data.clean_csv",
+        "data.merge_tables",
+        "data.chart"
+      ],
+      "examples": [
+        "Rapprocher deux listes d’inventaire et isoler les conflits.",
+        "Préparer un graphique à partir d’un CSV fourni."
+      ]
+    },
+    {
+      "id": "document_writer",
+      "domain_id": "writing",
+      "title": "Rédacteur",
+      "description": "Transformer des faits et des notes en un document adapté à son lecteur.",
+      "skill_ids": [
+        "writing.outline",
+        "writing.draft",
+        "writing.edit",
+        "writing.format_document"
+      ],
+      "examples": [
+        "Transformer des notes en rapport de projet.",
+        "Préparer une notice à partir d’informations validées."
+      ]
+    },
+    {
+      "id": "translator_editor",
+      "domain_id": "writing",
+      "title": "Traducteur-réviseur",
+      "description": "Préserver le sens et harmoniser la langue de documents.",
+      "skill_ids": [
+        "writing.translate",
+        "writing.terminology",
+        "writing.edit"
+      ],
+      "examples": [
+        "Préparer une version anglaise d’un document français.",
+        "Harmoniser les termes utilisés dans plusieurs fiches."
+      ]
+    },
+    {
+      "id": "interface_designer",
+      "domain_id": "design",
+      "title": "Concepteur d’interfaces",
+      "description": "Définir les parcours et les écrans utiles à un produit.",
+      "skill_ids": [
+        "design.user_flow",
+        "design.wireframe",
+        "design.accessibility_review"
+      ],
+      "examples": [
+        "Préparer le parcours de création d’une fiche client.",
+        "Examiner la lisibilité et les états d’un formulaire."
+      ]
+    },
+    {
+      "id": "visual_creator",
+      "domain_id": "design",
+      "title": "Créateur de supports visuels",
+      "description": "Préparer des supports cohérents à partir d’un brief et d’éléments fournis.",
+      "skill_ids": [
+        "design.visual_brief",
+        "iphone.photos.pick",
+        "design.image_variants",
+        "design.asset_export"
+      ],
+      "examples": [
+        "Préparer les variantes d’un visuel pour trois formats.",
+        "Choisir une photo puis définir son usage dans un support."
+      ]
+    },
+    {
+      "id": "project_planner",
+      "domain_id": "projects",
+      "title": "Planificateur de projet",
+      "description": "Clarifier le périmètre et proposer un ordre de travail fondé sur les livrables.",
+      "skill_ids": [
+        "projects.scope",
+        "projects.breakdown",
+        "projects.dependencies"
+      ],
+      "examples": [
+        "Décomposer la préparation d’un atelier en tâches.",
+        "Repérer les étapes indépendantes d’un projet."
+      ]
+    },
+    {
+      "id": "project_coordinator",
+      "domain_id": "projects",
+      "title": "Coordinateur de projet",
+      "description": "Rendre l’avancement, les décisions et les blocages faciles à suivre.",
+      "skill_ids": [
+        "projects.progress",
+        "projects.risks",
+        "projects.decisions",
+        "projects.dependencies"
+      ],
+      "examples": [
+        "Préparer un bilan à partir des résultats disponibles.",
+        "Rassembler les décisions prises et les questions restantes."
+      ]
+    },
+    {
+      "id": "crm_assistant",
+      "domain_id": "customers",
+      "title": "Gestionnaire CRM",
+      "description": "Préparer les informations et prochaines actions d’un dossier client.",
+      "skill_ids": [
+        "iphone.contacts.lookup",
+        "customers.record",
+        "customers.history",
+        "customers.followup"
+      ],
+      "examples": [
+        "Préparer une fiche client avec les informations fournies.",
+        "Résumer les engagements d’un échange avant de proposer un suivi."
+      ]
+    },
+    {
+      "id": "quote_assistant",
+      "domain_id": "customers",
+      "title": "Assistant aux soumissions",
+      "description": "Préparer un chiffrage et un document commercial révisables.",
+      "skill_ids": [
+        "customers.estimate",
+        "customers.quote",
+        "customers.record"
+      ],
+      "examples": [
+        "Chiffrer une prestation à partir de quantités et tarifs fournis.",
+        "Préparer le brouillon d’une soumission avec ses hypothèses."
+      ]
+    },
+    {
+      "id": "correspondence_assistant",
+      "domain_id": "communication",
+      "title": "Assistant de correspondance",
+      "description": "Préparer des réponses et leur composition sur le canal choisi.",
+      "skill_ids": [
+        "communication.reply",
+        "iphone.mail.compose",
+        "iphone.sms.compose"
+      ],
+      "examples": [
+        "Rédiger une réponse à un message sélectionné.",
+        "Préparer un courriel dans le composeur iPhone pour revue."
+      ]
+    },
+    {
+      "id": "meeting_secretary",
+      "domain_id": "communication",
+      "title": "Secrétaire de réunion",
+      "description": "Structurer les réunions et conserver leurs résultats utiles.",
+      "skill_ids": [
+        "communication.agenda",
+        "communication.minutes",
+        "communication.actions"
+      ],
+      "examples": [
+        "Transformer des notes en compte rendu.",
+        "Extraire les responsables et échéances explicitement mentionnés."
+      ]
+    },
+    {
+      "id": "agenda_assistant",
+      "domain_id": "daily_life",
+      "title": "Assistant d’agenda",
+      "description": "Préparer un horaire selon les engagements et contraintes connus.",
+      "skill_ids": [
+        "iphone.calendar.events",
+        "daily_life.week_plan",
+        "daily_life.conflicts"
+      ],
+      "examples": [
+        "Repérer les conflits dans les événements d’une semaine.",
+        "Proposer des créneaux pour les tâches prioritaires."
+      ]
+    },
+    {
+      "id": "daily_organizer",
+      "domain_id": "daily_life",
+      "title": "Organisateur personnel",
+      "description": "Organiser les tâches courantes selon les besoins du moment.",
+      "skill_ids": [
+        "daily_life.prioritize",
+        "daily_life.household",
+        "daily_life.week_plan"
+      ],
+      "examples": [
+        "Préparer une liste pour organiser un déménagement.",
+        "Classer les tâches du week-end selon le temps disponible."
+      ]
+    },
+    {
+      "id": "budget_analyst",
+      "domain_id": "administration",
+      "title": "Analyste de budget",
+      "description": "Organiser les dépenses et rendre les écarts de budget compréhensibles.",
+      "skill_ids": [
+        "administration.expense_categories",
+        "administration.budget_compare",
+        "administration.subscriptions"
+      ],
+      "examples": [
+        "Comparer les dépenses d’un mois au budget prévu.",
+        "Inventorier les coûts d’abonnements à partir des justificatifs."
+      ]
+    },
+    {
+      "id": "administrative_assistant",
+      "domain_id": "administration",
+      "title": "Assistant administratif",
+      "description": "Préparer les pièces, échéances et justificatifs d’une démarche.",
+      "skill_ids": [
+        "administration.document_checklist",
+        "administration.deadlines",
+        "administration.expense_pack"
+      ],
+      "examples": [
+        "Vérifier les pièces disponibles contre une liste fournie.",
+        "Préparer un dossier de remboursement avec ses justificatifs."
+      ]
+    },
+    {
+      "id": "learning_tutor",
+      "domain_id": "learning",
+      "title": "Tuteur",
+      "description": "Adapter explications et exercices à un objectif d’apprentissage.",
+      "skill_ids": [
+        "learning.explain",
+        "learning.practice",
+        "learning.plan"
+      ],
+      "examples": [
+        "Préparer des exercices pour apprendre les bases de Python.",
+        "Organiser une progression à partir du niveau actuel."
+      ]
+    },
+    {
+      "id": "habit_companion",
+      "domain_id": "learning",
+      "title": "Accompagnateur d’habitudes",
+      "description": "Préparer une routine et aider à examiner la progression déclarée.",
+      "skill_ids": [
+        "learning.routine",
+        "learning.progress",
+        "learning.plan"
+      ],
+      "examples": [
+        "Organiser une routine de lecture selon les créneaux disponibles.",
+        "Examiner un journal de pratique et proposer des ajustements."
+      ]
+    },
+    {
+      "id": "travel_planner",
+      "domain_id": "travel",
+      "title": "Planificateur de déplacements",
+      "description": "Préparer des options et un itinéraire selon des contraintes explicites.",
+      "skill_ids": [
+        "iphone.location.current",
+        "travel.options",
+        "travel.itinerary"
+      ],
+      "examples": [
+        "Comparer des trajets selon les offres fournies.",
+        "Préparer les étapes d’un déplacement avec des marges de temps."
+      ]
+    },
+    {
+      "id": "purchase_coordinator",
+      "domain_id": "travel",
+      "title": "Coordinateur d’achats",
+      "description": "Préparer une comparaison et l’organisation pratique des besoins matériels.",
+      "skill_ids": [
+        "travel.purchase_compare",
+        "travel.logistics"
+      ],
+      "examples": [
+        "Comparer des devis de fournitures avec les mêmes critères.",
+        "Préparer la liste logistique d’un petit événement."
+      ]
+    }
+  ]
+}
