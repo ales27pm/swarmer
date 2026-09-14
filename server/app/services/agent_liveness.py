@@ -44,3 +44,19 @@ def agent_counts_as_active(
         now=now,
         timeout_seconds=timeout_seconds,
     )
+
+
+def effective_agent_status(
+    agent: Mapping[str, Any],
+    *,
+    now: datetime,
+    timeout_seconds: int = DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
+) -> str:
+    """Project expired active declarations as offline without changing stored state."""
+
+    declared = str(agent.get("status", "offline"))
+    if declared in ACTIVE_AGENT_STATUSES and not agent_is_fresh(
+        agent, now=now, timeout_seconds=timeout_seconds
+    ):
+        return "offline"
+    return declared

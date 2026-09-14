@@ -55,7 +55,7 @@ from app.services.activity_catalog import (
 from app.services.agent_card import AgentCardPolicyError, validate_agent_registration
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
-from app.services.agent_liveness import agent_counts_as_active
+from app.services.agent_liveness import agent_counts_as_active, effective_agent_status
 from app.services.agent_scoring import AgentScoringService
 from app.services.approval_binding import (
     public_tool_arguments,
@@ -1887,7 +1887,17 @@ def create_app(config: Settings | None = None) -> FastAPI:
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> list[dict[str, Any]]:
         del principal
-        return await state_service.list_agents()
+        agents = await state_service.list_agents()
+        now = datetime.now(UTC)
+        return [
+            {
+                **agent,
+                "status": effective_agent_status(
+                    agent, now=now, timeout_seconds=settings.agent_offline_timeout_seconds
+                ),
+            }
+            for agent in agents
+        ]
 
     @app.get("/agents/{agent_id}")
     async def get_agent(
@@ -1897,7 +1907,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
         record = await state_service.get_agent(agent_id)
         if not record:
             raise HTTPException(status_code=404, detail="agent not found")
-        return record
+        return {
+            **record,
+            "status": effective_agent_status(
+                record,
+                now=datetime.now(UTC),
+                timeout_seconds=settings.agent_offline_timeout_seconds,
+            ),
+        }
 
     @app.post("/agents/register", status_code=status.HTTP_201_CREATED)
     async def register_agent(
