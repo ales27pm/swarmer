@@ -464,11 +464,18 @@ actor LocalModelStore {
       }
       var hash = SHA256()
       var count: Int64 = 0
-      while let data = try input.read(upToCount: Self.copyChunkBytes), !data.isEmpty {
+      while true {
         try Task.checkCancellation()
-        count += Int64(data.count)
-        guard count <= artifact.sizeBytes else { throw LocalInferenceError.sourceChangedDuringImport }
-        hash.update(data: data)
+        // FileHandle bridges through Foundation. Drain each chunk's temporary
+        // NSData before loading model weights in the same asynchronous task.
+        let readChunk = try autoreleasepool {
+          guard let data = try input.read(upToCount: Self.copyChunkBytes), !data.isEmpty else { return false }
+          count += Int64(data.count)
+          guard count <= artifact.sizeBytes else { throw LocalInferenceError.sourceChangedDuringImport }
+          hash.update(data: data)
+          return true
+        }
+        if !readChunk { break }
       }
       guard count == artifact.sizeBytes,
             hash.finalize().map({ String(format: "%02x", $0) }).joined() == artifact.sha256,
@@ -824,18 +831,22 @@ actor LocalModelStore {
       var digest = SHA256()
       while true {
         try Task.checkCancellation()
-        guard let data = try input.read(upToCount: Self.copyChunkBytes), !data.isEmpty else { break }
-        let (nextFileSize, fileOverflow) = fileCopied.addingReportingOverflow(Int64(data.count))
-        let (nextTotal, totalOverflow) = totalCopied.addingReportingOverflow(Int64(data.count))
-        guard !fileOverflow, !totalOverflow,
-              nextFileSize <= file.sizeBytes,
-              nextTotal <= plan.totalBytes else {
-          throw LocalInferenceError.sourceChangedDuringImport
+        let readChunk = try autoreleasepool {
+          guard let data = try input.read(upToCount: Self.copyChunkBytes), !data.isEmpty else { return false }
+          let (nextFileSize, fileOverflow) = fileCopied.addingReportingOverflow(Int64(data.count))
+          let (nextTotal, totalOverflow) = totalCopied.addingReportingOverflow(Int64(data.count))
+          guard !fileOverflow, !totalOverflow,
+                nextFileSize <= file.sizeBytes,
+                nextTotal <= plan.totalBytes else {
+            throw LocalInferenceError.sourceChangedDuringImport
+          }
+          try output.write(contentsOf: data)
+          if recordDigests { digest.update(data: data) }
+          fileCopied = nextFileSize
+          totalCopied = nextTotal
+          return true
         }
-        try output.write(contentsOf: data)
-        if recordDigests { digest.update(data: data) }
-        fileCopied = nextFileSize
-        totalCopied = nextTotal
+        if !readChunk { break }
       }
       guard fileCopied == file.sizeBytes else {
         throw LocalInferenceError.sourceChangedDuringImport

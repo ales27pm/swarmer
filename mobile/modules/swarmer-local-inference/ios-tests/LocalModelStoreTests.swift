@@ -87,6 +87,8 @@ private struct LocalModelStoreTests {
       ("Core ML filtering and required sidecars", testCoreMLFilteringAndSidecars),
       ("MLX direct artifact filtering", testMLXFiltering),
       ("cached MLX becomes independent durable files and keeps pinned provenance", testDurableMLXCachePromotion),
+      ("durable MLX preserves multi-chunk hashes and detects final-byte corruption", testDurableMLXMultiChunkIntegrity),
+      ("durable MLX copy and verification retain less than 64 MiB per phase", testDurableMLXMemoryBudget),
       ("durable MLX rejects changed files and manifest", testDurableMLXIntegrity),
       ("MLX cache confinement and complete shard index", testDurableMLXRejectsUnsafeCache),
       ("durable MLX cancellation preserves Files additions and active staging", testDurableMLXCancellation),
@@ -538,6 +540,107 @@ private struct LocalModelStoreTests {
     try expect(local.runtimeURL == loaded.runtimeURL, "local UUID and pinned remote id resolve to different files")
     let wrongRevision = try await reopened.resolveRemoteMLX(repositoryId: repositoryId, revision: String(repeating: "d", count: 40))
     try expect(wrongRevision == nil, "a different revision reused the wrong durable model")
+  }
+
+  private static func testDurableMLXMultiChunkIntegrity() async throws {
+    let workspace = try TestWorkspace(name: "mlx-multi-chunk")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let chunkBytes = 4 * 1_024 * 1_024
+    var bytes = Data(repeating: 0x11, count: chunkBytes)
+    bytes.append(Data(repeating: 0x7f, count: chunkBytes))
+    bytes.append(Data(repeating: 0xd3, count: 137))
+    let expectedDigest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    try bytes.write(to: cached.cache.appendingPathComponent("blobs/model.safetensors"))
+
+    let result = try await durableStore(workspace).preserveMLXSnapshot(
+      at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision
+    )
+    let origin = try required(result.stored.remoteOrigin, "multi-chunk promotion lost pinned provenance")
+    let weight = try required(origin.files.first(where: { $0.filename == "model.safetensors" }), "multi-chunk weights lack a digest")
+    try expect(weight.sizeBytes == Int64(2 * chunkBytes + 137), "the partial final chunk changed the recorded size")
+    try expect(weight.sha256 == expectedDigest, "streamed copy digest differs from the complete source digest")
+    let weights = result.runtimeURL.appendingPathComponent("model.safetensors")
+    try expect(try Data(contentsOf: weights) == bytes, "multi-chunk durable copy changed the weights")
+    try FileManager.default.removeItem(at: cached.cache)
+
+    let reopened = durableStore(workspace)
+    let resolved = try required(
+      try await reopened.resolveRemoteMLX(repositoryId: repositoryId, revision: revision),
+      "multi-chunk durable model did not resolve independently of its cache"
+    )
+    try expect(resolved.stored.remoteOrigin == origin, "resolution changed the persisted file digests")
+    let local = try await reopened.resolve(modelId: result.stored.modelId)
+    try expect(local.runtimeURL == resolved.runtimeURL, "local and pinned multi-chunk resolution disagree")
+
+    let writer = try FileHandle(forWritingTo: weights)
+    defer { try? writer.close() }
+    try writer.seek(toOffset: UInt64(bytes.count - 1))
+    try writer.write(contentsOf: Data([0xd2]))
+    try writer.synchronize()
+    try writer.close()
+    try expect(try weights.resourceValues(forKeys: [.fileSizeKey]).fileSize == bytes.count, "corruption fixture changed the file size")
+    do {
+      _ = try await reopened.resolveRemoteMLX(repositoryId: repositoryId, revision: revision)
+      throw TestFailure("last-byte corruption beyond two complete chunks retained pinned provenance")
+    } catch LocalInferenceError.sourceChangedDuringImport { }
+    do {
+      _ = try await reopened.resolve(modelId: result.stored.modelId)
+      throw TestFailure("local resolution accepted the corrupted partial final chunk")
+    } catch LocalInferenceError.sourceChangedDuringImport { }
+  }
+
+  private static func physicalFootprint() throws -> UInt64 {
+    var information = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let capacity = Int(count)
+    let status = withUnsafeMutablePointer(to: &information) { pointer in
+      pointer.withMemoryRebound(to: integer_t.self, capacity: capacity) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    try expect(status == KERN_SUCCESS, "Mach could not measure the process physical footprint")
+    return information.phys_footprint
+  }
+
+  private static func testDurableMLXMemoryBudget() async throws {
+    let workspace = try TestWorkspace(name: "mlx-memory-budget")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    let writer = try FileHandle(forWritingTo: cached.cache.appendingPathComponent("blobs/model.safetensors"))
+    defer { try? writer.close() }
+    try writer.truncate(atOffset: 0)
+    let chunk = Data(repeating: 0x5b, count: 4 * 1_024 * 1_024)
+    for _ in 0..<32 { try writer.write(contentsOf: chunk) }
+    try writer.synchronize()
+    try writer.close()
+    try await measureDurableMLXPhases(store: durableStore(workspace), cache: cached.cache, snapshot: cached.snapshot)
+  }
+
+  // Measure on the store's executor, before returning through an actor hop that could
+  // drain Foundation temporaries. Exercise production methods, not a duplicate loop.
+  private static func measureDurableMLXPhases(
+    store: isolated LocalModelStore, cache: URL, snapshot: URL
+  ) async throws {
+    let beforeCopy = try physicalFootprint()
+    let preserved = try await store.preserveMLXSnapshot(
+      at: snapshot, repositoryCacheURL: cache, repositoryId: repositoryId, revision: revision
+    )
+    let afterCopy = try physicalFootprint()
+    let resolved = try store.resolve(modelId: preserved.stored.modelId)
+    let afterResolve = try physicalFootprint()
+    try expect(resolved.stored.modelId == preserved.stored.modelId, "memory measurement resolved another model")
+    let copiedWeight = try required(
+      preserved.stored.remoteOrigin?.files.first(where: { $0.filename == "model.safetensors" }),
+      "memory measurement did not preserve the weight artifact"
+    )
+    try expect(copiedWeight.sizeBytes == 128 * 1_024 * 1_024, "memory measurement did not exercise a 128 MiB file")
+    let copyGrowth = afterCopy > beforeCopy ? afterCopy - beforeCopy : 0
+    let resolveGrowth = afterResolve > afterCopy ? afterResolve - afterCopy : 0
+    print("MLX physical-footprint growth: preserve=\(copyGrowth) bytes, resolve=\(resolveGrowth) bytes")
+    let budget: UInt64 = 64 * 1_024 * 1_024
+    try expect(copyGrowth <= budget && resolveGrowth <= budget,
+      "durable MLX retained more than 64 MiB: preserve=\(copyGrowth), resolve=\(resolveGrowth)")
   }
 
   private static func testDurableMLXIntegrity() async throws {

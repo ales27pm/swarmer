@@ -1,9 +1,28 @@
 import Foundation
 import HuggingFace
+import MLX
 import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
 import Tokenizers
+#if DEBUG
+import os
+#endif
+
+/// The factory still owns model creation; its tokenizer child only retrieves the
+/// already prepared value, so tokenizer JSON parsing cannot overlap weight load.
+private struct PreloadedMLXTokenizerLoader: MLXLMCommon.TokenizerLoader {
+  let directory: URL
+  let tokenizer: any MLXLMCommon.Tokenizer
+
+  func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+    guard directory.standardizedFileURL == self.directory.standardizedFileURL else {
+      throw LocalInferenceError.unsupportedModel("the tokenizer directory changed during model loading")
+    }
+    try Task.checkCancellation()
+    return tokenizer
+  }
+}
 
 actor MLXRuntime {
   private var container: ModelContainer?
@@ -18,12 +37,7 @@ actor MLXRuntime {
     #if targetEnvironment(simulator)
     throw LocalInferenceError.unsupportedModel("MLX inference requires a physical iOS device")
     #else
-    let loaded = try await LLMModelFactory.shared.loadContainer(
-      from: directory,
-      using: #huggingFaceTokenizerLoader()
-    )
-    guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
-    container = loaded
+    try await loadContainer(directory: directory)
     #endif
   }
 
@@ -76,12 +90,52 @@ actor MLXRuntime {
       }
     }
     guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
-    let loaded = try await LLMModelFactory.shared.loadContainer(
-      from: durable.runtimeURL,
-      using: #huggingFaceTokenizerLoader()
-    )
+    try await loadContainer(directory: durable.runtimeURL)
+    #endif
+  }
+
+  private func loadContainer(directory: URL) async throws {
+    // The upstream iOS recommendation bounds reusable buffers independently of
+    // active model weights. The default cache can otherwise grow to several GB.
+    Memory.cacheLimit = 20 * 1024 * 1024
+    container = nil
+    Memory.clearCache()
+    defer {
+      Memory.clearCache()
+      Self.traceMemory("load_exit")
+    }
+
+    guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
+    Self.traceMemory("before_tokenizer")
+    let tokenizer = try await #huggingFaceTokenizerLoader().load(from: directory)
+    guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
+    Self.traceMemory("after_tokenizer")
+    let tokenizerLoader = PreloadedMLXTokenizerLoader(directory: directory, tokenizer: tokenizer)
+    Memory.clearCache()
+
+    // Model loading evaluates weights through MLX's non-throwing eval API.
+    // Convert recoverable MLX errors to throws before publishing a ready model.
+    // An OS memory termination cannot be caught here.
+    Self.traceMemory("before_weights")
+    let loaded = try await MLX.withError {
+      try await LLMModelFactory.shared.loadContainer(
+        from: directory,
+        using: tokenizerLoader
+      )
+    }
+    Self.traceMemory("after_weights")
     guard !cancelRequested, !Task.isCancelled else { throw CancellationError() }
     container = loaded
+  }
+
+  private static func traceMemory(_ stage: String) {
+    #if DEBUG
+    let snapshot = Memory.snapshot()
+    NSLog(
+      "MLXMemory stage=%@ active=%llu cache=%llu peak=%llu available=%llu",
+      stage, UInt64(snapshot.activeMemory), UInt64(snapshot.cacheMemory),
+      UInt64(snapshot.peakMemory), UInt64(os_proc_available_memory())
+    )
     #endif
   }
 
@@ -97,6 +151,9 @@ actor MLXRuntime {
         self.container = nil
         unloadRequested = false
       }
+      // synchronize() below settles the producer before cancelled/completed
+      // generation returns; never clear cached buffers from cancel() mid-stream.
+      Memory.clearCache()
     }
 
     let promptTokenCount = await container.encode(prompt).count
@@ -180,5 +237,6 @@ actor MLXRuntime {
     }
     container = nil
     unloadRequested = false
+    Memory.clearCache()
   }
 }
