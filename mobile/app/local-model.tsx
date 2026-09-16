@@ -63,29 +63,33 @@ function BackgroundExecutionCard({ status }: { status: BackgroundExecutionStatus
   let description = "Disponibilité non confirmée. Garde l’app au premier plan pendant la génération.";
   if (status) {
     if (status.state === "expiring") description = "Arrêt demandé par le système ou l’utilisateur. Le calcul en cours se termine avant la libération de la tâche.";
-    else if (status.active) description = "Tâche GPU admise par iOS. Cette génération peut continuer en arrière-plan tant que le système l’autorise.";
-    else if (!status.osSupported) description = "Cette version d’iOS ne prend pas en charge la continuation GPU. Garde l’app au premier plan.";
-    else if (!status.gpuSupported) description = "Cet appareil ne déclare pas de GPU disponible en arrière-plan. Garde l’app au premier plan.";
+    else if (status.active) description = `Tâche ${status.executionDevice === "cpu" ? "CPU" : "GPU"} admise par iOS. Cette génération peut continuer en arrière-plan tant que le système l’autorise.`;
+    else if (!status.osSupported) description = "Cette version d’iOS ne prend pas en charge la continuation du calcul. Garde l’app au premier plan.";
+    else if (!status.supported) description = "Cette version du module ne propose pas de continuation sur cet appareil. Garde l’app au premier plan.";
     else if (status.state === "requesting") description = "Demande en cours auprès d’iOS. Garde l’app au premier plan jusqu’à son admission.";
-    else if (status.entitlementGranted === false || status.reason === "not_permitted") description = "iOS a refusé l’autorisation d’arrière-plan. La génération reste au premier plan.";
+    else if (status.reason === "not_permitted" || (status.entitlementGranted === false && status.gpuSupported && status.executionDevice !== "cpu")) description = "iOS a refusé l’autorisation d’arrière-plan. La génération reste au premier plan.";
     else if (["system_busy", "admission_timeout", "registration_failed", "request_failed", "foreground_required"].includes(status.reason ?? "")) {
       description = "Aucune tâche d’arrière-plan n’a été admise pour cette opération. Garde l’app au premier plan.";
     } else if (status.state === "cancelled" || status.reason === "request_cancelled") description = "La tâche a été annulée. Aucune continuation d’arrière-plan n’est active.";
     else if (status.state === "failed") description = "La tâche n’a pas confirmé sa réussite. Aucune continuation d’arrière-plan n’est active.";
     else if (status.state === "completed") description = "La tâche de génération est terminée. Cela ne valide pas le plan ou la proposition produite.";
+    else if (status.executionDevice === "cpu" || !status.gpuSupported) description = "Le repli CPU est disponible. Une tâche doit encore être admise par iOS lors de la génération ; sa disponibilité ne garantit pas sa continuation.";
     else if (status.entitlementGranted === null) description = "Le système et le GPU sont compatibles ; l’autorisation n’a pas encore été confirmée. Une demande sera faite lors de la génération MLX.";
     else description = "Une admission GPU a déjà été confirmée. Chaque nouvelle génération reste soumise à l’autorisation d’iOS.";
   }
   return <Card testID="local-model-background-status">
     <Text selectable style={{ color: COLORS.text, fontWeight: "800" }}>MLX · Exécution en arrière-plan</Text>
     <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>{description}</Text>
+    {status?.executionDevice === "cpu" || (status?.supported && !status.gpuSupported) ? (
+      <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>Calcul local sur CPU : il peut être plus lent que sur GPU. Les données restent sur l’iPhone.</Text>
+    ) : null}
     {status ? <>
       <Text selectable style={{ color: COLORS.subtle }}>Activité : {status.active ? "tâche admise en cours" : "aucune tâche admise active"}</Text>
       {status.entitlementGranted === true || status.active || status.outputBytes > 0 ? (
         <Text selectable style={{ color: COLORS.subtle }}>Texte produit par la tâche d’arrière-plan : {status.outputBytes} octets UTF-8 · pas un nombre de tokens.</Text>
       ) : null}
     </> : null}
-    <Text selectable style={{ color: COLORS.subtle }}>L’API réseau de développement reste accessible uniquement au premier plan.</Text>
+    <Text selectable style={{ color: COLORS.subtle }}>En arrière-plan, l’API permet uniquement de suivre ou d’annuler le calcul déjà admis, pendant sa durée autorisée. Elle ne permet pas de lancer un autre travail et ne constitue pas un serveur permanent.</Text>
   </Card>;
 }
 

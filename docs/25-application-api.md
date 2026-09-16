@@ -39,8 +39,12 @@ une identité TLS et un secret aléatoire. Aucun secret ne traverse le bridge JS
 Les builds Release ne contiennent pas le listener et répondent désactivé aux
 méthodes natives d’automatisation.
 
-Le téléphone doit garder l’application au premier plan. Le passage en arrière-plan
-ferme le listener et les connexions. La reprise permet une réouverture pendant la
+Le démarrage du listener exige le premier plan. En arrière-plan, un listener déjà
+ouvert reste disponible uniquement pendant une génération native effectivement
+admise par iOS. Il permet les GET, la consultation `models.status`, l’annulation
+`inference.cancel` et la récupération idempotente de reçus existants. Toute nouvelle
+opération différente exige le premier plan. La fin ou l’expiration du calcul ferme
+le listener hors du premier plan. La reprise permet une réouverture pendant la
 durée restante de la session ; elle ne renouvelle pas son expiration. Pendant une
 session Debug prête et au premier plan, le verrouillage automatique est suspendu.
 Sa valeur antérieure est restaurée à l’arrêt, à l’expiration ou au passage en
@@ -145,7 +149,7 @@ d’essais physiques sont documentés séparément des tests de contrat.
 
 ## Travail pendant l’utilisation d’une autre app
 
-Le transport livré ici reste limité au premier plan. Le maintien éveillé ne
+Le transport n’est pas un service permanent. Le maintien éveillé ne
 confère aucun droit d’exécution en arrière-plan et n’empêche pas un verrouillage
 manuel ou un changement d’application. Les agents Ubuntu déjà démarrés continuent
 indépendamment de l’interface iPhone.
@@ -159,15 +163,27 @@ de `BGTaskScheduler.supportedResources`.
 
 Le module natif intègre ce mécanisme pour une génération MLX déjà lancée au
 premier plan, avec un modèle déjà chargé. Il demande une exécution immédiate
-(`.fail`, sans file d’attente différée) et la ressource `.gpu`. Le calcul ne reçoit
+(`.fail`, sans file d’attente différée). Sur un appareil proposant le GPU en
+arrière-plan, il demande `.gpu`. Sinon, il utilise le moteur CPU de MLX et une
+tâche sans ressource GPU. Ce calcul reste local et peut être plus lent. Le calcul ne reçoit
 le droit de continuer que lorsque le gestionnaire de lancement Apple a fourni
 la tâche correspondante. Une admission tardive, un refus ou un appareil non
-compatible conservent le comportement de premier plan.
+compatible avec les tâches continues conservent le comportement de premier plan.
+
+Le chargement et la génération CPU utilisent les scopes de device et de stream
+MLX ; le scope englobe aussi les tâches filles et la barrière de synchronisation.
+Le JIT CPU absent sur iOS est désactivé via l’API publique MLX avant ce chemin.
+Cette désactivation concerne le processus et n’est pas restaurée à une valeur
+inconnue. Les kernels CPU normaux restent disponibles. Aucun droit GPU n’est
+simulé et aucun calcul n’est transféré sur Ubuntu par ce repli.
 
 `models.status.backgroundExecution` et l’écran du modèle local exposent :
 
 - `osSupported`, `gpuSupported`, `supported` : capacités du système et de
-  l’appareil ; `supported` seul ne prouve pas l’admission ;
+  l’appareil ; `supported` inclut désormais le chemin CPU et ne prouve pas
+  l’admission ;
+- `executionDevice` : `cpu`, `gpu` ou `null` ; la sélection CPU ne change pas
+  `gpuSupported` et ne constitue pas une permission GPU ;
 - `entitlementGranted` : `null` avant une preuve d’admission, `true` après une
   admission GPU, `false` après un refus de permission du gestionnaire Apple ;
 - `active`, `operationId`, `state`, `reason` : état de la tâche finie courante ;
@@ -176,23 +192,26 @@ compatible conservent le comportement de premier plan.
   à un nombre de tokens ni fabriquer un pourcentage.
 
 L’annulation/expiration cible uniquement cette opération. L’achèvement attend
-la fin du flux et la synchronisation GPU ; le seul événement de statistiques MLX
+la fin du flux et la synchronisation MLX ; le seul événement de statistiques MLX
 ne suffit pas. Une génération Core ML/GGUF, une importation ou un chargement ne
 bénéficient pas de cette prolongation. Un arrêt forcé par la personne termine
 l’application ; les résultats de l’API restent liés à la session JavaScript,
 sans garantie de reprise après destruction du processus.
 
-Le listener HTTPS reste arrêté en arrière-plan. Ce changement permet seulement
-la poursuite native d’un calcul admis, puis la récupération de son résultat au
-retour dans l’app. Le journal de qualification documente séparément la signature,
+L’accès HTTPS de suivi cesse à la fin du calcul ; si la réponse finale n’a pas
+été reçue, revenir au premier plan et consulter le même job. Ne pas relancer la
+génération. Le journal de qualification documente séparément la signature,
 le support matériel observé et les essais réellement effectués sur iPhone.
 
 Sur l’iPhone 16 Pro testé sous iOS 26.6.1, le build `20260916034417` possède le
 droit GPU dans sa signature et son profil, mais le système retourne
-`gpuSupported=false`. Le calcul MLX reste donc au premier plan sur cet appareil.
+`gpuSupported=false`. Ce premier build gardait donc MLX au premier plan.
 Le passage à l’écran d’accueil a annulé proprement une génération ; une nouvelle
 génération a réussi au retour, avec le modèle toujours chargé. L’exécution GPU
-en arrière-plan sur un appareil qui l’admet reste à qualifier. Voir les
+en arrière-plan sur un appareil qui l’admet reste à qualifier. Le chemin CPU est
+une évolution distincte, dont la compilation et l’installation sont acquises mais
+les essais physiques attendent le déverrouillage du téléphone. Voir le
+[suivi du correctif CPU](evidence/iphone-background-cpu-2026-09-16.md) et les
 [preuves physiques](evidence/application-api-2026-09-16.md).
 
 Sources Apple : [tâches longues sur iOS](https://developer.apple.com/documentation/BackgroundTasks/performing-long-running-tasks-on-ios-and-ipados),

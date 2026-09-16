@@ -35,7 +35,7 @@ export type LocalInferenceStatus = {
 };
 
 const BACKGROUND_STATES = ["idle", "requesting", "active", "foreground_only", "expiring", "completed", "cancelled", "failed"] as const;
-const BACKGROUND_REASONS = ["os_unsupported", "gpu_unsupported", "permission_unverified", "foreground_required", "registration_failed",
+const BACKGROUND_REASONS = ["os_unsupported", "gpu_unsupported", "cpu_fallback", "permission_unverified", "foreground_required", "registration_failed",
   "not_permitted", "system_busy", "admission_timeout", "request_failed", "request_cancelled", "user_or_system_cancelled"] as const;
 export type BackgroundExecutionStatus = {
   supported: boolean;
@@ -43,6 +43,7 @@ export type BackgroundExecutionStatus = {
   osSupported: boolean;
   gpuSupported: boolean;
   entitlementGranted: boolean | null;
+  executionDevice: "cpu" | "gpu" | null;
   active: boolean;
   operationId: string | null;
   outputBytes: number;
@@ -501,19 +502,27 @@ function parseStatus(value: unknown): LocalInferenceStatus {
 }
 
 function parseBackgroundExecutionStatus(value: unknown): BackgroundExecutionStatus {
-  if (!isRecord(value) || !hasExactKeys(value, ["supported", "reason", "osSupported", "gpuSupported", "entitlementGranted", "active", "operationId", "outputBytes", "state"])
+  if (!isRecord(value)) throw new Error("État natif d’arrière-plan invalide.");
+  const legacy = !Object.prototype.hasOwnProperty.call(value, "executionDevice");
+  const executionDevice = legacy ? (value.active === true ? "gpu" : null) : value.executionDevice;
+  if (!hasExactKeys(value, ["supported", "reason", "osSupported", "gpuSupported", "entitlementGranted", "active", "operationId", "outputBytes", "state", ...(legacy ? [] : ["executionDevice"])])
       || typeof value.supported !== "boolean" || typeof value.osSupported !== "boolean" || typeof value.gpuSupported !== "boolean"
       || !(value.entitlementGranted === null || typeof value.entitlementGranted === "boolean") || typeof value.active !== "boolean"
       || !(value.reason === null || BACKGROUND_REASONS.some((reason) => reason === value.reason))
       || !BACKGROUND_STATES.some((state) => state === value.state)
       || !(value.operationId === null || (typeof value.operationId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value.operationId)))
       || !Number.isSafeInteger(value.outputBytes) || Number(value.outputBytes) < 0
-      || value.supported !== (value.osSupported && value.gpuSupported)
-      || (value.active && (!value.supported || value.entitlementGranted !== true || value.operationId === null || !["active", "expiring"].includes(String(value.state))))
+      || !(executionDevice === null || executionDevice === "cpu" || executionDevice === "gpu")
+      || value.supported !== (legacy ? value.osSupported && value.gpuSupported : value.osSupported)
+      || (value.gpuSupported && !value.osSupported)
+      || (value.active && (!value.supported || executionDevice === null || value.operationId === null || !["active", "expiring"].includes(String(value.state))))
+      || (value.active && executionDevice === "gpu" && (!value.gpuSupported || value.entitlementGranted !== true))
+      || (["requesting", "active", "expiring"].includes(String(value.state)) !== (value.operationId !== null))
+      || (legacy && value.reason === "cpu_fallback")
       || (value.state === "active" && !value.active)) {
     throw new Error("État natif d’arrière-plan invalide.");
   }
-  return value as BackgroundExecutionStatus;
+  return { ...value, executionDevice } as BackgroundExecutionStatus;
 }
 
 function parseGeneration(value: unknown): LocalGenerationResult {

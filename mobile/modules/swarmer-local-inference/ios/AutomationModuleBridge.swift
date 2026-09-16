@@ -19,6 +19,17 @@ struct AutomationStartRecord: Record, Sendable {
 import UIKit
 
 @MainActor
+enum AutomationModuleAccess {
+  static func current() -> AutomationExecutionAccess {
+    let foreground = UIApplication.shared.applicationState == .active
+    return AutomationExecutionAccess(
+      foreground: foreground,
+      backgroundContinuation: !foreground && BackgroundGenerationController.shared.status().active
+    )
+  }
+}
+
+@MainActor
 final class AutomationIdleTimerPolicy {
   static let shared = AutomationIdleTimerPolicy()
   private let lease = AutomationIdleTimerLease(
@@ -50,16 +61,17 @@ final class AutomationModuleEventEmitter: @unchecked Sendable {
     lock.withLock { self.module = module }
   }
 
-  func send(_ request: AutomationRequest) {
-    DispatchQueue.main.async { [self] in
-      let target = lock.withLock { module }
-      target?.sendEvent("automationRequest", [
-        "requestId": request.requestId,
-        "method": request.method,
-        "path": request.path,
-        "body": request.body,
-      ])
-    }
+  @MainActor
+  func send(_ request: AutomationRequest, access: AutomationExecutionAccess) {
+    let target = lock.withLock { module }
+    target?.sendEvent("automationRequest", [
+      "requestId": request.requestId,
+      "method": request.method,
+      "path": request.path,
+      "body": request.body,
+      "foreground": access.foreground,
+      "backgroundContinuation": access.backgroundContinuation,
+    ])
   }
 }
 #endif

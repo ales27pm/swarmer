@@ -107,3 +107,28 @@ test("an oversized result does not mislabel a completed mutation as failure", as
   expect(getJob(api)).toMatchObject({ job: { state: "succeeded", resultOmitted: true } });
   expect(JSON.stringify(getJob(api)).length).toBeLessThan(1000);
 });
+
+test("an admitted background calculation permits observation, cancellation and exact receipt recovery only", async () => {
+  const execute = jest.fn(async () => "done");
+  const api = create({ execute, catalog: () => ({}) });
+  const original = request("inference.generate");
+  api.handle(original);
+  api.setAccess("continuation");
+  expect(api.handle({ method: "GET", path: "/v1/health", body: "" }).body).toMatchObject({ access: "continuation" });
+  expect(api.handle(original)).toMatchObject({ status: 200, body: { replayed: true } });
+  expect(execute).toHaveBeenCalledTimes(1);
+  for (const command of ["inference.generate", "models.load", "goals.create", "iphone.photos.select"]) {
+    expect(api.handle(request(command, {}, `background-${command}`))).toMatchObject({
+      status: 409, body: { error: { code: "foreground_required" } },
+    });
+  }
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(api.handle(request("models.status", {}, "background-status" )).status).toBe(202);
+  expect(api.handle(request("inference.cancel", {}, "background-cancel")).status).toBe(202);
+  await Promise.resolve();
+  expect(getJob(api)).toMatchObject({ job: { state: "succeeded" } });
+  api.setAccess("inactive");
+  expect(api.handle(original).status).toBe(503);
+  api.setAccess("foreground");
+  expect(api.handle(request("inference.generate", {}, "new-foreground-work")).status).toBe(202);
+});

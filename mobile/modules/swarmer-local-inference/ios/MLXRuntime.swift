@@ -4,6 +4,7 @@ import MLX
 import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 import Tokenizers
 #if DEBUG
 import os
@@ -25,6 +26,10 @@ private struct PreloadedMLXTokenizerLoader: MLXLMCommon.TokenizerLoader {
 }
 
 actor MLXRuntime {
+  // iOS ships normal CPU kernels but not CPU JIT. Official compile() is process
+  // wide; this app has one MLX owner. Disable it once, never restore unknown
+  // global state or change the unsafe global default device while tasks run.
+  private static let cpuCompilationDisabled: Void = { MLX.compile(enable: false) }()
   private var container: ModelContainer?
   private var cancelRequested = false
   private var generating = false
@@ -95,6 +100,47 @@ actor MLXRuntime {
   }
 
   private func loadContainer(directory: URL) async throws {
+    let device = await BackgroundGenerationController.shared.preferredExecutionDevice()
+    if device == .cpu {
+      _ = Self.cpuCompilationDisabled
+      try await Device.withDefaultDevice(.cpu) { @Sendable in
+        try await Stream.withNewDefaultStream(device: .cpu) { @Sendable in
+          try Self.verifyCPUActivations()
+          try await self.loadContainerOnCurrentDevice(directory: directory)
+        }
+      }
+    } else {
+      try await loadContainerOnCurrentDevice(directory: directory)
+    }
+  }
+
+  private static func verifyCPUActivations() throws {
+    // Exercise the upstream compiled activation entry points on the actual CPU
+    // backend before allocating model weights. Their JIT must remain disabled.
+    guard Device.defaultDevice().deviceType == .cpu else {
+      throw LocalInferenceError.inferenceFailed("The MLX CPU execution scope is unavailable")
+    }
+    try MLX.withError {
+      let values: [Float] = [-2, -1, 0, 1, 2]
+      let input = MLXArray(values)
+      let actualSilu = MLXNN.silu(input)
+      let actualGelu = MLXNN.gelu(input)
+      eval(actualSilu, actualGelu)
+      let siluValues = actualSilu.asArray(Float.self)
+      let geluValues = actualGelu.asArray(Float.self)
+      for index in values.indices {
+        let x = Double(values[index])
+        let expectedSilu = x / (1 + exp(-x))
+        let expectedGelu = x * (1 + erf(x / sqrt(2))) / 2
+        guard abs(Double(siluValues[index]) - expectedSilu) < 0.0001,
+              abs(Double(geluValues[index]) - expectedGelu) < 0.0001 else {
+          throw LocalInferenceError.inferenceFailed("The MLX CPU activation check failed")
+        }
+      }
+    }
+  }
+
+  private func loadContainerOnCurrentDevice(directory: URL) async throws {
     // The upstream iOS recommendation bounds reusable buffers independently of
     // active model weights. The default cache can otherwise grow to several GB.
     Memory.cacheLimit = 20 * 1024 * 1024
@@ -143,7 +189,29 @@ actor MLXRuntime {
     prompt: String,
     maxTokens: Int,
     temperature: Double,
+    executionDevice: BackgroundGenerationDevice = .gpu,
     onOutputProgress: (@Sendable (Int) async -> Void)? = nil
+  ) async throws -> RuntimeGenerationResult {
+    if executionDevice == .cpu {
+      _ = Self.cpuCompilationDisabled
+      return try await Device.withDefaultDevice(.cpu) { @Sendable in
+        try await Stream.withNewDefaultStream(device: .cpu) { @Sendable in
+          try await self.generateOnCurrentDevice(
+            prompt: prompt, maxTokens: maxTokens, temperature: temperature,
+            onOutputProgress: onOutputProgress
+          )
+        }
+      }
+    }
+    return try await generateOnCurrentDevice(
+      prompt: prompt, maxTokens: maxTokens, temperature: temperature,
+      onOutputProgress: onOutputProgress
+    )
+  }
+
+  private func generateOnCurrentDevice(
+    prompt: String, maxTokens: Int, temperature: Double,
+    onOutputProgress: (@Sendable (Int) async -> Void)?
   ) async throws -> RuntimeGenerationResult {
     guard !generating else { throw LocalInferenceError.generationInProgress }
     guard let container else { throw LocalInferenceError.modelNotLoaded }

@@ -56,6 +56,11 @@ def main():
             assert connection.getpeercert(binary_form=True) == expected_der
             return connection
 
+        def control(process, command):
+            process.stdin.write(command + "\n")
+            process.stdin.flush()
+            return host_response(process)
+
         def wire(route="/v1/health", bearer=token, extra="", body=None):
             method = "POST" if body is not None else "GET"
             payload = body.encode() if body is not None else b""
@@ -94,7 +99,7 @@ def main():
             process.stdin.write("background\n")
             process.stdin.flush()
             stopped = host_response(process)
-            assert stopped["reason"] == "background"
+            assert not stopped["enabled"] and stopped["reason"] in {"background", "stopped"}
             assert stopped["readyChanges"] == [True, False]
             try:
                 assert pending.recv(1) == b"", "Background did not close pending connection"
@@ -102,17 +107,54 @@ def main():
                 pass
             finally:
                 pending.close()
-            process.stdin.write("start\n")
-            process.stdin.flush()
-            restarted = host_response(process)
+            assert control(process, "background-admitted")["enabled"] is False
+            assert control(process, "start")["reason"] == "foreground_required", "Background lease created a listener"
+            assert control(process, "foreground")["enabled"] is False
+            transitioning = control(process, "start-transition")
+            assert not transitioning["enabled"] and transitioning["reason"] in {"foreground_required", "background"}, "TLS setup raced into a new background listener"
+            assert control(process, "foreground")["enabled"] is False
+            restarted = control(process, "start")
             assert restarted["enabled"] is True
             assert restarted["readyChanges"] == [True, False, True]
-            assert exchange(wire())[0] == 200
-            process.stdin.write("stop\n")
-            process.stdin.flush()
-            stopped = host_response(process)
+            status, result = exchange(wire())
+            assert status == 200 and result["foreground"] and not result["backgroundContinuation"]
+            admitted = control(process, "background-admitted")
+            assert admitted["enabled"] is True and admitted["readyChanges"] == [True, False, True]
+            assert control(process, "start")["enabled"] is True, "Existing admitted listener was not reused"
+            status, result = exchange(wire())
+            assert status == 200 and not result["foreground"] and result["backgroundContinuation"]
+            assert exchange(wire(bearer="wrong"))[0] == 401
+            assert control(process, "delayed-background-callback")["enabled"] is True
+            status, result = exchange(wire())
+            assert status == 200 and result["foreground"] and not result["backgroundContinuation"]
+            assert control(process, "background-admitted")["enabled"] is True
+            pending = connect()
+            pending.sendall(wire("/v1/pending"))
+            stopped = control(process, "lease-ended")
+            assert not stopped["enabled"] and stopped["readyChanges"] == [True, False, True, False]
+            try:
+                assert pending.recv(1) == b"", "Lease end left a pending TLS connection open"
+            except (ConnectionResetError, ssl.SSLError):
+                pass
+            finally:
+                pending.close()
+            assert control(process, "foreground")["enabled"] is False
+            assert control(process, "start")["enabled"] is True
+            status, previous = exchange(wire())
+            assert status == 200
+            control(process, "revoke-without-callback")
+            try:
+                exchange(wire())
+                raise AssertionError("Revoked access dispatched before its delayed lifecycle callback")
+            except (OSError, ValueError):
+                pass
+            control(process, "foreground")
+            assert control(process, "start")["enabled"] is True
+            status, result = exchange(wire())
+            assert status == 200 and result["count"] == previous["count"] + 1, "Denied request reached the application"
+            stopped = control(process, "stop")
             assert stopped["reason"] == "stopped"
-            assert stopped["readyChanges"] == [True, False, True, False]
+            assert stopped["readyChanges"] == [True, False, True, False, True, False, True, False]
         finally:
             process.stdin.close()
             try:
@@ -126,6 +168,7 @@ def main():
         process = subprocess.Popen([executable], env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         try:
             assert host_response(process)["enabled"] is True
+            assert control(process, "background-admitted")["enabled"] is True
             time.sleep(1.2)
             process.stdin.write("start\n")
             process.stdin.flush()
@@ -138,7 +181,7 @@ def main():
                 process.kill()
                 process.wait(timeout=5)
         assert process.returncode == 0
-    print("PASS: real HTTPS identity/pin, auth before dispatch, repeated connections, UTF-8, background stop/re-enable, TTL")
+    print("PASS: real HTTPS pin/auth, fresh access, admitted background continuation, lease-end closure, foreground-only creation, TTL")
 
 
 if __name__ == "__main__":

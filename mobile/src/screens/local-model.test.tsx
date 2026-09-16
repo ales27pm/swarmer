@@ -201,13 +201,19 @@ describe("LocalModelScreen", () => {
 
   it.each([
     { supported: false, osSupported: true, gpuSupported: false, entitlementGranted: null, active: false, operationId: null,
-      outputBytes: 0, state: "idle", reason: "gpu_unsupported", expected: "Cet appareil ne déclare pas de GPU disponible en arrière-plan." },
+      executionDevice: null, outputBytes: 0, state: "idle", reason: "gpu_unsupported", expected: "Cette version du module ne propose pas de continuation sur cet appareil." },
     { supported: true, osSupported: true, gpuSupported: true, entitlementGranted: null, active: false, operationId: null,
-      outputBytes: 0, state: "idle", reason: "permission_unverified", expected: "l’autorisation n’a pas encore été confirmée" },
+      executionDevice: null, outputBytes: 0, state: "idle", reason: "permission_unverified", expected: "l’autorisation n’a pas encore été confirmée" },
     { supported: true, osSupported: true, gpuSupported: true, entitlementGranted: true, active: true, operationId: "operation-1",
-      outputBytes: 128, state: "active", reason: null, expected: "Tâche GPU admise par iOS." },
+      executionDevice: "gpu", outputBytes: 128, state: "active", reason: null, expected: "Tâche GPU admise par iOS." },
     { supported: true, osSupported: true, gpuSupported: true, entitlementGranted: true, active: false, operationId: "operation-1",
-      outputBytes: 128, state: "expiring", reason: "user_or_system_cancelled", expected: "Arrêt demandé par le système ou l’utilisateur." },
+      executionDevice: "gpu", outputBytes: 128, state: "expiring", reason: "user_or_system_cancelled", expected: "Arrêt demandé par le système ou l’utilisateur." },
+    { supported: true, osSupported: true, gpuSupported: false, entitlementGranted: null, active: false, operationId: null,
+      executionDevice: null, outputBytes: 0, state: "idle", reason: "cpu_fallback", expected: "Le repli CPU est disponible." },
+    { supported: true, osSupported: true, gpuSupported: false, entitlementGranted: false, active: false, operationId: null,
+      executionDevice: "cpu", outputBytes: 0, state: "idle", reason: "cpu_fallback", expected: "Le repli CPU est disponible." },
+    { supported: true, osSupported: true, gpuSupported: false, entitlementGranted: null, active: true, operationId: "cpu-1",
+      executionDevice: "cpu", outputBytes: 64, state: "active", reason: "cpu_fallback", expected: "Tâche CPU admise par iOS." },
   ] as const)("shows truthful MLX background state: $reason / $state", async ({ expected, ...backgroundExecution }) => {
     jest.mocked(getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: "actual/dolphin", revision: "b".repeat(40), backgroundExecution });
     await render(<LocalModelScreen />);
@@ -215,6 +221,11 @@ describe("LocalModelScreen", () => {
     expect(screen.getByTestId("local-model-background-status")).toBeOnTheScreen();
     expect(screen.getByText(expected, { exact: false })).toBeOnTheScreen();
     expect(screen.getByText(`Activité : ${backgroundExecution.active ? "tâche admise en cours" : "aucune tâche admise active"}`)).toBeOnTheScreen();
+    if (backgroundExecution.supported && !backgroundExecution.gpuSupported) {
+      expect(screen.getByText(/Calcul local sur CPU : il peut être plus lent que sur GPU/)).toBeOnTheScreen();
+      expect(screen.queryByText(/Une admission GPU a déjà été confirmée/)).not.toBeOnTheScreen();
+    }
+    expect(screen.getByText(/uniquement de suivre ou d’annuler le calcul déjà admis/)).toBeOnTheScreen();
     if (backgroundExecution.entitlementGranted === true || backgroundExecution.active || backgroundExecution.outputBytes > 0) {
       expect(screen.getByText(`Texte produit par la tâche d’arrière-plan : ${backgroundExecution.outputBytes} octets UTF-8`, { exact: false })).toBeOnTheScreen();
     } else {

@@ -5,12 +5,17 @@ import { AppState } from "react-native";
 import { applicationApi } from "@/lib/application-api";
 import { createApplicationProtocol, type ProtocolRequest } from "@/lib/application-api/protocol";
 
-type NativeRequest = ProtocolRequest & { requestId: string };
+type NativeRequest = ProtocolRequest & {
+  requestId: string;
+  foreground?: boolean;
+  backgroundContinuation?: boolean;
+};
 type AutomationModule = {
   automationAvailable?: boolean;
   addListener(name: "automationRequest", listener: (request: NativeRequest) => void): { remove(): void };
   startAutomationServer(): Promise<{ enabled: boolean; port?: number; reason?: string }>;
   stopAutomationServer(): Promise<void>;
+  reconcileAutomationServer?(): Promise<void>;
   completeAutomationRequest(requestId: string, status: number, body: string): Promise<void>;
 };
 
@@ -27,6 +32,14 @@ export function ApplicationNetworkBridge() {
     let disposed = false;
     const subscription = native.addListener("automationRequest", (request) => {
       if (disposed) return;
+      // These flags are supplied by the native listener, never by the HTTP body.
+      // Native UIKit/admission state wins over a delayed React AppState event.
+      if (typeof request.foreground === "boolean" && typeof request.backgroundContinuation === "boolean") {
+        protocol.setAccess(request.foreground ? "foreground" : request.backgroundContinuation ? "continuation" : "inactive");
+      } else {
+        protocol.setActive(request.foreground === undefined && request.backgroundContinuation === undefined
+          && AppState.currentState === "active");
+      }
       let response;
       try {
         response = protocol.handle(request);
@@ -41,6 +54,9 @@ export function ApplicationNetworkBridge() {
       const active = !disposed && AppState.currentState === "active";
       protocol.setActive(active);
       if (active) void native.startAutomationServer().catch(() => { /* native fail closed */ });
+      else if (native.reconcileAutomationServer) void native.reconcileAutomationServer().catch(() => {
+        void native.stopAutomationServer().catch(() => {});
+      });
       else void native.stopAutomationServer().catch(() => {});
     };
     activate();

@@ -63,6 +63,7 @@ export function createApplicationProtocol(
   let sequence = 0;
   let retainedResultBytes = 0;
   let accepting = true;
+  let continuationOnly = false;
 
   async function run(entry: Entry, input: unknown) {
     try {
@@ -94,7 +95,7 @@ export function createApplicationProtocol(
     if (!accepting) return failure(503, "app_inactive", "L’application doit être au premier plan.");
     if (request.method === "GET" && request.body !== "") return failure(400, "invalid_request", "Corps GET interdit.");
     if (request.method === "GET" && request.path === "/v1/health") {
-      return { status: 200, body: { apiVersion: "1", instanceId, state: "ready", activeJobs: active, retainedJobs: jobs.size, capacity: MAX_JOBS, persistence: "javascript_session" } };
+      return { status: 200, body: { apiVersion: "1", instanceId, state: "ready", access: continuationOnly ? "continuation" : "foreground", activeJobs: active, retainedJobs: jobs.size, capacity: MAX_JOBS, persistence: "javascript_session" } };
     }
     if (request.method === "GET" && request.path === "/v1/catalog") {
       return { status: 200, body: { apiVersion: "1", instanceId, catalog: dispatcher.catalog() } };
@@ -129,6 +130,11 @@ export function createApplicationProtocol(
       if (existing.fingerprint !== fingerprint) return failure(409, "idempotency_conflict", "Cette clé désigne déjà une autre commande.");
       return { status: 200, body: { apiVersion: "1", instanceId, replayed: true, job: { ...existing.job } } };
     }
+    // An admitted native calculation permits observation and cancellation only.
+    // A background listener is never authority to initiate unrelated work.
+    if (continuationOnly && value.command !== "models.status" && value.command !== "inference.cancel") {
+      return failure(409, "foreground_required", "Revenez dans l’application pour démarrer une nouvelle opération. Le suivi et l’annulation du calcul en cours restent disponibles.");
+    }
     if (jobs.size >= MAX_JOBS || active >= MAX_ACTIVE) return failure(429, "session_capacity", "Capacité de session atteinte. Aucun nouveau traitement accepté.");
     const entry: Entry = { fingerprint, job: { id: `job_${instanceId}_${++sequence}`, command: value.command, state: "running", acceptedAt: now().toISOString() } };
     jobs.set(value.idempotencyKey, entry);
@@ -137,5 +143,12 @@ export function createApplicationProtocol(
     void run(entry, value.input);
     return { status: 202, body: { apiVersion: "1", instanceId, replayed: false, job: { ...entry.job } } };
   }
-  return { handle, setActive: (value: boolean) => { accepting = value; } };
+  return {
+    handle,
+    setActive: (value: boolean) => { accepting = value; continuationOnly = false; },
+    setAccess: (value: "foreground" | "continuation" | "inactive") => {
+      accepting = value !== "inactive";
+      continuationOnly = value === "continuation";
+    },
+  };
 }

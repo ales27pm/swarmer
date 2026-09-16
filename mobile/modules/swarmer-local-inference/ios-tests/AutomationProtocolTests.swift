@@ -1,5 +1,14 @@
 import Foundation
 
+@MainActor
+private final class TestExecutionAccess {
+  var foreground = true
+  var continuation = false
+  func current() -> AutomationExecutionAccess {
+    .init(foreground: foreground, backgroundContinuation: !foreground && continuation)
+  }
+}
+
 @main
 struct AutomationProtocolTests {
   struct Failure: Error { let message: String }
@@ -22,6 +31,16 @@ struct AutomationProtocolTests {
 
   static func main() async throws {
     try await MainActor.run {
+      let oldDelivery = AutomationDeliveryFence()
+      var deliveries = 0
+      let later = ContinuousClock.now.advanced(by: .seconds(10))
+      try expect(oldDelivery.deliver(before: later) { deliveries += 1 }, "Live delivery rejected")
+      oldDelivery.invalidate()
+      let replacement = AutomationDeliveryFence()
+      try expect(!oldDelivery.deliver(before: later) { deliveries += 1 }, "Queued old-session request survived stop/restart")
+      try expect(!replacement.deliver(before: .now.advanced(by: .seconds(-1))) { deliveries += 1 }, "Expired request was emitted")
+      try expect(replacement.deliver(before: later) { deliveries += 1 }, "Old invalidation stopped a new generation")
+      try expect(deliveries == 2, "Rejected request reached the event emitter")
       for initial in [false, true] {
         var disabled = initial
         let lease = AutomationIdleTimerLease(read: { disabled }, write: { disabled = $0 })
@@ -105,13 +124,21 @@ struct AutomationProtocolTests {
       do { _ = try AutomationConfiguration.read(invalid); throw Failure(message: "Invalid configuration accepted") }
       catch is AutomationProtocolError {}
     }
-    let server = AutomationServer()
-    let disabled = await server.start(environment: [:], foreground: true, emit: { _ in })
+    let access = await MainActor.run { TestExecutionAccess() }
+    let server = AutomationServer(access: { access.current() })
+    let disabled = await server.start(environment: [:], emit: { _, _ in })
     try expect(!disabled.enabled && disabled.reason == "not_enabled", "Opt-in ignored")
-    let background = await server.start(environment: environment, foreground: false, emit: { _ in })
+    await MainActor.run { access.foreground = false }
+    let background = await server.start(environment: environment, emit: { _, _ in })
     try expect(!background.enabled && background.reason == "foreground_required", "Background start accepted")
+    await MainActor.run { access.continuation = true }
+    let admittedBackground = await server.start(environment: environment, emit: { _, _ in })
+    try expect(!admittedBackground.enabled && admittedBackground.reason == "foreground_required", "Lease created new listener in background")
+    let absent = await server.reconcile()
+    try expect(!absent.enabled, "Reconcile created a listener")
+    await MainActor.run { access.foreground = true; access.continuation = false }
     environment["SWARMER_AUTOMATION_TLS_P12"] = Data([1, 2, 3]).base64EncodedString()
-    let badIdentity = await server.start(environment: environment, foreground: true, emit: { _ in })
+    let badIdentity = await server.start(environment: environment, emit: { _, _ in })
     try expect(!badIdentity.enabled && badIdentity.reason == "invalid_tls_configuration", "Invalid TLS identity accepted")
     await server.stop()
     do { try await server.complete(requestID: "absent", status: 200, body: "{}"); throw Failure(message: "Unknown request accepted") }

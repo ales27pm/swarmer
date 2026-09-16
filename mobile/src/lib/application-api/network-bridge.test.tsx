@@ -10,7 +10,7 @@ jest.mock("@/lib/application-api", () => ({ applicationApi: {
   execute: jest.fn(async () => ({ data: "ok" })),
 } }));
 
-let receive: (request: { requestId: string; method: string; path: string; body: string }) => void;
+let receive: (request: { requestId: string; method: string; path: string; body: string; foreground?: boolean; backgroundContinuation?: boolean }) => void;
 let appState: (state: string) => void;
 let removed: jest.Mock;
 let native: {
@@ -18,6 +18,7 @@ let native: {
   addListener: jest.Mock;
   startAutomationServer: jest.Mock;
   stopAutomationServer: jest.Mock;
+  reconcileAutomationServer?: jest.Mock;
   completeAutomationRequest: jest.Mock;
 };
 
@@ -97,5 +98,32 @@ test("a rejected native reply never retries dispatch", async () => {
   const view = await render(<ApplicationNetworkBridge />);
   await act(async () => { receive({ requestId: "gone", method: "GET", path: "/v1/catalog", body: "" }); });
   expect(native.completeAutomationRequest).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+test("native admission permits background observation without trusting stale AppState or opening new work", async () => {
+  native.reconcileAutomationServer = jest.fn(async () => {});
+  const view = await render(<ApplicationNetworkBridge />);
+  await act(async () => {
+    Object.assign(AppState, { currentState: "background" });
+    appState("background");
+  });
+  expect(native.reconcileAutomationServer).toHaveBeenCalledTimes(1);
+  expect(native.stopAutomationServer).not.toHaveBeenCalled();
+  await act(async () => {
+    receive({ requestId: "continued", method: "GET", path: "/v1/health", body: "", foreground: false, backgroundContinuation: true });
+  });
+  const health = JSON.parse(native.completeAutomationRequest.mock.calls.at(-1)![2]);
+  expect(health.access).toBe("continuation");
+  await act(async () => {
+    receive({ requestId: "new-work", method: "POST", path: "/v1/commands", foreground: false, backgroundContinuation: true,
+      body: JSON.stringify({ command: "inference.generate", input: {}, instanceId: health.instanceId, idempotencyKey: "background-new-work" }) });
+  });
+  expect(native.completeAutomationRequest.mock.calls.at(-1)![1]).toBe(409);
+  await act(async () => {
+    Object.assign(AppState, { currentState: "active" }); // Delayed JS state cannot override expired native admission.
+    receive({ requestId: "expired", method: "GET", path: "/v1/health", body: "", foreground: false, backgroundContinuation: false });
+  });
+  expect(native.completeAutomationRequest.mock.calls.at(-1)![1]).toBe(503);
   await view.unmount();
 });

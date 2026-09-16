@@ -9,6 +9,31 @@ struct AutomationStartResult: Sendable {
   var reason: String? = nil
 }
 
+/// Background execution belongs to admitted finite work, not to this listener.
+struct AutomationExecutionAccess: Sendable {
+  let foreground: Bool
+  let backgroundContinuation: Bool
+  var mayServe: Bool { foreground || backgroundContinuation }
+}
+
+/// A queued MainActor delivery cannot outlive stop/restart or the session TTL.
+/// The lock covers the synchronous event emission, so invalidation is a barrier.
+final class AutomationDeliveryFence: @unchecked Sendable {
+  private let lock = NSLock()
+  private var valid = true
+
+  func invalidate() { lock.withLock { valid = false } }
+
+  @MainActor
+  func deliver(before deadline: ContinuousClock.Instant, _ action: () -> Void) -> Bool {
+    lock.withLock {
+      guard valid, ContinuousClock.now < deadline else { return false }
+      action()
+      return true
+    }
+  }
+}
+
 /// The app's original idle-timer preference belongs to its owner, not to automation.
 @MainActor
 final class AutomationIdleTimerLease {
@@ -49,17 +74,30 @@ actor AutomationServer {
   private var expiration: Task<Void, Never>?
   private var startupTimer: Task<Void, Never>?
   private var startup: CheckedContinuation<AutomationStartResult, Never>?
-  private var emit: (@Sendable (AutomationRequest) -> Void)?
+  private var emit: (@MainActor @Sendable (AutomationRequest, AutomationExecutionAccess) -> Void)?
+  private let readAccess: @MainActor @Sendable () -> AutomationExecutionAccess
   private var generation = UUID()
+  private var deliveryFence = AutomationDeliveryFence()
   private var readyPort: Int?
   private var readinessChanged: (@Sendable (Bool) -> Void)?
 
-  func start(environment: [String: String], foreground: Bool,
-             emit: @escaping @Sendable (AutomationRequest) -> Void,
+  init(access: @escaping @MainActor @Sendable () -> AutomationExecutionAccess) {
+    readAccess = access
+  }
+
+  func start(environment: [String: String],
+             emit: @escaping @MainActor @Sendable (AutomationRequest, AutomationExecutionAccess) -> Void,
              onReadyChanged: @escaping @Sendable (Bool) -> Void = { _ in }) async -> AutomationStartResult {
-    guard foreground else { return .init(enabled: false, reason: "foreground_required") }
-    if let deadline, ContinuousClock.now >= deadline { return .init(enabled: false, reason: "session_expired") }
-    if let readyPort { return .init(enabled: true, port: readyPort) }
+    let access = await readAccess()
+    if let deadline, ContinuousClock.now >= deadline {
+      stop(reason: "session_expired")
+      return .init(enabled: false, reason: "session_expired")
+    }
+    if let readyPort, access.mayServe { return .init(enabled: true, port: readyPort) }
+    guard access.foreground else {
+      if !access.mayServe { stop(reason: "foreground_required") }
+      return .init(enabled: false, reason: "foreground_required")
+    }
     guard listener == nil else { return .init(enabled: false, reason: "starting") }
     let config: AutomationConfiguration
     do {
@@ -83,6 +121,7 @@ actor AutomationServer {
       self.emit = emit
       readinessChanged = onReadyChanged
       generation = UUID()
+      deliveryFence = AutomationDeliveryFence()
       let current = generation
       listener.newConnectionHandler = { [weak self] connection in
         Task { await self?.accept(connection, generation: current) }
@@ -101,14 +140,38 @@ actor AutomationServer {
           do { try await Task.sleep(for: .seconds(10)) } catch { return }
           await self?.stopIfCurrent(current, reason: "listener_timeout")
         }
-        listener.start(queue: queue)
+        // Creating a listener is foreground-only. Read UIKit again on MainActor
+        // at the actual start, after TLS setup and any intervening transition.
+        Task { @MainActor [readAccess, queue] in
+          guard readAccess().foreground else {
+            await self.stopIfCurrent(current, reason: "foreground_required")
+            return
+          }
+          listener.start(queue: queue)
+        }
       }
     } catch {
       return .init(enabled: false, reason: "invalid_tls_configuration")
     }
   }
 
+  /// Lifecycle notifications carry no authority: use the current OS/lease state.
+  /// In particular, a delayed background callback must not stop a resumed app.
+  func reconcile() async -> AutomationStartResult {
+    let current = generation
+    let access = await readAccess()
+    guard generation == current else {
+      return .init(enabled: readyPort != nil, port: readyPort, reason: readyPort == nil ? "stopped" : nil)
+    }
+    guard access.mayServe else {
+      stop(reason: "background")
+      return .init(enabled: false, reason: "background")
+    }
+    return .init(enabled: readyPort != nil, port: readyPort, reason: readyPort == nil ? "stopped" : nil)
+  }
+
   func stop(reason: String = "stopped") {
+    deliveryFence.invalidate()
     generation = UUID()
     listener?.cancel()
     listener = nil
@@ -127,7 +190,14 @@ actor AutomationServer {
     emit = nil
   }
 
-  func complete(requestID: String, status: Int, body: String) throws {
+  func complete(requestID: String, status: Int, body: String) async throws {
+    let current = generation
+    let access = await readAccess()
+    guard generation == current else { throw AutomationProtocolError.unavailable }
+    guard access.mayServe else {
+      stop(reason: "background")
+      throw AutomationProtocolError.unavailable
+    }
     guard let deadline, ContinuousClock.now < deadline else {
       stop(reason: "session_expired")
       throw AutomationProtocolError.unavailable
@@ -156,8 +226,10 @@ actor AutomationServer {
     return wrapped
   }
 
-  private func listenerChanged(_ state: NWListener.State, generation expected: UUID) {
+  private func listenerChanged(_ state: NWListener.State, generation expected: UUID) async {
+    let access = await readAccess()
     guard generation == expected else { return }
+    guard access.mayServe else { stop(reason: "background"); return }
     switch state {
     case .ready:
       readyPort = listener?.port.map { Int($0.rawValue) }
@@ -176,7 +248,13 @@ actor AutomationServer {
     stop(reason: reason)
   }
 
-  private func accept(_ connection: NWConnection, generation expected: UUID) {
+  private func accept(_ connection: NWConnection, generation expected: UUID) async {
+    let access = await readAccess()
+    guard access.mayServe else {
+      if generation == expected { stop(reason: "background") }
+      connection.cancel()
+      return
+    }
     guard generation == expected, readyPort != nil, clients.count < 4,
           let deadline, ContinuousClock.now < deadline else { connection.cancel(); return }
     let id = UUID()
@@ -198,7 +276,7 @@ actor AutomationServer {
     }
   }
 
-  private func received(_ id: UUID, data: Data?, ended: Bool, failed: Bool) {
+  private func received(_ id: UUID, data: Data?, ended: Bool, failed: Bool) async {
     guard var client = clients[id], client.requestID == nil, let configuration else { return }
     guard let deadline, ContinuousClock.now < deadline else { stop(reason: "session_expired"); return }
     guard !failed, let data, !data.isEmpty else { close(id); return }
@@ -210,7 +288,16 @@ actor AutomationServer {
         clients[id]?.requestID = request.requestId
         pending[request.requestId] = id
         clients[id]?.timer = timeout(id, seconds: 120)
-        emit?(request)
+        let current = generation
+        let delivered = await MainActor.run { [readAccess, emit, deliveryFence] in
+          let access = readAccess()
+          guard access.mayServe, let emit else { return false }
+          // The emitter runs synchronously here, with fresh access evidence.
+          return deliveryFence.deliver(before: deadline) { emit(request, access) }
+        }
+        if !delivered, generation == current {
+          stop(reason: ContinuousClock.now >= deadline ? "session_expired" : "background")
+        }
       } else if ended { close(id) }
       else { receive(id) }
     } catch {

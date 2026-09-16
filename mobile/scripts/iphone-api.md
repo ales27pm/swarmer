@@ -41,10 +41,14 @@ It restores the previous idle-timer value on stop, expiry, or backgrounding. Thi
 not keep the app running after you switch away or lock the phone manually.
 
 On iOS 26, a foreground-started MLX generation may obtain a finite continued
-processing task when the device supports background GPU and Apple admits the
-GPU request. Read `models.status.backgroundExecution`: `supported` describes
+processing task. Devices without background GPU support use local CPU inference;
+the GPU capability remains false. Read `models.status.backgroundExecution`:
+`executionDevice` identifies CPU/GPU and `supported` describes
 OS/hardware support, while only `active` confirms the current task's admission.
-The HTTPS listener still closes in the background; return to the app to retrieve
+During an admitted calculation, the existing HTTPS listener permits GET requests,
+`models.status`, `inference.cancel`, and recovery of existing idempotency receipts.
+New unrelated work requires foreground. The listener closes when the calculation
+finishes or expires while backgrounded; return to the app to retrieve
 the existing job. Do not resend a generation after losing the connection.
 
 With `--console`, leave this first terminal running. A flushed JSON line with

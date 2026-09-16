@@ -14,6 +14,11 @@ struct BackgroundExecutionSnapshot: Sendable {
   let operationId: String?
   let outputBytes: Int
   let state: String
+  let executionDevice: String?
+}
+
+enum BackgroundGenerationDevice: String, Sendable {
+  case cpu, gpu
 }
 
 struct BackgroundGenerationActivity: Sendable {
@@ -59,7 +64,7 @@ protocol BackgroundGenerationScheduling: AnyObject {
   var isBackground: Bool { get }
   func support() -> BackgroundGenerationSupport
   func register(identifier: String, launch: @escaping @MainActor (any BackgroundGenerationTask) -> Void) -> Bool
-  func submit(identifier: String) throws
+  func submit(identifier: String, device: BackgroundGenerationDevice) throws
   func cancel(identifier: String)
 }
 
@@ -68,6 +73,7 @@ protocol BackgroundGenerationScheduling: AnyObject {
 /// public SecTask entitlement-inspection API, so its value starts as unknown.
 @MainActor
 final class BackgroundGenerationController {
+  nonisolated static let statusDidChange = Notification.Name("SwarmerBackgroundExecutionDidChange")
   #if os(iOS)
   static let shared = BackgroundGenerationController(scheduler: SystemBackgroundGenerationScheduler())
   #endif
@@ -75,6 +81,7 @@ final class BackgroundGenerationController {
   private struct Operation {
     let id: UUID
     let identifier: String
+    let device: BackgroundGenerationDevice
     let cancel: @Sendable () async -> Void
     var task: (any BackgroundGenerationTask)?
     var admission: CheckedContinuation<Void, Never>?
@@ -84,6 +91,7 @@ final class BackgroundGenerationController {
   private let admissionTimeout: Duration
   private var operation: Operation?
   private var entitlementGranted: Bool?
+  private var executionDevice: BackgroundGenerationDevice?
   private var state = "idle"
   private var reason: String?
   private var outputBytes = 0
@@ -97,31 +105,41 @@ final class BackgroundGenerationController {
   func status() -> BackgroundExecutionSnapshot {
     let support = scheduler.support()
     let capabilityReason: String? = !support.osSupported ? "os_unsupported"
-      : !support.gpuSupported ? "gpu_unsupported"
+      : !support.gpuSupported ? "cpu_fallback"
       : entitlementGranted == nil ? "permission_unverified" : nil
     return BackgroundExecutionSnapshot(
-      supported: support.osSupported && support.gpuSupported,
+      supported: support.osSupported,
       reason: reason ?? capabilityReason,
       osSupported: support.osSupported, gpuSupported: support.gpuSupported,
       entitlementGranted: entitlementGranted, active: operation?.task != nil && state == "active",
-      operationId: operation?.id.uuidString, outputBytes: outputBytes, state: state
+      operationId: operation?.id.uuidString, outputBytes: outputBytes, state: state,
+      executionDevice: executionDevice?.rawValue
     )
   }
 
-  func prepare(operationId: UUID, cancel: @escaping @Sendable () async -> Void) async {
-    guard operation == nil else { return }
+  func preferredExecutionDevice() -> BackgroundGenerationDevice {
+    let support = scheduler.support()
+    return support.osSupported && !support.gpuSupported ? .cpu : .gpu
+  }
+
+  @discardableResult
+  func prepare(operationId: UUID, cancel: @escaping @Sendable () async -> Void) async -> BackgroundGenerationDevice {
+    let device = preferredExecutionDevice()
+    guard operation == nil else { return device }
+    executionDevice = device
     outputBytes = 0
     let support = scheduler.support()
-    guard support.osSupported, support.gpuSupported, scheduler.isForeground, !foregroundBlocked else {
+    guard support.osSupported, scheduler.isForeground, !foregroundBlocked else {
       state = "foreground_only"
-      reason = !support.osSupported ? "os_unsupported"
-        : !support.gpuSupported ? "gpu_unsupported" : "foreground_required"
-      return
+      reason = !support.osSupported ? "os_unsupported" : "foreground_required"
+      notifyStatusChanged()
+      return device
     }
     let identifier = "org.27pm.mongars.mlx-generation.\(operationId.uuidString)"
-    operation = Operation(id: operationId, identifier: identifier, cancel: cancel)
+    operation = Operation(id: operationId, identifier: identifier, device: device, cancel: cancel)
     state = "requesting"
-    reason = nil
+    reason = device == .cpu ? "cpu_fallback" : nil
+    notifyStatusChanged()
     // Register each concrete ID once. Only Info.plist uses the wildcard family.
     // The scheduler retains handlers: retain neither a model nor this controller.
     guard scheduler.register(identifier: identifier, launch: { [weak self] task in
@@ -129,7 +147,7 @@ final class BackgroundGenerationController {
       self.admit(task, operationId: operationId)
     }) else {
       abandonAdmission(operationId: operationId, reason: "registration_failed")
-      return
+      return device
     }
     await withTaskCancellationHandler {
       await withCheckedContinuation { continuation in
@@ -140,7 +158,7 @@ final class BackgroundGenerationController {
         }
         operation?.admission = continuation
         do {
-          try scheduler.submit(identifier: identifier)
+          try scheduler.submit(identifier: identifier, device: device)
           Task { [weak self, admissionTimeout] in
             try? await Task.sleep(for: admissionTimeout)
             self?.abandonAdmission(operationId: operationId, reason: "admission_timeout")
@@ -149,7 +167,7 @@ final class BackgroundGenerationController {
           let rejection: String
           switch error {
           case BackgroundGenerationSubmissionError.notPermitted:
-            entitlementGranted = false
+            if device == .gpu { entitlementGranted = false }
             rejection = "not_permitted"
           case BackgroundGenerationSubmissionError.busy: rejection = "system_busy"
           default: rejection = "request_failed"
@@ -162,6 +180,7 @@ final class BackgroundGenerationController {
         self?.abandonAdmission(operationId: operationId, reason: "request_cancelled")
       }
     }
+    return device
   }
 
   private func admit(_ task: any BackgroundGenerationTask, operationId: UUID) {
@@ -170,10 +189,10 @@ final class BackgroundGenerationController {
       abandonAdmission(operationId: operationId, reason: "foreground_required")
       return
     }
-    entitlementGranted = true
+    if operation?.device == .gpu { entitlementGranted = true }
     operation?.task = task
     state = "active"
-    reason = nil
+    reason = operation?.device == .cpu ? "cpu_fallback" : nil
     task.setExpirationHandler { [weak self] in
       Task { @MainActor in await self?.expire(operationId: operationId) }
     }
@@ -181,6 +200,7 @@ final class BackgroundGenerationController {
     let continuation = operation?.admission
     operation?.admission = nil
     continuation?.resume()
+    notifyStatusChanged()
   }
 
   private func abandonAdmission(operationId: UUID, reason: String) {
@@ -190,6 +210,7 @@ final class BackgroundGenerationController {
     state = "foreground_only"
     self.reason = reason
     pending.admission?.resume()
+    notifyStatusChanged()
   }
 
   func willResignActive() {
@@ -233,6 +254,7 @@ final class BackgroundGenerationController {
     guard let current = operation, current.id == operationId, state == "active" else { return }
     state = "expiring"
     reason = "user_or_system_cancelled"
+    notifyStatusChanged()
     // Await the actual native producer and its GPU synchronization barrier.
     await current.cancel()
     finish(operationId: operationId, success: false, cancelled: true)
@@ -250,8 +272,13 @@ final class BackgroundGenerationController {
       scheduler.cancel(identifier: current.identifier)
     }
     state = didExpire || cancelled ? "cancelled" : success ? "completed" : "failed"
-    if !didExpire { reason = nil }
+    if !didExpire { reason = current.device == .cpu ? "cpu_fallback" : nil }
+    notifyStatusChanged()
     return didExpire || cancelled
+  }
+
+  private func notifyStatusChanged() {
+    NotificationCenter.default.post(name: Self.statusDidChange, object: nil)
   }
 }
 
@@ -302,13 +329,13 @@ private final class SystemBackgroundGenerationScheduler: BackgroundGenerationSch
       }
     }
   }
-  func submit(identifier: String) throws {
+  func submit(identifier: String, device: BackgroundGenerationDevice) throws {
     guard #available(iOS 26.0, *) else { throw BackgroundGenerationSubmissionError.unavailable }
     let request = BGContinuedProcessingTaskRequest(
       identifier: identifier, title: "Génération MLX", subtitle: "Préparation du texte"
     )
     request.strategy = .fail
-    request.requiredResources = .gpu
+    request.requiredResources = device == .gpu ? .gpu : []
     do { try BGTaskScheduler.shared.submit(request) }
     catch {
       switch (error as NSError).code {

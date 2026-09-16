@@ -228,7 +228,7 @@ actor LocalInferenceCoordinator {
         )
       case .mlx(let runtime):
         try Task.checkCancellation()
-        await BackgroundGenerationController.shared.prepare(operationId: operationId) {
+        let executionDevice = await BackgroundGenerationController.shared.prepare(operationId: operationId) {
           await self.cancel(operationId: operationId)
         }
         guard await self.mayBeginGeneration(operationId: operationId) else { throw CancellationError() }
@@ -237,6 +237,7 @@ actor LocalInferenceCoordinator {
           prompt: prompt,
           maxTokens: maxTokens,
           temperature: temperature,
+          executionDevice: executionDevice,
           onOutputProgress: { bytes in
             await BackgroundGenerationController.shared.reportOutput(operationId: operationId, bytes: bytes)
           }

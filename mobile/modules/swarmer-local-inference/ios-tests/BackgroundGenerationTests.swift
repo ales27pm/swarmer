@@ -20,6 +20,7 @@ private final class FakeScheduler: BackgroundGenerationScheduling {
   var rejection: BackgroundGenerationSubmissionError?
   var launchImmediately = true
   var submissions: [String] = []
+  var requestedDevices: [BackgroundGenerationDevice] = []
   var cancelled: [String] = []
   var handlers: [String: @MainActor (any BackgroundGenerationTask) -> Void] = [:]
   var tasks: [String: FakeBackgroundTask] = [:]
@@ -31,8 +32,9 @@ private final class FakeScheduler: BackgroundGenerationScheduling {
     if registrationAllowed { handlers[identifier] = launch }
     return registrationAllowed
   }
-  func submit(identifier: String) throws {
+  func submit(identifier: String, device: BackgroundGenerationDevice) throws {
     submissions.append(identifier)
+    requestedDevices.append(device)
     if let rejection { throw rejection }
     if launchImmediately { admit(identifier) }
   }
@@ -67,6 +69,8 @@ private struct BackgroundGenerationTests {
   @MainActor static func main() async throws {
     try await fallbackDoesNotSubmit()
     try await refusalsDoNotGrantPermission()
+    try await cpuAdmissionDoesNotClaimGPUPermission()
+    try await cpuRefusalStaysForegroundOnly()
     try await admissionProgressAndCompletion()
     try await expirationWaitsForNativeBarrier()
     try await backgroundRejectsPendingAdmission()
@@ -77,7 +81,7 @@ private struct BackgroundGenerationTests {
     try lifecycleEntryReconcilesCurrentState()
     try staleActiveCallbackCannotReopenBackground()
     try staleResumePreservesFullBackgroundCancellation()
-    print("12 background generation lifecycle tests passed")
+    print("14 background generation lifecycle tests passed")
   }
 
   @MainActor static func lifecycleEntryReconcilesCurrentState() throws {
@@ -133,11 +137,10 @@ private struct BackgroundGenerationTests {
   }
 
   @MainActor static func fallbackDoesNotSubmit() async throws {
-    for variant in 0..<3 {
+    for variant in 0..<2 {
       let scheduler = FakeScheduler()
       if variant == 0 { scheduler.osSupported = false; scheduler.gpuSupported = false }
-      if variant == 1 { scheduler.gpuSupported = false }
-      if variant == 2 { scheduler.isForeground = false }
+      if variant == 1 { scheduler.isForeground = false }
       let controller = BackgroundGenerationController(scheduler: scheduler)
       let id = UUID()
       await controller.prepare(operationId: id, cancel: {})
@@ -145,7 +148,7 @@ private struct BackgroundGenerationTests {
       try check(scheduler.submissions.isEmpty, "fallback must not submit")
       try check(status.entitlementGranted == nil, "OS/resource/foreground checks do not establish entitlement")
       try check(!controller.mayContinue(operationId: id), "fallback must cancel on background")
-      try check(status.reason == ["os_unsupported", "gpu_unsupported", "foreground_required"][variant], "precise fallback reason")
+      try check(status.reason == ["os_unsupported", "foreground_required"][variant], "precise fallback reason")
     }
   }
 
@@ -167,6 +170,41 @@ private struct BackgroundGenerationTests {
     }
   }
 
+  @MainActor static func cpuAdmissionDoesNotClaimGPUPermission() async throws {
+    let scheduler = FakeScheduler()
+    scheduler.gpuSupported = false
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let id = UUID()
+    try check(controller.status().supported, "CPU continued processing only requires supported OS")
+    try check(controller.preferredExecutionDevice() == .cpu, "load and generation must agree on CPU")
+    let selected = await controller.prepare(operationId: id, cancel: {})
+    try check(selected == .cpu && scheduler.requestedDevices == [.cpu], "request CPU without a GPU requirement")
+    let status = controller.status()
+    try check(status.active && !status.gpuSupported && status.executionDevice == "cpu", "CPU admission is independently usable")
+    try check(status.entitlementGranted == nil, "CPU admission proves no GPU entitlement")
+    try check(status.reason == "cpu_fallback", "fallback is explicit")
+    scheduler.isForeground = false
+    scheduler.isBackground = true
+    controller.willResignActive()
+    try check(controller.mayContinue(operationId: id), "admitted CPU generation survives background")
+    controller.reportOutput(operationId: id, bytes: 7)
+    controller.finish(operationId: id, success: true)
+    try check(controller.status().executionDevice == "cpu" && controller.status().outputBytes == 7, "retain honest CPU outcome")
+  }
+
+  @MainActor static func cpuRefusalStaysForegroundOnly() async throws {
+    let scheduler = FakeScheduler()
+    scheduler.gpuSupported = false
+    scheduler.rejection = .notPermitted
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let id = UUID()
+    let selected = await controller.prepare(operationId: id, cancel: {})
+    try check(selected == .cpu, "refused continuation still uses CPU in foreground")
+    try check(!controller.status().active && controller.status().entitlementGranted == nil, "CPU refusal cannot claim GPU entitlement denied")
+    scheduler.isForeground = false
+    try check(!controller.mayRun(operationId: id), "refused CPU task cannot continue in background")
+  }
+
   @MainActor static func admissionProgressAndCompletion() async throws {
     let scheduler = FakeScheduler()
     let controller = BackgroundGenerationController(scheduler: scheduler)
@@ -175,6 +213,7 @@ private struct BackgroundGenerationTests {
     await controller.prepare(operationId: id, cancel: {})
     let task = scheduler.tasks[scheduler.submissions[0]]!
     try check(controller.status().active && controller.status().entitlementGranted == true, "only admission proves permission")
+    try check(scheduler.requestedDevices == [.gpu] && controller.status().executionDevice == "gpu", "GPU path retains explicit GPU request")
     scheduler.isForeground = false
     try check(controller.mayRun(operationId: id), "admitted generation can continue")
     try check(!controller.mayRun(operationId: UUID()), "lease cannot cover another operation")
@@ -221,7 +260,7 @@ private struct BackgroundGenerationTests {
     scheduler.isForeground = false
     let identifier = scheduler.submissions[0]
     scheduler.admit(identifier)
-    await pending.value
+    _ = await pending.value
     try check(scheduler.tasks[identifier]?.completions == [false], "late admission cannot start after background")
     try check(!controller.mayRun(operationId: id), "no permission at dispatch after background")
     try check(controller.status().entitlementGranted == nil, "rejected stale admission proves no usable permission")
@@ -236,7 +275,7 @@ private struct BackgroundGenerationTests {
     while scheduler.submissions.isEmpty { await Task.yield() }
     // UIKit may still report .active inside willResignActiveNotification.
     controller.willResignActive()
-    await pending.value
+    _ = await pending.value
     try check(scheduler.isForeground && !controller.mayRun(operationId: id), "early lifecycle fence must reject GPU dispatch")
     scheduler.admit(scheduler.submissions[0])
     try check(!controller.status().active, "late admission after inactivity stays rejected")
@@ -252,7 +291,7 @@ private struct BackgroundGenerationTests {
     let pending = Task { await controller.prepare(operationId: id, cancel: {}) }
     while scheduler.submissions.isEmpty { await Task.yield() }
     pending.cancel()
-    await pending.value
+    _ = await pending.value
     let identifier = scheduler.submissions[0]
     scheduler.admit(identifier)
     try check(scheduler.tasks[identifier]?.completions == [false], "cancelled request cannot resurrect")

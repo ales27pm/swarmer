@@ -6,8 +6,9 @@ public final class SwarmerLocalInferenceModule: Module {
   private var directoryPicker: LocalModelDirectoryPicker?
   private var backgroundResignObserver: NSObjectProtocol?
   #if DEBUG
-  private let automationServer = AutomationServer()
+  private let automationServer = AutomationServer(access: { AutomationModuleAccess.current() })
   private let automationEvents = AutomationModuleEventEmitter()
+  private var automationLifecycleObservers: [NSObjectProtocol] = []
   #endif
 
   public func definition() -> ModuleDefinition {
@@ -28,20 +29,35 @@ public final class SwarmerLocalInferenceModule: Module {
     Constants(["automationAvailable": true])
 
     OnCreate { [weak self] in
-      if let self { self.automationEvents.attach(self) }
+      guard let self else { return }
+      self.automationEvents.attach(self)
+      let server = self.automationServer
+      self.automationLifecycleObservers = [
+        UIApplication.willResignActiveNotification,
+        UIApplication.didEnterBackgroundNotification,
+        UIApplication.didBecomeActiveNotification,
+        BackgroundGenerationController.statusDidChange,
+      ].map { name in
+        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+          Task { _ = await server.reconcile() }
+        }
+      }
     }
 
     AsyncFunction("startAutomationServer") { [automationServer, automationEvents] () async -> AutomationStartRecord in
-      let foreground = await MainActor.run { UIApplication.shared.applicationState == .active }
       let result = await automationServer.start(
         environment: ProcessInfo.processInfo.environment,
-        foreground: foreground,
-        emit: { automationEvents.send($0) },
+        emit: { automationEvents.send($0, access: $1) },
         onReadyChanged: { ready in
           // Server actor transitions enqueue FIFO; UIKit is touched only on main.
           DispatchQueue.main.async { AutomationIdleTimerPolicy.shared.setReady(ready) }
         }
       )
+      return AutomationStartRecord(enabled: result.enabled, port: result.port, reason: result.reason)
+    }
+
+    AsyncFunction("reconcileAutomationServer") { [automationServer] () async -> AutomationStartRecord in
+      let result = await automationServer.reconcile()
       return AutomationStartRecord(enabled: result.enabled, port: result.port, reason: result.reason)
     }
 
@@ -60,6 +76,9 @@ public final class SwarmerLocalInferenceModule: Module {
     }
     AsyncFunction("completeAutomationRequest") { (_: String, _: Int, _: String) -> Void in }
     AsyncFunction("stopAutomationServer") { () -> Void in }
+    AsyncFunction("reconcileAutomationServer") { () -> AutomationStartRecord in
+      AutomationStartRecord(enabled: false, reason: "debug_build_required")
+    }
     #endif
 
     AsyncFunction("capabilities") { [coordinator] () async -> CapabilitiesRecord in
@@ -161,10 +180,9 @@ public final class SwarmerLocalInferenceModule: Module {
     }
 
     #if DEBUG
-    OnAppEntersBackground { [automationServer] in
-      Task { await automationServer.stop(reason: "background") }
-    }
-    OnDestroy { [automationServer] in
+    OnDestroy { [weak self, automationServer] in
+      self?.automationLifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
+      self?.automationLifecycleObservers.removeAll()
       Task { await automationServer.stop(reason: "destroyed") }
     }
     #endif
@@ -196,6 +214,7 @@ struct BackgroundExecutionRecord: Record, Sendable {
   @Field var operationId: String? = nil
   @Field var outputBytes: Int = 0
   @Field var state: String = "idle"
+  @Field var executionDevice: String? = nil
 
   init() {}
   init(_ snapshot: BackgroundExecutionSnapshot) {
@@ -209,5 +228,6 @@ struct BackgroundExecutionRecord: Record, Sendable {
     operationId = snapshot.operationId
     outputBytes = snapshot.outputBytes
     state = snapshot.state
+    executionDevice = snapshot.executionDevice
   }
 }
