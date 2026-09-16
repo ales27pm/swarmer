@@ -19,7 +19,7 @@ import {
   searchMemory,
   updateMemory,
   type MemoryItem,
-} from "@/lib/api/client";
+} from "@/lib/application-api/server";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
 function memoryIdentity(item: MemoryItem): string {

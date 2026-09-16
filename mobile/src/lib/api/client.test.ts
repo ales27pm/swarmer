@@ -10,6 +10,7 @@ import {
   createGoal,
   createGoalFeedback,
   createLocalGoalPlanSession,
+  createLocalToolSubmissionSession,
   createIPhoneCapabilityApiSession,
   createEventStreamTicket,
   createTask,
@@ -1477,6 +1478,46 @@ describe("goal API contract and connection fencing", () => {
     response.resolve(successfulJson(goalDetail));
 
     await expect(pending).rejects.toThrow("connexion jumelée a changé");
+  });
+
+  it("fences a legacy task creation after same-origin credentials change and reports its outcome as uncertain", async () => {
+    const response = deferred<never>();
+    const started = deferred<void>();
+    let active = storedConnection("https://control.example", "old-device-token");
+    getItem.mockImplementation(async (key) => key === CONNECTION_KEY ? active : null);
+    request.mockImplementationOnce(() => { started.resolve(); return response.promise; });
+    const pending = createTask("Lister les fichiers");
+    await started.promise;
+    active = storedConnection("https://control.example", "new-device-token");
+    response.resolve(successfulJson({ id: "task_created" }));
+    await expect(pending).rejects.toMatchObject({ name: "ConnectionChangedError", outcomeUnknown: true });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the created task identity but never sends a local proposal to a newly paired server", async () => {
+    let active = storedConnection("https://old.example", "old-device-token");
+    getItem.mockImplementation(async (key) => key === CONNECTION_KEY ? active : null);
+    const session = await createLocalToolSubmissionSession();
+    request.mockResolvedValueOnce(successfulJson({ conversation_id: "conv_1", task: { id: "tsk_created" } }));
+    const knownTasks: string[] = [];
+    await expect(session.createTask("Lister les fichiers", (task) => {
+      knownTasks.push(task.id);
+      active = storedConnection("https://new.example", "new-device-token");
+    })).rejects.toMatchObject({ outcomeUnknown: true });
+    await expect(session.submit("tsk_created", { tool_name: "workspace.list_dir", arguments: { path: "." }, rationale: "Lire" } as never))
+      .rejects.toMatchObject({ outcomeUnknown: false });
+    expect(knownTasks).toEqual(["tsk_created"]);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[0]).toBe("https://old.example/chat");
+  });
+
+  it("rechecks an expiring tool review immediately before its second POST", async () => {
+    const session = await createLocalToolSubmissionSession();
+    request.mockResolvedValueOnce(successfulJson({ conversation_id: "conv_1", task: { id: "tsk_created" } }));
+    await session.createTask("Lister les fichiers");
+    await expect(session.submit("tsk_created", { tool_name: "workspace.list_dir", arguments: { path: "." }, rationale: "Lire" } as never,
+      () => { throw new Error("review expired"); })).rejects.toThrow("review expired");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("fences a goal response when its screen refresh epoch is stale", async () => {

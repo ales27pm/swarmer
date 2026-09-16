@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 
 import { KeyboardInputGroup, KeyboardTextInput, ScreenShell } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, EmptyState, ErrorBanner } from "@/components/swarm-ui";
-import { getActivityCatalog } from "@/lib/api/client";
+import { getActivityCatalog } from "@/lib/application-api/server";
 import { catalogSearchText, type ActivityCatalog, type CatalogAvailability, type CatalogSkill } from "@/lib/api/activity-catalog";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 

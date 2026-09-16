@@ -374,8 +374,17 @@ async function readEffectiveConnectionLocked(): Promise<{
   return active ?? { baseUrl: DEFAULT_SERVER_URL, token: null };
 }
 
+export class ConnectionChangedError extends Error {
+  constructor(public readonly outcomeUnknown = false) {
+    super(outcomeUnknown
+      ? "La connexion jumelée a changé après l’envoi. Vérifiez l’état de l’opération avant toute nouvelle tentative."
+      : "La connexion jumelée a changé pendant la requête.");
+    this.name = "ConnectionChangedError";
+  }
+}
+
 function connectionRequestChanged(): Error {
-  return new Error("La connexion jumelée a changé pendant la requête; réessaie l’action.");
+  return new ConnectionChangedError();
 }
 
 async function captureRequestConnectionFence(): Promise<RequestConnectionFence> {
@@ -406,6 +415,13 @@ async function assertRequestConnectionCurrent(
   });
 }
 
+async function assertMutationConnectionCurrent(connection: RequestConnectionFence): Promise<void> {
+  try { await assertRequestConnectionCurrent(connection); } catch (cause) {
+    if (cause instanceof ConnectionChangedError) throw new ConnectionChangedError(true);
+    throw cause;
+  }
+}
+
 async function fencedRequest<T>(
   path: string,
   init?: RequestInit,
@@ -414,8 +430,15 @@ async function fencedRequest<T>(
   const connection = await captureRequestConnectionFence();
   if (!shouldAccept()) throw connectionRequestChanged();
   const value = await requestAt<T>(connection.baseUrl, path, init, connection.token);
-  await assertRequestConnectionCurrent(connection);
-  if (!shouldAccept()) throw connectionRequestChanged();
+  try {
+    await assertRequestConnectionCurrent(connection);
+    if (!shouldAccept()) throw connectionRequestChanged();
+  } catch (cause) {
+    if (cause instanceof ConnectionChangedError && init?.method && init.method !== "GET") {
+      throw new ConnectionChangedError(true);
+    }
+    throw cause;
+  }
   return value;
 }
 
@@ -467,8 +490,7 @@ export async function createEventStreamTicket(): Promise<EventStreamTicket> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const connection = await resolveRequestConnection();
-  return requestAt<T>(connection.baseUrl, path, init, connection.token);
+  return fencedRequest<T>(path, init);
 }
 
 async function resolvePendingConnection(
@@ -923,7 +945,7 @@ export async function createLocalGoalPlanSession() {
       const value = await requestAt<unknown>(connection.baseUrl, `/goals/${resourceId(goalId)}/memory-context`, {
         method: "POST", body: JSON.stringify({ purpose: "planner", expected_goal_updated_at: expectedGoalUpdatedAt }),
       }, connection.token);
-      await assertCurrent();
+      await assertMutationConnectionCurrent(connection);
       return parseGoalMemoryContext(value, goalId);
     },
     bootstrapSync: async (): Promise<Bootstrap> => {
@@ -940,7 +962,7 @@ export async function createLocalGoalPlanSession() {
       const detail = await requestAt<GoalDetail>(connection.baseUrl, `/goals/${resourceId(goalId)}/start`, {
         method: "POST", body,
       }, connection.token);
-      await assertCurrent();
+      await assertMutationConnectionCurrent(connection);
       return detail;
     },
   };
@@ -994,7 +1016,7 @@ export async function reviewGoalCodeProposal(
         method: "POST",
         body: JSON.stringify({ sha256: reviewedDigest }),
       }, connection.token);
-      await assertRequestConnectionCurrent(connection);
+      await assertMutationConnectionCurrent(connection);
       return parseCodeProposalApplication(result);
     },
   };
@@ -1030,7 +1052,7 @@ export async function getGoalConversation(goalId: string): Promise<GoalConversat
           inFlight = true;
           try {
             const result = await requestAt<GoalDetail>(connection.baseUrl, `/goals/${resourceId(activeGoal)}/messages`, { method: "POST", body }, connection.token);
-            await assertRequestConnectionCurrent(connection);
+            await assertMutationConnectionCurrent(connection);
             projectIdentifier(result?.goal?.id);
             if (local && (result.goal.id === activeGoal || result.goal.status !== "planning" || result.goal.started_at
                 || result.goal.current_phase !== "awaiting_local_plan" || result.goal.step_count !== 0
@@ -1066,7 +1088,7 @@ export async function reviewGoalProject(goalId: string): Promise<ProjectReview> 
       attempted = true;
       await assertRequestConnectionCurrent(connection);
       const result = await requestAt<unknown>(connection.baseUrl, `${path}/apply`, { method: "POST", body }, connection.token);
-      await assertRequestConnectionCurrent(connection);
+      await assertMutationConnectionCurrent(connection);
       return parseCodeProposalApplication(result);
     },
   };
@@ -1114,6 +1136,34 @@ export function submitToolProposal(
     method: "POST",
     body: JSON.stringify({ ...proposal, planner_source: "iphone_local" }),
   });
+}
+
+/** One captured connection for the two effects of submitting a reviewed local proposal. */
+export async function createLocalToolSubmissionSession() {
+  const connection = await captureRequestConnectionFence();
+  if (!connection.token) throw new Error("Un jumelage authentifié est requis pour soumettre la proposition.");
+  return {
+    createTask: async (intent: string, onTaskCreated?: (task: Task) => void, assertReviewCurrent?: () => void) => {
+      await assertRequestConnectionCurrent(connection);
+      assertReviewCurrent?.();
+      const chat = await requestAt<{ conversation_id: string; task: Task | null; message?: Message }>(connection.baseUrl, "/chat", {
+        method: "POST", body: JSON.stringify({ content: intent, mode: "normal", start_task: true }),
+      }, connection.token);
+      // Keep the known task identity even if the following pairing fence makes the remaining outcome uncertain.
+      if (chat.task) { projectIdentifier(chat.task.id); onTaskCreated?.(chat.task); }
+      await assertMutationConnectionCurrent(connection);
+      return chat;
+    },
+    submit: async (taskId: string, proposal: ToolProposalInput, assertReviewCurrent?: () => void) => {
+      await assertRequestConnectionCurrent(connection);
+      assertReviewCurrent?.();
+      const result = await requestAt<ToolCall>(connection.baseUrl, `/tasks/${resourceId(taskId)}/tool-calls`, {
+        method: "POST", body: JSON.stringify({ ...proposal, planner_source: "iphone_local" }),
+      }, connection.token);
+      await assertMutationConnectionCurrent(connection);
+      return result;
+    },
+  };
 }
 
 export function sendChat(
@@ -1191,16 +1241,14 @@ export async function decideApproval(
   id: string,
   decision: "approve" | "deny",
 ): Promise<ApprovalDecisionReceipt> {
-  const stored = await getConnection();
-  const connection = stored.source === "pending"
-    ? await resolvePendingConnection(stored)
-    : stored;
+  const connection = await captureRequestConnectionFence();
   const result = await requestAt<ApprovalDecisionResult>(
     connection.baseUrl,
     `/approvals/${resourceId(id)}/decision`,
     { method: "POST", body: JSON.stringify({ decision }) },
     connection.token,
   );
+  await assertMutationConnectionCurrent(connection);
   const approval = "approval" in result ? result.approval : result;
   try {
     await upsertEvent(connection.baseUrl, "approval.decided", approval);

@@ -2,7 +2,7 @@ import { Linking, Text, View } from "react-native";
 
 import { ActionButton, Card, COLORS, SectionTitle } from "@/components/swarm-ui";
 import { LOCAL_MODEL_PRESETS, presetSourceUrl } from "@/lib/local-model-presets";
-import type { LocalInferenceRuntime } from "@/lib/local-inference";
+import type { LocalInferenceRuntime } from "@/lib/application-api/local-inference";
 
 export function LocalModelPresets({ runtime, disabled, onApply, onError }: {
   runtime: LocalInferenceRuntime;

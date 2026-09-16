@@ -24,7 +24,7 @@ import {
   type GoalNodeStatus,
   type GoalStatus,
   type PlanNode,
-} from "@/lib/api/client";
+} from "@/lib/application-api/server";
 import { localGoalDetail } from "@/lib/state/replica";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 

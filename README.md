@@ -223,8 +223,15 @@ modèle et d'exécution:
   `/usr/bin/bwrap` ou le limiteur `/usr/bin/prlimit` manque, l'exécution est
   refusée sans fallback direct.
 
-Le contrat complet est dans [`api/openapi.yaml`](api/openapi.yaml) et la procédure
+Le contrat du control plane est dans [`api/openapi.yaml`](api/openapi.yaml) et la procédure
 locale dans [`docs/18-dev-setup.md`](docs/18-dev-setup.md).
+
+Les fonctionnalités de l’app partagent le [contrat de domaine mobile](docs/25-application-api.md)
+dans `mobile/src/lib/application-api/`. L’interface, les tests et l’API HTTPS de
+développement utilisent ses mêmes handlers. Toute nouvelle fonctionnalité métier
+doit y déclarer ses paramètres, effets, prérequis et résultat avant son branchement
+à l’interface. Le [client iPhone](mobile/scripts/iphone-api.md) permet de les exercer
+directement sur l’appareil par IPv6, sans automatisation des coordonnées à l’écran.
 
 ## Runtime de buts v0.12
 

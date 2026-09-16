@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { Card, COLORS, EmptyState, ErrorBanner, StatusBadge, timeAgo } from "@/components/swarm-ui";
-import { getServerUrl, listTasks, type Task, type TaskStatus } from "@/lib/api/client";
+import { getServerUrl, listTasks, type Task, type TaskStatus } from "@/lib/application-api/server";
 import { localTasks } from "@/lib/state/replica";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 

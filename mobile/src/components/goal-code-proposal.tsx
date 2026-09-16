@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { ActionButton, COLORS, ErrorBanner } from "@/components/swarm-ui";
-import { reviewGoalCodeProposal, type GoalCodeProposalReview as ProposalReviewSession } from "@/lib/api/client";
+import { reviewGoalCodeProposal, type GoalCodeProposalReview as ProposalReviewSession } from "@/lib/application-api/server";
 
 type Props = {
   goalId: string;

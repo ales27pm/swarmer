@@ -4,13 +4,13 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import LocalModelScreen from "@/../app/local-model";
 import { createLocalGoalPlanSession, sendChat, submitToolProposal, type Agent, type Bootstrap, type GoalDetail, type GoalMemoryContext } from "@/lib/api/client";
 import { buildLocalSwarmPlanPrompt } from "@/lib/local-swarm-plan";
-import { cancelLocalGeneration, generateLocalProposal, getLocalInferenceCapabilities, isLocalInferenceAvailable, listLocalModels, loadLocalModel, unloadLocalModel } from "@/lib/local-inference";
+import { cancelLocalGeneration, generateLocalProposal, getLocalInferenceCapabilities, getLocalInferenceStatus, isLocalInferenceAvailable, listLocalModels, loadLocalModel, unloadLocalModel } from "@/lib/local-inference";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { readLocalModelSettings } from "@/lib/local-model-settings";
 
 const mockPush = jest.fn();
 let mockParams: { goalId?: string } = { goalId: "goal_crm" };
-jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }), useLocalSearchParams: () => mockParams }));
+jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }), useLocalSearchParams: () => mockParams, useFocusEffect: (effect: () => void) => jest.requireActual<typeof import("react")>("react").useEffect(effect, [effect]) }));
 jest.mock("expo-document-picker", () => ({ getDocumentAsync: jest.fn() }));
 jest.mock("@/lib/api/client", () => ({ createLocalGoalPlanSession: jest.fn(), sendChat: jest.fn(), submitToolProposal: jest.fn() }));
 jest.mock("@/lib/local-model-settings", () => ({
@@ -19,7 +19,7 @@ jest.mock("@/lib/local-model-settings", () => ({
 }));
 jest.mock("@/lib/local-inference", () => ({
   ...jest.requireActual<typeof import("@/lib/local-inference")>("@/lib/local-inference"),
-  getLocalInferenceCapabilities: jest.fn(), isLocalInferenceAvailable: jest.fn(),
+  getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(), isLocalInferenceAvailable: jest.fn(),
   listLocalModels: jest.fn(), loadLocalModel: jest.fn(), unloadLocalModel: jest.fn(),
   generateLocalProposal: jest.fn(), cancelLocalGeneration: jest.fn(),
 }));
@@ -104,6 +104,10 @@ describe("initial local goal plan", () => {
     jest.mocked(isLocalInferenceAvailable).mockReturnValue(true);
     jest.mocked(getLocalInferenceCapabilities).mockResolvedValue({ coreml: true, mlx: true, llamaCpp: true, platform: "ios" });
     jest.mocked(listLocalModels).mockResolvedValue([]);
+    jest.mocked(getLocalInferenceStatus).mockImplementation(async () => {
+      const latest = jest.mocked(loadLocalModel).mock.results.at(-1);
+      return latest?.type === "return" ? await latest.value : { state: "idle", runtime: null, modelId: null, revision: null };
+    });
     jest.mocked(loadLocalModel).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: LOCAL_MODEL_PRESETS.mlx.repoId, revision: LOCAL_MODEL_PRESETS.mlx.revision });
     jest.mocked(unloadLocalModel).mockResolvedValue();
     jest.mocked(cancelLocalGeneration).mockResolvedValue();

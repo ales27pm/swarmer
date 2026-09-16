@@ -4,6 +4,15 @@
 
 Construire une app iPhone Expo/React Native qui agit comme console locale-first du swarm.
 
+## Contrat des fonctionnalités
+
+Le contrat exécutable actuel est `mobile/src/lib/application-api/`, décrit dans
+[l’API de domaine](25-application-api.md). Les nouvelles fonctionnalités doivent
+enregistrer leur commande et faire passer l’interface par son handler partagé.
+Le transport HTTPS Debug et les tests appellent ce même domaine ; les adaptateurs
+natifs et serveur conservent leurs contrôles d’autorisation et leur état autoritaire.
+Les sections historiques ci-dessous décrivent le slice initial.
+
 ## État du document
 
 Les sections « capacités natives » restent une cible d'architecture. Le slice

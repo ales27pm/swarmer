@@ -30,6 +30,23 @@ export type LocalInferenceStatus = {
   modelId: string | null;
   revision: string | null;
   message?: string;
+  /** Optional for compatibility with native versions without background reporting. */
+  backgroundExecution?: BackgroundExecutionStatus;
+};
+
+const BACKGROUND_STATES = ["idle", "requesting", "active", "foreground_only", "expiring", "completed", "cancelled", "failed"] as const;
+const BACKGROUND_REASONS = ["os_unsupported", "gpu_unsupported", "permission_unverified", "foreground_required", "registration_failed",
+  "not_permitted", "system_busy", "admission_timeout", "request_failed", "request_cancelled", "user_or_system_cancelled"] as const;
+export type BackgroundExecutionStatus = {
+  supported: boolean;
+  reason: typeof BACKGROUND_REASONS[number] | null;
+  osSupported: boolean;
+  gpuSupported: boolean;
+  entitlementGranted: boolean | null;
+  active: boolean;
+  operationId: string | null;
+  outputBytes: number;
+  state: typeof BACKGROUND_STATES[number];
 };
 
 export type LocalGenerationResult = {
@@ -63,6 +80,7 @@ type NativeLocalInferenceModule = {
     revision?: string;
   }): Promise<unknown>;
   status(): Promise<unknown>;
+  getBackgroundExecutionStatus?(): Promise<unknown>;
   generate(input: {
     prompt: string;
     maxTokens?: number;
@@ -482,6 +500,22 @@ function parseStatus(value: unknown): LocalInferenceStatus {
   };
 }
 
+function parseBackgroundExecutionStatus(value: unknown): BackgroundExecutionStatus {
+  if (!isRecord(value) || !hasExactKeys(value, ["supported", "reason", "osSupported", "gpuSupported", "entitlementGranted", "active", "operationId", "outputBytes", "state"])
+      || typeof value.supported !== "boolean" || typeof value.osSupported !== "boolean" || typeof value.gpuSupported !== "boolean"
+      || !(value.entitlementGranted === null || typeof value.entitlementGranted === "boolean") || typeof value.active !== "boolean"
+      || !(value.reason === null || BACKGROUND_REASONS.some((reason) => reason === value.reason))
+      || !BACKGROUND_STATES.some((state) => state === value.state)
+      || !(value.operationId === null || (typeof value.operationId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value.operationId)))
+      || !Number.isSafeInteger(value.outputBytes) || Number(value.outputBytes) < 0
+      || value.supported !== (value.osSupported && value.gpuSupported)
+      || (value.active && (!value.supported || value.entitlementGranted !== true || value.operationId === null || !["active", "expiring"].includes(String(value.state))))
+      || (value.state === "active" && !value.active)) {
+    throw new Error("État natif d’arrière-plan invalide.");
+  }
+  return value as BackgroundExecutionStatus;
+}
+
 function parseGeneration(value: unknown): LocalGenerationResult {
   if (
     !isRecord(value) ||
@@ -552,7 +586,16 @@ export async function loadLocalModel(input: {
 }
 
 export async function getLocalInferenceStatus(): Promise<LocalInferenceStatus> {
-  return parseStatus(await requireModule().status());
+  const module = requireModule();
+  const status = parseStatus(await module.status());
+  if (typeof module.getBackgroundExecutionStatus !== "function") return status;
+  try {
+    return { ...status, backgroundExecution: parseBackgroundExecutionStatus(await module.getBackgroundExecutionStatus()) };
+  } catch {
+    // Missing or unverified reporting never invents permission and never hides
+    // the independently validated model state used by existing clients.
+    return status;
+  }
 }
 
 export async function generateLocalProposal(input: {

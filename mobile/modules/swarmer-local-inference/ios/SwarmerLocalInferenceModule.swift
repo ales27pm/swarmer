@@ -1,11 +1,66 @@
 import ExpoModulesCore
+import UIKit
 
 public final class SwarmerLocalInferenceModule: Module {
   private let coordinator = LocalInferenceCoordinator()
   private var directoryPicker: LocalModelDirectoryPicker?
+  private var backgroundResignObserver: NSObjectProtocol?
+  #if DEBUG
+  private let automationServer = AutomationServer()
+  private let automationEvents = AutomationModuleEventEmitter()
+  #endif
 
   public func definition() -> ModuleDefinition {
     Name("SwarmerLocalInference")
+    Events("automationRequest")
+
+    OnCreate { [weak self, coordinator] in
+      self?.backgroundResignObserver = NotificationCenter.default.addObserver(
+        forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
+      ) { _ in
+        // Invalidate pending admission before UIKit's later background event.
+        MainActor.assumeIsolated { BackgroundGenerationController.shared.willResignActive() }
+        Task { await coordinator.prepareForInactivity() }
+      }
+    }
+
+    #if DEBUG
+    Constants(["automationAvailable": true])
+
+    OnCreate { [weak self] in
+      if let self { self.automationEvents.attach(self) }
+    }
+
+    AsyncFunction("startAutomationServer") { [automationServer, automationEvents] () async -> AutomationStartRecord in
+      let foreground = await MainActor.run { UIApplication.shared.applicationState == .active }
+      let result = await automationServer.start(
+        environment: ProcessInfo.processInfo.environment,
+        foreground: foreground,
+        emit: { automationEvents.send($0) },
+        onReadyChanged: { ready in
+          // Server actor transitions enqueue FIFO; UIKit is touched only on main.
+          DispatchQueue.main.async { AutomationIdleTimerPolicy.shared.setReady(ready) }
+        }
+      )
+      return AutomationStartRecord(enabled: result.enabled, port: result.port, reason: result.reason)
+    }
+
+    AsyncFunction("completeAutomationRequest") { [automationServer] (requestId: String, statusCode: Int, bodyJSON: String) async throws -> Void in
+      try await automationServer.complete(requestID: requestId, status: statusCode, body: bodyJSON)
+    }
+
+    AsyncFunction("stopAutomationServer") { [automationServer] () async -> Void in
+      await automationServer.stop()
+    }
+    #else
+    Constants(["automationAvailable": false])
+
+    AsyncFunction("startAutomationServer") { () -> AutomationStartRecord in
+      AutomationStartRecord(enabled: false, reason: "debug_build_required")
+    }
+    AsyncFunction("completeAutomationRequest") { (_: String, _: Int, _: String) -> Void in }
+    AsyncFunction("stopAutomationServer") { () -> Void in }
+    #endif
 
     AsyncFunction("capabilities") { [coordinator] () async -> CapabilitiesRecord in
       await coordinator.capabilities()
@@ -80,6 +135,11 @@ public final class SwarmerLocalInferenceModule: Module {
       try await coordinator.loadModel(options: options)
     }
 
+    AsyncFunction("getBackgroundExecutionStatus") { () async -> BackgroundExecutionRecord in
+      let snapshot = await BackgroundGenerationController.shared.status()
+      return BackgroundExecutionRecord(snapshot)
+    }
+
     AsyncFunction("status") { [coordinator] () async -> StatusRecord in
       await coordinator.status()
     }
@@ -100,12 +160,54 @@ public final class SwarmerLocalInferenceModule: Module {
       Task { await coordinator.suspend() }
     }
 
+    #if DEBUG
+    OnAppEntersBackground { [automationServer] in
+      Task { await automationServer.stop(reason: "background") }
+    }
+    OnDestroy { [automationServer] in
+      Task { await automationServer.stop(reason: "destroyed") }
+    }
+    #endif
+
     OnAppBecomesActive { [coordinator] in
-      Task { await coordinator.resume() }
+      Task {
+        await BackgroundGenerationController.shared.didBecomeActive()
+        await coordinator.resume()
+      }
     }
 
-    OnDestroy { [coordinator] in
+    OnDestroy { [weak self, coordinator] in
+      if let observer = self?.backgroundResignObserver {
+        NotificationCenter.default.removeObserver(observer)
+        self?.backgroundResignObserver = nil
+      }
       Task { await coordinator.shutdown() }
     }
+  }
+}
+
+struct BackgroundExecutionRecord: Record, Sendable {
+  @Field var supported: Bool = false
+  @Field var reason: String? = nil
+  @Field var osSupported: Bool = false
+  @Field var gpuSupported: Bool = false
+  @Field var entitlementGranted: Bool? = nil
+  @Field var active: Bool = false
+  @Field var operationId: String? = nil
+  @Field var outputBytes: Int = 0
+  @Field var state: String = "idle"
+
+  init() {}
+  init(_ snapshot: BackgroundExecutionSnapshot) {
+    self.init()
+    supported = snapshot.supported
+    reason = snapshot.reason
+    osSupported = snapshot.osSupported
+    gpuSupported = snapshot.gpuSupported
+    entitlementGranted = snapshot.entitlementGranted
+    active = snapshot.active
+    operationId = snapshot.operationId
+    outputBytes = snapshot.outputBytes
+    state = snapshot.state
   }
 }

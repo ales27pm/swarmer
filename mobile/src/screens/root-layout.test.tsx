@@ -14,6 +14,9 @@ jest.mock("@/lib/sync/live-sync-provider", () => ({
   LiveSyncProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+// The transport lifecycle has its own tests; this test checks navigation labels.
+jest.mock("@/lib/application-api/network-bridge", () => ({ ApplicationNetworkBridge: () => null }));
+
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const Stack = ({ children }: { children: React.ReactNode }) =>

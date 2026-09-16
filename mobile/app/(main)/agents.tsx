@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, EmptyState, ErrorBanner, timeAgo } from "@/components/swarm-ui";
-import { listAgents, type Agent } from "@/lib/api/client";
+import { listAgents, type Agent } from "@/lib/application-api/server";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
 const STATUS_COLOR = {

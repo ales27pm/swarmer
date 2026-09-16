@@ -15,7 +15,7 @@ import {
   View,
 } from "react-native";
 
-import type { Approval, TaskStatus } from "@/lib/api/client";
+import type { Approval, TaskStatus } from "@/lib/application-api/server";
 
 export const COLORS = {
   background: "#09090b",

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
-import * as DocumentPicker from "expo-document-picker";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { KeyboardInputGroup, KeyboardTextInput, ScreenShell } from "@/components/screen-shell";
 import { LocalModelPresets } from "@/components/local-model-presets";
@@ -13,16 +12,17 @@ import {
   SectionTitle,
   useAccessibilityAnnouncement,
 } from "@/components/swarm-ui";
-import { createLocalGoalPlanSession, sendChat, submitToolProposal, type GoalDetail, type GoalMemoryContext, type SwarmPlanProposal } from "@/lib/api/client";
-import { buildLocalSwarmPlanPrompt, parseLocalSwarmPlan, type LocalSwarmPlanContext } from "@/lib/local-swarm-plan";
+import { createLocalGoalPlanSession, type SwarmPlanProposal } from "@/lib/application-api/server";
+import { submitReviewedToolProposal } from "@/lib/application-api/tool-proposal";
+import { buildLocalSwarmPlanPrompt } from "@/lib/local-swarm-plan";
+import { readInitialGoal, parseCompletedLocalGoalPlan, startReviewedLocalGoalPlan, type GoalPlanSession, type GoalPlanSnapshot } from "@/lib/application-api/goal-plan";
 import {
   buildLocalProposalPrompt,
-  cancelLocalGeneration,
+  createLocalGenerationSession,
   cancelLocalModelDownload,
   downloadLocalGgufModel,
-  generateLocalProposal,
   getLocalInferenceCapabilities,
-  importLocalModel,
+  getLocalInferenceStatus,
   isActionableToolProposal,
   isHuggingFaceModelId,
   isImmutableHuggingFaceRevision,
@@ -30,20 +30,22 @@ import {
   listLocalModels,
   loadLocalModel,
   parseLocalToolProposal,
-  pickAndImportLocalModelDirectory,
+  pickAndImportLocalModel,
   unloadLocalModel,
   type LocalInferenceCapabilities,
   type LocalInferenceRuntime,
+  type LocalInferenceStatus,
+  type BackgroundExecutionStatus,
   type LocalModel,
   type LocalToolProposal,
-} from "@/lib/local-inference";
+} from "@/lib/application-api/local-inference";
 import { LOCAL_MODEL_PRESETS, preferredLocalRuntime } from "@/lib/local-model-presets";
 import {
   DEFAULT_GENERATION_SETTINGS,
   parseGenerationSettings,
   readLocalModelSettings,
   saveLocalModelSettings,
-} from "@/lib/local-model-settings";
+} from "@/lib/application-api/local-settings";
 
 const RUNTIMES: readonly {
   value: LocalInferenceRuntime;
@@ -56,6 +58,36 @@ const RUNTIMES: readonly {
 ];
 
 type BusyAction = "initial" | "import" | "download" | "save" | "load" | "generate" | "cancel" | "unload" | "submit";
+
+function BackgroundExecutionCard({ status }: { status: BackgroundExecutionStatus | undefined }) {
+  let description = "Disponibilité non confirmée. Garde l’app au premier plan pendant la génération.";
+  if (status) {
+    if (status.state === "expiring") description = "Arrêt demandé par le système ou l’utilisateur. Le calcul en cours se termine avant la libération de la tâche.";
+    else if (status.active) description = "Tâche GPU admise par iOS. Cette génération peut continuer en arrière-plan tant que le système l’autorise.";
+    else if (!status.osSupported) description = "Cette version d’iOS ne prend pas en charge la continuation GPU. Garde l’app au premier plan.";
+    else if (!status.gpuSupported) description = "Cet appareil ne déclare pas de GPU disponible en arrière-plan. Garde l’app au premier plan.";
+    else if (status.state === "requesting") description = "Demande en cours auprès d’iOS. Garde l’app au premier plan jusqu’à son admission.";
+    else if (status.entitlementGranted === false || status.reason === "not_permitted") description = "iOS a refusé l’autorisation d’arrière-plan. La génération reste au premier plan.";
+    else if (["system_busy", "admission_timeout", "registration_failed", "request_failed", "foreground_required"].includes(status.reason ?? "")) {
+      description = "Aucune tâche d’arrière-plan n’a été admise pour cette opération. Garde l’app au premier plan.";
+    } else if (status.state === "cancelled" || status.reason === "request_cancelled") description = "La tâche a été annulée. Aucune continuation d’arrière-plan n’est active.";
+    else if (status.state === "failed") description = "La tâche n’a pas confirmé sa réussite. Aucune continuation d’arrière-plan n’est active.";
+    else if (status.state === "completed") description = "La tâche de génération est terminée. Cela ne valide pas le plan ou la proposition produite.";
+    else if (status.entitlementGranted === null) description = "Le système et le GPU sont compatibles ; l’autorisation n’a pas encore été confirmée. Une demande sera faite lors de la génération MLX.";
+    else description = "Une admission GPU a déjà été confirmée. Chaque nouvelle génération reste soumise à l’autorisation d’iOS.";
+  }
+  return <Card testID="local-model-background-status">
+    <Text selectable style={{ color: COLORS.text, fontWeight: "800" }}>MLX · Exécution en arrière-plan</Text>
+    <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>{description}</Text>
+    {status ? <>
+      <Text selectable style={{ color: COLORS.subtle }}>Activité : {status.active ? "tâche admise en cours" : "aucune tâche admise active"}</Text>
+      {status.entitlementGranted === true || status.active || status.outputBytes > 0 ? (
+        <Text selectable style={{ color: COLORS.subtle }}>Texte produit par la tâche d’arrière-plan : {status.outputBytes} octets UTF-8 · pas un nombre de tokens.</Text>
+      ) : null}
+    </> : null}
+    <Text selectable style={{ color: COLORS.subtle }}>L’API réseau de développement reste accessible uniquement au premier plan.</Text>
+  </Card>;
+}
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -85,12 +117,6 @@ function formattedSize(bytes: number): string {
   if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} ko`;
   if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} Mo`;
   return `${(bytes / 1_000_000_000).toFixed(2)} Go`;
-}
-
-function hasExpectedExtension(runtime: LocalInferenceRuntime, name: string): boolean {
-  const normalized = name.toLowerCase();
-  if (runtime === "llama.cpp") return normalized.endsWith(".gguf");
-  return false;
 }
 
 function isPickerCancellation(cause: unknown): boolean {
@@ -253,44 +279,6 @@ function ProposalEvidence({
   );
 }
 
-type GoalPlanSession = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
-type GoalPlanSnapshot = { detail: GoalDetail; context: LocalSwarmPlanContext & { memory: GoalMemoryContext }; fingerprint: string };
-
-async function readInitialGoal(session: GoalPlanSession, goalId: string): Promise<GoalPlanSnapshot> {
-  const [before, bootstrap] = await Promise.all([session.getGoal(goalId), session.bootstrapSync()]);
-  await session.assertCurrent();
-  const structurallyInitial = (detail: GoalDetail) => detail.goal.id === goalId
-    && detail.goal.status === "planning" && !detail.goal.started_at
-    && detail.goal.step_count === 0 && detail.goal.replan_count === 0
-    && !detail.nodes.length && !detail.result;
-  if (!structurallyInitial(before)) {
-    throw new Error("Ce but a déjà démarré ou changé. Consulte son état avant de préparer un plan initial.");
-  }
-  const memory = await session.memoryContext(goalId, before.goal.updated_at);
-  // Retrieval can reserve one model call. Only the server's traced planning credits allow it.
-  const detail = await session.getGoal(goalId);
-  await session.assertCurrent();
-  const goal = detail.goal;
-  const logicalGoal = (value: GoalDetail["goal"]) => ({ ...value, updated_at: null, model_call_count: 0 });
-  if (!structurallyInitial(detail) || !memory.local_planning_eligible
-      || goal.model_call_count !== memory.planning_embedding_call_count
-      || before.goal.model_call_count > goal.model_call_count
-      || JSON.stringify(logicalGoal(before.goal)) !== JSON.stringify(logicalGoal(goal))
-      || (before.goal.model_call_count === goal.model_call_count && before.goal.updated_at !== goal.updated_at)) {
-    throw new Error("Le but a changé pendant la lecture mémoire ou n’est plus admissible à un plan initial. Consulte son état.");
-  }
-  const agents = bootstrap.agents.map((agent) => ({
-    id: agent.id, status: agent.status, skills: [...agent.skills].sort(), model_id: agent.model_id,
-    runtime: agent.runtime, supported_protocol_version: agent.supported_protocol_version,
-  })).sort((left, right) => left.id.localeCompare(right.id));
-  const context = { goal: {
-    objective: goal.objective, completion_criteria: goal.completion_criteria,
-    max_steps: goal.max_steps, step_count: goal.step_count, max_parallelism: goal.max_parallelism,
-    max_model_calls: goal.max_model_calls, model_call_count: goal.model_call_count,
-  }, agents, memory };
-  return { detail, context, fingerprint: JSON.stringify({ goal, agents, memory: memory.context_fingerprint,
-    provider: memory.provider_fingerprint }) };
-}
 
 function LocalPlanEvidence({ plan }: { plan: SwarmPlanProposal }) {
   return (
@@ -327,6 +315,12 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const downloadVersion = useRef(0);
   const runtimeSelections = useRef<Partial<Record<LocalInferenceRuntime, { modelId: string; revision: string }>>>({});
   const mounted = useRef(true);
+  const generationSession = useRef<ReturnType<typeof createLocalGenerationSession> | null>(null);
+  const loadedModel = useRef<Pick<LocalInferenceStatus, "runtime" | "modelId" | "revision"> | null>(null);
+  const statusVersion = useRef(0);
+  const [initialized, setInitialized] = useState(false);
+  const [nativeBusy, setNativeBusy] = useState(false);
+  const [backgroundExecution, setBackgroundExecution] = useState<BackgroundExecutionStatus>();
   const [capabilities, setCapabilities] = useState<LocalInferenceCapabilities | null>(null);
   const [models, setModels] = useState<LocalModel[]>([]);
   const [runtime, setRuntime] = useState<LocalInferenceRuntime>("mlx");
@@ -364,7 +358,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const validMlxModelId = isHuggingFaceModelId(modelId);
   const immutableRevision = isImmutableHuggingFaceRevision(revision);
   const selectedRuntimeSupported = supportsRuntime(capabilities, runtime);
-  const locked = busy !== null;
+  const locked = busy !== null || nativeBusy;
   const canLoad =
     !loaded &&
     selectedRuntimeSupported &&
@@ -380,6 +374,54 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setProposal(null);
     setLocalPlan(null);
   }, []);
+
+  const observeNativeStatus = useCallback((status: LocalInferenceStatus) => {
+    setBackgroundExecution(status.backgroundExecution);
+    statusVersion.current += 1;
+    const hasModel = ["ready", "generating", "cancelling"].includes(status.state) && status.runtime !== null && status.modelId !== null;
+    const identity = hasModel ? { runtime: status.runtime, modelId: status.modelId, revision: status.revision } : null;
+    if (JSON.stringify(identity) !== JSON.stringify(loadedModel.current)) {
+      invalidateProposal();
+      setNotice(hasModel
+        ? "Le modèle de l’app est chargé. Son état est partagé avec l’API locale."
+        : "Aucun modèle prêt n’est confirmé dans l’app. Charge un modèle avant de générer.");
+    }
+    loadedModel.current = identity;
+    setLoaded(hasModel);
+    setNativeBusy(["loading", "generating", "cancelling"].includes(status.state));
+    if (hasModel) {
+      setRuntime(status.runtime!);
+      setModelId(status.modelId!);
+      setRevision(status.revision ?? "");
+    }
+  }, [invalidateProposal]);
+
+  // Model ownership is global. Refresh on focus and while visible so API activity
+  // cannot leave this screen showing a model that was unloaded or replaced.
+  useFocusEffect(useCallback(() => {
+    if (!nativeAvailable || !initialized) return;
+    let active = true;
+    let reading = false;
+    const refresh = async () => {
+      if (reading) return;
+      reading = true;
+      const version = statusVersion.current;
+      try {
+        const status = await getLocalInferenceStatus();
+        if (active && mounted.current && version === statusVersion.current) observeNativeStatus(status);
+      } catch {
+        if (active && mounted.current && version === statusVersion.current) {
+          loadedModel.current = null;
+          setLoaded(false);
+          setNativeBusy(false);
+          setBackgroundExecution(undefined);
+        }
+      } finally { reading = false; }
+    };
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 2_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [initialized, nativeAvailable, observeNativeStatus]));
 
   useEffect(() => {
     if (!goalMode) return;
@@ -404,13 +446,15 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   useEffect(() => {
     if (!nativeAvailable) return;
     mounted.current = true;
+    const ownedGeneration = createLocalGenerationSession();
+    generationSession.current = ownedGeneration;
     let active = true;
     const savedSettings = readLocalModelSettings().catch(() => {
       if (active) setError("Les réglages enregistrés n’ont pas pu être lus. Les préréglages restent disponibles.");
       return null;
     });
-    void Promise.all([getLocalInferenceCapabilities(), listLocalModels(), savedSettings])
-      .then(([nextCapabilities, nextModels, saved]) => {
+    void Promise.all([getLocalInferenceCapabilities(), listLocalModels(), savedSettings, getLocalInferenceStatus()])
+      .then(([nextCapabilities, nextModels, saved, status]) => {
         if (!active) return;
         setCapabilities(nextCapabilities);
         setModels(nextModels);
@@ -428,8 +472,11 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
           setMaxTokens(goalMode ? "512" : String(saved.maxTokens));
           setTemperature(String(saved.temperature));
         }
+        observeNativeStatus(status);
         setNotice(
-          firstSupported
+          status.state === "ready"
+            ? "Le modèle de l’app est déjà chargé. Il reste disponible jusqu’au déchargement explicite."
+            : firstSupported
             ? "Choisis un modèle local. Aucune donnée n’est envoyée au control plane pendant l’inférence."
             : "Aucun runtime local compatible n’est disponible sur cet appareil.",
         );
@@ -440,7 +487,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         setNotice("Les capacités natives n’ont pas pu être vérifiées.");
       })
       .finally(() => {
-        if (active) setBusy(null);
+        if (active) { setBusy(null); setInitialized(true); }
       });
     return () => {
       active = false;
@@ -448,11 +495,10 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       generationVersion.current += 1;
       loadVersion.current += 1;
       downloadVersion.current += 1;
-      void cancelLocalGeneration()
-        .catch(() => undefined)
-        .then(() => unloadLocalModel().catch(() => undefined));
+      statusVersion.current += 1;
+      void ownedGeneration.close();
     };
-  }, [nativeAvailable, goalMode]);
+  }, [nativeAvailable, goalMode, observeNativeStatus]);
 
   function selectRuntime(nextRuntime: LocalInferenceRuntime) {
     if (locked || loaded || nextRuntime === runtime) return;
@@ -545,43 +591,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setBusy("import");
     setError(null);
     try {
-      let uri: string;
-      let displayName: string;
-      if (runtime === "llama.cpp") {
-        const picked = await DocumentPicker.getDocumentAsync({
-          copyToCacheDirectory: true,
-          multiple: false,
-          type: "*/*",
-        });
-        if (!mounted.current) return;
-        if (picked.canceled) {
-          setNotice("Importation annulée.");
-          return;
-        }
-        const asset = picked.assets[0];
-        if (!asset || !hasExpectedExtension(runtime, asset.name)) {
-          throw new Error("Choisis un fichier .gguf.");
-        }
-        uri = asset.uri;
-        displayName = asset.name;
-      } else {
-        const imported = await pickAndImportLocalModelDirectory(runtime);
-        if (!mounted.current) return;
-        setModels((current) => [
-          imported,
-          ...current.filter((model) => model.modelId !== imported.modelId),
-        ]);
-        setModelId(imported.modelId);
-        setLoaded(false);
-        invalidateProposal();
-        setNotice(`${imported.displayName} a été copié dans le stockage privé de l’app.`);
-        return;
-      }
-      const imported = await importLocalModel({
-        runtime,
-        uri,
-        displayName,
-      });
+      const imported = await pickAndImportLocalModel(runtime, () => mounted.current);
       if (!mounted.current) return;
       setModels((current) => [
         imported,
@@ -611,6 +621,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     const requestedModelId = modelId.trim();
     const requestedRevision = remoteMlx ? revision.trim().toLowerCase() : null;
     setBusy("load");
+    statusVersion.current += 1;
     setError(null);
     setLoaded(false);
     invalidateProposal();
@@ -621,7 +632,6 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         ...(requestedRevision ? { revision: requestedRevision } : {}),
       });
       if (!mounted.current || loadVersion.current !== requestVersion) {
-        await unloadLocalModel().catch(() => undefined);
         return;
       }
       if (
@@ -632,7 +642,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       ) {
         throw new Error("Le runtime natif n’a pas confirmé le modèle exact demandé.");
       }
-      setLoaded(true);
+      observeNativeStatus(result);
       setNotice("Modèle chargé localement. Aucune exécution n’a encore été demandée.");
       // Remote MLX loading can materialize a durable model in Documents/Models.
       // Listing failure must not contradict the native ready result above.
@@ -678,10 +688,13 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         if (!mounted.current || generationVersion.current !== version) return;
         setNotice("Le modèle génère le plan initial sur l’iPhone. Aucun démarrage serveur n’est envoyé…");
       }
-      const result = await generateLocalProposal({
+      const session = generationSession.current;
+      const expectedModel = loadedModel.current;
+      if (!session || !expectedModel) throw new Error("Le modèle chargé n’a pas été confirmé. Actualisez son état.");
+      const result = await session.generate({
         prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent),
         ...parseGenerationSettings(goalMode ? "512" : maxTokens, temperature),
-      });
+      }, expectedModel);
       if (!mounted.current || generationVersion.current !== version) return;
       setRawText(result.text);
       setTokenCount(result.tokenCount);
@@ -694,7 +707,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         return;
       }
       if (snapshot) {
-        const plan = parseLocalSwarmPlan(result.text, snapshot.context);
+        const plan = parseCompletedLocalGoalPlan(result, snapshot);
         setLocalPlan({ plan, snapshot });
         setNotice("Plan initial généré sur l’iPhone. Relis les nœuds avant de démarrer explicitement; les évaluations et la suite restent sur Ubuntu.");
         return;
@@ -721,7 +734,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setBusy("cancel");
     setError(null);
     try {
-      await cancelLocalGeneration();
+      await generationSession.current?.cancel();
       if (!mounted.current) return;
       setNotice("Annulation demandée au runtime local. Aucune proposition n’a été soumise.");
     } catch (cause) {
@@ -736,12 +749,13 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   async function unloadModel() {
     if (locked || !loaded) return;
     setBusy("unload");
+    statusVersion.current += 1;
     setError(null);
     invalidateProposal();
     try {
       await unloadLocalModel();
       if (!mounted.current) return;
-      setLoaded(false);
+      observeNativeStatus({ state: "idle", runtime: null, modelId: null, revision: null });
       setNotice("Modèle déchargé de la mémoire de l’appareil.");
     } catch (cause) {
       if (!mounted.current) return;
@@ -758,15 +772,12 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setError(null);
     let taskId: string | null = null;
     try {
-      const chat = await sendChat(prompt.trim(), undefined, "normal", true);
-      if (!chat.task) throw new Error("Le serveur n’a pas créé la tâche demandée.");
-      taskId = chat.task.id;
-      await submitToolProposal(chat.task.id, proposal);
+      const { task } = await submitReviewedToolProposal(prompt.trim(), proposal, (created) => { taskId = created.id; });
       if (!mounted.current) return;
       setNotice(
         "La proposition a été transmise au control plane authentifié. Son état d’exécution reste visible dans la tâche.",
       );
-      router.push({ pathname: "/task/[id]", params: { id: chat.task.id } });
+      router.push({ pathname: "/task/[id]", params: { id: task.id } });
     } catch (cause) {
       if (!mounted.current) return;
       setError(errorMessage(cause));
@@ -793,24 +804,11 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setBusy("submit");
     setError(null);
     try {
-      const snapshot = await readInitialGoal(session, goalId);
-      if (!mounted.current) return;
-      if (snapshot.fingerprint !== localPlan.snapshot.fingerprint) {
-        setGoalSnapshot(snapshot);
-        throw new Error("Le but, la mémoire ou les capacités ont changé depuis la génération. Génère un nouveau plan avant de démarrer.");
-      }
-      // Revalidate the exact reviewed output against the freshly authenticated context.
-      const plan = parseLocalSwarmPlan(rawText ?? "", snapshot.context);
-      await session.assertCurrent();
-      if (!mounted.current) return;
-      startAttempted.current = true;
-      setStartLocked(true);
-      const detail = await session.startGoal(goalId, { plan_proposal: plan, planner_source: "iphone_local",
-        memory_context_fingerprint: snapshot.context.memory.context_fingerprint });
-      if (!mounted.current) return;
-      if (detail.goal.id !== goalId || detail.goal.planner_source !== "iphone_local") {
-        throw new Error("Le serveur n’a pas confirmé ce plan initial iPhone.");
-      }
+      const detail = await startReviewedLocalGoalPlan(session, goalId, localPlan.snapshot, rawText ?? "", {
+        shouldAccept: () => mounted.current,
+        onAttempt: () => { startAttempted.current = true; setStartLocked(true); },
+      });
+      if (!detail || !mounted.current) return;
       setNotice("Le serveur a reçu le plan initial iPhone. Consulte le but pour suivre les agents et les évaluations sur Ubuntu.");
       router.push({ pathname: "/goal/[id]", params: { id: goalId } });
     } catch (cause) {
@@ -844,6 +842,8 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
           {notice}
         </Text>
       </Card>
+
+      {runtime === "mlx" && nativeAvailable ? <BackgroundExecutionCard status={backgroundExecution} /> : null}
 
       {goalMode ? (
         <Card>

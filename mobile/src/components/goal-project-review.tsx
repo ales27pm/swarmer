@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle } from "@/components/swarm-ui";
-import { ApiError, reviewGoalProject, type ProjectReview } from "@/lib/api/client";
+import { ApiError, reviewGoalProject, type ProjectReview } from "@/lib/application-api/server";
 import type { ProjectCheck, ProjectPreview } from "@/lib/api/project";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Text, TextInput, View } from "react-native";
-import * as SecureStore from "expo-secure-store";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
@@ -10,21 +9,10 @@ import {
   getServerUrl,
   hasDeviceToken,
   listAudit,
-  pairDevice,
+  pairConnection,
   type AuditEvent,
   type Bootstrap,
-} from "@/lib/api/client";
-
-const DEVICE_ID_KEY = "mongars.device_id";
-
-async function getDeviceId(): Promise<string> {
-  let id = await SecureStore.getItemAsync(DEVICE_ID_KEY);
-  if (!id) {
-    id = `iphone_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    await SecureStore.setItemAsync(DEVICE_ID_KEY, id);
-  }
-  return id;
-}
+} from "@/lib/application-api/server";
 
 function ControlPlaneSection({
   activeUrl,
@@ -336,12 +324,11 @@ function usePairing({
     setError(null);
     setNotice("Validation du jumelage et de l’accès authentifié…");
     try {
-      const verifiedPairing = await pairDevice(
+      const verifiedPairing = await pairConnection({
         code,
-        await getDeviceId(),
-        deviceName.trim() || "Mon iPhone",
-        url,
-      );
+        deviceName: deviceName.trim() || "Mon iPhone",
+        serverUrl: url,
+      });
       setUrl(verifiedPairing.serverUrl);
       adoptVerifiedConnection(verifiedPairing.bootstrap, verifiedPairing.serverUrl);
       setCode("");

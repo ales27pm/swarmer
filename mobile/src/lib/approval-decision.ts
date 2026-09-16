@@ -3,7 +3,7 @@ import {
   ApiError,
   decideApproval,
   type ApprovalDecisionResult,
-} from "@/lib/api/client";
+} from "@/lib/application-api/server";
 
 export type ApprovalSubmissionOutcome = {
   conflict: boolean;

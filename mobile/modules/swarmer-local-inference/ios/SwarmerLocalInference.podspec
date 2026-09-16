@@ -45,7 +45,7 @@ Pod::Spec.new do |s|
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20'
   }
 
-  s.frameworks = 'Accelerate', 'CoreML', 'Foundation', 'Metal'
+  s.frameworks = 'Accelerate', 'BackgroundTasks', 'CoreML', 'Foundation', 'Metal', 'Network', 'Security'
   s.source_files = "*.{h,m,mm,swift,hpp,cpp}"
   s.public_header_files = 'SwarmerLlamaBridge.h'
 end

@@ -9,6 +9,7 @@ import {
   downloadLocalGgufModel,
   generateLocalProposal,
   getLocalInferenceCapabilities,
+  getLocalInferenceStatus,
   importLocalModel,
   isLocalInferenceAvailable,
   listLocalModels,
@@ -19,6 +20,7 @@ import {
 
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { readLocalModelSettings, saveLocalModelSettings } from "@/lib/local-model-settings";
+import { applicationApi } from "@/lib/application-api/registry";
 
 jest.mock("@/lib/local-model-settings", () => ({
   ...jest.requireActual<typeof import("@/lib/local-model-settings")>("@/lib/local-model-settings"),
@@ -28,12 +30,23 @@ jest.mock("@/lib/local-model-settings", () => ({
 
 const mockPush = jest.fn();
 
-jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }), useLocalSearchParams: () => ({}) }));
+jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }), useLocalSearchParams: () => ({}), useFocusEffect: (effect: () => void) => jest.requireActual<typeof import("react")>("react").useEffect(effect, [effect]) }));
 jest.mock("expo-document-picker", () => ({ getDocumentAsync: jest.fn() }));
-jest.mock("@/lib/api/client", () => ({
-  sendChat: jest.fn(),
-  submitToolProposal: jest.fn(),
-}));
+jest.mock("@/lib/api/client", () => {
+  const sendChat = jest.fn<(...args: unknown[]) => Promise<{ task: Task | null }>>();
+  const submitToolProposal = jest.fn();
+  return {
+    sendChat, submitToolProposal,
+    createLocalToolSubmissionSession: async () => ({
+      createTask: async (intent: string, onTaskCreated?: (task: Task) => void) => {
+        const chat = await sendChat(intent, undefined, "normal", true);
+        if (chat.task) onTaskCreated?.(chat.task);
+        return chat;
+      },
+      submit: (id: string, proposal: unknown) => submitToolProposal(id, proposal),
+    }),
+  };
+});
 jest.mock("@/lib/local-inference", () => {
   const actual = jest.requireActual<typeof import("@/lib/local-inference")>(
     "@/lib/local-inference",
@@ -45,6 +58,7 @@ jest.mock("@/lib/local-inference", () => {
     downloadLocalGgufModel: jest.fn(),
     generateLocalProposal: jest.fn(),
     getLocalInferenceCapabilities: jest.fn(),
+    getLocalInferenceStatus: jest.fn(),
     importLocalModel: jest.fn(),
     isLocalInferenceAvailable: jest.fn(),
     listLocalModels: jest.fn(),
@@ -108,6 +122,10 @@ describe("LocalModelScreen", () => {
       platform: "ios",
     });
     mockListModels.mockResolvedValue([]);
+    jest.mocked(getLocalInferenceStatus).mockImplementation(async () => {
+      const latest = mockLoad.mock.results.at(-1);
+      return latest?.type === "return" ? await latest.value : { state: "idle", runtime: null, modelId: null, revision: null };
+    });
     mockImport.mockResolvedValue({
       modelId: "local_import",
       runtime: "coreml",
@@ -144,6 +162,81 @@ describe("LocalModelScreen", () => {
     expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled();
     expect(mockLoad).not.toHaveBeenCalled();
     expect(downloadLocalGgufModel).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel or unload an API generation when an unused screen unmounts", async () => {
+    let finish!: (value: Awaited<ReturnType<typeof generateLocalProposal>>) => void;
+    mockGenerate.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = applicationApi.execute("inference.generate", { prompt: "API" });
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await screen.unmount();
+    expect(mockCancel).not.toHaveBeenCalled();
+    expect(mockUnload).not.toHaveBeenCalled();
+    finish({ text: "API_OK", tokenCount: 2, finishReason: "stop" });
+    await pending;
+  });
+
+  it("restores the actual API-loaded model instead of saved selections", async () => {
+    jest.mocked(getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: "actual/dolphin", revision: "b".repeat(40) });
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Le modèle de l’app est déjà chargé/);
+    expect(screen.getByLabelText("Dépôt Hugging Face")).toHaveDisplayValue("actual/dolphin");
+    expect(screen.getByLabelText("Révision Hugging Face immuable")).toHaveDisplayValue("b".repeat(40));
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
+    await screen.unmount();
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(mockUnload).not.toHaveBeenCalled();
+  });
+
+  it("refreshes global model state while the screen is visible after an API unload", async () => {
+    jest.mocked(getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: "actual/dolphin", revision: "b".repeat(40) });
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Le modèle de l’app est déjà chargé/);
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
+    jest.mocked(getLocalInferenceStatus).mockResolvedValue({ state: "idle", runtime: null, modelId: null, revision: null });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled(), { timeout: 3_000 });
+    expect(mockUnload).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { supported: false, osSupported: true, gpuSupported: false, entitlementGranted: null, active: false, operationId: null,
+      outputBytes: 0, state: "idle", reason: "gpu_unsupported", expected: "Cet appareil ne déclare pas de GPU disponible en arrière-plan." },
+    { supported: true, osSupported: true, gpuSupported: true, entitlementGranted: null, active: false, operationId: null,
+      outputBytes: 0, state: "idle", reason: "permission_unverified", expected: "l’autorisation n’a pas encore été confirmée" },
+    { supported: true, osSupported: true, gpuSupported: true, entitlementGranted: true, active: true, operationId: "operation-1",
+      outputBytes: 128, state: "active", reason: null, expected: "Tâche GPU admise par iOS." },
+    { supported: true, osSupported: true, gpuSupported: true, entitlementGranted: true, active: false, operationId: "operation-1",
+      outputBytes: 128, state: "expiring", reason: "user_or_system_cancelled", expected: "Arrêt demandé par le système ou l’utilisateur." },
+  ] as const)("shows truthful MLX background state: $reason / $state", async ({ expected, ...backgroundExecution }) => {
+    jest.mocked(getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: "actual/dolphin", revision: "b".repeat(40), backgroundExecution });
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Le modèle de l’app est déjà chargé/);
+    expect(screen.getByTestId("local-model-background-status")).toBeOnTheScreen();
+    expect(screen.getByText(expected, { exact: false })).toBeOnTheScreen();
+    expect(screen.getByText(`Activité : ${backgroundExecution.active ? "tâche admise en cours" : "aucune tâche admise active"}`)).toBeOnTheScreen();
+    if (backgroundExecution.entitlementGranted === true || backgroundExecution.active || backgroundExecution.outputBytes > 0) {
+      expect(screen.getByText(`Texte produit par la tâche d’arrière-plan : ${backgroundExecution.outputBytes} octets UTF-8`, { exact: false })).toBeOnTheScreen();
+    } else {
+      expect(screen.queryByText(/Texte produit par la tâche d’arrière-plan/)).not.toBeOnTheScreen();
+    }
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
+  it("cancels only its own generation on unmount and retains the loaded model", async () => {
+    let finish!: (value: Awaited<ReturnType<typeof generateLocalProposal>>) => void;
+    mockGenerate.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await prepareMlxModel(user);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Test");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    await waitFor(() => expect(mockGenerate).toHaveBeenCalledTimes(1));
+    await screen.unmount();
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(mockUnload).not.toHaveBeenCalled();
+    await act(async () => finish({ text: "", tokenCount: 0, finishReason: "cancelled" }));
   });
 
   it("loads the pinned default only after an explicit load", async () => {
@@ -422,7 +515,7 @@ describe("LocalModelScreen", () => {
     ).toBeDisabled();
   });
 
-  it("unloads a model whose load resolves after the screen unmounts", async () => {
+  it("keeps a model whose load resolves after the screen unmounts", async () => {
     let resolveLoad!: (value: Awaited<ReturnType<typeof loadLocalModel>>) => void;
     mockLoad.mockImplementation(
       () =>
@@ -445,14 +538,15 @@ describe("LocalModelScreen", () => {
     await waitFor(() => expect(mockLoad).toHaveBeenCalledTimes(1));
     await screen.unmount();
 
-    resolveLoad({
+    await act(async () => resolveLoad({
       state: "ready",
       runtime: "mlx",
       modelId: "mlx-community/test-model",
       revision: "a".repeat(40),
-    });
+    }));
 
-    await waitFor(() => expect(mockUnload).toHaveBeenCalledTimes(2));
+    expect(mockUnload).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
   });
 
   it("never submits a token-limit-truncated JSON object", async () => {

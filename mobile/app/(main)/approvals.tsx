@@ -13,14 +13,14 @@ import {
   useAccessibilityAnnouncement,
   useApprovalDecisionLocks,
 } from "@/components/swarm-ui";
-import { getServerUrl, listApprovals, type Approval } from "@/lib/api/client";
+import { getServerUrl, listApprovals, type Approval } from "@/lib/application-api/server";
 import { localApprovals } from "@/lib/state/replica";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 import {
   approvalDecisionError,
   submitApprovalDecision,
 } from "@/lib/approval-decision";
-import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
+import { iphoneCapabilityTransport } from "@/lib/application-api/iphone-capabilities";
 import { assertCapabilityRequestFresh } from "@/lib/iphone-capabilities/grant";
 import type {
   CapabilityArgumentsByName,

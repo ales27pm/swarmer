@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { AppState } from "react-native";
 
+import { publishApplicationSyncState } from "@/lib/application-api/sync-state";
 import { bootstrapSync, drainMutationOutbox } from "@/lib/api/client";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { iphoneCapabilityTransport } from "@/lib/iphone-capabilities/runtime";
@@ -16,6 +17,8 @@ export function LiveSyncProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   const [state, setState] = useState<LiveSyncState>("stopped");
+
+  useEffect(() => publishApplicationSyncState({ state, revision, hasError: error !== null }), [state, revision, error]);
 
   useEffect(() => {
     let disposed = false;

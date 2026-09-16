@@ -25,7 +25,7 @@ import {
   planTask,
   type Approval,
   type TaskDetail,
-} from "@/lib/api/client";
+} from "@/lib/application-api/server";
 import {
   approvalDecisionError,
   submitApprovalDecision,

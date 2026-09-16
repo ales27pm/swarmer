@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 
 import { KeyboardInputGroup, KeyboardTextInput } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle } from "@/components/swarm-ui";
-import { ApiError, getGoalConversation, type GoalConversationSession, type GoalDetail, type GoalReplyAttempt } from "@/lib/api/client";
+import { ApiError, getGoalConversation, type GoalConversationSession, type GoalDetail, type GoalReplyAttempt } from "@/lib/application-api/server";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 
 type Props = {

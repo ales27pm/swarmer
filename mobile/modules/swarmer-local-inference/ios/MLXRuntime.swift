@@ -139,7 +139,12 @@ actor MLXRuntime {
     #endif
   }
 
-  func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> RuntimeGenerationResult {
+  func generate(
+    prompt: String,
+    maxTokens: Int,
+    temperature: Double,
+    onOutputProgress: (@Sendable (Int) async -> Void)? = nil
+  ) async throws -> RuntimeGenerationResult {
     guard !generating else { throw LocalInferenceError.generationInProgress }
     guard let container else { throw LocalInferenceError.modelNotLoaded }
     generating = true
@@ -179,6 +184,7 @@ actor MLXRuntime {
     )
 
     var output = ""
+    var outputBytes = 0
     var completionCount: Int?
     var finishReason = "stop"
     var generationError: (any Error)?
@@ -194,6 +200,8 @@ actor MLXRuntime {
         switch event {
         case .chunk(let value):
           output += value
+          outputBytes += value.utf8.count
+          await onOutputProgress?(outputBytes)
         case .info(let info):
           completionCount = info.generationTokenCount
           switch info.stopReason {

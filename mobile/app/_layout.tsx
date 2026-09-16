@@ -1,11 +1,13 @@
 import { Stack } from "expo-router";
 
 import { COLORS } from "@/components/swarm-ui";
+import { ApplicationNetworkBridge } from "@/lib/application-api/network-bridge";
 import { LiveSyncProvider } from "@/lib/sync/live-sync-provider";
 
 export default function RootLayout() {
   return (
     <LiveSyncProvider>
+      <ApplicationNetworkBridge />
       <Stack
         screenOptions={{
           contentStyle: { backgroundColor: COLORS.background },

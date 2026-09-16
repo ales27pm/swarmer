@@ -41,7 +41,7 @@ actor LocalInferenceCoordinator {
   private var state = "idle"
   private var message: String?
   private var lifecycleEpoch = 0
-  private var isSuspended = false
+  private var activity = GenerationActivityFence()
 
   func capabilities() -> CapabilitiesRecord {
     CapabilitiesRecord()
@@ -61,7 +61,7 @@ actor LocalInferenceCoordinator {
     displayName: String?
   ) async throws -> LocalModelRecord {
     let runtime = try LocalRuntime(wireValue: runtimeValue)
-    guard !isSuspended,
+    guard !activity.isSuspended,
           importOperation == nil,
           loadOperation == nil,
           generationOperation == nil,
@@ -88,7 +88,7 @@ actor LocalInferenceCoordinator {
       sizeBytes: options.sizeBytes,
       displayName: options.displayName
     )
-    guard !isSuspended,
+    guard !activity.isSuspended,
           importOperation == nil,
           loadOperation == nil,
           generationOperation == nil,
@@ -132,7 +132,7 @@ actor LocalInferenceCoordinator {
   }
 
   func loadModel(options: LoadModelOptions) async throws -> StatusRecord {
-    guard !isSuspended,
+    guard !activity.isSuspended,
           importOperation == nil,
           state != "loading", state != "generating", state != "cancelling" else {
       throw LocalInferenceError.generationInProgress
@@ -208,7 +208,7 @@ actor LocalInferenceCoordinator {
 
   func generate(options: GenerateOptions) async throws -> GenerationRecord {
     guard let handle else { throw LocalInferenceError.modelNotLoaded }
-    guard !isSuspended, importOperation == nil, state == "ready", generationOperation == nil else {
+    guard !activity.isSuspended, importOperation == nil, state == "ready", generationOperation == nil else {
       throw LocalInferenceError.generationInProgress
     }
     let prompt = try LocalInferenceValidation.prompt(options.prompt)
@@ -227,10 +227,19 @@ actor LocalInferenceCoordinator {
           temperature: temperature
         )
       case .mlx(let runtime):
+        try Task.checkCancellation()
+        await BackgroundGenerationController.shared.prepare(operationId: operationId) {
+          await self.cancel(operationId: operationId)
+        }
+        guard await self.mayBeginGeneration(operationId: operationId) else { throw CancellationError() }
+        try Task.checkCancellation()
         return try await runtime.generate(
           prompt: prompt,
           maxTokens: maxTokens,
-          temperature: temperature
+          temperature: temperature,
+          onOutputProgress: { bytes in
+            await BackgroundGenerationController.shared.reportOutput(operationId: operationId, bytes: bytes)
+          }
         )
       case .llamaCpp(let runtime):
         return try await runtime.generate(
@@ -244,6 +253,13 @@ actor LocalInferenceCoordinator {
 
     do {
       let result = try await task.value
+      let wasCancelled = result.finishReason == "cancelled" || task.isCancelled
+      let leaseCancelled = await BackgroundGenerationController.shared.finish(
+        operationId: operationId, success: !wasCancelled, cancelled: wasCancelled
+      )
+      // Cancellation can arrive after MLX's .info event but before synchronize
+      // or while this actor awaits lease completion. Never publish a valid plan.
+      let finishReason = wasCancelled || leaseCancelled || task.isCancelled ? "cancelled" : result.finishReason
       if generationOperation?.id == operationId {
         generationOperation = nil
         state = self.handle == nil ? "idle" : "ready"
@@ -251,10 +267,11 @@ actor LocalInferenceCoordinator {
       }
       return GenerationRecord(
         text: result.text,
-        finishReason: result.finishReason,
+        finishReason: finishReason,
         tokenCount: result.tokenCount
       )
     } catch is CancellationError {
+      await BackgroundGenerationController.shared.finish(operationId: operationId, success: false, cancelled: true)
       if generationOperation?.id == operationId {
         generationOperation = nil
         state = self.handle == nil ? "idle" : "ready"
@@ -262,6 +279,7 @@ actor LocalInferenceCoordinator {
       }
       return GenerationRecord(text: "", finishReason: "cancelled", tokenCount: 0)
     } catch {
+      await BackgroundGenerationController.shared.finish(operationId: operationId, success: false)
       if generationOperation?.id == operationId {
         generationOperation = nil
         state = "failed"
@@ -271,12 +289,23 @@ actor LocalInferenceCoordinator {
     }
   }
 
+  private func mayBeginGeneration(operationId: UUID) async -> Bool {
+    let allowed = await BackgroundGenerationController.shared.mayRun(operationId: operationId)
+    return allowed && generationOperation?.id == operationId && state == "generating"
+  }
+
   func cancel() async {
     guard let operation = generationOperation else { return }
+    await cancel(operationId: operation.id)
+  }
+
+  private func cancel(operationId: UUID) async {
+    guard let operation = generationOperation, operation.id == operationId else { return }
     state = "cancelling"
     operation.task.cancel()
     await Self.cancel(operation.handle)
     _ = await operation.task.result
+    await BackgroundGenerationController.shared.finish(operationId: operation.id, success: false, cancelled: true)
     if generationOperation?.id == operation.id {
       generationOperation = nil
       state = handle == nil ? "idle" : "ready"
@@ -297,6 +326,7 @@ actor LocalInferenceCoordinator {
       operation.task.cancel()
       await Self.cancel(operation.handle)
       _ = await operation.task.result
+      await BackgroundGenerationController.shared.finish(operationId: operation.id, success: false, cancelled: true)
       if generationOperation?.id == operation.id {
         generationOperation = nil
       }
@@ -330,28 +360,44 @@ actor LocalInferenceCoordinator {
   }
 
   func shutdown() async {
-    isSuspended = true
+    activity.shutdown()
     await unload()
   }
 
-  func suspend() async {
-    isSuspended = true
-    if importOperation != nil || loadOperation != nil || generationOperation != nil {
-      state = "cancelling"
+  func prepareForInactivity() async { await reconcileActivity(cancelAllWhenInactive: false) }
+
+  func suspend() async { await reconcileActivity(cancelAllWhenInactive: true) }
+
+  func resume() async { await reconcileActivity(cancelAllWhenInactive: false) }
+
+  private func reconcileActivity(cancelAllWhenInactive: Bool) async {
+    let epoch = activity.begin()
+    let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
+    guard activity.reconcile(inactive: snapshot.inactive, epoch: epoch), snapshot.inactive else { return }
+    let cancelAll = snapshot.shouldCancelAll(requested: cancelAllWhenInactive)
+    if let operation = generationOperation, case .mlx = operation.handle {
+      let admitted = await BackgroundGenerationController.shared.mayContinue(operationId: operation.id)
+      guard activity.isCurrent(epoch), activity.isSuspended else { return }
+      if admitted, generationOperation?.id == operation.id {
+        // Only the already running generation with an admitted GPU lease survives.
+        return
+      }
+      if !cancelAll {
+        await cancel(operationId: operation.id)
+        return
+      }
     }
+    guard cancelAll else { return }
     await cancelImport()
+    guard activity.isCurrent(epoch), activity.isSuspended else { return }
     if loadOperation != nil {
       await unload()
-    } else if generationOperation != nil {
-      await cancel()
+    } else if let operation = generationOperation {
+      await cancel(operationId: operation.id)
     } else if state == "cancelling" {
       state = handle == nil ? "idle" : "ready"
       message = nil
     }
-  }
-
-  func resume() {
-    isSuspended = false
   }
 
   private func cancelImport() async {

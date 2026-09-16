@@ -21,7 +21,7 @@ import {
   type Message,
   type Task,
   type ToolCall,
-} from "@/lib/api/client";
+} from "@/lib/application-api/server";
 import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
 import type { LiveSyncState } from "@/lib/sync/live-sync";
 

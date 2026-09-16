@@ -22,7 +22,7 @@ import {
   type GoalRecord,
   type GoalResult,
   type PlanNode,
-} from "@/lib/api/client";
+} from "@/lib/application-api/server";
 import {
   localSwarmSnapshot,
   type LocalSwarmSnapshot,

@@ -57,8 +57,17 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "org.27pm.mongars",
-      "buildNumber": "20260914035141",
+      "buildNumber": "20260916034417",
+      "entitlements": {
+        "com.apple.developer.background-tasks.continued-processing.gpu": true
+      },
       "infoPlist": {
+        "UIBackgroundModes": [
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "org.27pm.mongars.mlx-generation.*"
+        ],
         "CFBundleDevelopmentRegion": "fr",
         "CFBundleLocalizations": [
           "fr"
