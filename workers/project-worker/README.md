@@ -78,11 +78,14 @@ The candidate Qwen3-Coder profile uses non-thinking inference with temperature 0
 top_p 0.8, top_k 20 and repetition penalty 1.05, following the
 [official model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct).
 Ollama responses use its native NDJSON stream. The project-only socket timeout
-defaults to 240 seconds and remains configurable between 30 and 240 seconds; it
-therefore bounds an inactive connection rather than cutting off a response that is
-still producing chunks. The worker checks its lease between chunks and enforces a
-separate 510-second model wall limit, leaving time for validation and checks inside
-the 600-second operation limit. Model selection is a candidate configuration;
+defaults to 240 seconds and remains configurable between 30 and 240 seconds. The
+worker checks its lease between chunks and also enforces a 240-second model wall
+limit for code-changing batches, preserving the established validation budget
+inside the 600-second operation limit. The deterministic final-README route uses a
+700-token, 1,800-character response bound. Only a dependency-free Python project
+may stream for up to 420 seconds, leaving 150 seconds for its two isolated checks;
+projects with dependency manifests or mixed runtimes retain the 240-second model
+wall and larger validation reserve. Model selection is a candidate configuration;
 passing unit checks does not establish project quality. Release acceptance requires
 actual independent application tests.
 
@@ -105,7 +108,9 @@ there is no retry inside the timed-out job and no fabricated check receipt. A se
 consecutive timeout pauses the project instead of automatically charging a third
 call. When existing source and real checks already pass, no newer user request is
 pending, and only README.md is missing, the next request is constrained to one
-concise README edit and a smaller 1,200-token output budget.
+concise README edit and a smaller 700-token output budget. The new revision still
+runs the isolated build and tests; prior receipts are never relabelled as evidence
+for a different project digest.
 Connection failures, rejected HTTP configuration and service unavailability are
 distinct fixed transport categories and remain failed jobs. Logs omit raw error
 bodies and endpoints. Goal and worker time/call budgets remain unchanged.

@@ -47,8 +47,9 @@ _JOB_LOCK = threading.Lock()
 MAX_MODEL_RESPONSE_BYTES = 2_000_000
 MAX_PROMPT_BYTES = 22_000
 MAX_OUTPUT_TOKENS = 2_000
-MAX_README_OUTPUT_TOKENS = 1_200
-MAX_MODEL_WALL_SECONDS = 510
+MAX_README_OUTPUT_TOKENS = 700
+MAX_MODEL_WALL_SECONDS = 240
+MAX_README_MODEL_WALL_SECONDS = 420
 MAX_SPAN_BYTES = 12_000
 MAX_ADDRESS_BYTES = 8_000
 
@@ -246,14 +247,15 @@ def set_stream_read_timeout(response: Any, timeout_seconds: float) -> None:
         connection.settimeout(timeout_seconds)
 
 
-def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
-    paths = {item["path"] for item in payload["files"]}
+def runtime_for_files(files: list[dict[str, str]]) -> str:
+    paths = {item["path"] for item in files}
     has_python = any(path.endswith(".py") for path in paths)
-    runtime = (
-        "python_node"
-        if has_python and "package.json" in paths
-        else ("node" if "package.json" in paths else "python")
-    )
+    if has_python and "package.json" in paths:
+        return "python_node"
+    return "node" if "package.json" in paths else "python"
+
+
+def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
         "action": "continue",
@@ -262,11 +264,29 @@ def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
         "files": payload["files"],
         "checks": payload["checks"],
         "run_instructions": "",
-        "runtime": runtime,
+        "runtime": runtime_for_files(payload["files"]),
         "base_revision_id": payload["base_revision_id"],
         "base_sha256": payload["base_sha256"],
         "focus_paths": [],
     }
+
+
+def valid_readme_completion(
+    payload: dict[str, Any], step: dict[str, Any]
+) -> bool:
+    return (
+        readme_is_only_remaining_gate(payload)
+        and step["action"] == "complete"
+        and [item["path"] for item in step["edits"]] == ["README.md"]
+        and bool(step["edits"][0]["content"].strip())
+        and not step["patches"]
+        and not step["deletions"]
+        and not step["requested_checks"]
+        and not step["focus_paths"]
+        and step["plan"] == payload["plan"]
+        and step["runtime"] == runtime_for_files(payload["files"])
+        and bool(step["run_instructions"].strip())
+    )
 
 
 def physical_source_lines(content: str) -> list[str]:
@@ -509,6 +529,44 @@ def node_collected_no_tests(check: dict[str, Any]) -> bool:
     return all(
         re.findall(rf"(?m)^# {field} ([0-9]+)\r?$", output) == ["0"]
         for field in ("tests", "pass", "fail", "cancelled", "skipped", "todo")
+    )
+
+
+def readme_is_only_remaining_gate(payload: dict[str, Any]) -> bool:
+    test_commands = {
+        ("python", "-m", "pytest", "-q"),
+        ("python", "-m", "pytest"),
+        ("pytest", "-q"),
+        ("pytest",),
+        ("node", "--test"),
+    }
+    return (
+        bool(payload["files"])
+        and bool(payload["plan"])
+        and bool(payload["checks"])
+        and all(check["status"] == "passed" for check in payload["checks"])
+        and any(tuple(check["command"]) in test_commands for check in payload["checks"])
+        and (
+            not payload["conversation"]
+            or payload["conversation"][-1]["role"] != "user"
+        )
+        and not any(
+            item["path"].casefold() == "readme.md" for item in payload["files"]
+        )
+    )
+
+
+def model_wall_seconds(payload: dict[str, Any], needs_readme: bool) -> int:
+    paths = {item["path"].casefold() for item in payload["files"]}
+    dependency_free_python = (
+        runtime_for_files(payload["files"]) == "python"
+        and "requirements.txt" not in paths
+        and "package.json" not in paths
+    )
+    return (
+        MAX_README_MODEL_WALL_SECONDS
+        if needs_readme and dependency_free_python
+        else MAX_MODEL_WALL_SECONDS
     )
 
 
@@ -848,15 +906,7 @@ class ProjectGenerator:
             check["status"] != "failed" or node_collected_no_tests(check)
             for check in payload["checks"]
         )
-        needs_readme = (
-            bool(payload["files"])
-            and bool(payload["checks"])
-            and all(check["status"] == "passed" for check in payload["checks"])
-            and (not conversation or conversation[-1]["role"] != "user")
-            and not any(
-                item["path"].casefold() == "readme.md" for item in payload["files"]
-            )
-        )
+        needs_readme = readme_is_only_remaining_gate(payload)
         schema = copy.deepcopy(STEP_SCHEMA)
         existing_paths = [item["path"] for item in payload["files"]]
         if existing_paths:
@@ -884,6 +934,10 @@ class ProjectGenerator:
             }
         if needs_readme and not needs_repair:
             schema["properties"]["action"]["enum"] = ["complete"]
+            schema["properties"]["plan"] = {"const": payload["plan"]}
+            schema["properties"]["runtime"]["enum"] = [
+                runtime_for_files(payload["files"])
+            ]
             schema["properties"]["edits"]["minItems"] = 1
             schema["properties"]["edits"]["maxItems"] = 1
             schema["properties"]["edits"]["items"]["properties"]["path"] = {
@@ -891,7 +945,7 @@ class ProjectGenerator:
             }
             schema["properties"]["edits"]["items"]["properties"]["content"] = {
                 "type": "string",
-                "maxLength": 3_000,
+                "maxLength": 1_800,
             }
             for field in ("patches", "deletions", "requested_checks", "focus_paths"):
                 schema["properties"][field]["maxItems"] = 0
@@ -942,7 +996,7 @@ class ProjectGenerator:
             current_task = (
                 "Create exactly README.md in this iteration as one concise complete edit. "
                 "Document the current application's requirements, setup, run and test commands "
-                "from the actual files and passing check receipts. Keep it below 3000 characters. "
+                "from the actual files and passing check receipts. Keep it below 1800 characters. "
                 "Do not edit application or test files, request checks, patch, delete, or focus "
                 "another file. Preserve the existing milestone plan and use action complete."
             )
@@ -1054,7 +1108,7 @@ class ProjectGenerator:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), protocol._RejectRedirects()
         )
-        deadline = time.monotonic() + MAX_MODEL_WALL_SECONDS
+        deadline = time.monotonic() + model_wall_seconds(payload, needs_readme)
         try:
             ensure_active()
             with opener.open(request, timeout=self.timeout_seconds) as response:  # nosec B310
@@ -1236,6 +1290,13 @@ def run_iteration(
             payload,
             "The model requested a file absent from the current project manifest. "
             "No changes were accepted. Use only existing manifest paths in focus_paths.",
+        )
+    if readme_is_only_remaining_gate(payload) and not valid_readme_completion(payload, step):
+        return rejected_step(
+            payload,
+            "The documentation-only completion did not preserve the accepted project metadata. "
+            "No edits were accepted. Return exactly one complete README.md with the existing "
+            "plan, runtime, passing check receipts and concise run instructions.",
         )
     checks: list[dict[str, Any]] = []
     if step["focus_paths"]:

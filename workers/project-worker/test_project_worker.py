@@ -595,6 +595,82 @@ def test_streaming_native_response_bounds_each_read_by_remaining_wall_time(
     assert "private" not in str(error.value)
 
 
+def test_readme_route_uses_its_reserved_model_wall_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
+        "plan": ["Keep the application", "Document setup"],
+        "checks": [
+            {
+                "command": ["python", "-m", "pytest", "-q"],
+                "status": "passed",
+                "exit_code": 0,
+                "duration_ms": 2,
+                "output": "5 passed",
+            }
+        ],
+        "conversation": [{"role": "assistant", "content": "Progress"}],
+    }
+    response = step(
+        action="complete",
+        edits=[{"path": "README.md", "content": "# App\n\nRun `pytest`.\n"}],
+        plan=data["plan"],
+        run_instructions="python -m pytest -q",
+    )
+    raw = json.dumps(
+        {
+            "message": {"content": json.dumps(response)},
+            "done": True,
+            "done_reason": "stop",
+        }
+    ).encode()
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response(raw)
+
+    clock = iter((0.0, worker.MAX_MODEL_WALL_SECONDS + 30.0))
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    result = worker.ProjectGenerator(
+        "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+    ).generate(data)
+    assert worker.MAX_README_MODEL_WALL_SECONDS > worker.MAX_MODEL_WALL_SECONDS + 30
+    assert worker.model_wall_seconds(data, True) == worker.MAX_README_MODEL_WALL_SECONDS
+    assert result["edits"][0]["path"] == "README.md"
+
+
+@pytest.mark.parametrize("manifest", ["requirements.txt", "package.json"])
+def test_readme_route_keeps_full_check_reserve_when_dependencies_are_present(
+    manifest: str,
+) -> None:
+    data = {
+        **payload(),
+        "files": [
+            {"path": "app.py", "content": "VALUE = 1\n"},
+            {"path": manifest, "content": "{}\n" if manifest == "package.json" else ""},
+        ],
+        "plan": ["Document setup"],
+        "checks": [
+            {
+                "command": ["python", "-m", "pytest", "-q"],
+                "status": "passed",
+                "exit_code": 0,
+                "duration_ms": 2,
+                "output": "5 passed",
+            }
+        ],
+        "conversation": [{"role": "assistant", "content": "Progress"}],
+    }
+    assert worker.readme_is_only_remaining_gate(data) is True
+    assert worker.model_wall_seconds(data, True) == worker.MAX_MODEL_WALL_SECONDS
+
+
 def test_streaming_native_error_event_is_a_fixed_transport_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2004,6 +2080,8 @@ def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
     assert Draft202012Validator.check_schema(body["format"]) is None
     assert next(iter(schema["properties"])) == "edits"
     assert schema["properties"]["action"]["enum"] == ["complete"]
+    assert schema["properties"]["plan"] == {"const": data["plan"]}
+    assert schema["properties"]["runtime"]["enum"] == ["python"]
     assert schema["properties"]["edits"]["minItems"] == 1
     assert schema["properties"]["edits"]["maxItems"] == 1
     assert schema["properties"]["edits"]["items"]["properties"]["path"] == {
@@ -2011,13 +2089,107 @@ def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
     }
     assert schema["properties"]["edits"]["items"]["properties"]["content"][
         "maxLength"
-    ] == 3_000
+    ] == 1_800
+    assert body["options"]["num_predict"] == worker.MAX_README_OUTPUT_TOKENS == 700
     for field in ("patches", "deletions", "requested_checks", "focus_paths"):
         assert schema["properties"][field]["maxItems"] == 0
     task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
     assert "Create exactly README.md" in task
     assert "Do not edit application or test files" in task
     assert "use action complete" in task
+
+
+def test_readme_only_completion_runs_checks_on_the_new_revision() -> None:
+    checks = [
+        {
+            "command": ["python", "-m", "compileall", "-q", "."],
+            "status": "passed",
+            "exit_code": 0,
+            "duration_ms": 1,
+            "output": "",
+        },
+        {
+            "command": ["python", "-m", "pytest", "-q"],
+            "status": "passed",
+            "exit_code": 0,
+            "duration_ms": 2,
+            "output": "5 passed",
+        },
+    ]
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
+        "plan": ["Keep the application", "Document setup"],
+        "checks": checks,
+        "conversation": [
+            {"role": "user", "content": "Build the application"},
+            {"role": "assistant", "content": worker.MODEL_TIMEOUT_DIAGNOSTIC},
+        ],
+    }
+    response = step(
+        action="complete",
+        edits=[{"path": "README.md", "content": "# App\n\nRun `pytest`.\n"}],
+        plan=data["plan"],
+        run_instructions="python -m pytest -q",
+    )
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 1
+    assert result["action"] == "complete"
+    assert result["checks"] != checks
+    assert result["checks"][0]["status"] == "passed"
+    assert {item["path"] for item in result["files"]} == {"app.py", "README.md"}
+
+
+def test_invalid_readme_only_metadata_is_rejected_without_running_checks() -> None:
+    checks = [
+        {
+            "command": ["python", "-m", "pytest", "-q"],
+            "status": "passed",
+            "exit_code": 0,
+            "duration_ms": 2,
+            "output": "5 passed",
+        }
+    ]
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
+        "plan": ["Keep the application", "Document setup"],
+        "checks": checks,
+        "conversation": [{"role": "assistant", "content": "Progress"}],
+    }
+    response = step(
+        action="complete",
+        edits=[{"path": "README.md", "content": "# App\n\nRun `pytest`.\n"}],
+        plan=["Changed plan"],
+        run_instructions="python -m pytest -q",
+    )
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 0
+    assert result["action"] == "continue"
+    assert result["files"] == data["files"] and result["checks"] == checks
+    assert "No edits were accepted" in result["message"]
+
+
+@pytest.mark.parametrize(
+    "plan,checks",
+    [
+        ([], [{"command": ["python", "-m", "pytest", "-q"], "status": "passed"}]),
+        (["Document"], [{"command": ["python", "-m", "compileall"], "status": "passed"}]),
+    ],
+)
+def test_missing_readme_is_not_the_only_gate_without_plan_and_test_receipt(
+    plan: list[str], checks: list[dict[str, Any]]
+) -> None:
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
+        "plan": plan,
+        "checks": checks,
+        "conversation": [{"role": "assistant", "content": "Progress"}],
+    }
+    assert worker.readme_is_only_remaining_gate(data) is False
 
 
 def test_new_user_request_takes_priority_over_missing_readme(

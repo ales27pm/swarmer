@@ -60,16 +60,20 @@ runtime, and model-call limits remain authoritative.
 
 Model responses are limited to 2,000 tokens. Each iteration can write one
 complete file and use small patches or deletions to repair several paths. Ollama
-responses are consumed as bounded NDJSON streams: the 240-second socket timeout is
-an inactivity bound, while a separate 510-second wall limit leaves room inside the
-worker operation lease for validation and checks. A generation timeout preserves
-the previous source and real check receipts, then returns a continuation for one
-new charged job. A second consecutive timeout pauses instead of charging a third
-call. Network and request failures remain distinct from a timed-out generation; no
-job retries its model request internally. When source and tests already pass, no
-newer user request is pending, and README.md is the sole remaining readiness gate,
-generation is constrained to that single documentation file with a 1,200-token
-output budget.
+responses are consumed as bounded NDJSON streams. Code-changing batches retain a
+240-second model wall limit so the established operation lease still reserves time
+for isolated dependency, build and test checks. A generation timeout preserves the
+previous source and real check receipts, then returns a continuation for one new
+charged job. A second consecutive timeout pauses instead of charging a third call.
+Network and request failures remain distinct from a timed-out generation; no job
+retries its model request internally. When source and tests already pass, no newer
+user request is pending, and README.md is the sole remaining readiness gate,
+generation is constrained to that single documentation file with a 700-token
+output budget. Its README content is capped at 1,800 characters and the total
+response at 700 tokens. A dependency-free Python project may use a 420-second
+model wall, reserving 150 seconds for its two real isolated checks; projects with
+dependency manifests or mixed runtimes keep the 240-second wall and larger check
+reserve. Prior receipts are not reused for a new project digest.
 
 An evaluator transport or response failure waits at least 60 seconds before an
 automatic retry of unchanged state. Three invalid or rejected responses for the
