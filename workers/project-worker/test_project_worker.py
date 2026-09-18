@@ -1590,6 +1590,36 @@ def test_rejected_native_response_keeps_metrics_and_specific_safe_diagnostic(
     assert "private-source-marker" not in str(error.value)
 
 
+def test_resolved_patch_rejects_noop_after_terminal_newline_preservation() -> None:
+    data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\n"}]}
+    addresses = worker.addressed_patch_spans(worker.model_context(data), data)
+    address = next(item for item in addresses.values() if item["old"] == "value = 1\n")
+    response = step(
+        edits=[],
+        patches=[{"path": "app.py", "span_id": address["span_id"], "new": "value = 1"}],
+    )
+    with pytest.raises(ProjectError, match="identical to the selected source span"):
+        worker.resolve_model_patches(response, addresses)
+
+
+def test_resolved_patch_rejects_replacement_over_utf8_byte_limit() -> None:
+    data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\n"}]}
+    addresses = worker.addressed_patch_spans(worker.model_context(data), data)
+    address = next(item for item in addresses.values() if item["old"] == "value = 1\n")
+    response = step(
+        edits=[],
+        patches=[
+            {
+                "path": "app.py",
+                "span_id": address["span_id"],
+                "new": "é" * (worker.MAX_PATCH_BYTES // 2 + 1),
+            }
+        ],
+    )
+    with pytest.raises(ProjectError, match="8000-byte UTF-8 limit"):
+        worker.resolve_model_patches(response, addresses)
+
+
 def test_native_response_cannot_bypass_current_visible_patch_choices(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
