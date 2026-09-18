@@ -47,6 +47,8 @@ _JOB_LOCK = threading.Lock()
 MAX_MODEL_RESPONSE_BYTES = 2_000_000
 MAX_PROMPT_BYTES = 22_000
 MAX_OUTPUT_TOKENS = 2_000
+MAX_README_OUTPUT_TOKENS = 1_200
+MAX_MODEL_WALL_SECONDS = 510
 MAX_SPAN_BYTES = 12_000
 MAX_ADDRESS_BYTES = 8_000
 
@@ -200,11 +202,20 @@ class ModelStepError(ProjectError):
     """A rejected model response; its safe diagnostic can guide a new charged job."""
 
 
+class ModelTimeoutError(ModelStepError):
+    """A productive or stalled model request exceeded a bounded time budget."""
+
+
 MODEL_TIMEOUT_DIAGNOSTIC = (
     "The local model timed out before returning a complete response. No edits were accepted, "
     "and the previous files and check receipts are unchanged. In the next charged iteration, "
     "return one smaller complete module or a short repair patch, with concise metadata, "
     "within the 2000-token response limit. No retry occurred within this job."
+)
+MODEL_REPEATED_TIMEOUT_DIAGNOSTIC = (
+    "The local model timed out twice without producing an accepted edit, so the project is "
+    "paused with its files and check receipts unchanged instead of consuming more model-call "
+    "budget. Send a project message when you want to resume."
 )
 
 
@@ -224,6 +235,15 @@ class ModelTransportError(ProjectError):
 def model_http_error(status: int) -> ModelTransportError:
     category = "unavailable" if status in {408, 429} or status >= 500 else "configuration_error"
     return ModelTransportError(category)
+
+
+def set_stream_read_timeout(response: Any, timeout_seconds: float) -> None:
+    """Shorten urllib's live socket timeout to the remaining model wall budget."""
+    stream = getattr(response, "fp", None)
+    raw = getattr(stream, "raw", None)
+    connection = getattr(raw, "_sock", None)
+    if connection is not None:
+        connection.settimeout(timeout_seconds)
 
 
 def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
@@ -499,7 +519,10 @@ def constrained_step_schema(
     addresses: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     mutation = copy.deepcopy(schema)
-    mutation["properties"]["action"]["enum"] = ["continue", "complete"]
+    allowed_actions = schema["properties"]["action"]["enum"]
+    mutation["properties"]["action"]["enum"] = [
+        action for action in ("continue", "complete") if action in allowed_actions
+    ]
     mutation["properties"]["focus_paths"]["maxItems"] = 0
     addresses = addressed_patch_spans(context, payload) if addresses is None else addresses
     by_path: dict[str, list[str]] = {}
@@ -538,7 +561,11 @@ def constrained_step_schema(
         python = copy.deepcopy(mutation)
         python["properties"]["runtime"]["enum"] = ["python"]
         branches = [node, python]
-    if payload["files"]:
+    if (
+        payload["files"]
+        and "continue" in allowed_actions
+        and schema["properties"]["focus_paths"].get("maxItems") != 0
+    ):
         read = copy.deepcopy(schema)
         read["properties"]["action"]["enum"] = ["continue"]
         read["properties"]["focus_paths"]["minItems"] = 1
@@ -546,7 +573,7 @@ def constrained_step_schema(
             read["properties"][field].pop("minItems", None)
             read["properties"][field]["maxItems"] = 0
         branches.append(read)
-    if "clarify" in schema["properties"]["action"]["enum"]:
+    if "clarify" in allowed_actions:
         clarify = copy.deepcopy(schema)
         clarify["properties"]["action"]["enum"] = ["clarify"]
         for field in ("edits", "patches", "deletions", "requested_checks", "focus_paths"):
@@ -787,7 +814,12 @@ class ProjectGenerator:
         self.last_metrics: dict[str, int] = {}
         self.last_visible_paths: set[str] = set()
 
-    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def generate(
+        self,
+        payload: dict[str, Any],
+        ensure_active: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        ensure_active = ensure_active or (lambda: None)
         self.last_metrics = {}
         context = model_context(payload)
         diagnostics = "\n".join(item["output"] for item in payload["checks"])
@@ -816,6 +848,15 @@ class ProjectGenerator:
             check["status"] != "failed" or node_collected_no_tests(check)
             for check in payload["checks"]
         )
+        needs_readme = (
+            bool(payload["files"])
+            and bool(payload["checks"])
+            and all(check["status"] == "passed" for check in payload["checks"])
+            and (not conversation or conversation[-1]["role"] != "user")
+            and not any(
+                item["path"].casefold() == "readme.md" for item in payload["files"]
+            )
+        )
         schema = copy.deepcopy(STEP_SCHEMA)
         existing_paths = [item["path"] for item in payload["files"]]
         if existing_paths:
@@ -829,18 +870,31 @@ class ProjectGenerator:
         instruction = SYSTEM_PROMPT
         if answered or needs_repair:
             instruction += "\n" + IMPLEMENTATION_INSTRUCTION
-        if (answered and not payload["files"]) or needs_repair:
+        if (answered and not payload["files"]) or needs_repair or needs_readme:
             schema["properties"]["action"]["enum"] = ["continue", "complete"]
             if not payload["files"]:
                 schema["properties"]["edits"]["minItems"] = 1
             if needs_repair:
                 schema["properties"]["deletions"]["maxItems"] = 0
-            needs_creation = needs_tests or needs_node_manifest or needs_node_tests
+            needs_creation = needs_tests or needs_node_manifest or needs_node_tests or needs_readme
             first_field = "patches" if payload["files"] and not needs_creation else "edits"
             schema["properties"] = {
                 first_field: schema["properties"][first_field],
                 **schema["properties"],
             }
+        if needs_readme and not needs_repair:
+            schema["properties"]["action"]["enum"] = ["complete"]
+            schema["properties"]["edits"]["minItems"] = 1
+            schema["properties"]["edits"]["maxItems"] = 1
+            schema["properties"]["edits"]["items"]["properties"]["path"] = {
+                "const": "README.md"
+            }
+            schema["properties"]["edits"]["items"]["properties"]["content"] = {
+                "type": "string",
+                "maxLength": 3_000,
+            }
+            for field in ("patches", "deletions", "requested_checks", "focus_paths"):
+                schema["properties"][field]["maxItems"] = 0
         if needs_node_manifest:
             current_task = (
                 "The actual npm build failed and the root package.json is missing. "
@@ -883,6 +937,14 @@ class ProjectGenerator:
                 "features. Return effective changes, not identical files or a future plan. "
                 "Prefer exact text patches for small repairs; preserve the rest of each file. "
                 "Include README.md if it is missing.\n\nACTUAL FAILURES:\n" + failures
+            )
+        elif needs_readme:
+            current_task = (
+                "Create exactly README.md in this iteration as one concise complete edit. "
+                "Document the current application's requirements, setup, run and test commands "
+                "from the actual files and passing check receipts. Keep it below 3000 characters. "
+                "Do not edit application or test files, request checks, patch, delete, or focus "
+                "another file. Preserve the existing milestone plan and use action complete."
             )
         elif answered:
             current_task = "Implement this latest user request now:\n" + last_user
@@ -959,10 +1021,18 @@ class ProjectGenerator:
         body = {
             "model": self.model,
             "messages": messages,
-            "stream": False,
+            "stream": True,
             "format": constrained_step_schema(schema, context, payload, addresses),
             "keep_alive": "10m",
-            "options": {"temperature": 0, "num_ctx": 32_768, "num_predict": MAX_OUTPUT_TOKENS},
+            "options": {
+                "temperature": 0,
+                "num_ctx": 32_768,
+                "num_predict": (
+                    MAX_README_OUTPUT_TOKENS
+                    if needs_readme and not needs_repair
+                    else MAX_OUTPUT_TOKENS
+                ),
+            },
         }
         if "qwen3.5" in self.model.casefold():
             # Qwen's published non-thinking coding profile. Thinking is disabled
@@ -984,26 +1054,77 @@ class ProjectGenerator:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), protocol._RejectRedirects()
         )
+        deadline = time.monotonic() + MAX_MODEL_WALL_SECONDS
         try:
+            ensure_active()
             with opener.open(request, timeout=self.timeout_seconds) as response:  # nosec B310
                 if response.status != 200:
                     raise model_http_error(response.status)
-                raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+                total_bytes = 0
+                content_parts: list[str] = []
+                envelope: dict[str, Any] | None = None
+                while True:
+                    ensure_active()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC)
+                    set_stream_read_timeout(
+                        response, min(self.timeout_seconds, remaining)
+                    )
+                    line = response.readline(MAX_MODEL_RESPONSE_BYTES - total_bytes + 1)
+                    if not line:
+                        break
+                    total_bytes += len(line)
+                    if total_bytes > MAX_MODEL_RESPONSE_BYTES:
+                        raise ProjectError("local project model response exceeded its byte limit")
+                    ensure_active()
+                    try:
+                        event = transport._parse_json(line)
+                    except transport.GenerationError as exc:
+                        raise ModelStepError(
+                            "The model response was incomplete. No edits were accepted. "
+                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                        ) from exc
+                    if not isinstance(event, dict):
+                        raise ModelStepError(
+                            "The model response was incomplete. No edits were accepted. "
+                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                        )
+                    if "error" in event:
+                        raise ModelTransportError("unavailable")
+                    message = event.get("message")
+                    content = message.get("content") if isinstance(message, dict) else None
+                    if not isinstance(content, str):
+                        raise ModelStepError(
+                            "The model response was incomplete. No edits were accepted. "
+                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                        )
+                    content_parts.append(content)
+                    if event.get("done") is True:
+                        envelope = event
+                        break
+                    if event.get("done") is not False:
+                        raise ModelStepError(
+                            "The model response was incomplete. No edits were accepted. "
+                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                        )
+                if envelope is None:
+                    raise ModelStepError(
+                        "The model response was incomplete. No edits were accepted. "
+                        "Return a smaller complete JSON file-edit batch in the next iteration."
+                    )
+                content = "".join(content_parts)
         except TimeoutError as exc:
-            raise ModelStepError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
+            raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
         except urllib.error.HTTPError as exc:
             raise model_http_error(exc.code) from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
-                raise ModelStepError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
+                raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
             raise ModelTransportError("connection_error") from exc
         except OSError as exc:
             raise ModelTransportError("connection_error") from exc
-        if len(raw) > MAX_MODEL_RESPONSE_BYTES:
-            raise ProjectError("local project model response exceeded its byte limit")
         try:
-            envelope = transport._parse_json(raw)
-            content = envelope["message"]["content"]
             self.last_metrics = {
                 key: envelope[key]
                 for key in (
@@ -1071,7 +1192,17 @@ def run_iteration(
 ) -> dict[str, Any]:
     ensure_active()
     try:
-        step = parse_step(generator.generate(payload))
+        step = parse_step(generator.generate(payload, ensure_active))
+    except ModelTimeoutError as exc:
+        ensure_active()
+        result = rejected_step(payload, str(exc))
+        if payload["conversation"] and payload["conversation"][-1] == {
+            "role": "assistant",
+            "content": MODEL_TIMEOUT_DIAGNOSTIC,
+        }:
+            result["action"] = "clarify"
+            result["message"] = MODEL_REPEATED_TIMEOUT_DIAGNOSTIC
+        return result
     except ModelStepError as exc:
         ensure_active()
         return rejected_step(payload, str(exc))

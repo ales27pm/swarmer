@@ -51,8 +51,12 @@ class Generator:
         self.response = response
         self.calls = 0
 
-    def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def generate(
+        self, payload: dict[str, Any], ensure_active: Any | None = None
+    ) -> dict[str, Any]:
         self.calls += 1
+        if ensure_active is not None:
+            ensure_active()
         return copy.deepcopy(self.response)
 
 
@@ -257,7 +261,7 @@ def test_model_transport_uses_one_local_schema_request_without_credentials(
             assert schema["properties"][field]["maxItems"] == 0
         assert '"enum": []' not in json.dumps(schema)
     assert "maxLength" not in json.dumps(schema)
-    assert body["stream"] is False
+    assert body["stream"] is True
     assert requests[0].full_url == "http://127.0.0.1:11434/api/chat"
     assert body["keep_alive"] == "10m"
     assert body["options"]["num_ctx"] == 32_768
@@ -397,7 +401,7 @@ def test_model_timeout_preserves_snapshot_and_receipts_without_execution_or_retr
     class Response(io.BytesIO):
         status = 200
 
-        def read(self, size: int = -1) -> bytes:
+        def readline(self, size: int = -1) -> bytes:
             raise TimeoutError("private response detail")
 
     class Opener:
@@ -421,6 +425,219 @@ def test_model_timeout_preserves_snapshot_and_receipts_without_execution_or_retr
     assert data == original
     assert result["message"] == worker.MODEL_TIMEOUT_DIAGNOSTIC
     assert "private" not in result["message"]
+
+
+def test_streaming_native_response_assembles_chunks_and_checks_active_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = single_file_step()
+    serialized = json.dumps(expected)
+    midpoint = len(serialized) // 2
+    raw = b"\n".join(
+        json.dumps(item).encode()
+        for item in (
+            {
+                "message": {"content": serialized[:midpoint]},
+                "done": False,
+            },
+            {
+                "message": {"content": serialized[midpoint:]},
+                "done": False,
+            },
+            {
+                "message": {"content": ""},
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 22,
+                "eval_count": 33,
+            },
+        )
+    ) + b"\n"
+    requests = []
+    active_checks = 0
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            requests.append(json.loads(request.data))
+            return Response(raw)
+
+    def active() -> None:
+        nonlocal active_checks
+        active_checks += 1
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator(
+        "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+    )
+    assert generator.generate(payload(), active)["edits"] == expected["edits"]
+    assert requests[0]["stream"] is True
+    assert active_checks >= 4
+    assert generator.last_metrics == {"prompt_eval_count": 22, "eval_count": 33}
+
+
+def test_streaming_native_response_rejects_eof_before_terminal_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = (
+        json.dumps({"message": {"content": "{\"action\":"}, "done": False})
+        + "\n"
+    ).encode()
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response(raw)
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(worker.ModelStepError, match="incomplete"):
+        worker.ProjectGenerator(
+            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+        ).generate(payload())
+
+
+def test_streaming_native_response_rejects_malformed_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response(b"not-json\n")
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(worker.ModelStepError, match="incomplete"):
+        worker.ProjectGenerator(
+            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+        ).generate(payload())
+
+
+def test_streaming_native_response_enforces_total_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = b"x" * (worker.MAX_MODEL_RESPONSE_BYTES + 1)
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response(raw)
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(worker.ProjectError, match="byte limit"):
+        worker.ProjectGenerator(
+            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+        ).generate(payload())
+
+
+def test_streaming_native_response_enforces_productive_wall_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response(
+                json.dumps({"message": {"content": "{"}, "done": False}).encode()
+                + b"\n"
+            )
+
+    clock = iter((0.0, worker.MAX_MODEL_WALL_SECONDS + 0.01))
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(worker.ModelTimeoutError, match="timed out"):
+        worker.ProjectGenerator(
+            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+        ).generate(payload())
+
+
+def test_streaming_native_response_bounds_each_read_by_remaining_wall_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured: list[float] = []
+
+    class Socket:
+        def settimeout(self, value: float) -> None:
+            configured.append(value)
+
+    class Raw:
+        _sock = Socket()
+
+    class Stream:
+        raw = Raw()
+
+    class Response(io.BytesIO):
+        status = 200
+        fp = Stream()
+
+        def readline(self, size: int = -1) -> bytes:
+            raise TimeoutError("private response detail")
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response()
+
+    clock = iter((10.0, 10.0 + worker.MAX_MODEL_WALL_SECONDS - 1.25))
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(worker.ModelTimeoutError, match="timed out") as error:
+        worker.ProjectGenerator(
+            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+        ).generate(payload())
+    assert configured == [pytest.approx(1.25)]
+    assert "private" not in str(error.value)
+
+
+def test_streaming_native_error_event_is_a_fixed_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            return Response(b'{"error":"private backend detail"}\n')
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(worker.ModelTransportError) as error:
+        worker.ProjectGenerator(
+            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
+        ).generate(payload())
+    assert error.value.category == "unavailable"
+    assert "private" not in str(error.value)
+
+
+def test_second_consecutive_timeout_pauses_instead_of_charging_a_third_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {
+        **payload(),
+        "conversation": [
+            {"role": "assistant", "content": worker.MODEL_TIMEOUT_DIAGNOSTIC}
+        ],
+    }
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Any:
+            raise TimeoutError("private detail")
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    result = worker.run_iteration(
+        data,
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b"),
+        Runner(),
+        lambda: None,
+    )
+    assert result["action"] == "clarify"
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+    assert "paused" in result["message"].casefold()
 
 
 @pytest.mark.parametrize(
@@ -540,7 +757,7 @@ def test_timeout_recovery_still_discards_a_lost_lease(monkeypatch: pytest.Monkey
     def active() -> None:
         nonlocal active_checks
         active_checks += 1
-        if active_checks > 1:
+        if active_checks > 2:
             raise worker.protocol.LeaseLost("cancelled")
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
@@ -1680,7 +1897,9 @@ def test_rejected_model_step_preserves_snapshot_without_a_forged_check_or_second
     }
 
     class InvalidGenerator(Generator):
-        def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        def generate(
+            self, payload: dict[str, Any], ensure_active: Any | None = None
+        ) -> dict[str, Any]:
             self.calls += 1
             raise worker.ModelStepError(
                 "The model step failed strict validation. No edits were accepted."
@@ -1745,6 +1964,92 @@ def test_readiness_diagnostic_names_missing_readme_even_when_tests_pass() -> Non
     result = worker.run_iteration(payload(), Generator(response), Runner(), lambda: None)
     assert result["action"] == "continue" and "README.md" in result["message"]
     assert "failed check" not in result["message"]
+
+
+def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {
+        **payload(),
+        "files": [
+            {"path": "app.py", "content": "VALUE = 1\n"},
+            {"path": "tests/test_app.py", "content": "def test_value(): assert True\n"},
+        ],
+        "plan": ["Keep the application", "Document setup"],
+        "checks": [
+            {
+                "command": ["python", "-m", "pytest", "-q"],
+                "status": "passed",
+                "exit_code": 0,
+                "duration_ms": 1,
+                "output": "1 passed",
+            }
+        ],
+        "conversation": [
+            {"role": "user", "content": "Build the application"},
+            {"role": "assistant", "content": "Required before readiness: README.md"},
+        ],
+    }
+    response = step(
+        action="complete",
+        edits=[{"path": "README.md", "content": "# App\n\nRun `pytest`.\n"}],
+        patches=[],
+        requested_checks=[],
+        run_instructions="python -m pytest -q",
+        focus_paths=[],
+    )
+    body = capture_project_request(monkeypatch, data, response)
+    schema = body["format"]["oneOf"][0]
+    assert len(body["format"]["oneOf"]) == 1
+    assert Draft202012Validator.check_schema(body["format"]) is None
+    assert next(iter(schema["properties"])) == "edits"
+    assert schema["properties"]["action"]["enum"] == ["complete"]
+    assert schema["properties"]["edits"]["minItems"] == 1
+    assert schema["properties"]["edits"]["maxItems"] == 1
+    assert schema["properties"]["edits"]["items"]["properties"]["path"] == {
+        "const": "README.md"
+    }
+    assert schema["properties"]["edits"]["items"]["properties"]["content"][
+        "maxLength"
+    ] == 3_000
+    for field in ("patches", "deletions", "requested_checks", "focus_paths"):
+        assert schema["properties"][field]["maxItems"] == 0
+    task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
+    assert "Create exactly README.md" in task
+    assert "Do not edit application or test files" in task
+    assert "use action complete" in task
+
+
+def test_new_user_request_takes_priority_over_missing_readme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
+        "checks": [
+            {
+                "command": ["python", "-m", "pytest", "-q"],
+                "status": "passed",
+                "exit_code": 0,
+                "duration_ms": 1,
+                "output": "1 passed",
+            }
+        ],
+        "conversation": [
+            {"role": "assistant", "content": "Required before readiness: README.md"},
+            {"role": "user", "content": "Add CSV export first."},
+        ],
+    }
+    body = capture_project_request(monkeypatch, data)
+    schema = body["format"]["oneOf"][0]
+    assert schema["properties"]["edits"]["maxItems"] == 1
+    assert schema["properties"]["edits"]["items"]["properties"]["path"].get(
+        "const"
+    ) is None
+    assert body["options"]["num_predict"] == worker.MAX_OUTPUT_TOKENS
+    task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
+    assert "Add CSV export first." in task
+    assert "Create exactly README.md" not in task
 
 
 def test_context_labels_partial_reads_and_historical_memory_without_exceeding_byte_budget() -> None:

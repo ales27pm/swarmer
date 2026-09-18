@@ -59,10 +59,17 @@ attempt and cannot be automatically redistributed. Existing user-selected step,
 runtime, and model-call limits remain authoritative.
 
 Model responses are limited to 2,000 tokens. Each iteration can write one
-complete file and use small patches or deletions to repair several paths. A generation
-timeout preserves the previous source and real check receipts, then returns a
-continuation for a new charged job. Network and request failures remain distinct
-from a timed-out generation; no job retries its model request internally.
+complete file and use small patches or deletions to repair several paths. Ollama
+responses are consumed as bounded NDJSON streams: the 240-second socket timeout is
+an inactivity bound, while a separate 510-second wall limit leaves room inside the
+worker operation lease for validation and checks. A generation timeout preserves
+the previous source and real check receipts, then returns a continuation for one
+new charged job. A second consecutive timeout pauses instead of charging a third
+call. Network and request failures remain distinct from a timed-out generation; no
+job retries its model request internally. When source and tests already pass, no
+newer user request is pending, and README.md is the sole remaining readiness gate,
+generation is constrained to that single documentation file with a 1,200-token
+output budget.
 
 An evaluator transport or response failure waits at least 60 seconds before an
 automatic retry of unchanged state. Three invalid or rejected responses for the

@@ -77,10 +77,14 @@ precedence. The worker never performs a hidden second model/embedding call.
 The candidate Qwen3-Coder profile uses non-thinking inference with temperature 0.7,
 top_p 0.8, top_k 20 and repetition penalty 1.05, following the
 [official model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct).
-The project-only request timeout defaults to 240 seconds and remains configurable
-between 30 and 240 seconds, within the 600-second worker operation limit. Model
-selection is a candidate configuration; passing unit checks does not establish
-project quality. Release acceptance requires actual independent application tests.
+Ollama responses use its native NDJSON stream. The project-only socket timeout
+defaults to 240 seconds and remains configurable between 30 and 240 seconds; it
+therefore bounds an inactive connection rather than cutting off a response that is
+still producing chunks. The worker checks its lease between chunks and enforces a
+separate 510-second model wall limit, leaving time for validation and checks inside
+the 600-second operation limit. Model selection is a candidate configuration;
+passing unit checks does not establish project quality. Release acceptance requires
+actual independent application tests.
 
 `focus_paths` requests a separately charged read iteration for omitted files.
 Complete focused files are prioritized; oversized files are explicitly labelled
@@ -97,7 +101,11 @@ subject to the goal budget. Invalid model edits are rejected without altering th
 snapshot; a safe diagnostic guides the next job, preserving previous real checks.
 A model timeout also returns an unchanged snapshot with a fixed diagnostic asking
 for a smaller complete batch. The next attempt is a new, separately charged job;
-there is no retry inside the timed-out job and no fabricated check receipt.
+there is no retry inside the timed-out job and no fabricated check receipt. A second
+consecutive timeout pauses the project instead of automatically charging a third
+call. When existing source and real checks already pass, no newer user request is
+pending, and only README.md is missing, the next request is constrained to one
+concise README edit and a smaller 1,200-token output budget.
 Connection failures, rejected HTTP configuration and service unavailability are
 distinct fixed transport categories and remain failed jobs. Logs omit raw error
 bodies and endpoints. Goal and worker time/call budgets remain unchanged.
