@@ -1615,7 +1615,7 @@ def test_resolved_patch_rejects_replacement_over_utf8_byte_limit() -> None:
             }
         ],
     )
-    with pytest.raises(ProjectError, match="8000-byte UTF-8 limit"):
+    with pytest.raises(ProjectError, match=rf"below {worker.MAX_PATCH_BYTES} UTF-8 bytes"):
         worker.resolve_model_patches(response, addresses)
 
 

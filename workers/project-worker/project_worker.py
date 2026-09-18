@@ -625,7 +625,9 @@ def resolve_model_patches(value: object, addresses: dict[str, dict[str, Any]]) -
         if new == address["old"]:
             raise ProjectError("model patch replacement is identical to the selected source span")
         if isinstance(new, str) and len(new.encode("utf-8")) >= MAX_PATCH_BYTES:
-            raise ProjectError(f"model patch replacement must be below {MAX_PATCH_BYTES} UTF-8 bytes")
+            raise ProjectError(
+                f"model patch replacement must be below {MAX_PATCH_BYTES} UTF-8 bytes"
+            )
         resolved.append({"path": address["path"], "old": address["old"], "new": new})
     value["patches"] = resolved
     return value
