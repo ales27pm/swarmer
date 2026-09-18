@@ -903,21 +903,20 @@ def test_addressed_editor_does_not_add_a_newline_at_unterminated_eof() -> None:
 def test_added_terminal_separator_is_included_in_strict_patch_size_limit() -> None:
     data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\r\n"}]}
     addresses = worker.addressed_patch_spans(worker.model_context(data), data)
-    resolved = worker.resolve_model_patches(
-        step(
-            edits=[],
-            patches=[
-                {
-                    "path": "app.py",
-                    "span_id": next(iter(addresses)),
-                    "new": "x" * worker.MAX_PATCH_BYTES,
-                }
-            ],
-        ),
-        addresses,
-    )
-    with pytest.raises(ProjectError, match="exceeds"):
-        worker.merge_files(data["files"], resolved)
+    with pytest.raises(ProjectError, match=rf"below {worker.MAX_PATCH_BYTES} UTF-8 bytes"):
+        worker.resolve_model_patches(
+            step(
+                edits=[],
+                patches=[
+                    {
+                        "path": "app.py",
+                        "span_id": next(iter(addresses)),
+                        "new": "x" * worker.MAX_PATCH_BYTES,
+                    }
+                ],
+            ),
+            addresses,
+        )
     assert data["files"][0]["content"] == "value = 1\r\n"
 
 
@@ -1588,6 +1587,36 @@ def test_rejected_native_response_keeps_metrics_and_specific_safe_diagnostic(
     assert generator.last_metrics["eval_count"] == 3000
     assert ("unknown" if done_reason == "stop" else "incomplete") in str(error.value)
     assert "private-source-marker" not in str(error.value)
+
+
+def test_resolved_patch_rejects_noop_after_terminal_newline_preservation() -> None:
+    data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\n"}]}
+    addresses = worker.addressed_patch_spans(worker.model_context(data), data)
+    address = next(item for item in addresses.values() if item["old"] == "value = 1\n")
+    response = step(
+        edits=[],
+        patches=[{"path": "app.py", "span_id": address["span_id"], "new": "value = 1"}],
+    )
+    with pytest.raises(ProjectError, match="identical to the selected source span"):
+        worker.resolve_model_patches(response, addresses)
+
+
+def test_resolved_patch_rejects_replacement_over_utf8_byte_limit() -> None:
+    data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\n"}]}
+    addresses = worker.addressed_patch_spans(worker.model_context(data), data)
+    address = next(item for item in addresses.values() if item["old"] == "value = 1\n")
+    response = step(
+        edits=[],
+        patches=[
+            {
+                "path": "app.py",
+                "span_id": address["span_id"],
+                "new": "é" * (worker.MAX_PATCH_BYTES // 2 + 1),
+            }
+        ],
+    )
+    with pytest.raises(ProjectError, match="8000-byte UTF-8 limit"):
+        worker.resolve_model_patches(response, addresses)
 
 
 def test_native_response_cannot_bypass_current_visible_patch_choices(
