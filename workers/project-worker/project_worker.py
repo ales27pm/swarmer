@@ -88,6 +88,8 @@ PATCH_TARGET blocks show the exact text replaced by each ID. Do not copy lines
 from surrounding SOURCE context or decorators outside that target into new.
 For a nonempty replacement missing its final newline, the editor preserves the
 replaced span's terminal CRLF, LF or CR so the next unselected line stays separate.
+A patch replacement MUST differ from the exact PATCH_TARGET after that newline
+preservation and stay below 8000 UTF-8 bytes. Never return the selected source unchanged.
 Do not regenerate or copy an old field. At most8
 patches and3 changed paths across edits/patches/deletions. Patches must not overlap
 or share a path with edits/deletions. You may patch a shown fragment while leaving
@@ -620,6 +622,10 @@ def resolve_model_patches(value: object, addresses: dict[str, dict[str, Any]]) -
         terminal = re.search(r"(\r\n|\r|\n)$", address["old"])
         if isinstance(new, str) and new and not new.endswith(("\r", "\n")) and terminal:
             new += terminal.group(1)
+        if new == address["old"]:
+            raise ProjectError("model patch replacement is identical to the selected source span")
+        if isinstance(new, str) and len(new.encode("utf-8")) > MAX_PATCH_BYTES:
+            raise ProjectError("model patch replacement exceeds the 8000-byte UTF-8 limit")
         resolved.append({"path": address["path"], "old": address["old"], "new": new})
     value["patches"] = resolved
     return value
