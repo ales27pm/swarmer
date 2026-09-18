@@ -903,21 +903,20 @@ def test_addressed_editor_does_not_add_a_newline_at_unterminated_eof() -> None:
 def test_added_terminal_separator_is_included_in_strict_patch_size_limit() -> None:
     data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\r\n"}]}
     addresses = worker.addressed_patch_spans(worker.model_context(data), data)
-    resolved = worker.resolve_model_patches(
-        step(
-            edits=[],
-            patches=[
-                {
-                    "path": "app.py",
-                    "span_id": next(iter(addresses)),
-                    "new": "x" * worker.MAX_PATCH_BYTES,
-                }
-            ],
-        ),
-        addresses,
-    )
-    with pytest.raises(ProjectError, match="exceeds"):
-        worker.merge_files(data["files"], resolved)
+    with pytest.raises(ProjectError, match=rf"below {worker.MAX_PATCH_BYTES} UTF-8 bytes"):
+        worker.resolve_model_patches(
+            step(
+                edits=[],
+                patches=[
+                    {
+                        "path": "app.py",
+                        "span_id": next(iter(addresses)),
+                        "new": "x" * worker.MAX_PATCH_BYTES,
+                    }
+                ],
+            ),
+            addresses,
+        )
     assert data["files"][0]["content"] == "value = 1\r\n"
 
 
