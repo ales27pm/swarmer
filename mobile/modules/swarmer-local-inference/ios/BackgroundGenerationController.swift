@@ -45,7 +45,7 @@ struct GenerationActivityFence: Sendable {
 @MainActor
 protocol BackgroundGenerationTask: AnyObject {
   func setExpirationHandler(_ handler: @escaping @Sendable () -> Void)
-  func reportOutputBytes(_ count: Int)
+  func reportProgress(completed: Int, total: Int, outputBytes: Int)
   func complete(success: Bool, outputBytes: Int)
 }
 
@@ -82,6 +82,10 @@ final class BackgroundGenerationController {
     let id: UUID
     let identifier: String
     let device: BackgroundGenerationDevice
+    let maxTokens: Int
+    var prepared = false
+    var tokenSteps = 0
+    var completedWork: Int { (prepared ? 1 : 0) + tokenSteps }
     let cancel: @Sendable () async -> Void
     var task: (any BackgroundGenerationTask)?
     var admission: CheckedContinuation<Void, Never>?
@@ -123,11 +127,17 @@ final class BackgroundGenerationController {
   }
 
   @discardableResult
-  func prepare(operationId: UUID, cancel: @escaping @Sendable () async -> Void) async -> BackgroundGenerationDevice {
+  func prepare(operationId: UUID, maxTokens: Int, cancel: @escaping @Sendable () async -> Void) async -> BackgroundGenerationDevice {
     let device = preferredExecutionDevice()
     guard operation == nil else { return device }
     executionDevice = device
     outputBytes = 0
+    guard maxTokens > 0, maxTokens <= Int.max - 2 else {
+      state = "foreground_only"
+      reason = "invalid_token_limit"
+      notifyStatusChanged()
+      return device
+    }
     let support = scheduler.support()
     guard support.osSupported, scheduler.isForeground, !foregroundBlocked else {
       state = "foreground_only"
@@ -136,7 +146,7 @@ final class BackgroundGenerationController {
       return device
     }
     let identifier = "org.27pm.mongars.mlx-generation.\(operationId.uuidString)"
-    operation = Operation(id: operationId, identifier: identifier, device: device, cancel: cancel)
+    operation = Operation(id: operationId, identifier: identifier, device: device, maxTokens: maxTokens, cancel: cancel)
     state = "requesting"
     reason = device == .cpu ? "cpu_fallback" : nil
     notifyStatusChanged()
@@ -196,7 +206,7 @@ final class BackgroundGenerationController {
     task.setExpirationHandler { [weak self] in
       Task { @MainActor in await self?.expire(operationId: operationId) }
     }
-    task.reportOutputBytes(0)
+    reportProgress()
     let continuation = operation?.admission
     operation?.admission = nil
     continuation?.resume()
@@ -247,7 +257,35 @@ final class BackgroundGenerationController {
   func reportOutput(operationId: UUID, bytes: Int) {
     guard operation?.id == operationId, state == "active", bytes >= outputBytes else { return }
     outputBytes = bytes
-    operation?.task?.reportOutputBytes(bytes)
+    reportProgress()
+  }
+
+  func reportPreparation(operationId: UUID) {
+    reportWork(operationId: operationId, completedUnits: 1)
+  }
+
+  func reportTokenStep(operationId: UUID, count: Int) {
+    guard let current = operation, count > 0, count <= current.maxTokens else { return }
+    reportWork(operationId: operationId, completedUnits: count + 1)
+  }
+
+  func reportWork(operationId: UUID, completedUnits: Int) {
+    guard let current = operation, current.id == operationId, state == "active",
+          completedUnits > current.completedWork, completedUnits <= current.maxTokens + 1 else { return }
+    // A finished token step implies preparation already finished. Its callback
+    // may arrive first; accept that evidence and ignore later lower counters.
+    operation?.prepared = true
+    operation?.tokenSteps = completedUnits - 1
+    reportProgress()
+  }
+
+  private func reportProgress() {
+    guard let current = operation, state == "active" else { return }
+    // Preparation + bounded generation + a final native producer/stream barrier.
+    // Bytes are independent output evidence, never an invented token estimate.
+    current.task?.reportProgress(
+      completed: current.completedWork, total: current.maxTokens + 2, outputBytes: outputBytes
+    )
   }
 
   private func expire(operationId: UUID) async {
@@ -267,7 +305,15 @@ final class BackgroundGenerationController {
     operation = nil
     current.admission?.resume()
     if let task = current.task {
-      task.complete(success: success && !didExpire, outputBytes: outputBytes)
+      let completedSuccessfully = success && !didExpire && !cancelled
+      if completedSuccessfully {
+        // The caller has joined the producer and drained its execution stream.
+        // EOS can finish before the limit: complete only the work actually done,
+        // including one final barrier unit, without claiming unused token steps.
+        let finishedWork = current.completedWork + 1
+        task.reportProgress(completed: finishedWork, total: finishedWork, outputBytes: outputBytes)
+      }
+      task.complete(success: completedSuccessfully, outputBytes: outputBytes)
     } else {
       scheduler.cancel(identifier: current.identifier)
     }
@@ -289,18 +335,17 @@ private final class SystemBackgroundGenerationTask: BackgroundGenerationTask {
   private let task: BGContinuedProcessingTask
   init(_ task: BGContinuedProcessingTask) { self.task = task }
   func setExpirationHandler(_ handler: @escaping @Sendable () -> Void) { task.expirationHandler = handler }
-  func reportOutputBytes(_ count: Int) {
-    task.progress.totalUnitCount = -1
-    task.progress.completedUnitCount = Int64(count)
-    task.updateTitle("Génération MLX", subtitle: "\(count) octets de texte produits")
+  func reportProgress(completed: Int, total: Int, outputBytes: Int) {
+    task.progress.totalUnitCount = Int64(total)
+    task.progress.completedUnitCount = Int64(completed)
+    #if DEBUG
+    NSLog("BackgroundGenerationProgress completed=%lld total=%lld outputBytes=%lld fraction=%f",
+          Int64(completed), Int64(total), Int64(outputBytes), task.progress.fractionCompleted)
+    #endif
+    task.updateTitle("Génération MLX", subtitle: "\(outputBytes) octets de texte produits")
   }
   func complete(success: Bool, outputBytes: Int) {
     task.expirationHandler = nil
-    // No fabricated completion percentage before the native GPU barrier.
-    if success {
-      task.progress.totalUnitCount = Int64(outputBytes)
-      task.progress.completedUnitCount = Int64(outputBytes)
-    }
     task.setTaskCompleted(success: success)
   }
 }

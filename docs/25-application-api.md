@@ -99,9 +99,33 @@ cd ..
 node scripts/prepare-automation-build.cjs
 ```
 
-Compiler le workspace `monGARSSwarm.xcworkspace`, scheme `monGARSSwarm`, configuration
-`Debug`, destination iPhone, avec une signature Development
-valide pour l’appareil. Le script prépare uniquement le projet iOS généré et exclut
+Compiler avec le wrapper dédié, qui conserve `DEBUG` et optimise aussi les kernels
+CPU Cmlx provenant de Swift Package Manager :
+
+```sh
+bash scripts/build-automation-iphone.sh \
+  -derivedDataPath /private/tmp/swarmer-automation-build \
+  -clonedSourcePackagesDirPath /private/tmp/swarmer-automation-packages \
+  -allowProvisioningUpdates
+```
+
+Le wrapper utilise par défaut `monGARSSwarm.xcworkspace`, scheme `monGARSSwarm`
+et une destination iPhone générique. Il transmet les options de cache et de
+signature, puis impose `-configuration Debug GCC_OPTIMIZATION_LEVEL=3
+SWIFT_OPTIMIZATION_LEVEL=-Onone`. Seule l’action `build` est acceptée ; si elle est
+fournie explicitement, elle n’est transmise qu’une fois. Les substitutions
+contradictoires, `-xcconfig`, les remplacements de conditions de compilation
+(`SWIFT_ACTIVE_COMPILATION_CONDITIONS`, `GCC_PREPROCESSOR_DEFINITIONS`) et les
+options `OTHER_CFLAGS`, `OTHER_CPLUSPLUSFLAGS`, `OTHER_SWIFT_FLAGS` sont refusés,
+y compris leurs variantes conditionnelles. `XCODE_XCCONFIG_FILE` doit être absent.
+L’optimisation vise les kernels CPU C/C++ ; Swift reste à `-Onone`, car Swift 6.2.4
+plante dans ExpoModulesCore avec une optimisation Swift globale à `-O`. Les tests du wrapper utilisent un faux
+`xcodebuild` (`node --test scripts/test-build-automation-iphone.cjs`). Une signature
+Development valide pour l’appareil reste nécessaire. Vérifier les commandes du
+build réel : Cmlx doit recevoir `-O3` et les sources natives doivent garder
+`DEBUG`. Ces réglages ne prouvent pas à eux seuls les performances sur iPhone.
+
+Le script de préparation modifie uniquement le projet iOS généré et exclut
 le launcher Metro de cette compilation. Il force le bundling Debug directement
 dans la phase Xcode, après les fichiers d’environnement ; `pod install` peut supprimer
 `.xcode.env.updates` sans désactiver ce réglage. Le second passage vérifie cette phase
@@ -170,8 +194,10 @@ le droit de continuer que lorsque le gestionnaire de lancement Apple a fourni
 la tâche correspondante. Une admission tardive, un refus ou un appareil non
 compatible avec les tâches continues conservent le comportement de premier plan.
 
-Le chargement et la génération CPU utilisent les scopes de device et de stream
-MLX ; le scope englobe aussi les tâches filles et la barrière de synchronisation.
+Le chargement et la génération CPU utilisent le device MLX scopé et réutilisent
+le stream CPU par défaut ; les tâches filles héritent du device et la barrière
+finale attend ce même stream. Un stream ambiant incompatible est refusé avant
+le calcul. Aucune création répétée de workers CPU n’est nécessaire.
 Le JIT CPU absent sur iOS est désactivé via l’API publique MLX avant ce chemin.
 Cette désactivation concerne le processus et n’est pas restaurée à une valeur
 inconnue. Les kernels CPU normaux restent disponibles. Aucun droit GPU n’est
@@ -203,14 +229,28 @@ L’accès HTTPS de suivi cesse à la fin du calcul ; si la réponse finale n’
 génération. Le journal de qualification documente séparément la signature,
 le support matériel observé et les essais réellement effectués sur iPhone.
 
-Sur l’iPhone 16 Pro testé sous iOS 26.6.1, le build `20260916034417` possède le
-droit GPU dans sa signature et son profil, mais le système retourne
-`gpuSupported=false`. Ce premier build gardait donc MLX au premier plan.
-Le passage à l’écran d’accueil a annulé proprement une génération ; une nouvelle
-génération a réussi au retour, avec le modèle toujours chargé. L’exécution GPU
-en arrière-plan sur un appareil qui l’admet reste à qualifier. Le chemin CPU est
-une évolution distincte, dont la compilation et l’installation sont acquises mais
-les essais physiques attendent le déverrouillage du téléphone. Voir le
+Sur l’iPhone 16 Pro sous iOS 26.7, le build installé `20260920220700` a réussi
+deux essais bornés de continuation CPU, après observation d’une première sortie
+au premier plan. L’annulation API termine en 1,885 seconde après son acceptation,
+avec 7 tokens et `finishReason=cancelled`. La génération suivante atteint son
+budget de 16 tokens (`finishReason=length`) après 28,868 secondes d’observation
+en arrière-plan, avec progression de 31 à 71 octets entre observations. Dans les
+deux cas, les nouveaux calculs sont refusés avec HTTP 409, le listener ferme à
+la fin, et le modèle reste `ready` dans la même instance.
+
+Cette qualification concerne un modèle déjà chargé et une génération ayant
+produit une sortie au premier plan. Elle ne couvre ni le passage en arrière-plan
+pendant la préparation initiale, ni les longues durées, ni l’écran verrouillé.
+Le système retourne toujours `gpuSupported=false` ; le droit signé ne suffit
+pas à rendre cette capacité disponible. Le GPU en arrière-plan reste à qualifier
+sur un appareil qui le prend en charge.
+
+Les échecs historiques sont conservés : le build `20260916034417` restait au
+premier plan faute de GPU, et l’essai CPU du build `20260916045505` a été annulé
+sans texte après 38,779 secondes. Le premier essai de 32 tokens du 20 septembre
+a montré une progression en arrière-plan, mais son retour au premier plan avant
+la fin ne qualifie pas l’achèvement dans cet état. Voir la
+[qualification du 20 septembre](evidence/iphone-background-cpu-2026-09-20.md), le
 [suivi du correctif CPU](evidence/iphone-background-cpu-2026-09-16.md) et les
 [preuves physiques](evidence/application-api-2026-09-16.md).
 

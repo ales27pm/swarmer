@@ -3,10 +3,25 @@ import Foundation
 @MainActor
 private final class FakeBackgroundTask: BackgroundGenerationTask {
   var expiration: (@Sendable () -> Void)?
+  struct WorkProgress {
+    let completed: Int
+    let total: Int
+    let fraction: Double
+    let indeterminate: Bool
+  }
+  var workProgress: [WorkProgress] = []
   var progress: [Int] = []
   var completions: [Bool] = []
   func setExpirationHandler(_ handler: @escaping @Sendable () -> Void) { expiration = handler }
-  func reportOutputBytes(_ count: Int) { progress.append(count) }
+  func reportProgress(completed: Int, total: Int, outputBytes: Int) {
+    let value = Progress(totalUnitCount: Int64(total))
+    value.completedUnitCount = Int64(completed)
+    workProgress.append(WorkProgress(
+      completed: completed, total: total,
+      fraction: value.fractionCompleted, indeterminate: value.isIndeterminate
+    ))
+    progress.append(outputBytes)
+  }
   func complete(success: Bool, outputBytes: Int) { completions.append(success) }
 }
 
@@ -81,7 +96,13 @@ private struct BackgroundGenerationTests {
     try lifecycleEntryReconcilesCurrentState()
     try staleActiveCallbackCannotReopenBackground()
     try staleResumePreservesFullBackgroundCancellation()
-    print("14 background generation lifecycle tests passed")
+    try await determinateProgressTracksRealWork()
+    try await earlyEOSCompletesOnlyActualWork()
+    try await zeroOutputEOSCompletesDeterminateProgress()
+    try await cancelledProgressNeverFinishesSuccessfully()
+    try await staleAndOutOfOrderProgressCannotAdvanceWork()
+    try await invalidTokenBudgetNeverSubmits()
+    print("20 background generation lifecycle and progress tests passed")
   }
 
   @MainActor static func lifecycleEntryReconcilesCurrentState() throws {
@@ -143,7 +164,7 @@ private struct BackgroundGenerationTests {
       if variant == 1 { scheduler.isForeground = false }
       let controller = BackgroundGenerationController(scheduler: scheduler)
       let id = UUID()
-      await controller.prepare(operationId: id, cancel: {})
+      await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
       let status = controller.status()
       try check(scheduler.submissions.isEmpty, "fallback must not submit")
       try check(status.entitlementGranted == nil, "OS/resource/foreground checks do not establish entitlement")
@@ -160,7 +181,7 @@ private struct BackgroundGenerationTests {
       if variant == 2 { scheduler.registrationAllowed = false }
       let controller = BackgroundGenerationController(scheduler: scheduler)
       let id = UUID()
-      await controller.prepare(operationId: id, cancel: {})
+      await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
       let status = controller.status()
       try check(status.supported, "GPU availability must be independent from permission")
       try check(status.entitlementGranted == (variant == 0 ? false : nil), "only explicit permission rejection establishes false")
@@ -177,7 +198,7 @@ private struct BackgroundGenerationTests {
     let id = UUID()
     try check(controller.status().supported, "CPU continued processing only requires supported OS")
     try check(controller.preferredExecutionDevice() == .cpu, "load and generation must agree on CPU")
-    let selected = await controller.prepare(operationId: id, cancel: {})
+    let selected = await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
     try check(selected == .cpu && scheduler.requestedDevices == [.cpu], "request CPU without a GPU requirement")
     let status = controller.status()
     try check(status.active && !status.gpuSupported && status.executionDevice == "cpu", "CPU admission is independently usable")
@@ -198,7 +219,7 @@ private struct BackgroundGenerationTests {
     scheduler.rejection = .notPermitted
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let id = UUID()
-    let selected = await controller.prepare(operationId: id, cancel: {})
+    let selected = await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
     try check(selected == .cpu, "refused continuation still uses CPU in foreground")
     try check(!controller.status().active && controller.status().entitlementGranted == nil, "CPU refusal cannot claim GPU entitlement denied")
     scheduler.isForeground = false
@@ -210,7 +231,7 @@ private struct BackgroundGenerationTests {
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let id = UUID()
     try check(controller.status().entitlementGranted == nil, "permission initially unknown")
-    await controller.prepare(operationId: id, cancel: {})
+    await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
     let task = scheduler.tasks[scheduler.submissions[0]]!
     try check(controller.status().active && controller.status().entitlementGranted == true, "only admission proves permission")
     try check(scheduler.requestedDevices == [.gpu] && controller.status().executionDevice == "gpu", "GPU path retains explicit GPU request")
@@ -233,13 +254,19 @@ private struct BackgroundGenerationTests {
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let barrier = CancellationBarrier()
     let id = UUID()
-    await controller.prepare(operationId: id, cancel: { await barrier.cancel() })
+    await controller.prepare(operationId: id, maxTokens: 32, cancel: { await barrier.cancel() })
     let task = scheduler.tasks[scheduler.submissions[0]]!
+    controller.reportPreparation(operationId: id)
+    controller.reportTokenStep(operationId: id, count: 5)
+    let previousProgress = task.workProgress.count
     task.expiration?()
     while !(await barrier.entered) { await Task.yield() }
     try check(controller.status().state == "expiring", "expiry state while producer drains")
     try check(!controller.mayContinue(operationId: id), "expired lease grants no new GPU work")
     try check(task.completions.isEmpty, "must await real cancellation barrier")
+    controller.reportTokenStep(operationId: id, count: 6)
+    controller.reportPreparation(operationId: id)
+    try check(task.workProgress.count == previousProgress, "expiring task rejects additional progress")
     // The producer's final native barrier can return before the cancel callback
     // resumes. Even a .stop result must be normalized to cancelled by its caller.
     let leaseCancelled = controller.finish(operationId: id, success: true)
@@ -247,6 +274,7 @@ private struct BackgroundGenerationTests {
     await barrier.release()
     await settle()
     try check(task.completions == [false], "expiry wins completion race, exactly once")
+    try check(task.workProgress.last!.fraction < 1, "expiry never reports completed progress")
     try check(controller.status().state == "cancelled", "expiry preserves cancelled outcome")
   }
 
@@ -255,7 +283,7 @@ private struct BackgroundGenerationTests {
     scheduler.launchImmediately = false
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let id = UUID()
-    let pending = Task { await controller.prepare(operationId: id, cancel: {}) }
+    let pending = Task { await controller.prepare(operationId: id, maxTokens: 32, cancel: {}) }
     while scheduler.submissions.isEmpty { await Task.yield() }
     scheduler.isForeground = false
     let identifier = scheduler.submissions[0]
@@ -271,7 +299,7 @@ private struct BackgroundGenerationTests {
     scheduler.launchImmediately = false
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let id = UUID()
-    let pending = Task { await controller.prepare(operationId: id, cancel: {}) }
+    let pending = Task { await controller.prepare(operationId: id, maxTokens: 32, cancel: {}) }
     while scheduler.submissions.isEmpty { await Task.yield() }
     // UIKit may still report .active inside willResignActiveNotification.
     controller.willResignActive()
@@ -288,7 +316,7 @@ private struct BackgroundGenerationTests {
     scheduler.launchImmediately = false
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let id = UUID()
-    let pending = Task { await controller.prepare(operationId: id, cancel: {}) }
+    let pending = Task { await controller.prepare(operationId: id, maxTokens: 32, cancel: {}) }
     while scheduler.submissions.isEmpty { await Task.yield() }
     pending.cancel()
     _ = await pending.value
@@ -302,7 +330,7 @@ private struct BackgroundGenerationTests {
     let scheduler = FakeScheduler()
     scheduler.launchImmediately = false
     let controller = BackgroundGenerationController(scheduler: scheduler, admissionTimeout: .milliseconds(2))
-    await controller.prepare(operationId: UUID(), cancel: {})
+    await controller.prepare(operationId: UUID(), maxTokens: 32, cancel: {})
     try check(controller.status().reason == "admission_timeout", "admission has a finite wait")
     let identifier = scheduler.submissions[0]
     scheduler.admit(identifier)
@@ -313,12 +341,12 @@ private struct BackgroundGenerationTests {
     let scheduler = FakeScheduler()
     let controller = BackgroundGenerationController(scheduler: scheduler)
     let old = UUID()
-    await controller.prepare(operationId: old, cancel: {})
+    await controller.prepare(operationId: old, maxTokens: 32, cancel: {})
     let oldTask = scheduler.tasks[scheduler.submissions[0]]!
     let staleExpiry = oldTask.expiration
     controller.finish(operationId: old, success: true)
     let next = UUID()
-    await controller.prepare(operationId: next, cancel: {})
+    await controller.prepare(operationId: next, maxTokens: 32, cancel: {})
     staleExpiry?()
     controller.finish(operationId: old, success: false)
     controller.reportOutput(operationId: old, bytes: 99)
@@ -328,4 +356,102 @@ private struct BackgroundGenerationTests {
     try check(Set(scheduler.submissions).count == 2, "concrete IDs registered once per operation")
     controller.finish(operationId: next, success: true)
   }
+  @MainActor static func determinateProgressTracksRealWork() async throws {
+    let scheduler = FakeScheduler()
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let id = UUID()
+    await controller.prepare(operationId: id, maxTokens: 3, cancel: {})
+    let task = scheduler.tasks[scheduler.submissions[0]]!
+    try check(task.workProgress.last?.total == 5, "budget includes preparation and final barrier")
+    try check(task.workProgress.last?.fraction == 0 && task.workProgress.last?.indeterminate == false, "admission starts determinate")
+    controller.reportPreparation(operationId: id)
+    controller.reportOutput(operationId: id, bytes: 900)
+    try check(task.workProgress.last?.completed == 1, "bytes cannot masquerade as completed tokens")
+    controller.reportTokenStep(operationId: id, count: 1)
+    controller.reportTokenStep(operationId: id, count: 3)
+    try check(task.workProgress.last?.completed == 4 && task.workProgress.last?.fraction == 0.8, "token limit still reserves the synchronization unit")
+    try check(task.completions.isEmpty, "all token steps do not prove the producer barrier")
+    controller.finish(operationId: id, success: true)
+    try check(task.workProgress.last?.completed == 5 && task.workProgress.last?.fraction == 1, "only explicit post-barrier success reaches completion")
+    try check(zip(task.workProgress, task.workProgress.dropFirst()).allSatisfy { $0.fraction <= $1.fraction }, "reported fraction never regresses")
+  }
+
+  @MainActor static func earlyEOSCompletesOnlyActualWork() async throws {
+    let scheduler = FakeScheduler()
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let id = UUID()
+    await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
+    let task = scheduler.tasks[scheduler.submissions[0]]!
+    controller.reportPreparation(operationId: id)
+    controller.reportTokenStep(operationId: id, count: 2)
+    try check(task.workProgress.last?.total == 34 && task.workProgress.last?.completed == 3, "partial real steps against maximum")
+    controller.finish(operationId: id, success: true)
+    try check(task.workProgress.last?.total == 4 && task.workProgress.last?.completed == 4, "early EOS does not fabricate thirty unused tokens")
+    try check(task.workProgress.last?.fraction == 1 && task.completions == [true], "early EOS completes after barrier")
+  }
+
+  @MainActor static func zeroOutputEOSCompletesDeterminateProgress() async throws {
+    let scheduler = FakeScheduler()
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let id = UUID()
+    await controller.prepare(operationId: id, maxTokens: 32, cancel: {})
+    let task = scheduler.tasks[scheduler.submissions[0]]!
+    controller.reportPreparation(operationId: id)
+    controller.finish(operationId: id, success: true)
+    try check(controller.status().outputBytes == 0, "no output fabricated for empty EOS")
+    try check(task.workProgress.last?.total == 2 && task.workProgress.last?.completed == 2, "preparation and completed barrier remain real work")
+    try check(task.workProgress.last?.indeterminate == false && task.workProgress.last?.fraction == 1, "zero-byte success is not zero over zero")
+  }
+
+  @MainActor static func cancelledProgressNeverFinishesSuccessfully() async throws {
+    let scheduler = FakeScheduler()
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let id = UUID()
+    await controller.prepare(operationId: id, maxTokens: 2, cancel: {})
+    let task = scheduler.tasks[scheduler.submissions[0]]!
+    controller.reportPreparation(operationId: id)
+    controller.reportTokenStep(operationId: id, count: 2)
+    controller.finish(operationId: id, success: true, cancelled: true)
+    try check(task.completions == [false], "cancellation wins even a stale successful result")
+    try check(task.workProgress.last?.fraction == 0.75, "cancel does not manufacture final barrier success")
+    let updates = task.workProgress.count
+    controller.reportTokenStep(operationId: id, count: 2)
+    controller.reportPreparation(operationId: id)
+    try check(task.workProgress.count == updates, "finished operation ignores late progress")
+  }
+
+  @MainActor static func staleAndOutOfOrderProgressCannotAdvanceWork() async throws {
+    let scheduler = FakeScheduler()
+    let controller = BackgroundGenerationController(scheduler: scheduler)
+    let old = UUID()
+    await controller.prepare(operationId: old, maxTokens: 4, cancel: {})
+    controller.finish(operationId: old, success: false)
+    let next = UUID()
+    await controller.prepare(operationId: next, maxTokens: 4, cancel: {})
+    let task = scheduler.tasks[scheduler.submissions[1]]!
+    controller.reportPreparation(operationId: old)
+    controller.reportTokenStep(operationId: old, count: 4)
+    controller.reportWork(operationId: next, completedUnits: 0)
+    controller.reportWork(operationId: next, completedUnits: -1)
+    try check(task.workProgress.count == 1, "wrong UUID or nonpositive units cannot advance")
+    controller.reportWork(operationId: next, completedUnits: 4)
+    try check(task.workProgress.last?.completed == 4, "real token progress can arrive before preparation callback")
+    let updates = task.workProgress.count
+    controller.reportPreparation(operationId: next)
+    for count in [-1, 0, 1, 3, 5, Int.max] { controller.reportTokenStep(operationId: next, count: count) }
+    try check(task.workProgress.count == updates, "regressing, duplicate and out-of-budget steps are rejected")
+    try check(task.workProgress.last?.completed == 4 && task.workProgress.last?.total == 6, "last valid progress retained")
+    controller.finish(operationId: next, success: false)
+  }
+
+  @MainActor static func invalidTokenBudgetNeverSubmits() async throws {
+    for count in [0, -1, Int.max - 1, Int.max] {
+      let scheduler = FakeScheduler()
+      let controller = BackgroundGenerationController(scheduler: scheduler)
+      await controller.prepare(operationId: UUID(), maxTokens: count, cancel: {})
+      try check(scheduler.submissions.isEmpty && !controller.status().active, "invalid finite budget never requests a lease")
+      try check(controller.status().reason == "invalid_token_limit", "invalid budget is explicit")
+    }
+  }
+
 }

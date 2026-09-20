@@ -228,7 +228,7 @@ actor LocalInferenceCoordinator {
         )
       case .mlx(let runtime):
         try Task.checkCancellation()
-        let executionDevice = await BackgroundGenerationController.shared.prepare(operationId: operationId) {
+        let executionDevice = await BackgroundGenerationController.shared.prepare(operationId: operationId, maxTokens: maxTokens) {
           await self.cancel(operationId: operationId)
         }
         guard await self.mayBeginGeneration(operationId: operationId) else { throw CancellationError() }
@@ -240,6 +240,9 @@ actor LocalInferenceCoordinator {
           executionDevice: executionDevice,
           onOutputProgress: { bytes in
             await BackgroundGenerationController.shared.reportOutput(operationId: operationId, bytes: bytes)
+          },
+          onWorkProgress: { units in
+            await BackgroundGenerationController.shared.reportWork(operationId: operationId, completedUnits: units)
           }
         )
       case .llamaCpp(let runtime):

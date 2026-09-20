@@ -7,6 +7,36 @@ installed, foregrounded on a paired, unlocked physical iPhone with DDI available
 The client does not install apps or repair pairing. Use `launch --console` to
 keep the launch's CoreDevice connection open while testing over a device tunnel.
 
+For an installed development build, first prepare the generated iOS project as
+shown in [the build instructions](../../docs/25-application-api.md#compilation-dédiée).
+Then build with the C/C++ optimized Debug wrapper; it does not install or launch:
+
+```sh
+bash mobile/scripts/build-automation-iphone.sh \
+  -derivedDataPath /private/tmp/swarmer-automation-build \
+  -clonedSourcePackagesDirPath /private/tmp/swarmer-automation-packages \
+  -allowProvisioningUpdates
+```
+
+The wrapper fixes `Debug`, `GCC_OPTIMIZATION_LEVEL=3`, and
+`SWIFT_OPTIMIZATION_LEVEL=-Onone` after forwarded Xcode arguments. This optimizes
+the C/C++ CPU inference kernels while retaining the native `DEBUG` API. Swift
+stays unoptimized because Swift 6.2.4 crashes in ExpoModulesCore with global `-O`.
+Only the `build` action is supported; an explicit `build` is normalized to one
+final action. Contradictory configuration/optimization overrides, `-xcconfig`,
+`XCODE_XCCONFIG_FILE`, compilation-condition overrides
+(`SWIFT_ACTIVE_COMPILATION_CONDITIONS`, `GCC_PREPROCESSOR_DEFINITIONS`) and extra
+compiler flags (`OTHER_CFLAGS`, `OTHER_CPLUSPLUSFLAGS`, `OTHER_SWIFT_FLAGS`) are
+rejected, including conditional build-setting variants. Cache and signing
+options remain forwarded.
+Development signing must already cover the selected device. Check the real build
+commands for Cmlx `-O3` and retained `DEBUG`; optimization alone is not device
+performance evidence. Wrapper tests invoke only a fake Xcode executable:
+
+```sh
+node --test mobile/scripts/test-build-automation-iphone.cjs
+```
+
 Rediscover the exact UDID/CoreDevice UUID before launch. `launch` requests fresh
 device details and checks the identity, paired/connected/booted state and DDI.
 Choose **`--device-tunnel`** for a CoreDevice connection: after the held launch,
@@ -45,6 +75,9 @@ processing task. Devices without background GPU support use local CPU inference;
 the GPU capability remains false. Read `models.status.backgroundExecution`:
 `executionDevice` identifies CPU/GPU and `supported` describes
 OS/hardware support, while only `active` confirms the current task's admission.
+CPU execution reuses the default CPU stream, avoiding a new retained MLX worker
+per generation. Native progress counts completed preparation/token steps;
+admission or an increasing work counter alone does not prove decoded output.
 During an admitted calculation, the existing HTTPS listener permits GET requests,
 `models.status`, `inference.cancel`, and recovery of existing idempotency receipts.
 New unrelated work requires foreground. The listener closes when the calculation
