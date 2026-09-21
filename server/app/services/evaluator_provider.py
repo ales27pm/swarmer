@@ -288,7 +288,14 @@ The Ubuntu control plane independently validates your proposal and remains autho
                 else {"type": "null"}
             )
             if statuses != ("continue", "replan"):
-                properties["suggested_new_nodes"]["maxItems"] = 0
+                # Local grammar converters can ignore sibling constraints on
+                # an anyOf. Use a standalone empty-array rule for terminal
+                # decisions, rather than decorating the worker alternatives.
+                properties["suggested_new_nodes"] = {
+                    "type": "array",
+                    "items": {"type": "null"},
+                    "maxItems": 0,
+                }
             # Prefix only top-level transport fields. The public contract and
             # every nested node schema remain unchanged.
             branch["properties"] = {alias: properties[name] for alias, name in _WIRE_FIELDS.items()}

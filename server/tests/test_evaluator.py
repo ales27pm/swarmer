@@ -373,6 +373,29 @@ def test_evaluator_schema_preserves_project_exclusivity() -> None:
     assert not Draft202012Validator(schema).is_valid(wire_decision(raw))
 
 
+@pytest.mark.parametrize("status", ["done", "failed", "needs_user"])
+@pytest.mark.parametrize(
+    "skills", [["research.query", "writing.draft", "code.build_project"], None]
+)
+def test_terminal_node_grammar_does_not_rely_on_anyof_sibling_constraints(
+    status: str, skills: list[str] | None
+) -> None:
+    schema = UbuntuEvaluatorProvider._response_format(skills)["json_schema"]["schema"]
+    branch = next(
+        branch for branch in schema["anyOf"] if status in branch["properties"]["40_status"]["enum"]
+    )
+    nodes = branch["properties"]["50_suggested_new_nodes"]
+    # llama.cpp's union conversion uses the anyOf branches without sibling
+    # keywords. Reproduce that dialect for this array: an outer maxItems=0
+    # must not disappear and let a terminal verdict propose another worker.
+    converted = {"anyOf": nodes["anyOf"]} if "anyOf" in nodes else nodes
+    validator = Draft202012Validator({"$defs": schema["$defs"], **converted})
+    raw = continue_decision()
+    raw["suggested_new_nodes"][0]["required_skill"] = "writing.draft"
+    assert validator.is_valid([])
+    assert not validator.is_valid(wire_decision(raw)["50_suggested_new_nodes"])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("skills", [[], ["code.build_project"], ["workspace.read_text"], None])
 async def test_evaluator_rejects_unadvertised_skill_without_retry_or_rewrite(
