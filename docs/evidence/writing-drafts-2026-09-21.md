@@ -1,6 +1,12 @@
 # Written plans: deployment qualification, 2026-09-21
 
-Candidate source: `acaec196f6aa36a703dc4b12e728516cc7e9ceac`.
+Final state: server release `dc6fa13` is deployed with the qualified 30B evaluator.
+Four authenticated executors are online. Six read-only file/Git/Ruff implementations
+passed live sandbox checks. Debug iPhone build `20260921041035` is installed;
+physical end-to-end API testing remains pending because its development tunnel
+and DDI are unavailable. The details below retain failed and partial attempts.
+
+Initial candidate source: `acaec196f6aa36a703dc4b12e728516cc7e9ceac`.
 This change routes requests for plans and other written deliverables to the
 bounded `writing.draft` worker. Code implementation remains a separate skill.
 A generated plan is not evidence that an application was built or tested.
@@ -183,3 +189,79 @@ text was confirmed in its bounded context. Receipt SHA-256:
 The pending follow-up clarifies the evaluator's distinction between untrusted
 text instructions and valid evidence of a text deliverable; it does not bypass
 real authorization requirements or rewrite model decisions as success.
+
+## Qualified evaluator routing
+
+The dc6fa13 instruction fix passed 64 targeted tests and four focused final-wording
+tests, with Ruff and mypy clean. Nevertheless the actual 7B evaluator still
+invented a French-speaking reviewer requirement in a single 7.102-second probe.
+Its receipt is preserved as a failure (SHA-256
+`5817c0f665b471cfffc6391fccda2ee50e35ba410c278035515c52a19934ca26`).
+No decision was automatically promoted to success.
+
+A one-call comparison used the already installed local
+`swarmer-project-qwen3-coder-heretic:30b-32k-d2d985e` model with the same semantic
+context, unchanged 806-byte real draft, schema, request and criteria. It returned
+`done` in 38.178 seconds, with no missing requirements, invalid results, new nodes
+or user question. The canonical private goal completed. The exact receipt has
+SHA-256 `287ff0efffd32e7f299e51e7f3c4974a47f3f6299eab720e881aefd63f3eb93a`.
+This is evaluator-only validation with a fixed manual plan and preserved real
+writer output, not uninterrupted physical end-to-end success.
+
+The selected operator profile therefore changes exactly three settings:
+`MONGARS_GOAL_MODEL_TIMEOUT_SECONDS=120`,
+`MONGARS_GOAL_MODEL_CALL_LEASE_SECONDS=180`, and
+`MONGARS_EVALUATOR_MODEL=swarmer-project-qwen3-coder-heretic:30b-32k-d2d985e`.
+Planner, text-worker and project-worker model settings remain unchanged. No model
+was downloaded. The final deployment helper's twelve lifecycle/environment tests
+passed locally and on Ubuntu. Its exact SHA-256 is
+`0f93c398bfc73b42f62fd291630e0cd4c7cf62de678b4de8124d8d5ebeb1bf82`.
+
+## Final deployment and real executor availability
+
+The supervised API cutover completed successfully in 10.997 seconds. Its fresh
+six-category idle gate was clear. Health is OK; process source and actual environment
+match dc6fa13 plus the selected evaluator/120/180 profile. Schema 24, all existing
+agent identities/credentials and the c4 project-worker binding were preserved.
+The compact a71 text-worker source is active. No database restore occurred.
+
+The two additional executors then registered through the canonical local operator
+service and started without restarting existing services. Both run the committed
+file/review implementations with the actual workspace and bundle mounted read-only
+inside bubblewrap. Runtime inspection verified source hashes, authenticated fresh
+heartbeats, NoNewPrivs=1, zero effective capabilities and EROFS on a write-open probe.
+
+At the independent 04:41 UTC read, all four executors had fresh online heartbeats:
+
+| Executor | Available skills |
+| --- | --- |
+| ubuntu-project-builder | code.build_project |
+| ubuntu-text-draft-worker | writing.draft |
+| ubuntu-workspace-reader | workspace.list_dir, workspace.read_text |
+| ubuntu-repository-reviewer | code_review.git_status, git_diff, git_show, static_analysis |
+
+The six added implementations executed real read-only operations against the
+configured repository: directory listing, README reading, Git status/diff/show,
+and Ruff analysis of server/app/models.py. All passed; diff/show/Ruff exited 0.
+No model was called and no project file was written. These are actual worker
+implementation sandbox smokes, **not production job-dispatch proof**: no new
+server test task/job was created because the physical API was unavailable.
+Research still has no configured adapter; catalog profiles are not represented
+as connected executors. File reading and static analysis require explicit paths.
+
+An independent read using the installed task-projection service returned the last
+user goal's 13 worker nodes, with 12 assigned-agent records, and no truncation.
+The API/UI regression tests verify that this projection is shown separately from
+direct tool calls. The user's goal remains budget_exhausted at 30 calls, with its
+results preserved; it was not restarted.
+
+The last fresh iPhone check at 04:41:09 UTC retained pairing and Developer Mode,
+but reported an unavailable tunnel/DDI. No further service reset or device launch
+was attempted. A fresh connection is required for authenticated physical API
+job-dispatch and uninterrupted end-to-end qualification.
+
+Final receipt SHA-256 values:
+
+- cutover: `a381c3d00da79b8000df5022583feaa8a6a6323f876dd23d767abd19969dd04d`
+- activation: `c58b3befa60f877c674a029c750a12983ebead368981e7dcef0687e1bd043c1e`
+- smoke: `40d99f670283ca3dbe13564d1a21706d856b95f9bc3f7ebc14fe0a29cd756ed4`
