@@ -120,7 +120,10 @@ def test_nonresearch_grammar_keeps_objective_and_rejects_query_alias(
 ) -> None:
     public = public_response(kind, skill)
     wire = wire_response(kind, public)
-    validator = grammar(kind, ["research.query", "writing.draft", "workspace.read_text"])
+    skills = ["research.query", "workspace.read_text"]
+    if skill is not None:
+        skills.append("writing.draft")
+    validator = grammar(kind, skills)
     assert validator.is_valid(wire)
     node = wire_nodes(kind, wire)[0]
     node["search_query"] = node.pop("objective")
@@ -280,10 +283,33 @@ def test_sorted_grammar_selects_capability_before_branch_parameters(kind: Kind) 
             if "00_required_skill" in properties:
                 branches.append(properties)
                 assert min(properties) == "00_required_skill"
+                assert next(iter(properties)) == "00_required_skill"
                 assert "required_skill" not in properties
-                assert "00_required_skill" in value["required"]
+                assert value["required"][0] == "00_required_skill"
             for item in value.values():
                 visit(item)
 
     visit(validator.schema)
-    assert len(branches) >= 4  # research, writing, project and synthesis
+    assert len(branches) >= 4  # research, writing, project and dependent synthesis
+
+
+@pytest.mark.parametrize("kind", ["planner", "evaluator"])
+def test_connected_writer_grammar_excludes_inert_synthesis_but_keeps_real_workers(
+    kind: Kind,
+) -> None:
+    synthesis = wire_response(kind, public_response(kind, None))
+    writing = wire_response(kind, public_response(kind, "writing.draft"))
+    research = wire_response(kind, public_response(kind, "research.query"))
+    connected = grammar(kind, ["writing.draft", "research.query"])
+    assert not connected.is_valid(synthesis)
+    assert connected.is_valid(writing)
+    assert connected.is_valid(research)
+    # Preserve real aggregation of tool results, including non-writing work.
+    dependent = deepcopy(synthesis)
+    wire_nodes(kind, dependent)[0]["dependencies"] = ["completed_research"]
+    assert connected.is_valid(dependent)
+    assert grammar(kind, []).is_valid(synthesis)
+    assert grammar(kind, ["research.query"]).is_valid(synthesis)
+    if kind == "evaluator":
+        unknown = UbuntuEvaluatorProvider._response_format(None)["json_schema"]["schema"]
+        assert Draft202012Validator(unknown).is_valid(synthesis)

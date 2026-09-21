@@ -15,6 +15,13 @@ remplir `search_query`. Les synthèses utilisent une valeur nulle. Les deux noms
 de compétence dans le même nœud sont refusés; le nom public historique reste
 compatible dans une réponse ancienne.
 
+Le discriminateur est premier dans l'ordre d'insertion comme dans l'ordre trié.
+Quand un rédacteur est explicitement disponible, la grammaire impose au moins
+une dépendance obligatoire aux synthèses : elles agrègent des résultats réels,
+au lieu de devenir des étapes vides ignorées. Les déploiements sans rédacteur et
+les anciens contextes sans inventaire conservent leur branche de signalement
+des capacités manquantes. La validation publique des anciens plans reste inchangée.
+
 Une réponse mélangeant les deux noms, utilisant `search_query` sur une autre
 compétence ou ajoutant des champs inconnus est rejetée. Les réponses historiques
 complètes avec `objective` restent compatibles, tandis que la nouvelle grammaire

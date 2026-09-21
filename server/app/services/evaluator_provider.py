@@ -184,6 +184,9 @@ The server maps this wire field to the public objective. Do not emit both fields
 All other proposed node types retain objective.
 If a sourced draft is also needed, make its writing.draft node depend on that research node;
 never create an independent draft that claims research which has not yet returned.
+When writing.draft is advertised, propose actual writing workers for remaining text
+deliverables. A synthesis must have required dependencies supplying actual results;
+do not add independent synthesis placeholders.
 For a requested written plan, design, analysis, report or draft, writing.draft produces the
 text deliverable. A validated writing.draft result can fulfill a request for that text;
 it does not prove implementation, testing, deployment or other external actions.

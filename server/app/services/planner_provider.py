@@ -103,19 +103,24 @@ def worker_node_array_schema(
     Execution eligibility remains independently validated by the control plane.
     """
 
-    # Ollama sorts object keys. Select the capability before a branch-specific
-    # objective/search_query can commit decoding to an unrelated worker type.
+    # Put the capability first for both insertion-order and sorted decoders,
+    # before branch-specific parameters can commit to an unrelated worker type.
     node_schema = deepcopy(node_schema)
-    node_schema["properties"]["00_required_skill"] = node_schema["properties"].pop("required_skill")
+    skill_schema = node_schema["properties"].pop("required_skill")
+    node_schema["properties"] = {"00_required_skill": skill_schema, **node_schema["properties"]}
     node_schema["required"] = [
-        "00_required_skill" if field == "required_skill" else field
-        for field in node_schema["required"]
+        "00_required_skill",
+        *(field for field in node_schema["required"] if field != "required_skill"),
     ]
     skills = set(SUPPORTED_AGENT_SKILLS if available_skills is None else available_skills)
     synthesis = deepcopy(node_schema)
     synthesis["properties"]["node_type"] = {"type": "string", "const": "synthesis"}
     synthesis["properties"]["00_required_skill"] = {"type": "null"}
     synthesis["properties"]["preferred_agent_constraints"] = {"type": "null"}
+    # A connected writer delivers new text; synthesis must aggregate real inputs.
+    # Unknown availability and no-writer capability-gap plans stay compatible.
+    if available_skills is not None and "writing.draft" in skills:
+        synthesis["properties"]["dependencies"]["minItems"] = 1
     general_nodes = [synthesis]
     if "research.query" in skills:
         research = deepcopy(node_schema)
@@ -240,6 +245,9 @@ is absent, preserve the unmet search requirement; a model-only draft is not live
 When the requested deliverable is a written plan, design, analysis, report or draft that
 does not require external research, and writing.draft is available, create one writing.draft
 worker node with no dependencies.
+When writing.draft is advertised, it delivers the requested text using required
+research dependencies when applicable. Do not add independent synthesis placeholders.
+A synthesis must have required dependencies supplying actual results to aggregate.
 Its objective must preserve the requested subject, language and requirements. This worker
 actually produces the requested text. Do not ask the user to write the plan or replace it
 with an empty synthesis. Asking for a plan for an application is a writing request, not a
