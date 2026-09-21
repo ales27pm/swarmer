@@ -159,6 +159,7 @@ class GoalManager:
         planner: SwarmPlannerProvider,
         evaluator: EvaluatorProvider,
         permission_policy: PermissionPolicy,
+        research_evaluator: EvaluatorProvider | None = None,
         context_builder: Any | None = None,
         strategy_retrieval: Any | None = None,
         project_memory: ProjectMemoryService | None = None,
@@ -179,6 +180,7 @@ class GoalManager:
         self.agent_dispatcher = agent_dispatcher
         self.planner = planner
         self.evaluator = evaluator
+        self.research_evaluator = research_evaluator
         self.permission_policy = permission_policy
         self.context_builder = context_builder
         self.strategy_retrieval = strategy_retrieval
@@ -2575,6 +2577,41 @@ class GoalManager:
             draft.worker_job_id,
         )
 
+    def _evaluator_for_context(
+        self,
+        context: GoalEvaluationContext,
+        nodes: Sequence[Mapping[str, Any]],
+    ) -> EvaluatorProvider:
+        if self.research_evaluator is None:
+            return self.evaluator
+        # Inspect the full canonical graph, not only the budgeted context:
+        # omitted code or legacy nodes must never switch evaluation models.
+        for node in nodes:
+            if node.get("node_type") == PlanNodeType.WORKER.value:
+                if node.get("required_skill") not in {"research.query", WRITING_SKILL}:
+                    return self.evaluator
+            elif node.get("node_type") != PlanNodeType.SYNTHESIS.value:
+                return self.evaluator
+        completed_research = {
+            str(node["id"])
+            for node in nodes
+            if node.get("node_type") == PlanNodeType.WORKER.value
+            and node.get("required_skill") == "research.query"
+            and node.get("status") == PlanNodeStatus.COMPLETED.value
+            and str(node.get("result_summary") or "").strip()
+        }
+        if any(
+            node.node_id in completed_research
+            and node.node_type is PlanNodeType.WORKER
+            and node.required_skill == "research.query"
+            and node.status is PlanNodeStatus.COMPLETED
+            and node.result_summary is not None
+            and node.result_summary.strip()
+            for node in context.node_results
+        ):
+            return self.research_evaluator
+        return self.evaluator
+
     async def _evaluate_if_quiescent(
         self,
         goal_run_id: str,
@@ -2701,6 +2738,7 @@ class GoalManager:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
+        evaluator = self._evaluator_for_context(context, nodes)
         try:
             call_id = await self._reserve_model_call(
                 goal_run_id,
@@ -2710,8 +2748,8 @@ class GoalManager:
                 explicit_user_action=explicit_user_action,
                 context_id=context_id,
                 input_digest=input_digest,
-                provider_source=self.evaluator.source.value,
-                model_id=getattr(self.evaluator, "model", None),
+                provider_source=evaluator.source.value,
+                model_id=getattr(evaluator, "model", None),
                 maintenance_guard=maintenance_guard,
             )
         except GoalManagerConflict as exc:
@@ -2728,7 +2766,7 @@ class GoalManager:
             if remaining <= 0:
                 raise TimeoutError("goal runtime budget exhausted")
             async with asyncio.timeout(remaining):
-                decision = await self.evaluator.evaluate(context)
+                decision = await evaluator.evaluate(context)
             validated = validate_evaluation_decision(
                 decision,
                 policy=self.permission_policy,

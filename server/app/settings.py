@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Unset roles share the orchestrator, keeping the default to one loaded model.
     planner_model: ModelIdentifier | None = None
     evaluator_model: ModelIdentifier | None = None
+    # Explicit override for completed research/writing plans only; unset keeps
+    # the normal evaluator for every goal.
+    research_evaluator_model: ModelIdentifier | None = None
     summarizer_model: ModelIdentifier | None = None
     synthesizer_model: ModelIdentifier | None = None
     goal_max_steps: int = Field(default=20, ge=1, le=20)
@@ -75,7 +78,12 @@ class Settings(BaseSettings):
     iphone_capability_grant_ttl_seconds: int = Field(default=90, ge=30, le=300)
 
     @field_validator(
-        "planner_model", "evaluator_model", "summarizer_model", "synthesizer_model", mode="before"
+        "planner_model",
+        "evaluator_model",
+        "research_evaluator_model",
+        "summarizer_model",
+        "synthesizer_model",
+        mode="before",
     )
     @classmethod
     def inherit_unset_model_role(cls, value: object) -> object:

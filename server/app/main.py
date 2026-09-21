@@ -384,12 +384,24 @@ def create_app(config: Settings | None = None) -> FastAPI:
         policy=permission_policy,
         timeout_seconds=goal_model_timeout,
     )
+    research_evaluator = (
+        UbuntuEvaluatorProvider(
+            base_url=settings.llm_base_url,
+            model=settings.research_evaluator_model,
+            policy=permission_policy,
+            timeout_seconds=goal_model_timeout,
+            reasoning_effort="none",
+        )
+        if settings.research_evaluator_model is not None
+        else None
+    )
     goal_manager = GoalManager(
         settings.db_path,
         state_service=state_service,
         agent_dispatcher=agent_dispatcher,
         planner=swarm_planner,
         evaluator=evaluator,
+        research_evaluator=research_evaluator,
         permission_policy=permission_policy,
         context_builder=context_builder,
         strategy_retrieval=strategy_retrieval,
@@ -626,6 +638,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.model_router = model_router
     app.state.swarm_planner = swarm_planner
     app.state.evaluator = evaluator
+    app.state.research_evaluator = research_evaluator
     app.state.goal_manager = goal_manager
     app.state.project_memory = project_memory
     app.state.vector_projection = vector_projection

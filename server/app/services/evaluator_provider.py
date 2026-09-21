@@ -235,11 +235,13 @@ The Ubuntu control plane independently validates your proposal and remains autho
         model: str,
         policy: PermissionPolicy,
         timeout_seconds: float = 60.0,
+        reasoning_effort: Literal["none"] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.policy = policy
         self.timeout_seconds = timeout_seconds
+        self.reasoning_effort = reasoning_effort
 
     @staticmethod
     def _response_format(available_skills: Sequence[str] | None = None) -> dict[str, Any]:
@@ -302,6 +304,8 @@ The Ubuntu control plane independently validates your proposal and remains autho
             "stream": False,
             "response_format": self._response_format(available_skills),
         }
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:

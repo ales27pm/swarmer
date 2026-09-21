@@ -10,7 +10,14 @@ from app.settings import Settings
 
 @pytest.fixture(autouse=True)
 def clear_model_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("ORCHESTRATOR", "PLANNER", "EVALUATOR", "SUMMARIZER", "SYNTHESIZER"):
+    for name in (
+        "ORCHESTRATOR",
+        "PLANNER",
+        "EVALUATOR",
+        "RESEARCH_EVALUATOR",
+        "SUMMARIZER",
+        "SYNTHESIZER",
+    ):
         monkeypatch.delenv(f"MONGARS_{name}_MODEL", raising=False)
 
 
@@ -27,6 +34,7 @@ def test_swarm_defaults_bind_abliterated_model_to_inference_providers(tmp_path: 
     assert app.state.orchestrator_service.model == expected
     assert app.state.swarm_planner.model == expected
     assert app.state.evaluator.model == expected
+    assert app.state.research_evaluator is None
     for role in ModelRole:
         assert app.state.model_router.route_for(role).model_id == expected
 
@@ -68,6 +76,7 @@ def test_goal_provider_deadlines_follow_operator_config_inside_lease(
 ) -> None:
     monkeypatch.setenv("MONGARS_GOAL_MODEL_TIMEOUT_SECONDS", str(timeout))
     monkeypatch.setenv("MONGARS_GOAL_MODEL_CALL_LEASE_SECONDS", str(lease))
+    monkeypatch.setenv("MONGARS_RESEARCH_EVALUATOR_MODEL", "research-evaluator")
     app = create_app(
         Settings(
             _env_file=None, db_path=tmp_path / "state.db", workspace_root=tmp_path / "workspace"
@@ -75,6 +84,7 @@ def test_goal_provider_deadlines_follow_operator_config_inside_lease(
     )
     assert app.state.swarm_planner.timeout_seconds == expected
     assert app.state.evaluator.timeout_seconds == expected
+    assert app.state.research_evaluator.timeout_seconds == expected
     assert expected < app.state.settings.goal_model_call_lease_seconds
     assert app.state.settings.goal_max_model_calls == 30
     assert app.state.settings.goal_max_runtime_seconds == 1800

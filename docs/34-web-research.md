@@ -1,5 +1,28 @@
 # Recherche Internet locale
 
+## Évaluateur de recherche optionnel
+
+`MONGARS_RESEARCH_EVALUATOR_MODEL` permet de choisir explicitement un évaluateur
+pour les plans composés uniquement de workers `research.query`, `writing.draft`
+et de nœuds de synthèse. Il faut aussi qu'un résultat de recherche terminé et
+non vide soit encore présent dans le contexte borné envoyé au modèle. Un plan
+mixte contenant du code, une lecture de workspace ou des métadonnées anciennes
+incomplètes conserve l'évaluateur habituel, même si ces nœuds ont été omis du
+contexte pour respecter son budget.
+
+Cette option est désactivée par défaut; une valeur vide équivaut à son absence.
+Elle ne modifie ni `MONGARS_EVALUATOR_MODEL`, ni le planificateur, ni les modèles
+des workers. L'évaluateur optionnel utilise le même endpoint, les mêmes règles
+de validation et le même délai absolu, avec `reasoning_effort: "none"` dans sa
+requête. Le fournisseur habituel continue d'omettre ce champ. Le modèle
+effectivement choisi est inscrit dans la réservation durable de l'appel avant
+son exécution, avec les limites et les mécanismes de contrôle existants.
+
+Configurer ce champ nécessite de qualifier le modèle et sa prise en charge de
+`reasoning_effort` sur les réponses pertinentes comme sur les preuves hors
+sujet. L'existence du réglage et la réussite des tests ne constituent pas une
+qualification du modèle ni une activation en production.
+
 ## Déploiement de la passerelle SearXNG
 
 La pile historique `/home/ales27pm/original-monGARS` héberge déjà SearXNG et son
