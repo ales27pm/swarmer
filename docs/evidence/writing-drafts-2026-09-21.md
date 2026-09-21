@@ -141,3 +141,45 @@ Worker results and project checks remain distinct from direct tool calls.
 Task projection and screen validation passed 15 server tests and 27 mobile tests;
 TypeScript, ESLint, targeted Ruff and mypy checks passed. The GET path uses a
 read-only database transaction and reads no worker payloads or raw results.
+
+The first c6edc9b disposable qualification stopped after a correct single-node
+writing plan: planning took 102.993 seconds, but fixture-only agent heartbeats
+had expired at 90 seconds. No writer or evaluator call ran. The failure receipt
+is preserved (SHA-256 `9eeea9594bf2df757adb4db2c0e2f4eafe97672865958c788ef2f2a5577c1b93`).
+The qualification helper now maintains authenticated heartbeats throughout its
+bounded lifetime, matching production workers. Three fast tests reproduce the
+103-second liveness failure, verify successful dispatch with heartbeats, check
+cleanup, and reject invalid credentials. This changes the fixture, not the
+candidate's worker admission rules.
+
+The signed physical Debug build `20260921041035` was built from c6edc9b and
+installed successfully. All 172 recorded mobile/native source files matched;
+the provisioning profile includes the target iPhone. IPA SHA-256:
+`1f8e7ee6a25a3e6de1167140fb3a7912b509df2b375a64328ac0a1bb62071ac2`.
+Initial API health passed. This installation is separate from the pending
+server cutover and does not establish end-to-end goal success.
+
+With continuous fixture heartbeats, the real planner and writer passed:
+79.865 seconds for planning, 42.293 seconds for writing, 244 output tokens with
+a terminal stop, and an 806-byte/109-word French draft. Before evaluation, the
+fresh admission check detected that the user had resumed goal522. No evaluator
+request was sent. The run is incomplete, not a passing end-to-end result;
+its receipt SHA-256 is `97352c703c077e2bfa9fa57a09c637b6ddabbf216388c575fa9ebd5b0fac503b`.
+
+After the iPhone installation, its API console terminated. A fresh diagnostic
+confirmed the saved pairing and Developer Mode, but an unavailable development
+tunnel and unavailable DDI. One targeted Apple-service refresh retained the
+pairing and did not recover a usable session. `app.status` and post-deployment
+physical API tests therefore remain unverified at this point.
+
+Goal522 naturally reached `budget_exhausted` at 04:27:58 UTC after 13 steps and
+30 calls; no cancellation was needed. A separately labeled evaluator-only probe
+then reused the preserved real draft, a fixed manual plan and canonical strict
+worker-result submission. Its sole real evaluator call took 9.011 seconds and
+returned `needs_user`, inventing a requirement to approve the written plan.
+The actual objective and criteria request no such approval. The full accepted
+text was confirmed in its bounded context. Receipt SHA-256:
+`acb1a6384c99db1b9e8d6f9f7a77baa73f82072363efc3cf9dc4299eb4d91ef3`.
+The pending follow-up clarifies the evaluator's distinction between untrusted
+text instructions and valid evidence of a text deliverable; it does not bypass
+real authorization requirements or rewrite model decisions as success.
