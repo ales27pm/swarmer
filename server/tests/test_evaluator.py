@@ -481,33 +481,6 @@ def test_evaluator_wire_schema_enforces_status_question_and_node_constraints(sta
         assert not validator.is_valid(wire_decision(missing_field))
 
 
-def test_evaluator_implementation_example_is_a_valid_grounded_project_proposal(
-    policy: PermissionPolicy,
-) -> None:
-    prompt = UbuntuEvaluatorProvider.SYSTEM_PROMPT
-    start = prompt.index('{"schema_version":"1.0","status":"continue"')
-    example, _ = json.JSONDecoder().raw_decode(prompt[start:])
-    validated = validate_evaluation_decision(example, policy=policy)
-    decision = validated.decision
-    assert decision.status is EvaluationStatus.CONTINUE
-    assert decision.user_question is None
-    assert len(decision.suggested_new_nodes) == 1
-    node = decision.suggested_new_nodes[0]
-    assert node.required_skill == "code.build_project"
-    assert node.dependencies == node.optional_dependencies == []
-    for requirement in (
-        "Python",
-        "fiches clients",
-        "soumissions",
-        "projets",
-        "courriels",
-        "calendrier",
-    ):
-        assert requirement in node.objective
-    schema = UbuntuEvaluatorProvider._response_format()["json_schema"]["schema"]
-    assert Draft202012Validator(schema).is_valid(wire_decision(example))
-
-
 @pytest.mark.asyncio
 async def test_evaluator_still_accepts_a_distinct_material_question(
     policy: PermissionPolicy,

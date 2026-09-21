@@ -7,6 +7,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+
 from app.models import AgentCreate, TaskCreate, TaskRecord
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.message_board import MessageBoardService
