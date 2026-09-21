@@ -275,6 +275,18 @@ def previous_model_timeout(payload: dict[str, Any]) -> bool:
     }
 
 
+def repair_follows_model_timeout(payload: dict[str, Any]) -> bool:
+    """Keep repairs compact across user resumes without carrying the pause counter."""
+    for message in reversed(payload["conversation"]):
+        if message["role"] == "user":
+            continue
+        return message["role"] == "assistant" and message["content"] in {
+            MODEL_TIMEOUT_DIAGNOSTIC,
+            MODEL_REPEATED_TIMEOUT_DIAGNOSTIC,
+        }
+    return False
+
+
 def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Keep one small mutation or one read; unchanged metadata is worker-owned."""
     fields = ("action", "message", "edits", "patches", "run_instructions", "runtime", "focus_paths")
@@ -1119,7 +1131,9 @@ class ProjectGenerator:
                 "Respond to the original request in its language:\n" + payload["objective"]
             )
 
-        compact_repair = needs_repair and bool(payload["files"]) and previous_model_timeout(payload)
+        compact_repair = (
+            needs_repair and bool(payload["files"]) and repair_follows_model_timeout(payload)
+        )
         prompt_budget = MAX_RECOVERY_PROMPT_BYTES if compact_repair else MAX_PROMPT_BYTES
         if compact_repair:
             instruction = REPAIR_RECOVERY_INSTRUCTION

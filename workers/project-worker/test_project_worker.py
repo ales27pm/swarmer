@@ -2444,7 +2444,7 @@ def test_compact_context_retains_valid_large_unicode_user_reply(
     assert body["options"]["num_predict"] == 512
 
 
-@pytest.mark.parametrize("kind", ["no_timeout", "user_resumed", "checks_passed"])
+@pytest.mark.parametrize("kind", ["no_timeout", "ordinary_assistant", "checks_passed"])
 def test_compact_recovery_does_not_change_other_generation_phases(
     monkeypatch: pytest.MonkeyPatch,
     kind: str,
@@ -2452,7 +2452,8 @@ def test_compact_recovery_does_not_change_other_generation_phases(
     data = compact_recovery_payload()
     if kind == "no_timeout":
         data["conversation"].pop()
-    elif kind == "user_resumed":
+    elif kind == "ordinary_assistant":
+        data["conversation"].append({"role": "assistant", "content": "Accepted the repair."})
         data["conversation"].append(
             {"role": "user", "content": "Resume with this new requirement."}
         )
@@ -2462,6 +2463,58 @@ def test_compact_recovery_does_not_change_other_generation_phases(
     body = capture_project_request(monkeypatch, data)
     assert body["options"]["num_predict"] == 2000
     assert "plan" in body["format"]["oneOf"][0]["properties"]
+
+
+@pytest.mark.parametrize(
+    "diagnostic", [worker.MODEL_TIMEOUT_DIAGNOSTIC, worker.MODEL_REPEATED_TIMEOUT_DIAGNOSTIC]
+)
+def test_first_user_resumed_repair_stays_compact_and_resets_timeout_pause_counter(
+    monkeypatch: pytest.MonkeyPatch, diagnostic: str
+) -> None:
+    data = compact_recovery_payload()
+    data["conversation"][-1]["content"] = diagnostic
+    data["conversation"].extend(
+        [
+            {"role": "user", "content": "Continue la réparation."},
+            {"role": "user", "content": "Conserve précisément cette exigence : éèà.\n"},
+        ]
+    )
+    body = capture_project_request(monkeypatch, data, compact_step())
+    assert body["options"]["num_predict"] == 512
+    assert data["conversation"][-1] in body["messages"]
+    assert not worker.previous_model_timeout(data)
+
+    class Opener:
+        def open(self, request: Any, **kwargs: Any) -> Any:
+            raise TimeoutError("private detail")
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    runner = Runner()
+    result = worker.run_iteration(
+        data,
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b"),
+        runner,
+        lambda: None,
+    )
+    assert result["action"] == "continue" and runner.calls == 0
+    assert result["message"] == worker.MODEL_TIMEOUT_DIAGNOSTIC
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+
+
+@pytest.mark.parametrize("role", ["system", "tool"])
+def test_timeout_recovery_rejects_intervening_non_user_roles(role: str) -> None:
+    data = compact_recovery_payload()
+    data["conversation"].extend(
+        [{"role": role, "content": "intervening message"}, {"role": "user", "content": "Continue"}]
+    )
+    assert not worker.repair_follows_model_timeout(data)
+
+
+def test_timeout_recovery_requires_exact_assistant_diagnostic() -> None:
+    data = compact_recovery_payload()
+    data["conversation"][-1]["content"] += " modified"
+    data["conversation"].append({"role": "user", "content": worker.MODEL_TIMEOUT_DIAGNOSTIC})
+    assert not worker.repair_follows_model_timeout(data)
 
 
 @pytest.mark.parametrize("terminal", ["missing", "length"])

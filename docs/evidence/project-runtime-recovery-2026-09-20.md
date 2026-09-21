@@ -79,7 +79,7 @@ the storage-path correction, not successful installation of the user's project.
 
 ## Verification before publication
 
-- Worker suite as the ordinary Mac user: 262 passed, 5 Docker-dependent skipped.
+- Worker suite as the ordinary Mac user: 267 passed, 5 Docker-dependent skipped.
 - Four affected mobile suites: 121 passed.
 - Worker Ruff and mypy, mobile TypeScript and targeted ESLint passed.
 - Added regression coverage preserves missing-manifest priority, strict small
@@ -93,3 +93,34 @@ the storage-path correction, not successful installation of the user's project.
 
 Private build receipts and the signed Debug IPA are retained under
 `~/Library/Developer/Xcode/SwarmerAPIQualifications/20260921001950`.
+
+
+## Physical install and compact-model canary
+
+The tested source commit is `937958db1a2c10f1fd9f44aa9cef10761d868cdf`,
+published to both `origin/main` and `vibecode/main`.
+
+CoreDevice installed and then independently listed build `20260921001950` on
+the paired iPhone 16 Pro. The temporary authenticated IPv6 application API
+returned `app.status: succeeded` at 00:31:10.070 UTC, confirming the same native
+and configured build, active app and retained pairing. No model was loaded and
+no business action was submitted. The changed pause text was covered by tests;
+it was not separately observed visually on the phone in this qualification.
+
+A single benign synthetic Node repair used the committed candidate and configured
+Ubuntu coding model after a read-only idle check. At 00:33:17 UTC it returned an
+accepted, complete `package.json` in 88.955 seconds: 2,985 input tokens and 110
+output tokens, within the 512-token cap. The prompt was 8,274 bytes; the schema
+was 7,555 bytes. Model-reported load, prefill and generation times were 17.257,
+43.874 and 27.740 seconds. The manifest had no dependencies and the expected
+`node --check app.mjs` build command. The fixture's plan and existing files were
+preserved. No user project source or generated application code was read, and
+no project database mutation was performed by the canary. This demonstrates a
+successful small repair under the time limit, not end-to-end user project success.
+
+The final worker qualification additionally covers the first manual resume after
+an exact timeout diagnostic: the latest assistant timeout followed only by user
+replies keeps the 512-token recovery limit immediately. An ordinary assistant
+response exits this mode. Consecutive-timeout accounting remains separate, so a
+new user reply resets the pause counter. Five additional regression cases passed;
+this predicate-only follow-up did not repeat the live model canary.

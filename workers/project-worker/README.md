@@ -102,6 +102,11 @@ static-web alternative remain in effect. The model and 240-second wall budget
 do not change. Missing terminal chunks, token-limit endings and incomplete JSON
 still reject the entire batch. A second consecutive timeout still pauses the
 project without accepting files or spending a third model call.
+The first repair after a user resumes a timeout pause also remains compact:
+the latest assistant message must be the exact single or repeated timeout
+diagnostic, followed only by user replies. A later ordinary assistant response
+ends this recovery mode. User replies reset the consecutive-timeout pause
+counter; the latest reply remains intact in the compact model request.
 
 `last_transport_metrics` records numeric request sizes, response bytes/chunks,
 time to headers/first chunk/first content, elapsed time and terminal receipt,
