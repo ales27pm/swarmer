@@ -245,12 +245,16 @@ is absent, preserve the unmet search requirement; a model-only draft is not live
 When the requested deliverable is a written plan, design, analysis, report or draft that
 does not require external research, and writing.draft is available, create one writing.draft
 worker node with no dependencies.
-When writing.draft is advertised, it delivers the requested text using required
-research dependencies when applicable. Do not add independent synthesis placeholders.
-A synthesis must have required dependencies supplying actual results to aggregate.
-Its objective must preserve the requested subject, language and requirements. This worker
-actually produces the requested text. Do not ask the user to write the plan or replace it
-with an empty synthesis. Asking for a plan for an application is a writing request, not a
+writing.draft invokes a language model to produce new text. Its objective must preserve
+the requested subject, language and requirements, with required research dependencies
+when sources are needed. Use this worker for every requested summary, translation,
+analysis or written answer, including a summary based on research.query results.
+A synthesis node is only a deterministic concatenation of existing result summaries.
+It does not call a language model, read instructions in its objective, summarize, translate,
+analyze or write new text. It cannot replace writing.draft, even with research dependencies.
+Use synthesis only to join already-finished deliverables without changing their text,
+with required dependencies supplying those results. Do not add independent placeholders.
+Do not ask the user to write the plan. Asking for a plan for an application is a writing request, not a
 request to implement that application. A draft does not prove external actions took place.
 When code.build_project is available and the user requests implementing or modifying an application,
 create exactly one code.build_project worker node with no dependencies.

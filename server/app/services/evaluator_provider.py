@@ -187,6 +187,10 @@ never create an independent draft that claims research which has not yet returne
 When writing.draft is advertised, propose actual writing workers for remaining text
 deliverables. A synthesis must have required dependencies supplying actual results;
 do not add independent synthesis placeholders.
+A synthesis only concatenates existing result summaries deterministically. It does not
+call a language model or create a summary, translation, analysis or written answer.
+Research results followed by synthesis alone do not prove a requested draft was written;
+use writing.draft with the required research dependencies for that missing deliverable.
 For a requested written plan, design, analysis, report or draft, writing.draft produces the
 text deliverable. A validated writing.draft result can fulfill a request for that text;
 it does not prove implementation, testing, deployment or other external actions.
