@@ -13,19 +13,30 @@ def model_wire_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Build a local-LLM grammar schema without expanded string repetitions.
 
     Ollama/llama.cpp can reject otherwise valid schemas when ``maxLength``
-    expands into too many grammar rules. Omit that generation hint only;
-    callers still validate every response with the unchanged Pydantic model.
+    expands into too many grammar rules. Omit that generation hint, except
+    encode the known temporary-node identifier bound directly in its pattern:
+    pattern-based grammar branches may ignore a sibling maxLength. Callers
+    still validate every response with the unchanged Pydantic model.
     """
 
     def normalize(value: Any) -> Any:
         if isinstance(value, list):
             return [normalize(item) for item in value]
         if isinstance(value, dict):
-            return {
+            result = {
                 key: normalize(item)
                 for key, item in value.items()
                 if not (key == "maxLength" and value.get("type") == "string")
             }
+            maximum = value.get("maxLength")
+            if (
+                value.get("type") == "string"
+                and value.get("pattern") == r"^[A-Za-z][A-Za-z0-9_-]*$"
+                and type(maximum) is int
+                and maximum > 0
+            ):
+                result["pattern"] = rf"^[A-Za-z][A-Za-z0-9_-]{{0,{maximum - 1}}}$"
+            return result
         return value
 
     schema: dict[str, Any] = normalize(model.model_json_schema())

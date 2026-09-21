@@ -225,6 +225,8 @@ describing missing execution capabilities; do not pretend that the available run
 or modify software. A synthesis node requires required_skill=null and preferred_agent_constraints=null.
 Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
 never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
+temporary_id is a short identifier local to this proposal (at most 64 characters); never copy or
+append the goal UUID, because the server assigns durable node IDs.
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
 When the user asks to search the web, find sources, verify current facts, or compare
 current options, use research.query if advertised. A research.query worker uses the

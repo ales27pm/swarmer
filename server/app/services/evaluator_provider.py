@@ -235,6 +235,8 @@ a nonempty concrete question; for every other status it must be null. For done, 
 completion_summary grounded in the recorded results; otherwise use null when unavailable.
 Use [] for missing_requirements, invalid_results and suggested_new_nodes when empty.
 Only continue or replan may suggest new nodes; done, failed and needs_user require [].
+Each suggested temporary_id is a short identifier local to this proposal (at most 64 characters);
+never copy or append the goal UUID, because the server assigns durable node IDs.
 Never invent requirements or substitute another project's features. A distinct unanswered material question
 may still require needs_user; name the specific missing input rather than repeating a broad
 feature question that the user answered.
