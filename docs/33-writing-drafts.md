@@ -21,7 +21,7 @@ lease, policy, and concurrency checks still apply.
 
 The new worker in `workers/text-worker` uses a configured local Ollama model. It
 makes one streamed CPU request with a 120-second absolute timeout and a
-1,536-token output cap. Missing terminal completion, truncation, invalid JSON,
+512-token output cap, with five to seven concise steps for plans. Missing terminal completion, truncation, invalid JSON,
 unknown fields, invalid Unicode, empty output, or lease loss prevent acceptance.
 The worker has no tools and never executes generated text.
 

@@ -32,8 +32,12 @@ fields and non-finite values. The stream must terminate with `done: true` and
 JSON, and incomplete streams fail without publishing a draft. No response is
 repaired or retried.
 
-Inference uses one native Ollama `/api/chat` request, at most 1,536 output tokens,
-and an absolute wall budget of 1–120 seconds. CPU inference (`num_gpu: 0`) avoids
+Inference uses one native Ollama `/api/chat` request, at most 512 output tokens,
+and an absolute wall budget of 1–120 seconds. The prompt requests a complete
+compact draft (5–7 concise steps for a plan) with a summary within 120 characters,
+including JSON overhead within the token budget. The result contract retains its
+larger byte and character bounds; the generation budget does not relax validation.
+CPU inference (`num_gpu: 0`) avoids
 displacing resident GPU workloads. The worker does not download, unload, or
 switch other model processes. Set an existing small local model alias through
 `MONGARS_TEXT_MODEL_ID`; there is deliberately no invented default alias.

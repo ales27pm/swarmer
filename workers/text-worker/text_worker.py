@@ -33,15 +33,17 @@ SKILL = "writing.draft"
 MAX_PAYLOAD_BYTES = 32_000
 MAX_TEXT_BYTES = 24_000
 MAX_RESPONSE_BYTES = 512_000
-MAX_OUTPUT_TOKENS = 1_536
+MAX_OUTPUT_TOKENS = 512
 _JOB_LOCK = threading.Lock()
 _MODEL_LOCK = threading.Lock()
 
 SYSTEM_PROMPT = """Write the actual requested draft, plan, instructions, or analysis.
 Return exactly one JSON object with schema_version "1.0", content_trust "untrusted",
-text (the complete deliverable), and summary (at most 1200 characters).
-Use the user's language. Be concise enough to finish within 1536 output tokens.
-For a plan, provide useful concrete steps, assumptions, dependencies, and limits.
+text (the complete deliverable), and summary (a short overview).
+Use the user's language. Return a complete concise JSON object within 512 output
+tokens, including JSON overhead. Keep the summary within 120 characters.
+For a plan, use 5–7 concise steps and briefly state assumptions, dependencies,
+and limits. Prefer a complete compact plan over an unfinished detailed draft.
 Use provided conversation to understand requirements and incorporate user replies.
 Where details are genuinely unknown, label reasonable assumptions or open issues
 in the draft. Never ask the user to provide the plan or draft you were asked to write.

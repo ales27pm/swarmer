@@ -249,7 +249,7 @@ def test_complete_native_stream_is_one_cpu_call_with_bounded_tokens(
     assert len(requests) == 1
     _, path, body, headers = requests[0]
     assert path == "/api/chat"
-    assert body["options"] == {"temperature": 0, "num_predict": 1536, "num_gpu": 0}
+    assert body["options"] == {"temperature": 0, "num_predict": 512, "num_gpu": 0}
     assert body["stream"] is True
     assert body["think"] is False
     assert body["format"] == worker.RESPONSE_SCHEMA
@@ -394,7 +394,12 @@ def test_real_loopback_body_socket_is_closed_on_lease_loss(worker: ModuleType) -
             self.wfile.flush()
             body_started.set()
             self.connection.settimeout(2)
-            if self.rfile.read(1) == b"":
+            try:
+                closed = self.rfile.read(1) == b""
+            except ConnectionResetError:
+                # A reset also proves cancellation closed the real socket.
+                closed = True
+            if closed:
                 disconnected.set()
             stop.wait(2)
 
