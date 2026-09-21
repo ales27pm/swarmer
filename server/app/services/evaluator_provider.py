@@ -15,6 +15,7 @@ from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
     MAX_PROPOSAL_BYTES,
     PlanValidationError,
+    _parse_json_object,
     parse_evaluation_json,
     validate_evaluation_decision,
 )
@@ -32,6 +33,33 @@ EvaluatorFailureCategory = Literal[
 EvaluatorDiagnostic = Literal[
     "transport", "http_status", "envelope", "json", "schema", "graph", "context"
 ]
+
+# Ollama may sort schema keys lexicographically before grammar generation.
+# These aliases affect only the model transport, never public decision fields.
+_WIRE_FIELDS = {
+    "00_schema_version": "schema_version",
+    "10_invalid_results": "invalid_results",
+    "20_missing_requirements": "missing_requirements",
+    "30_reason_summary": "reason_summary",
+    "40_status": "status",
+    "50_suggested_new_nodes": "suggested_new_nodes",
+    "60_user_question": "user_question",
+    "70_completion_summary": "completion_summary",
+}
+
+
+def _parse_wire_decision(content: str) -> EvaluationDecision:
+    # Reuse the bounded strict JSON reader before renaming: duplicate keys at
+    # any depth, invalid Unicode and non-finite numbers must not be normalized away.
+    value = _parse_json_object(content)
+    if set(value).intersection(_WIRE_FIELDS):
+        if set(value) != set(_WIRE_FIELDS):
+            raise PlanValidationError("evaluator wire fields are incomplete or mixed")
+        public = {name: value[alias] for alias, name in _WIRE_FIELDS.items()}
+        content = json.dumps(public, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    # Compatible endpoints may still return the complete public spelling;
+    # unknown public fields and nested aliases fail the unchanged strict parser.
+    return parse_evaluation_json(content)
 
 
 class EvaluatorProviderError(RuntimeError):
@@ -93,6 +121,13 @@ class UbuntuEvaluatorProvider:
     source = PlannerSource.UBUNTU_LOCAL
     SYSTEM_PROMPT = """You are the monGARS goal evaluator.
 Return exactly one JSON object matching the supplied schema and no prose.
+The transport schema uses numbered top-level names to preserve assessment order:
+00_schema_version, 10_invalid_results, 20_missing_requirements, 30_reason_summary,
+40_status, 50_suggested_new_nodes, 60_user_question, 70_completion_summary.
+Use exactly those top-level keys, never mixed with unprefixed names. Nested node
+keys remain unchanged. The explanations and example below use the public names;
+add the specified prefixes in your response. Assess evidence before choosing status
+or writing a completion summary.
 Evaluate only the bounded goal state in the user message.
 Report invalid_results and missing_requirements from the evidence before choosing status.
 Do not choose an outcome first and then justify it from the fact that nodes completed.
@@ -236,20 +271,7 @@ The Ubuntu control plane independently validates your proposal and remains autho
         alternatives: list[dict[str, Any]] = []
         for statuses in (("continue", "replan"), ("done", "failed"), ("needs_user",)):
             branch = deepcopy(schema)
-            # Grammar decoding emits properties in this order. Assess evidence before
-            # committing to an outcome; the authoritative decision contract is unchanged.
-            order = (
-                "schema_version",
-                "invalid_results",
-                "missing_requirements",
-                "reason_summary",
-                "status",
-                "suggested_new_nodes",
-                "user_question",
-                "completion_summary",
-            )
-            properties = {name: branch["properties"][name] for name in order}
-            branch["properties"] = properties
+            properties = branch["properties"]
             properties["status"] = {"type": "string", "enum": list(statuses)}
             properties["user_question"] = (
                 {"type": "string", "minLength": 1}
@@ -258,7 +280,10 @@ The Ubuntu control plane independently validates your proposal and remains autho
             )
             if statuses != ("continue", "replan"):
                 properties["suggested_new_nodes"]["maxItems"] = 0
-            branch["required"] = [*branch["required"], "user_question", "completion_summary"]
+            # Prefix only top-level transport fields. The public contract and
+            # every nested node schema remain unchanged.
+            branch["properties"] = {alias: properties[name] for alias, name in _WIRE_FIELDS.items()}
+            branch["required"] = list(_WIRE_FIELDS)
             alternatives.append(branch)
         return {
             "type": "json_schema",
@@ -331,7 +356,7 @@ The Ubuntu control plane independently validates your proposal and remains autho
         except UnicodeError:
             pass
         try:
-            decision = parse_evaluation_json(content.strip())
+            decision = _parse_wire_decision(content.strip())
         except PlanValidationError as exc:
             raise EvaluatorProviderError(
                 "evaluator returned an invalid proposal",

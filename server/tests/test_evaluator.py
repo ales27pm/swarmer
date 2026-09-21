@@ -91,6 +91,20 @@ def continue_decision() -> dict[str, object]:
     }
 
 
+def wire_decision(decision: dict[str, object]) -> dict[str, object]:
+    names = {
+        "schema_version": "00_schema_version",
+        "invalid_results": "10_invalid_results",
+        "missing_requirements": "20_missing_requirements",
+        "reason_summary": "30_reason_summary",
+        "status": "40_status",
+        "suggested_new_nodes": "50_suggested_new_nodes",
+        "user_question": "60_user_question",
+        "completion_summary": "70_completion_summary",
+    }
+    return {names[key]: value for key, value in decision.items()}
+
+
 def test_evaluation_context_keeps_legacy_defaults_and_accepts_user_answers() -> None:
     context = evaluation_context()
     assert context.conversation_revision == 0
@@ -331,12 +345,14 @@ def test_evaluator_schema_limits_workers_but_preserves_unknown_availability(
         raw = continue_decision()
         assert isinstance(raw["suggested_new_nodes"], list)
         raw["suggested_new_nodes"][0].update(required_skill=required_skill, dependencies=[])
-        assert validator.is_valid(raw) is (skills is None or required_skill in skills)
+        assert validator.is_valid(wire_decision(raw)) is (
+            skills is None or required_skill in skills
+        )
     raw = continue_decision()
     assert isinstance(raw["suggested_new_nodes"], list)
     raw["suggested_new_nodes"][0].update(node_type="synthesis", required_skill=None)
-    assert validator.is_valid(raw)
-    assert validator.is_valid({**raw, "suggested_new_nodes": []})
+    assert validator.is_valid(wire_decision(raw))
+    assert validator.is_valid(wire_decision({**raw, "suggested_new_nodes": []}))
 
 
 def test_evaluator_schema_preserves_project_exclusivity() -> None:
@@ -346,9 +362,9 @@ def test_evaluator_schema_preserves_project_exclusivity() -> None:
     raw = continue_decision()
     assert isinstance(raw["suggested_new_nodes"], list)
     raw["suggested_new_nodes"][0].update(required_skill="code.build_project", dependencies=[])
-    assert Draft202012Validator(schema).is_valid(raw)
+    assert Draft202012Validator(schema).is_valid(wire_decision(raw))
     raw["suggested_new_nodes"].append(continue_decision()["suggested_new_nodes"][0])
-    assert not Draft202012Validator(schema).is_valid(raw)
+    assert not Draft202012Validator(schema).is_valid(wire_decision(raw))
 
 
 @pytest.mark.asyncio
@@ -377,7 +393,7 @@ async def test_evaluator_rejects_unadvertised_skill_without_retry_or_rewrite(
     payload = post.await_args.kwargs["json"]
     assert json.loads(payload["messages"][1]["content"])["available_skills"] == skills
     schema = payload["response_format"]["json_schema"]["schema"]
-    assert Draft202012Validator(schema).is_valid(continue_decision()) is (
+    assert Draft202012Validator(schema).is_valid(wire_decision(continue_decision())) is (
         skills is None or "workspace.read_text" in skills
     )
 
@@ -452,15 +468,17 @@ def test_evaluator_wire_schema_enforces_status_question_and_node_constraints(sta
         if status == "needs_user"
         else None,
     }
-    assert validator.is_valid(decision)
+    assert validator.is_valid(wire_decision(decision))
     assert not validator.is_valid(
-        {**decision, "user_question": None if status == "needs_user" else "Une question ?"}
+        wire_decision(
+            {**decision, "user_question": None if status == "needs_user" else "Une question ?"}
+        )
     )
     with_nodes = {**decision, "suggested_new_nodes": continue_decision()["suggested_new_nodes"]}
-    assert validator.is_valid(with_nodes) is (status in {"continue", "replan"})
+    assert validator.is_valid(wire_decision(with_nodes)) is (status in {"continue", "replan"})
     for required in ("user_question", "completion_summary"):
         missing_field = {key: value for key, value in decision.items() if key != required}
-        assert not validator.is_valid(missing_field)
+        assert not validator.is_valid(wire_decision(missing_field))
 
 
 def test_evaluator_implementation_example_is_a_valid_grounded_project_proposal(
@@ -487,7 +505,7 @@ def test_evaluator_implementation_example_is_a_valid_grounded_project_proposal(
     ):
         assert requirement in node.objective
     schema = UbuntuEvaluatorProvider._response_format()["json_schema"]["schema"]
-    assert Draft202012Validator(schema).is_valid(example)
+    assert Draft202012Validator(schema).is_valid(wire_decision(example))
 
 
 @pytest.mark.asyncio
