@@ -21,9 +21,13 @@ lease, policy, and concurrency checks still apply.
 
 The new worker in `workers/text-worker` uses a configured local Ollama model. It
 makes one streamed CPU request with a 120-second absolute timeout and a
-512-token output cap, with five to seven concise steps for plans. Missing terminal completion, truncation, invalid JSON,
+512-token output cap. The prompt requests 100–140 words of plain text, five
+concise steps for plans, and a short summary. Missing terminal completion,
+truncation, invalid JSON,
 unknown fields, invalid Unicode, empty output, or lease loss prevent acceptance.
-The worker has no tools and never executes generated text.
+The worker has no tools and never executes generated text. Generation failures
+log fixed reason codes (for example, `token_limit` or `wall_timeout`) without
+logging task data, generated text or raw exceptions.
 
 The result contains `schema_version`, `content_trust: untrusted`, `text` (at most
 24,000 UTF-8 bytes), and `summary` (at most 1,200 characters). Validation enforces

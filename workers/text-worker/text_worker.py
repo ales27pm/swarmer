@@ -40,10 +40,12 @@ _MODEL_LOCK = threading.Lock()
 SYSTEM_PROMPT = """Write the actual requested draft, plan, instructions, or analysis.
 Return exactly one JSON object with schema_version "1.0", content_trust "untrusted",
 text (the complete deliverable), and summary (a short overview).
-Use the user's language. Return a complete concise JSON object within 512 output
-tokens, including JSON overhead. Keep the summary within 120 characters.
-For a plan, use 5–7 concise steps and briefly state assumptions, dependencies,
-and limits. Prefer a complete compact plan over an unfinished detailed draft.
+Use the user's language. Keep text to 100–140 words and summary to 80 characters.
+Return the complete JSON object within 512 output tokens, including JSON overhead.
+The text value must be plain prose, not another JSON object, a code block, or a
+table. For a plan, write 5 concise numbered steps covering the requested features
+and verification, then one short line for assumptions, dependencies, and limits.
+Combine related points instead of expanding the outline. Finish the JSON object.
 Use provided conversation to understand requirements and incorporate user replies.
 Where details are genuinely unknown, label reasonable assumptions or open issues
 in the draft. Never ask the user to provide the plan or draft you were asked to write.
@@ -70,6 +72,45 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 
 class GenerationError(ValueError):
     """No complete, bounded text draft could be accepted."""
+
+    def __init__(self, message: str, *, reason: str = "invalid_output") -> None:
+        super().__init__(message)
+        self.reason_code = reason if reason in _FAILURE_REASONS else "invalid_output"
+
+
+_FAILURE_REASONS = frozenset(
+    {
+        "invalid_payload",
+        "invalid_output",
+        "invalid_json",
+        "invalid_stream",
+        "model_error",
+        "model_http_error",
+        "transport_error",
+        "token_limit",
+        "non_stop_finish",
+        "incomplete_stream",
+        "response_limit",
+        "wall_timeout",
+        "request_busy",
+    }
+)
+
+
+def failure_reason(error: BaseException) -> str:
+    """Return only fixed diagnostic codes, never exception or generated text."""
+    if isinstance(error, GenerationError) and error.reason_code in _FAILURE_REASONS:
+        return error.reason_code
+    return "transport_error" if isinstance(error, OSError) else "invalid_output"
+
+
+def _parse_model_json(raw: str | bytes) -> Any:
+    try:
+        return transport._parse_json(raw)
+    except (TypeError, UnicodeError, ValueError) as exc:
+        raise GenerationError(
+            "local text model returned invalid JSON", reason="invalid_json"
+        ) from exc
 
 
 def _text(value: object, limit: int | None = None) -> str:
@@ -118,8 +159,11 @@ def validate_payload(value: object) -> dict[str, Any]:
 
 def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("required_skill") != SKILL:
-        raise GenerationError("unsupported worker skill")
-    return validate_payload(job.get("payload"))
+        raise GenerationError("unsupported worker skill", reason="invalid_payload")
+    try:
+        return validate_payload(job.get("payload"))
+    except GenerationError as exc:
+        raise GenerationError("invalid draft payload", reason="invalid_payload") from exc
 
 
 def validate_result(value: object) -> dict[str, str]:
@@ -199,7 +243,9 @@ class TextGenerator:
         response = connection.getresponse()
         if response.status != 200:
             response.close()
-            raise GenerationError("local text model returned an unsuccessful response")
+            raise GenerationError(
+                "local text model returned an unsuccessful response", reason="model_http_error"
+            )
         total = 0
         pending = b""
         parts: list[str] = []
@@ -210,27 +256,39 @@ class TextGenerator:
             nonlocal terminal, content_bytes
             check()
             if terminal:
-                raise GenerationError("local text model returned data after completion")
-            value = transport._parse_json(raw.decode("utf-8"))
+                raise GenerationError(
+                    "local text model returned data after completion", reason="invalid_stream"
+                )
+            value = _parse_model_json(raw)
+            if isinstance(value, dict) and "error" in value:
+                raise GenerationError("local text model reported an error", reason="model_error")
             message = value.get("message") if isinstance(value, dict) else None
             if (
                 not isinstance(value, dict)
-                or "error" in value
                 or not isinstance(message, dict)
                 or message.get("role") != "assistant"
                 or not isinstance(message.get("content"), str)
                 or message.get("tool_calls")
                 or type(value.get("done")) is not bool
             ):
-                raise GenerationError("local text model returned an invalid stream event")
+                raise GenerationError(
+                    "local text model returned an invalid stream event", reason="invalid_stream"
+                )
             content = message["content"]
             content_bytes += len(content.encode("utf-8"))
             if content_bytes > MAX_RESPONSE_BYTES:
-                raise GenerationError("local text model content exceeded its byte limit")
+                raise GenerationError(
+                    "local text model content exceeded its byte limit", reason="response_limit"
+                )
             parts.append(content)
             if value["done"]:
                 if value.get("done_reason") != "stop":
-                    raise GenerationError("local text model did not finish its draft")
+                    raise GenerationError(
+                        "local text model did not finish its draft",
+                        reason="token_limit"
+                        if value.get("done_reason") == "length"
+                        else "non_stop_finish",
+                    )
                 terminal = True
 
         try:
@@ -242,7 +300,9 @@ class TextGenerator:
                     break
                 total += len(chunk)
                 if total > MAX_RESPONSE_BYTES:
-                    raise GenerationError("local text model stream exceeded its byte limit")
+                    raise GenerationError(
+                        "local text model stream exceeded its byte limit", reason="response_limit"
+                    )
                 pending += chunk
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
@@ -251,9 +311,11 @@ class TextGenerator:
             if pending.strip():
                 event(pending)
             if not terminal:
-                raise GenerationError("local text model stream ended without completion")
+                raise GenerationError(
+                    "local text model stream ended without completion", reason="incomplete_stream"
+                )
             check()
-            return validate_result(transport._parse_json("".join(parts)))
+            return validate_result(_parse_model_json("".join(parts)))
         finally:
             response.close()
 
@@ -263,7 +325,9 @@ class TextGenerator:
         payload = validate_payload(payload)
         ensure_active()
         if not _MODEL_LOCK.acquire(blocking=False):
-            raise GenerationError("a prior model request is still being closed")
+            raise GenerationError(
+                "a prior model request is still being closed", reason="request_busy"
+            )
         try:
             connection = self._connection()
         except Exception:
@@ -276,7 +340,9 @@ class TextGenerator:
         def check() -> None:
             ensure_active()
             if cancelled.is_set() or time.monotonic() >= deadline:
-                raise GenerationError("local text model exceeded its wall-time limit")
+                raise GenerationError(
+                    "local text model exceeded its wall-time limit", reason="wall_timeout"
+                )
 
         def request() -> None:
             try:
@@ -309,8 +375,11 @@ class TextGenerator:
                     return validate_result(value)
                 if isinstance(value, (protocol.LeaseLost, protocol.LeaseUnavailable)):
                     raise value
+                if isinstance(value, GenerationError):
+                    raise value
                 raise GenerationError(
-                    "local text model failed to return a complete draft"
+                    "local text model failed to return a complete draft",
+                    reason=failure_reason(value),
                 ) from value
         finally:
             cancelled.set()
@@ -354,7 +423,8 @@ def run_once(
                 generator.generate(payload, ensure_active=heartbeat.ensure_active)
             )
             result_body: dict[str, Any] = {"status": "completed", "result": result}
-        except (GenerationError, OSError, TypeError, UnicodeError, ValueError):
+        except (GenerationError, OSError, TypeError, UnicodeError, ValueError) as exc:
+            LOGGER.warning("text draft generation failed: reason=%s", failure_reason(exc))
             result_body = {"status": "failed", "error": "Text draft generation failed validation"}
         heartbeat.ensure_active()
         # Renew synchronously after generation as the final cancellation fence.

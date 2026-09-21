@@ -32,9 +32,15 @@ fields and non-finite values. The stream must terminate with `done: true` and
 JSON, and incomplete streams fail without publishing a draft. No response is
 repaired or retried.
 
+Failed generation logs only fixed reason codes, such as `token_limit`,
+`wall_timeout`, `invalid_json`, or `transport_error`. Generated text, model error
+bodies, user inputs, credentials, and exception messages are never logged.
+The control-plane failure response remains fixed and contains no partial draft.
+
 Inference uses one native Ollama `/api/chat` request, at most 512 output tokens,
 and an absolute wall budget of 1–120 seconds. The prompt requests a complete
-compact draft (5–7 concise steps for a plan) with a summary within 120 characters,
+100–140-word plain-prose draft (5 concise steps for a plan and one short line for
+assumptions, dependencies, and limits) with a summary within 80 characters,
 including JSON overhead within the token budget. The result contract retains its
 larger byte and character bounds; the generation budget does not relax validation.
 CPU inference (`num_gpu: 0`) avoids

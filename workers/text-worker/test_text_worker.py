@@ -337,9 +337,10 @@ def test_header_stall_obeys_absolute_wall_timeout(
     generator, connection = generator_for(worker, monkeypatch, stream())
     connection.header_stall = True
     started = time.monotonic()
-    with pytest.raises(worker.GenerationError):
+    with pytest.raises(worker.GenerationError) as failed:
         generator.generate(payload(), ensure_active=lambda: None)
     assert time.monotonic() - started < 1.6
+    assert failed.value.reason_code == "wall_timeout"
     assert connection.initial_sock.closed.is_set()
     assert not worker._MODEL_LOCK.locked()
 
@@ -505,6 +506,70 @@ def test_failed_generation_publishes_only_fixed_error_and_no_private_text(
     ]
     assert "private invalid response" not in caplog.text
     assert "credential-secret" not in caplog.text
+    assert "reason=invalid_json" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("chunks", "reason"),
+    [
+        ([event(json.dumps(draft()), done=True, reason="length")], "token_limit"),
+        ([event(json.dumps(draft()), done=True, reason="private-reason")], "non_stop_finish"),
+        ([event(json.dumps(draft()))], "incomplete_stream"),
+        ([event("private-generated-text", done=True)], "invalid_json"),
+        ([b'{"error":"private-model-error"}\n'], "model_error"),
+        ([b'{"message":null,"done":false}\n'], "invalid_stream"),
+    ],
+)
+def test_generation_failure_logs_fixed_reason_without_publishing_partial_draft(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    chunks: list[bytes],
+    reason: str,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    generator, connection = generator_for(worker, monkeypatch, chunks)
+    assert worker.run_once("http://127.0.0.1", "agent", "credential-secret", generator)
+    assert client.submitted == [
+        {"status": "failed", "error": "Text draft generation failed validation"}
+    ]
+    assert f"reason={reason}" in caplog.text
+    assert "private-" not in caplog.text
+    assert "credential-secret" not in caplog.text
+    assert "opaque-proof" not in caplog.text
+    assert len([call for call in connection.calls if call[0] == "POST"]) == 1
+    assert connection.initial_sock.closed.is_set()
+
+
+@pytest.mark.parametrize("http_error", [True, False])
+def test_transport_failures_keep_safe_diagnostic_classification(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    http_error: bool,
+) -> None:
+    generator, connection = generator_for(worker, monkeypatch, stream())
+    if http_error:
+        connection.response.status = 503
+    else:
+
+        def unavailable() -> Any:
+            raise OSError("private transport address and credential")
+
+        monkeypatch.setattr(connection, "getresponse", unavailable)
+    with pytest.raises(worker.GenerationError) as failed:
+        generator.generate(payload(), ensure_active=lambda: None)
+    assert failed.value.reason_code == ("model_http_error" if http_error else "transport_error")
+    assert connection.initial_sock.closed.is_set()
+
+
+def test_failure_reason_cannot_leak_exception_text_or_unrecognized_code(worker: ModuleType) -> None:
+    error = worker.GenerationError("private-generated-text", reason="private-model-reason")
+    assert worker.failure_reason(error) == "invalid_output"
+    error.reason_code = "private-overwritten-code"
+    assert worker.failure_reason(error) == "invalid_output"
+    assert worker.failure_reason(ValueError("private payload")) == "invalid_output"
+    assert worker.failure_reason(OSError("private transport")) == "transport_error"
 
 
 def test_startup_requires_operator_model_and_uses_native_loopback_endpoint(
