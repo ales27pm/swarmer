@@ -36,7 +36,9 @@ def public_response(kind: Kind, skill: str | None = "research.query") -> dict[st
     field = "nodes" if kind == "planner" else "suggested_new_nodes"
     result[field][0].update(required_skill=skill, objective=QUERY)
     if skill is None:
-        result[field][0].update(node_type="synthesis", preferred_agent_constraints=None)
+        result[field][0].update(
+            node_type="synthesis", preferred_agent_constraints=None, dependencies=[]
+        )
     return result
 
 
