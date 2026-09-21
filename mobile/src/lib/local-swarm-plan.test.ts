@@ -46,6 +46,27 @@ function general(): SwarmPlanProposal {
 }
 
 describe("local Swarm planning contract", () => {
+  it("accepts a real active writer for a planning-only deliverable without inventing code execution", () => {
+    const writingContext: LocalSwarmPlanContext = { ...context,
+      goal: { ...context.goal, objective: "Rédiger un plan détaillé pour un CRM Swift natif.", completion_criteria: ["Plan détaillé à relire"] },
+      agents: [{ ...context.agents[0], id: "writer_1", skills: ["writing.draft"] }],
+    };
+    const plan = project();
+    plan.objective = writingContext.goal.objective;
+    plan.completion_criteria = [...writingContext.goal.completion_criteria];
+    plan.nodes = [{ ...plan.nodes[0], temporary_id: "draft", title: "Rédiger le plan", required_skill: "writing.draft",
+      objective: writingContext.goal.objective, expected_output: "Le plan complet, à relire" }];
+    expect(parseLocalSwarmPlan(JSON.stringify(plan), writingContext)).toEqual(plan);
+    const prompt = buildLocalSwarmPlanPrompt(writingContext);
+    expect(JSON.parse(prompt.split("\n").at(-1)!).active_agents[0].skills).toEqual(["writing.draft"]);
+    expect(prompt).toContain("Ne transforme pas une demande de plan en construction de code");
+    expect(prompt).toContain("Une synthèse seule ne peut pas produire ce livrable");
+    expect(() => parseLocalSwarmPlan(JSON.stringify(plan), { ...writingContext, agents: context.agents })).toThrow("compétence sans agent actif compatible");
+    expect(() => parseLocalSwarmPlan(JSON.stringify(plan), { ...writingContext,
+      agents: [{ ...writingContext.agents[0], status: "offline" }],
+    })).toThrow("aucun agent");
+  });
+
   it("preserves the actual model plan and all user requirements for the project worker", () => {
     const plan = project();
     expect(parseLocalSwarmPlan(JSON.stringify(plan), context)).toEqual(plan);

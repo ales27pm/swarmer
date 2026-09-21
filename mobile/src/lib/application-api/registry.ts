@@ -108,6 +108,8 @@ register("goals.list", noInput, (_, context) => context.shouldAccept ? server.li
 register<{ id: string }>("goals.get", idInput, ({ id }, context) => context.shouldAccept ? server.getGoal(id, context.shouldAccept) : server.getGoal(id));
 register<{ id: string }>("goals.nodes", idInput, ({ id }, context) => context.shouldAccept ? server.listGoalNodes(id, context.shouldAccept) : server.listGoalNodes(id));
 register<{ id: string }>("goals.result", idInput, ({ id }, context) => context.shouldAccept ? server.getGoalResult(id, context.shouldAccept) : server.getGoalResult(id));
+register<{ goalId: string; nodeId: string; workerJobId: string }>("goals.writing-draft", object({ goalId: identifier, nodeId: identifier, workerJobId: identifier }),
+  ({ goalId, nodeId, workerJobId }, context) => server.getGoalWritingDraft(goalId, nodeId, workerJobId, context.shouldAccept));
 register<GoalCreateInput>("goals.create", object({
   objective: text(4000), autonomy_profile: choice("manual", "assisted", "autonomous"),
   completion_criteria: list(text(500), 20), max_steps: integer(1, 20), max_parallelism: integer(1, 3),

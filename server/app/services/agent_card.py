@@ -21,12 +21,14 @@ CODE_REVIEW_SKILLS = frozenset(
 )
 CODE_GENERATION_SKILLS = frozenset({"code.generate_python"})
 PROJECT_BUILD_SKILLS = frozenset({"code.build_project"})
+WRITING_SKILLS = frozenset({"writing.draft"})
 SUPPORTED_AGENT_SKILLS = (
     WORKSPACE_SKILLS
     | RESEARCH_SKILLS
     | CODE_REVIEW_SKILLS
     | CODE_GENERATION_SKILLS
     | PROJECT_BUILD_SKILLS
+    | WRITING_SKILLS
 )
 
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
@@ -54,6 +56,7 @@ _FAMILY_METADATA: Mapping[str, frozenset[str]] = MappingProxyType(
         | {"max_operation_seconds", "max_paths", "max_selected_files"},
         "code": _BASE_METADATA | {"max_operation_seconds"},
         "project": _BASE_METADATA | {"max_operation_seconds"},
+        "writing": _BASE_METADATA | {"max_operation_seconds"},
     }
 )
 
@@ -101,6 +104,8 @@ def _skill_families(skills: tuple[str, ...]) -> frozenset[str]:
         families.add("code")
     if set(skills) & PROJECT_BUILD_SKILLS:
         families.add("project")
+    if set(skills) & WRITING_SKILLS:
+        families.add("writing")
     return frozenset(families)
 
 
@@ -238,10 +243,11 @@ def _manifest_policy(raw: object, skills: tuple[str, ...]) -> Mapping[str, str |
         "code_review": ("configured-repository-read-only", "control-plane-only"),
         "code": ("none", "control-plane-and-loopback-model-only"),
         "project": ("isolated-project-scratch", "control-plane-loopback-model-and-registry-only"),
+        "writing": ("none", "control-plane-and-loopback-model-only"),
     }[family]
     if raw.get("filesystem") != expected[0] or raw.get("network") != expected[1]:
         raise AgentCardPolicyError("agent card execution policy is incompatible with its skills")
-    if family in {"code_review", "code", "project"} and "shell" not in raw:
+    if family in {"code_review", "code", "project", "writing"} and "shell" not in raw:
         raise AgentCardPolicyError("code agent card must explicitly deny shell access")
     normalized: dict[str, str | bool] = {
         "filesystem": expected[0],

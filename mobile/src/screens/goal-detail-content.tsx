@@ -3,6 +3,7 @@ import { Alert, Pressable, Text, View } from "react-native";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { GoalCodeProposalReview } from "@/components/goal-code-proposal";
+import { GoalWritingDraft } from "@/components/goal-writing-draft";
 import { GoalConversation } from "@/components/goal-conversation";
 import { GoalProjectReview } from "@/components/goal-project-review";
 import {
@@ -477,6 +478,9 @@ function NodeCard({ node, navigation, readOnly }: {
       <NodeMetadata node={node} />
       <NodeOutcome node={node} />
       <NodeActions node={node} navigation={navigation} />
+      {node.required_skill === "writing.draft" && node.worker_job_id && node.status === "completed" ? (
+        <GoalWritingDraft key={node.worker_job_id} goalId={node.goal_run_id} nodeId={node.id} workerJobId={node.worker_job_id} disabled={readOnly} />
+      ) : null}
       {node.required_skill === "code.generate_python"
         && node.worker_job_id
         && (node.status === "waiting_permission" || node.status === "completed") ? (

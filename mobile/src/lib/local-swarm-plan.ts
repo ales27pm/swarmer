@@ -13,7 +13,7 @@ export type LocalSwarmPlanContext = {
 const SUPPORTED_SKILLS = new Set([
   "workspace.list_dir", "workspace.read_text", "research.query", "code_review.git_status",
   "code_review.git_diff", "code_review.git_show", "code_review.static_analysis",
-  "code.generate_python", "code.build_project",
+  "code.generate_python", "code.build_project", "writing.draft",
 ]);
 const NODE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const STABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -123,6 +123,7 @@ export function buildLocalSwarmPlanPrompt(context: LocalSwarmPlanContext): strin
     "Retourne exactement un objet JSON, sans Markdown, prose, clés dupliquées ni champs supplémentaires.",
     'Schéma : {"schema_version":"1.0","objective":string,"rationale_summary":string,"nodes":[{"temporary_id":string,"node_type":"worker"|"synthesis","title":string,"objective":string,"required_skill":string|null,"dependencies":string[],"optional_dependencies":string[],"expected_output":string,"priority":integer}],"completion_criteria":string[],"max_parallelism":integer}.',
     "Recopie exactement objective et tous les completion_criteria du but. Ne remplace aucune exigence par un résumé. Tu peux ajouter des critères vérifiables.",
+    "Pour livrer un plan détaillé, une analyse ou un document sans demande d’implémentation, sélectionne writing.draft s’il est disponible : ce worker rédige le texte demandé. Ne transforme pas une demande de plan en construction de code, et ne demande pas à l’utilisateur de rédiger lui-même le document demandé. Une synthèse seule ne peut pas produire ce livrable.",
     "Pour développer une application, sélectionne code.build_project s’il est disponible : exactement UN nœud worker, aucune dépendance, max_parallelism=1. Recopie l’objectif complet du but dans objective de ce nœud ; les itérations de code et de tests appartiennent à cet agent.",
     "Flask, SQLite et Python décrivent le projet, pas des noms de compétences. N’utilise jamais tool_name, arguments ou un nom de bibliothèque à la place de required_skill.",
     "Exemple de forme uniquement, pour un autre objectif ; remplace les textes par les données du but courant :",

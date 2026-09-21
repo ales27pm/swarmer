@@ -1,0 +1,9 @@
+{
+  "manifest_version": "1",
+  "name": "mongars-text-worker",
+  "version": "0.14.3",
+  "protocol": "mongars-worker-v0.9",
+  "skills": [{"id": "writing.draft", "risk": "low", "result_trust": "untrusted"}],
+  "limits": {"max_concurrency": 1, "max_result_bytes": 160000, "max_operation_seconds": 120},
+  "policy": {"filesystem": "none", "network": "control-plane-and-loopback-model-only", "writes": false, "shell": false}
+}

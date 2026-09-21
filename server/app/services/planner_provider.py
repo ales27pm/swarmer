@@ -186,7 +186,13 @@ or modify software. A synthesis node requires required_skill=null and preferred_
 Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
 never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
-When code.build_project is available and the user requests building or modifying an application,
+When the requested deliverable is a written plan, design, analysis, report or draft, and
+writing.draft is available, create one writing.draft worker node with no dependencies.
+Its objective must preserve the requested subject, language and requirements. This worker
+actually produces the requested text. Do not ask the user to write the plan or replace it
+with an empty synthesis. Asking for a plan for an application is a writing request, not a
+request to implement that application. A draft does not prove external actions took place.
+When code.build_project is available and the user requests implementing or modifying an application,
 create exactly one code.build_project worker node with no dependencies.
 Do not use a synthesis-only plan or an environment/framework research node for that deliverable.
 Its objective must carry the requested outcome and all functional requirements, not a generic

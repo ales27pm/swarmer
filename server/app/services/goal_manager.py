@@ -82,6 +82,8 @@ from app.services.swarm_contracts import (
     SwarmPlanNodeProposal,
     SwarmPlanProposal,
 )
+from app.services.writing_contracts import WRITING_SKILL
+from app.services.writing_drafts import writing_payload
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
@@ -322,6 +324,14 @@ class GoalManager:
     async def _worker_payload(
         self, goal: Mapping[str, Any], node: Mapping[str, Any]
     ) -> dict[str, Any]:
+        if node["required_skill"] == WRITING_SKILL:
+            goal_id = str(node["goal_run_id"])
+            original = await self.graph.get_goal(goal_id)
+            if original is None:
+                raise GoalManagerConflict("The writing goal is unavailable.")
+            return writing_payload(
+                str(original["objective"]), await self.recent_conversation(goal_id, limit=12)
+            )
         if node["required_skill"] != PROJECT_SKILL:
             return self._payload_for_node(node)
         if self.project_applications is None:
@@ -1807,6 +1817,8 @@ class GoalManager:
             payload: dict[str, Any] = {"path": "."}
         elif skill == "research.query":
             payload = {"query": objective[:2_000], "max_results": 5}
+        elif skill == WRITING_SKILL:
+            payload = writing_payload(objective, [])
         elif skill == CODE_PROPOSAL_SKILL:
             payload = {"objective": safe_context_text(objective, max_chars=4_000)}
         elif skill == "code_review.git_status":
@@ -1893,7 +1905,7 @@ class GoalManager:
             if int(usage[6]) != int(goal.get("conversation_revision") or 0):
                 await db.rollback()
                 return
-            if node["required_skill"] in {CODE_PROPOSAL_SKILL, PROJECT_SKILL}:
+            if node["required_skill"] in {CODE_PROPOSAL_SKILL, PROJECT_SKILL, WRITING_SKILL}:
                 if int(usage[4]) >= int(usage[5]):
                     await db.rollback()
                     await self._terminate_goal(
@@ -1909,7 +1921,9 @@ class GoalManager:
                 )
                 await append_audit_event(
                     db,
-                    "goal.codegen.reserved",
+                    "goal.writing.reserved"
+                    if node["required_skill"] == WRITING_SKILL
+                    else "goal.codegen.reserved",
                     {
                         "goal_run_id": goal["id"],
                         "node_id": node["id"],

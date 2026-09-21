@@ -197,7 +197,8 @@ class AgentDispatcher:
                         encoded_payload,
                         "queued",
                         1
-                        if required_skill in {"code.generate_python", "code.build_project"}
+                        if required_skill
+                        in {"code.generate_python", "code.build_project", "writing.draft"}
                         else self.max_attempts,
                         now,
                         now,

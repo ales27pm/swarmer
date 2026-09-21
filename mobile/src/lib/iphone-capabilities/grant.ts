@@ -343,7 +343,7 @@ function rotateRight(value: number, count: number): number {
   return (value >>> count) | (value << (32 - count));
 }
 
-function sha256(value: string): string {
+export function sha256(value: string): string {
   const input = utf8Bytes(value);
   const bitLength = input.length * 8;
   const bytes = [...input, 0x80];

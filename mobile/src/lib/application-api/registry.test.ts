@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import * as server from "@/lib/api/client";
 import * as native from "@/lib/local-inference";
 import { applicationApi, ApplicationApiError } from "./index";
-import { listAgents } from "./server";
+import { getGoalWritingDraft, listAgents } from "./server";
 import { createLocalGenerationSession, generateLocalProposal, pickAndImportLocalModel } from "./local-inference";
 import { applicationSessions, ApplicationSessions } from "./sessions";
 import { notifyConnectionChanged } from "@/lib/connection-events";
@@ -24,7 +24,7 @@ jest.mock("expo-constants", () => ({ __esModule: true, default: {
 jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
   listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(),
-  listAudit: jest.fn(),
+  listAudit: jest.fn(), getGoalWritingDraft: jest.fn(),
   createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
 }));
 jest.mock("@/lib/local-inference", () => ({
@@ -63,7 +63,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: null, active: false, operationId: null, outputBytes: 0, state: "idle" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(67);
+    expect(applicationApi.catalog().commands).toHaveLength(68);
     expect(applicationApi.catalog().commands.find((command) => command.name === "models.status")).toMatchObject({ effect: "read", output: { dataType: "LocalInferenceStatus", validation: "existing_parser" } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(native.loadLocalModel).not.toHaveBeenCalled();
@@ -75,7 +75,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: "cpu", active: true, operationId: "cpu-operation", outputBytes: 42, state: "active" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(67);
+    expect(applicationApi.catalog().commands).toHaveLength(68);
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
   });
 
@@ -88,6 +88,30 @@ describe("application API contract", () => {
         configuredBuildNumber: "configured-build", platform: "ios", appState: "active" });
       expect(result.metadata.source).toBe("device");
     } finally { AppState.currentState = previousState; }
+  });
+
+  it("exposes the full writing draft through the same read-only API used by the UI", async () => {
+    const draft = { schema_version: "1.0" as const, content_trust: "untrusted" as const,
+      goal_run_id: "goal_1", node_id: "node_1", worker_job_id: "job_1", text: "Un plan à relire.", summary: "Plan proposé", sha256: "a".repeat(64) };
+    jest.mocked(server.getGoalWritingDraft).mockResolvedValue(draft);
+    const shouldAccept = () => true;
+    expect(await getGoalWritingDraft("goal_1", "node_1", "job_1", shouldAccept)).toEqual(draft);
+    expect(server.getGoalWritingDraft).toHaveBeenCalledWith("goal_1", "node_1", "job_1", shouldAccept);
+    expect((await applicationApi.execute("goals.writing-draft", { goalId: "goal_1", nodeId: "node_1", workerJobId: "job_1" })).data).toEqual(draft);
+    expect(applicationApi.catalog().commands.find((command) => command.name === "goals.writing-draft")).toMatchObject({
+      available: true, effect: "read", source: "authoritative", execution: "immediate", requiresForeground: false,
+      output: { dataType: "GoalWritingDraft", validation: "existing_parser" },
+    });
+    expect(server.createGoal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { goalId: "goal_1", nodeId: "node_1" },
+    { goalId: "../goal_1", nodeId: "node_1", workerJobId: "job_1" },
+    { goalId: "goal_1", nodeId: "node_1", workerJobId: "job_1", execute: true },
+  ])("rejects malformed writing-draft identities or added execution fields", async (input) => {
+    await expect(applicationApi.execute("goals.writing-draft", input)).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(server.getGoalWritingDraft).not.toHaveBeenCalled();
   });
 
   it("projects a bounded audit summary without raw actors, payloads or traces", async () => {

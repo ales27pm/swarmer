@@ -115,12 +115,18 @@ policy-allowed worker capability snapshot. null means unknown; [] means none obs
 provide a skill. This snapshot proves availability, not execution, successful checks or approval.
 When available_skills is a list, never suggest a worker skill absent from that list.
 Do not infer missing capabilities from a planner's title when available_skills lists them.
-For a requested application, code.build_project can implement and check a private project;
+For a requested written plan, design, analysis, report or draft, writing.draft produces the
+text deliverable. A validated writing.draft result can fulfill a request for that text;
+it does not prove implementation, testing, deployment or other external actions. If that
+text is missing and writing.draft is available, propose continue with one writing.draft
+worker, dependencies=[], optional_dependencies=[] and user_question=null. Never ask the
+user to author the requested deliverable. An empty or skipped synthesis is not a draft.
+For a requested application implementation, code.build_project can implement and check a private project;
 if it is available and implementation is missing, propose that work rather than asking the user
 how to build it. Applying files to the user's workspace still requires separate approval.
 If the plan skipped requested implementation, propose continue or replan grounded in the
 available evidence; missing implementation is work remaining, not a question about how to code.
-When an application has supplied functional requirements and code.build_project is available,
+When application implementation is requested, functional requirements are supplied and code.build_project is available,
 but no worker implementation evidence is recorded, return continue with exactly one worker
 node using code.build_project, dependencies=[] and optional_dependencies=[]. Put the original
 requested language/platform and the user's supplied features in its objective. Do not return

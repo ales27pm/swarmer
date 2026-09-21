@@ -137,6 +137,7 @@ from app.services.swarm_contracts import (
 )
 from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
+from app.services.writing_drafts import WritingDraftPreview, read_writing_draft
 from app.settings import Settings, get_settings
 
 API_VERSION = "0.14.2"
@@ -1464,6 +1465,23 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise goal_conflict_http_exception(exc) from exc
         await broadcast_goal_detail(detail)
         return detail
+
+    @app.get("/goals/{goal_id}/nodes/{node_id}/writing-draft", response_model=WritingDraftPreview)
+    async def get_writing_draft(
+        goal_id: str,
+        node_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> WritingDraftPreview:
+        del principal
+        try:
+            draft = await read_writing_draft(settings.db_path, goal_id, node_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="writing draft is invalid") from exc
+        if draft is None:
+            raise HTTPException(status_code=404, detail="writing draft not found")
+        response.headers["Cache-Control"] = "no-store"
+        return draft
 
     @app.get("/goals/{goal_id}/nodes/{node_id}/code-proposal", response_model=CodeProposalPreview)
     async def get_code_proposal(

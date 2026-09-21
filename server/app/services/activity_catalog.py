@@ -52,6 +52,7 @@ GOAL_READY_SKILLS = frozenset(
         "code_review.git_show",
         "code.generate_python",
         "code.build_project",
+        "writing.draft",
     }
 )
 

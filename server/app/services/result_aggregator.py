@@ -15,6 +15,7 @@ from app.services.code_proposal import validate_code_proposal_result
 from app.services.feedback_dataset import SafeDatasetValue, sanitize_dataset_value
 from app.services.project_contracts import PROJECT_SKILL, ProjectResult
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
+from app.services.writing_contracts import WRITING_SKILL, validate_writing_result
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _MAX_NODE_SUMMARY_CHARS = 1_200
@@ -247,6 +248,20 @@ def summarize_untrusted_worker_output(
 ) -> str:
     if not 1 <= max_chars <= _MAX_GOAL_SUMMARY_CHARS:
         raise ValueError("max_chars is outside the aggregation limit")
+    if isinstance(value, dict) and {"schema_version", "content_trust", "text", "summary"} <= set(
+        value
+    ):
+        try:
+            draft = validate_writing_result(value)
+        except ValueError:
+            return _bounded_text(
+                "Writing output did not match the bounded draft contract.", max_chars=max_chars
+            )
+        summary = sanitize_dataset_value(draft["summary"], max_text_chars=1_000)
+        text = "Draft textual deliverable; external actions remain unverified."
+        if isinstance(summary, str) and summary.strip():
+            text += " " + summary
+        return _bounded_text(text, max_chars=max_chars) or "Draft textual deliverable."
     if isinstance(value, dict) and {"files", "checks", "base_revision_id"} <= set(value):
         # Project source and runner output are available only on the private
         # revision endpoint. Generic summaries never serialize this envelope.
@@ -276,6 +291,12 @@ def validate_worker_evidence(required_skill: object, value: object) -> bool:
 
     if not isinstance(required_skill, str) or not isinstance(value, dict):
         return False
+    if required_skill == WRITING_SKILL:
+        try:
+            validate_writing_result(value)
+        except ValueError:
+            return False
+        return True
     if required_skill == PROJECT_SKILL:
         try:
             ProjectResult.model_validate(value)

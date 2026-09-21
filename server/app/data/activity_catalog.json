@@ -569,19 +569,19 @@
     },
     {
       "id": "writing.draft",
-      "title": "Rédiger un brouillon",
-      "description": "Transformer des notes en texte cohérent selon un ton défini.",
+      "title": "Rédiger un plan ou un document",
+      "description": "Produire le texte demandé à partir de l’objectif et des précisions de la conversation.",
       "inputs": [
         "Notes et faits fournis",
         "Ton et destinataire"
       ],
-      "output": "Brouillon révisable.",
+      "output": "Texte complet consultable, avec résumé ; les actions décrites restent à réaliser.",
       "execution": {
-        "kind": "planned",
-        "target": null
+        "kind": "worker",
+        "target": "writing.draft"
       },
       "requirements": [
-        "Adaptateur métier à développer et à valider.",
+        "Agent de rédaction connecté à un modèle local configuré.",
         "Faits de référence et éléments à ne pas divulguer."
       ]
     },

@@ -15,6 +15,7 @@ from app.services.agent_card import (
     CODE_GENERATION_SKILLS,
     PROJECT_BUILD_SKILLS,
     SUPPORTED_AGENT_SKILLS,
+    WRITING_SKILLS,
 )
 from app.services.permission_policy import (
     PermissionPolicy,
@@ -115,10 +116,10 @@ class WorkerSkillPolicyStore:
             ) from exc
         missing = SUPPORTED_AGENT_SKILLS - set(rules)
         extra = set(rules) - SUPPORTED_AGENT_SKILLS
-        # A pre-code-generation epoch remains authoritative during upgrade.
+        # Historic epochs remain authoritative when new skill families ship.
         # Absent new skills are denied by is_allowed; only an explicit policy
         # reload can enable them. Missing original skills still fail closed.
-        if missing - CODE_GENERATION_SKILLS - PROJECT_BUILD_SKILLS or extra:
+        if missing - CODE_GENERATION_SKILLS - PROJECT_BUILD_SKILLS - WRITING_SKILLS or extra:
             raise WorkerSkillPolicyStateError(
                 "authoritative worker policy does not cover the supported skill set"
             )

@@ -10,6 +10,7 @@ export type {
   Task, TaskDetail, TaskMode, TaskStatus, ToolCall, ToolProposalInput,
 } from "@/lib/api/types";
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
+export type { GoalWritingDraft } from "@/lib/api/writing-draft";
 export type { GoalConversationSession, GoalReplyAttempt, ProjectReview, ProjectPreview } from "@/lib/api/project";
 export type { ApprovalDecisionReceipt, PairingResult } from "@/lib/api/client";
 // Private-session construction is not a raw network endpoint.
@@ -53,5 +54,6 @@ export const listGoals: typeof adapter.listGoals = (shouldAccept) => invokeAppli
 export const getGoal: typeof adapter.getGoal = (id, shouldAccept) => invokeApplicationCommand("goals.get", { id }, { shouldAccept });
 export const listGoalNodes: typeof adapter.listGoalNodes = (id, shouldAccept) => invokeApplicationCommand("goals.nodes", { id }, { shouldAccept });
 export const getGoalResult: typeof adapter.getGoalResult = (id, shouldAccept) => invokeApplicationCommand("goals.result", { id }, { shouldAccept });
+export const getGoalWritingDraft: typeof adapter.getGoalWritingDraft = (goalId, nodeId, workerJobId, shouldAccept) => invokeApplicationCommand("goals.writing-draft", { goalId, nodeId, workerJobId }, { shouldAccept });
 export const listMessages: typeof adapter.listMessages = (conversationId, shouldAccept) => invokeApplicationCommand("chat.messages", { conversationId }, { shouldAccept });
 export const bootstrapSync: typeof adapter.bootstrapSync = (shouldAccept) => invokeApplicationCommand("sync.refresh", {}, { shouldAccept });

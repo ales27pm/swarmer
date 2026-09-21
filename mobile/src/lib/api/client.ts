@@ -18,6 +18,7 @@ import {
   parseGoalCodeProposal,
   type GoalCodeProposalReview,
 } from "@/lib/api/code-proposal";
+import { parseGoalWritingDraft, type GoalWritingDraft } from "@/lib/api/writing-draft";
 import {
   assertCapabilityRequestFresh,
   CapabilityProtocolError,
@@ -100,6 +101,7 @@ export type {
   ToolProposalInput,
 } from "@/lib/api/types";
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
+export type { GoalWritingDraft } from "@/lib/api/writing-draft";
 export type { GoalConversationSession, GoalReplyAttempt, ProjectReview, ProjectPreview } from "@/lib/api/project";
 
 const CONNECTION_KEY = "mongars.connection.v1";
@@ -991,6 +993,25 @@ export function listGoalNodes(
     undefined,
     shouldAccept,
   );
+}
+
+export async function getGoalWritingDraft(
+  goalId: string,
+  nodeId: string,
+  workerJobId: string,
+  shouldAccept: () => boolean = () => true,
+): Promise<GoalWritingDraft> {
+  projectIdentifier(goalId);
+  projectIdentifier(nodeId);
+  projectIdentifier(workerJobId);
+  const connection = await captureRequestConnectionFence();
+  if (!shouldAccept()) throw connectionRequestChanged();
+  const path = `/goals/${resourceId(goalId)}/nodes/${resourceId(nodeId)}/writing-draft`;
+  const value = await requestAt<unknown>(connection.baseUrl, path, undefined, connection.token);
+  const draft = parseGoalWritingDraft(value, goalId, nodeId, workerJobId);
+  await assertRequestConnectionCurrent(connection);
+  if (!shouldAccept()) throw connectionRequestChanged();
+  return draft;
 }
 
 export async function reviewGoalCodeProposal(

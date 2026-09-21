@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.models import CAPABILITY_ARGUMENT_MODELS
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
+from app.services.writing_contracts import WRITING_SKILL, WritingPayload
 
 MAX_QUERY_CHARACTERS = 2_000
 MAX_REVIEW_PATHS = 50
@@ -199,6 +200,11 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         return _workspace_payload(required_skill, payload)
     if required_skill == "research.query":
         return _research_payload(payload)
+    if required_skill == WRITING_SKILL:
+        try:
+            return WritingPayload.model_validate(payload).model_dump()
+        except ValueError as exc:
+            raise RemoteJobPolicyError("writing draft payload is invalid") from exc
     if required_skill == PROJECT_SKILL:
         try:
             return ProjectPayload.model_validate(payload).model_dump()

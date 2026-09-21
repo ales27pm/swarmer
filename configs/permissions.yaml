@@ -98,6 +98,12 @@ capability_rules:
 # executable allowlist for dispatch. Only the two original workspace reads are
 # safe for automatic lease redistribution.
 worker_skill_rules:
+  writing.draft:
+    id: allow-worker-text-draft
+    description: A local model worker may produce a bounded textual draft without writing files or executing actions.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   code.build_project:
     id: allow-isolated-project-builder
     description: Build and test a private project snapshot in an isolated runtime without host workspace access.

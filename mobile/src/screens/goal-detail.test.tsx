@@ -8,6 +8,7 @@ import {
   createGoalFeedback,
   getGoal,
   getGoalConversation,
+  getGoalWritingDraft,
   getServerUrl,
   replanGoal,
   startGoal,
@@ -36,6 +37,7 @@ jest.mock("@/lib/api/client", () => ({
   createGoalFeedback: jest.fn(),
   getGoal: jest.fn(),
   getGoalConversation: jest.fn(),
+  getGoalWritingDraft: jest.fn(),
   getServerUrl: jest.fn(),
   replanGoal: jest.fn(),
   startGoal: jest.fn(),
@@ -176,6 +178,17 @@ describe("GoalDetailScreen", () => {
     mockStartGoal.mockResolvedValue(detail);
     mockReplanGoal.mockResolvedValue(detail);
     mockCreateFeedback.mockResolvedValue({ accepted: true });
+  });
+
+  it("offers the full document only for a completed writing job and never loads it automatically", async () => {
+    mockGetGoal.mockResolvedValue({ ...detail, nodes: [
+      { ...detail.nodes[0], id: "write_done", status: "completed", required_skill: "writing.draft", worker_job_id: "job_draft" },
+      { ...detail.nodes[0], id: "write_running", status: "running", required_skill: "writing.draft", worker_job_id: "job_running" },
+      { ...detail.nodes[0], id: "write_missing_job", status: "completed", required_skill: "writing.draft", worker_job_id: null },
+    ] });
+    await render(<GoalDetailScreen />);
+    expect(await screen.findAllByRole("button", { name: "Lire le document complet" })).toHaveLength(1);
+    expect(getGoalWritingDraft).not.toHaveBeenCalled();
   });
 
   it("opens local planning only for a fresh unstarted goal without starting it", async () => {
