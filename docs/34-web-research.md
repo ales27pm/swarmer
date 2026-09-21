@@ -23,6 +23,14 @@ Configurer ce champ nécessite de qualifier le modèle et sa prise en charge de
 sujet. L'existence du réglage et la réussite des tests ne constituent pas une
 qualification du modèle ni une activation en production.
 
+Le planificateur Ubuntu expose séparément
+`MONGARS_PLANNER_REASONING_EFFORT=none`. Le réglage est absent par défaut; une
+valeur vide laisse aussi le champ hors de la requête. Seule la valeur `none`
+est acceptée lorsqu'il est configuré. Ce réglage ne change ni le modèle choisi,
+ni son délai, ni les validations du plan. Le rédacteur conserve son transport
+Ollama natif et son comportement existant `think: false` pour les identifiants
+contenant `qwen3`; aucun nouveau réglage de worker n'est nécessaire.
+
 ## Déploiement de la passerelle SearXNG
 
 La pile historique `/home/ales27pm/original-monGARS` héberge déjà SearXNG et son

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     orchestrator_model: ModelIdentifier = "Hermes-3-Llama-3.2-3B-abliterated"
     # Unset roles share the orchestrator, keeping the default to one loaded model.
     planner_model: ModelIdentifier | None = None
+    planner_reasoning_effort: Literal["none"] | None = None
     evaluator_model: ModelIdentifier | None = None
     # Explicit override for completed research/writing plans only; unset keeps
     # the normal evaluator for every goal.
@@ -87,6 +88,13 @@ class Settings(BaseSettings):
     )
     @classmethod
     def inherit_unset_model_role(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("planner_reasoning_effort", mode="before")
+    @classmethod
+    def unset_blank_planner_reasoning_effort(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value

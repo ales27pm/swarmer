@@ -246,10 +246,12 @@ the requested answer format, language and other writing requirements.
         base_url: str,
         model: str,
         timeout_seconds: float = 60.0,
+        reasoning_effort: Literal["none"] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.reasoning_effort = reasoning_effort
 
     @staticmethod
     def _response_format(
@@ -322,6 +324,8 @@ the requested answer format, language and other writing requirements.
                 goal_card_id, available_skills=available_skills
             ),
         }
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:

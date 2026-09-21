@@ -377,6 +377,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         base_url=settings.llm_base_url,
         model=model_router.route_for(ModelRole.PLANNER).model_id,
         timeout_seconds=goal_model_timeout,
+        reasoning_effort=settings.planner_reasoning_effort,
     )
     evaluator = UbuntuEvaluatorProvider(
         base_url=settings.llm_base_url,

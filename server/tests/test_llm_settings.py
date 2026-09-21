@@ -10,6 +10,7 @@ from app.settings import Settings
 
 @pytest.fixture(autouse=True)
 def clear_model_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MONGARS_PLANNER_REASONING_EFFORT", raising=False)
     for name in (
         "ORCHESTRATOR",
         "PLANNER",
@@ -94,3 +95,31 @@ def test_goal_provider_deadlines_follow_operator_config_inside_lease(
 def test_unbounded_goal_provider_timeout_is_rejected(timeout: float) -> None:
     with pytest.raises(ValidationError, match="goal_model_timeout_seconds"):
         Settings(_env_file=None, goal_model_timeout_seconds=timeout)
+
+
+@pytest.mark.parametrize("effort", [None, "", " \t ", "none"])
+def test_planner_reasoning_is_optional_and_preserves_model_and_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, effort: str | None
+) -> None:
+    if effort is not None:
+        monkeypatch.setenv("MONGARS_PLANNER_REASONING_EFFORT", effort)
+    app = create_app(
+        Settings(
+            _env_file=None,
+            db_path=tmp_path / "state.db",
+            workspace_root=tmp_path / "workspace",
+            goal_model_timeout_seconds=120,
+            goal_model_call_lease_seconds=60,
+        )
+    )
+    assert app.state.swarm_planner.reasoning_effort == ("none" if effort == "none" else None)
+    assert app.state.swarm_planner.model == "Hermes-3-Llama-3.2-3B-abliterated"
+    assert app.state.swarm_planner.timeout_seconds == 50
+    assert app.state.evaluator.reasoning_effort is None
+    assert app.state.research_evaluator is None
+
+
+@pytest.mark.parametrize("effort", ["high", "low", "false", "None", True, 0])
+def test_unsupported_planner_reasoning_is_rejected_before_app_start(effort: object) -> None:
+    with pytest.raises(ValidationError, match="planner_reasoning_effort"):
+        Settings(_env_file=None, planner_reasoning_effort=effort)

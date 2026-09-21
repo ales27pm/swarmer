@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -56,6 +57,34 @@ def _proposal(skill: str | None = "code.build_project") -> dict[str, object]:
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "none"])
+async def test_planner_reasoning_effort_is_only_sent_when_explicit(
+    effort: Literal["none"] | None,
+) -> None:
+    request = httpx.Request("POST", "http://127.0.0.1:8711/v1/chat/completions")
+    response = httpx.Response(
+        200,
+        request=request,
+        json={"choices": [{"message": {"content": json.dumps(_proposal("workspace.list_dir"))}}]},
+    )
+    post = AsyncMock(return_value=response)
+    provider = UbuntuSwarmPlannerProvider(
+        base_url="http://127.0.0.1:8711/v1", model="local", reasoning_effort=effort
+    )
+    with patch("httpx.AsyncClient.post", post):
+        proposal = await provider.propose(_planner_context())
+    assert proposal.nodes[0].required_skill == "workspace.list_dir"
+    payload = post.await_args.kwargs["json"]
+    if effort is None:
+        assert "reasoning_effort" not in payload
+    else:
+        assert payload["reasoning_effort"] == "none"
+    assert payload["model"] == "local"
+    assert payload["stream"] is False
+    assert payload["response_format"]["json_schema"]["strict"] is True
 
 
 def test_advertised_worker_skills_uses_only_structured_agent_cards() -> None:
