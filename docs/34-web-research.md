@@ -1,5 +1,21 @@
 # Recherche Internet locale
 
+## Requête de recherche dans les réponses du modèle
+
+La grammaire privée du planificateur et des nouveaux nœuds proposés par
+l'évaluateur utilise `search_query` pour un worker `research.query`. Ce champ
+contient la requête destinée au moteur; les autres nœuds conservent `objective`.
+Le serveur traduit ce champ en `objective` avant la validation habituelle. Les
+contrats publics, la base et l'API mobile ne changent pas.
+
+Une réponse mélangeant les deux noms, utilisant `search_query` sur une autre
+compétence ou ajoutant des champs inconnus est rejetée. Les réponses historiques
+complètes avec `objective` restent compatibles, tandis que la nouvelle grammaire
+demande seulement `search_query` pour la recherche. Les contrôles de doublons
+JSON, de taille, de compétences et de dépendances restent appliqués. Le nom du
+champ guide la génération; il ne garantit pas la pertinence d'une requête ni
+l'exactitude d'une réponse, qui demandent une qualification distincte.
+
 ## Évaluateur de recherche optionnel
 
 `MONGARS_RESEARCH_EVALUATOR_MODEL` permet de choisir explicitement un évaluateur

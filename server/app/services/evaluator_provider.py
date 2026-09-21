@@ -10,7 +10,11 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import ValidationError
 
-from app.services.model_wire_schema import model_wire_schema
+from app.services.model_wire_schema import (
+    decode_research_query_nodes,
+    encode_model_wire_response,
+    model_wire_schema,
+)
 from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
     MAX_PROPOSAL_BYTES,
@@ -55,8 +59,9 @@ def _parse_wire_decision(content: str) -> EvaluationDecision:
     if set(value).intersection(_WIRE_FIELDS):
         if set(value) != set(_WIRE_FIELDS):
             raise PlanValidationError("evaluator wire fields are incomplete or mixed")
-        public = {name: value[alias] for alias, name in _WIRE_FIELDS.items()}
-        content = json.dumps(public, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        value = {name: value[alias] for alias, name in _WIRE_FIELDS.items()}
+    public = decode_research_query_nodes(value, node_field="suggested_new_nodes")
+    content = encode_model_wire_response(public)
     # Compatible endpoints may still return the complete public spelling;
     # unknown public fields and nested aliases fail the unchanged strict parser.
     return parse_evaluation_json(content)
@@ -169,6 +174,11 @@ requested subject or attaching a URL: that fact must be supported by the source.
 If the sources or answer concern the wrong subject, list the unsupported result
 in invalid_results and propose corrected research; do not return done.
 If fresh research is missing and research.query is available, suggest a research.query worker.
+For that worker only, use search_query instead of objective in the proposed node.
+search_query contains concise search-engine terms preserving the requested subject, place,
+language and time constraints; omit drafting instructions and the rest of the goal.
+The server maps this wire field to the public objective. Do not emit both fields.
+All other proposed node types retain objective.
 If a sourced draft is also needed, make its writing.draft node depend on that research node;
 never create an independent draft that claims research which has not yet returned.
 For a requested written plan, design, analysis, report or draft, writing.draft produces the

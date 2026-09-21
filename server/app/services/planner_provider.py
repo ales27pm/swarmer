@@ -9,9 +9,17 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from app.services.agent_card import PROJECT_BUILD_SKILLS, SUPPORTED_AGENT_SKILLS
-from app.services.model_wire_schema import model_wire_schema
+from app.services.model_wire_schema import (
+    decode_research_query_nodes,
+    encode_model_wire_response,
+    model_wire_schema,
+)
 from app.services.orchestrator_service import OrchestratorService
-from app.services.plan_validation import PlanValidationError, parse_swarm_plan_json
+from app.services.plan_validation import (
+    PlanValidationError,
+    _parse_json_object,
+    parse_swarm_plan_json,
+)
 from app.services.swarm_contracts import PlannerSource, SwarmPlanProposal
 
 
@@ -101,7 +109,18 @@ def worker_node_array_schema(
     synthesis["properties"]["required_skill"] = {"type": "null"}
     synthesis["properties"]["preferred_agent_constraints"] = {"type": "null"}
     general_nodes = [synthesis]
-    if general_skills := skills - PROJECT_BUILD_SKILLS:
+    if "research.query" in skills:
+        research = deepcopy(node_schema)
+        properties = research["properties"]
+        properties["node_type"] = {"type": "string", "const": "worker"}
+        properties["required_skill"] = {"type": "string", "const": "research.query"}
+        properties["search_query"] = properties.pop("objective")
+        properties["search_query"]["title"] = "Search Query"
+        research["required"] = [
+            "search_query" if field == "objective" else field for field in research["required"]
+        ]
+        general_nodes.append(research)
+    if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"}:
         worker = deepcopy(node_schema)
         worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
         worker["properties"]["required_skill"] = {
@@ -191,9 +210,10 @@ Every node must have a unique temporary_id. Dependencies refer only to other nod
 never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
 When the user asks to search the web, find sources, verify current facts, or compare
-current options, use research.query if advertised. Each research objective is a concise
-search query preserving the requested subject, place, language and time constraints.
-That node's objective is sent VERBATIM to a search engine, not interpreted by another
+current options, use research.query if advertised. A research.query worker uses the
+wire field search_query instead of objective. Put concise search terms preserving the
+requested subject, place, language and time constraints in search_query.
+That field is sent VERBATIM to a search engine, not interpreted by another
 agent. Use only search terms, names and relevant filters; omit drafting instructions,
 conversation, prohibitions and the rest of the user's goal. Its expected_output is
 source titles, URLs and excerpts, not a written answer. Preserve the exact subject
@@ -235,8 +255,10 @@ If the user explicitly requests execution, tests or deployment, preserve those r
 as unmet; do not replace them with a weaker saved-source criterion.
 Never emit credentials, tool calls, shell commands, approval decisions, execution state, or claims
 that work completed. The server validates the DAG, policy, budgets, and every later transition.
-Before returning, check each research.query node: its objective must be the search-engine
-query itself. Do not copy the full goal into it. The writing.draft objective carries
+Before returning, check each research.query node: search_query must be the search-engine
+query itself, with no objective field. Do not copy the full goal into it. The server maps
+search_query to the public node objective; all other nodes still use objective.
+The writing.draft objective carries
 the requested answer format, language and other writing requirements.
 """
 
@@ -351,7 +373,13 @@ the requested answer format, language and other writing requirements.
                 "swarm planner content is not text", category="invalid_response"
             )
         try:
-            return parse_swarm_plan_json(content.strip(), available_skills=available_skills)
+            decoded = decode_research_query_nodes(
+                _parse_json_object(content.strip()), node_field="nodes"
+            )
+            return parse_swarm_plan_json(
+                encode_model_wire_response(decoded),
+                available_skills=available_skills,
+            )
         except PlanValidationError as exc:
             raise SwarmPlannerProviderError(
                 "swarm planner returned an invalid proposal", category="invalid_response"
