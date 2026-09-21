@@ -29,6 +29,13 @@ The worker has no tools and never executes generated text. Generation failures
 log fixed reason codes (for example, `token_limit` or `wall_timeout`) without
 logging task data, generated text or raw exceptions.
 
+Planner and evaluator HTTP calls default to 60 seconds. Operators running slow
+CPU models can set `MONGARS_GOAL_MODEL_TIMEOUT_SECONDS` up to 120 seconds and
+`MONGARS_GOAL_MODEL_CALL_LEASE_SECONDS=180`. The effective transport deadline is
+clamped to at least ten seconds inside the configured lease. Provider timeouts
+remain transport failures; they do not masquerade as exhaustion of the whole
+goal's runtime. The goal's runtime and model-call budgets remain unchanged.
+
 The result contains `schema_version`, `content_trust: untrusted`, `text` (at most
 24,000 UTF-8 bytes), and `summary` (at most 1,200 characters). Validation enforces
 the data contract; it does not certify factual accuracy. Full text remains in the

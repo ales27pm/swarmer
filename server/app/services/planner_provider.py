@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -300,16 +301,17 @@ that work completed. The server validates the DAG, policy, budgets, and every la
             ),
         }
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(f"{self.base_url}/chat/completions", json=payload)
-                response.raise_for_status()
+            async with asyncio.timeout(self.timeout_seconds):
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    response = await client.post(f"{self.base_url}/chat/completions", json=payload)
+                    response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if 400 <= exc.response.status_code < 500 and exc.response.status_code not in {408, 429}:
                 raise SwarmPlannerProviderError(
                     "local swarm planner rejected the request", category="request_rejected"
                 ) from exc
             raise SwarmPlannerProviderError("local swarm planner unavailable") from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, TimeoutError) as exc:
             raise SwarmPlannerProviderError("local swarm planner unavailable") from exc
         try:
             body = response.json()

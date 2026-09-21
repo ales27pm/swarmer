@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
@@ -245,9 +246,10 @@ The Ubuntu control plane independently validates your proposal and remains autho
             "response_format": self._response_format(available_skills),
         }
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(f"{self.base_url}/chat/completions", json=payload)
-                response.raise_for_status()
+            async with asyncio.timeout(self.timeout_seconds):
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    response = await client.post(f"{self.base_url}/chat/completions", json=payload)
+                    response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             rejected = 400 <= exc.response.status_code < 500 and exc.response.status_code not in {
                 408,
@@ -258,7 +260,7 @@ The Ubuntu control plane independently validates your proposal and remains autho
                 category="request_rejected" if rejected else "transport_unavailable",
                 diagnostic="http_status",
             ) from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, TimeoutError) as exc:
             raise EvaluatorProviderError("local evaluator unavailable") from exc
 
         try:

@@ -367,14 +367,21 @@ def create_app(config: Settings | None = None) -> FastAPI:
             ),
         ]
     )
+    # Keep the transport deadline inside the durable reservation, even for
+    # operators using a shorter lease. Slow CPU models can opt into 120 seconds.
+    goal_model_timeout = min(
+        settings.goal_model_timeout_seconds, settings.goal_model_call_lease_seconds - 10
+    )
     swarm_planner = UbuntuSwarmPlannerProvider(
         base_url=settings.llm_base_url,
         model=model_router.route_for(ModelRole.PLANNER).model_id,
+        timeout_seconds=goal_model_timeout,
     )
     evaluator = UbuntuEvaluatorProvider(
         base_url=settings.llm_base_url,
         model=model_router.route_for(ModelRole.EVALUATOR).model_id,
         policy=permission_policy,
+        timeout_seconds=goal_model_timeout,
     )
     goal_manager = GoalManager(
         settings.db_path,

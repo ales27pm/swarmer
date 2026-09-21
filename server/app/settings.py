@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     goal_max_runtime_seconds: int = Field(default=1_800, ge=30, le=86_400)
     goal_max_model_calls: int = Field(default=30, ge=1, le=100)
     goal_model_call_lease_seconds: int = Field(default=120, ge=30, le=900)
+    goal_model_timeout_seconds: float = Field(default=60, ge=10, le=120)
     goal_context_max_tokens: int = Field(default=2_048, ge=64, le=32_768)
     goal_context_max_memory_items: int = Field(default=6, ge=0, le=100)
     goal_context_max_episode_items: int = Field(default=4, ge=0, le=100)
