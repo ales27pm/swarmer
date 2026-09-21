@@ -235,6 +235,12 @@ directement sur l’appareil par IPv6, sans automatisation des coordonnées à l
 
 ## Runtime de buts v0.12
 
+monGARS sert aussi les demandes personnelles, la recherche et la rédaction.
+La [recherche web via SearXNG local](docs/34-web-research.md) fournit des liens et
+extraits à l’agent de [rédaction](docs/33-writing-drafts.md) pour produire une
+réponse sourcée. Le [catalogue](docs/activity-catalog.md) distingue les compétences
+exécutables et les connecteurs encore à développer.
+
 Le [développement de projets v0.14](docs/32-project-coding.md) ajoute une
 conversation persistante, les réponses aux clarifications, des fichiers versionnés,
 des vérifications Python/Node isolées et la poursuite du même projet après une

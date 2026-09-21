@@ -24,13 +24,18 @@ Un **domaine** regroupe des usages. Un **rôle** décrit une mission et référe
 
 `execution.kind` distingue trois catégories :
 
-- **`worker` — 9 compétences prises en charge dans le code.** `target` est exactement un identifiant de `SUPPORTED_AGENT_SKILLS` dans [`agent_card.py`](../server/app/services/agent_card.py) : `workspace.list_dir`, `workspace.read_text`, `research.query`, `code_review.git_status`, `code_review.git_diff`, `code_review.git_show`, `code_review.static_analysis`, `code.generate_python` ou `code.build_project`.
+- **`worker` — 10 compétences prises en charge dans le code.** `target` est exactement un identifiant de `SUPPORTED_AGENT_SKILLS` dans [`agent_card.py`](../server/app/services/agent_card.py) : `workspace.list_dir`, `workspace.read_text`, `research.query`, `writing.draft`, `code_review.git_status`, `code_review.git_diff`, `code_review.git_show`, `code_review.static_analysis`, `code.generate_python` ou `code.build_project`.
 - **`iphone` — 6 ponts natifs pris en charge dans le code.** `target` est exactement un nom déclaré dans [`models.py`](../server/app/models.py) : `iphone.location.current`, `iphone.contacts.lookup`, `iphone.calendar.events`, `iphone.photos.pick`, `iphone.mail.compose` ou `iphone.sms.compose`. Ce sont des demandes corrélées à une tâche et soumises au parcours d’approbation de l’appareil, pas des skills worker supplémentaires.
-- **`planned` — 64 compétences descriptives.** `target` vaut toujours `null`. Leur adaptateur métier, leurs entrées/sorties et leur intégration restent à développer et à valider. La description d’un usage ne suffit pas à lui attribuer une cible existante.
+- **`planned` — 63 compétences descriptives.** `target` vaut toujours `null`. Leur adaptateur métier, leurs entrées/sorties et leur intégration restent à développer et à valider. La description d’un usage ne suffit pas à lui attribuer une cible existante.
 
 Pour les deux premières catégories, « pris en charge dans le code » ne signifie ni connecté, ni autorisé, ni disponible maintenant. L’état effectif dépend du registre, de la fraîcheur des workers, de la politique, des connexions configurées et de l’appareil. Par exemple, `research.query` exige un adaptateur de recherche configuré ; les composeurs iPhone ne garantissent pas l’envoi ou la livraison d’un message. Ce fichier ne déclare aucune application tierce connectée et ne constitue pas une preuve de validation sur appareil.
 
 Les fonctions de planification, d’évaluation et de mémoire du contrôle central ne sont pas converties en workers de gestion de projet. Les compétences métier correspondantes restent `planned`. Le fichier historique `configs/mobile-capabilities.yaml` n’est pas utilisé comme autorité pour les cibles de ce catalogue.
+
+La recherche web peut utiliser [l’instance locale SearXNG](34-web-research.md).
+Pour un résumé sourcé, le plan relie `research.query` à `writing.draft` ; les extraits
+et liens obtenus sont transmis au rédacteur. Ce parcours sert aussi les demandes
+personnelles, les comparaisons et la veille, sans créer de projet logiciel.
 
 ## Composition des activités
 

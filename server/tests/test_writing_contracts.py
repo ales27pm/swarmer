@@ -49,7 +49,9 @@ def _result(**updates: object) -> dict[str, object]:
 
 def test_writing_contract_round_trips_text_and_conversation_without_coercion() -> None:
     assert WRITING_SKILL == "writing.draft"
-    assert WritingPayload.model_validate(_payload()).model_dump() == _payload()
+    model = WritingPayload.model_validate(_payload())
+    assert model.research_sources == []
+    assert model.model_dump(exclude_unset=True) == _payload()
     assert WritingResult.model_validate(_result()).model_dump() == _result()
     assert validate_writing_result(_result()) == _result()
     assert WritingPayload.model_validate(_payload(conversation=[])).conversation == []
@@ -122,7 +124,7 @@ def test_writing_payload_accepts_character_and_message_count_boundaries() -> Non
     messages = [{"role": "user", "content": "é" * 4_000}]
     messages.extend({"role": "assistant", "content": "Note"} for _ in range(11))
     value = _payload(objective="é" * 4_000, conversation=messages)
-    assert WritingPayload.model_validate(value).model_dump() == value
+    assert WritingPayload.model_validate(value).model_dump(exclude_unset=True) == value
     assert validate_remote_job(WRITING_SKILL, value) == value
 
 

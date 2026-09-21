@@ -15,7 +15,11 @@ from app.services.code_proposal import validate_code_proposal_result
 from app.services.feedback_dataset import SafeDatasetValue, sanitize_dataset_value
 from app.services.project_contracts import PROJECT_SKILL, ProjectResult
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
-from app.services.writing_contracts import WRITING_SKILL, validate_writing_result
+from app.services.writing_contracts import (
+    WRITING_SKILL,
+    checked_research_url,
+    validate_writing_result,
+)
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _MAX_NODE_SUMMARY_CHARS = 1_200
@@ -266,6 +270,9 @@ def summarize_untrusted_worker_output(
         # Project source and runner output are available only on the private
         # revision endpoint. Generic summaries never serialize this envelope.
         return "Project iteration recorded; inspect its private revision and check results."
+    if validate_worker_evidence("research.query", value):
+        assert isinstance(value, dict)
+        return _research_summary(value["results"], max_chars=max_chars)
     sanitized = sanitize_dataset_value(value, max_text_chars=min(max_chars, 1_000))
     if sanitized in (None, "", [], {}):
         return "Worker output contained no safe summary fields."
@@ -277,6 +284,52 @@ def summarize_untrusted_worker_output(
         sort_keys=True,
     )
     return _bounded_text(encoded, max_chars=max_chars) or "Worker output summary is unavailable."
+
+
+def _research_summary(results: list[dict[str, str]], *, max_chars: int) -> str:
+    if not results:
+        return _bounded_text("Untrusted research: no results returned.", max_chars=max_chars)
+    summary = _bounded_text(
+        "Untrusted research: bounded source links and search snippets, not full pages.",
+        max_chars=max_chars,
+    )
+    selected: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    # All complete source links take priority over every snippet. A title or snippet
+    # can be shortened; a citation URL can only be kept verbatim or omitted.
+    for item in results:
+        url = item["url"]
+        try:
+            checked_research_url(url)
+        except ValueError:
+            continue
+        if _safe_optional_text(url, max_chars=1_001) != url or url in seen:
+            continue
+        number = len(selected) + 1
+        title_budget = min(80, max_chars - len(summary) - len(url) - len(str(number)) - 8)
+        if title_budget < 1:
+            continue
+        title = _safe_optional_text(item["title"], max_chars=title_budget) or "Source"
+        entry = f" [{number}] {title}: {url}"
+        if len(summary) + len(entry) > max_chars:
+            continue
+        summary += entry
+        selected.append((number, item["snippet"]))
+        seen.add(url)
+    if not selected:
+        return _bounded_text(
+            "Untrusted research: no safe complete source links fit this summary.",
+            max_chars=max_chars,
+        )
+    for number, snippet in selected:
+        prefix = f" [{number}] excerpt: "
+        remaining = min(200, max_chars - len(summary) - len(prefix))
+        if remaining < 1:
+            break
+        excerpt = _safe_optional_text(snippet, max_chars=remaining)
+        if excerpt:
+            summary += prefix + excerpt
+    return summary
 
 
 def validate_worker_evidence(required_skill: object, value: object) -> bool:

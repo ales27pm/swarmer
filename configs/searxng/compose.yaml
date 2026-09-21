@@ -1,0 +1,34 @@
+name: swarmer-search-bridge
+
+services:
+  gateway:
+    # Existing operator-built Caddy v2.11.4; no pull or mutable tag at rollout.
+    image: sha256:fae3dcb194bd6067ab36be58a56eabc51fabb766215c68d477deefd30b6570cd
+    pull_policy: never
+    container_name: swarmer-searxng-gateway
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8721:8080/tcp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      XDG_CONFIG_HOME: /tmp/config
+      XDG_DATA_HOME: /tmp/data
+    command: [/usr/bin/caddy, run, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+    networks: [existing_search, ingress]
+
+networks:
+  ingress:
+    driver: bridge
+  existing_search:
+    external: true
+    name: mongars_search

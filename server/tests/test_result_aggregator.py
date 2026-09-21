@@ -61,6 +61,61 @@ def test_worker_evidence_requires_each_bounded_skill_contract(
     assert validate_worker_evidence(skill, result) is valid
 
 
+def test_research_summary_preserves_all_complete_links_before_long_snippets() -> None:
+    urls = [f"https://example.org/source-{number}" for number in range(5)]
+    result = {
+        "content_trust": "untrusted",
+        "results": [
+            {"title": f"Source {number}", "url": url, "snippet": "Long finding. " * 1000}
+            for number, url in enumerate(urls)
+        ],
+    }
+    summary = summarize_untrusted_worker_output(result)
+    assert summary.startswith("Untrusted research") and len(summary) <= 1200
+    assert all(url in summary for url in urls)
+    assert summary.index(urls[-1]) < summary.index("excerpt:")
+
+
+@pytest.mark.parametrize("limit", [1, 50, 100, 250, 1200])
+def test_research_summary_never_truncates_or_redacts_a_citation_into_a_different_url(
+    limit: int,
+) -> None:
+    long_url = "https://example.org/" + "a" * 980
+    good_url = "https://example.org/public"
+    result = {
+        "content_trust": "untrusted",
+        "results": [
+            {"title": "Long URL", "url": long_url, "snippet": "Long source."},
+            {
+                "title": "Secret",
+                "url": "https://example.org/?token=private-test-value",
+                "snippet": "Secret URL.",
+            },
+            {"title": "Private", "url": "http://127.0.0.1/private", "snippet": "Private URL."},
+            {
+                "title": "Public password=private-title-value",
+                "url": good_url,
+                "snippet": "Evidence. password=private-snippet-value " + "tail" * 500,
+            },
+        ],
+    }
+    summary = summarize_untrusted_worker_output(result, max_chars=limit)
+    assert len(summary) <= limit and "private-test-value" not in summary
+    assert "private-title-value" not in summary and "private-snippet-value" not in summary
+    assert "127.0.0.1" not in summary
+    for token in summary.split():
+        if token.startswith(("http://", "https://")):
+            assert token in {long_url, good_url}
+
+
+def test_research_summary_explicitly_distinguishes_empty_results_and_invalid_evidence() -> None:
+    summary = summarize_untrusted_worker_output({"content_trust": "untrusted", "results": []})
+    assert summary == "Untrusted research: no results returned."
+    assert not validate_worker_evidence(
+        "research.query", {"content_trust": "trusted", "results": []}
+    )
+
+
 async def _seed_goal(db_path: Path) -> None:
     await StateService(db_path).initialize()
     async with aiosqlite.connect(db_path) as db:

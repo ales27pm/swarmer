@@ -83,7 +83,7 @@ from app.services.swarm_contracts import (
     SwarmPlanProposal,
 )
 from app.services.writing_contracts import WRITING_SKILL
-from app.services.writing_drafts import read_writing_draft, writing_payload
+from app.services.writing_drafts import read_research_sources, read_writing_draft, writing_payload
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
@@ -329,8 +329,18 @@ class GoalManager:
             original = await self.graph.get_goal(goal_id)
             if original is None:
                 raise GoalManagerConflict("The writing goal is unavailable.")
+            try:
+                sources = (
+                    await read_research_sources(self.db_path, goal_id, str(node["id"]))
+                    if node.get("id") is not None
+                    else []
+                )
+            except (ValueError, TypeError) as exc:
+                raise GoalManagerConflict("Completed research evidence is unavailable.") from exc
             return writing_payload(
-                str(original["objective"]), await self.recent_conversation(goal_id, limit=12)
+                str(original["objective"]),
+                await self.recent_conversation(goal_id, limit=12),
+                research_sources=sources,
             )
         if node["required_skill"] != PROJECT_SKILL:
             return self._payload_for_node(node)

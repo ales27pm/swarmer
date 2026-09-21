@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lease-aware research worker with one fixed, operator-configured adapter."""
+"""Lease-aware research worker with one fixed, operator-configured provider."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ import urllib.error
 import urllib.request
 import zlib
 from collections.abc import Callable
-from typing import Any
-from urllib.parse import quote, urlsplit
+from typing import Any, Protocol
+from urllib.parse import quote, urlencode, urlsplit
 
 LOGGER = logging.getLogger("mongars.research_worker")
 HEARTBEAT_JOIN_TIMEOUT_SECONDS = 1.0
@@ -32,6 +32,7 @@ MAX_TITLE_CHARACTERS = 300
 MAX_URL_CHARACTERS = 2_048
 MAX_SNIPPET_CHARACTERS = 4_000
 MAX_ADAPTER_REQUEST_BYTES = 16_384
+MAX_SEARXNG_REQUEST_BYTES = 32_768
 MAX_ADAPTER_RESPONSE_BYTES = 262_144
 MAX_ADAPTER_ENDPOINT_CHARACTERS = 2_048
 ADAPTER_READ_CHUNK_BYTES = 16_384
@@ -68,6 +69,10 @@ class ResearchQuery:
     def __init__(self, query: str, max_results: int) -> None:
         self.query = query
         self.max_results = max_results
+
+
+class ResearchProvider(Protocol):
+    def query(self, request: ResearchQuery) -> dict[str, Any]: ...
 
 
 class ResolvedAddress:
@@ -863,7 +868,7 @@ def normalize_adapter_response(response: Any, max_results: int) -> dict[str, Any
 
 
 class ResearchAdapterClient:
-    """The worker's only non-control-plane network capability."""
+    """The default research provider, using the operator's HTTPS adapter."""
 
     def __init__(
         self,
@@ -896,6 +901,185 @@ class ResearchAdapterClient:
         return normalize_adapter_response(response, request.max_results)
 
 
+def validate_searxng_endpoint(endpoint: str) -> str:
+    """Permit only an exact numeric loopback HTTP search endpoint, without DNS."""
+    if (
+        not isinstance(endpoint, str)
+        or not endpoint
+        or len(endpoint) > MAX_ADAPTER_ENDPOINT_CHARACTERS
+        or any(
+            character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+            for character in endpoint
+        )
+        or any(character in endpoint for character in ("\\", "?", "#"))
+    ):
+        raise ValueError("SearXNG URL must be an exact numeric loopback HTTP /search endpoint")
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("SearXNG URL has an invalid authority") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/search"
+        or parsed.netloc.endswith(":")
+        or (port is not None and port < 1)
+    ):
+        raise ValueError("SearXNG URL must be an exact numeric loopback HTTP /search endpoint")
+    host = "[::1]" if parsed.hostname == "::1" else "127.0.0.1"
+    return f"http://{host}{':' + str(port) if port is not None else ''}/search"
+
+
+class _LoopbackHTTPConnection(http.client.HTTPConnection):
+    """Single-request connection to one numeric endpoint; no proxies or resolver."""
+
+    def connect(self) -> None:
+        family = socket.AF_INET6 if self.host == "::1" else socket.AF_INET
+        address = ResolvedAddress(
+            family,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            (self.host, self.port, 0, 0) if family == socket.AF_INET6 else (self.host, self.port),
+        )
+        self.sock = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(address.sockaddr)
+        _verify_pinned_peer(self.sock, address)
+
+
+def _normalize_searxng_response(response: Any, max_results: int) -> dict[str, Any]:
+    if not isinstance(response, dict) or not isinstance(response.get("results"), list):
+        raise ResearchAdapterError("SearXNG returned an invalid results object")
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, int, str, str]] = set()
+    for item in response["results"]:
+        if not isinstance(item, dict):
+            continue
+        title, url, content = (
+            item.get("title"),
+            item.get("url"),
+            item.get("content", ""),
+        )
+        if not isinstance(title, str) or not isinstance(url, str) or not isinstance(content, str):
+            continue
+        if (
+            not url
+            or len(url) > MAX_URL_CHARACTERS
+            or any(character.isspace() or not character.isprintable() for character in url)
+            or "\\" in url
+        ):
+            continue
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or (port is not None and port < 1)
+            or parsed.netloc.endswith(":")
+        ):
+            continue
+        clean_title = " ".join("".join(c if c.isprintable() else " " for c in title).split())
+        if not clean_title:
+            continue
+        key = (
+            parsed.scheme,
+            parsed.hostname.casefold(),
+            port or (443 if parsed.scheme == "https" else 80),
+            parsed.path or "/",
+            parsed.query,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        snippet = " ".join("".join(c if c.isprintable() else " " for c in content).split())
+        normalized.append(
+            {
+                "title": clean_title[:MAX_TITLE_CHARACTERS],
+                "url": url,
+                "snippet": snippet[:MAX_SNIPPET_CHARACTERS],
+            }
+        )
+        if len(normalized) == max_results:
+            break
+    return normalize_adapter_response({"results": normalized}, max_results)
+
+
+class SearXNGClient:
+    """Read search results from a separately operated local SearXNG instance."""
+
+    def __init__(self, endpoint: str, *, timeout_seconds: float = 20) -> None:
+        self.endpoint = validate_searxng_endpoint(endpoint)
+        if not 0 < timeout_seconds <= 60:
+            raise ValueError("research timeout must be between 0 and 60 seconds")
+        self.timeout_seconds = timeout_seconds
+
+    def query(self, request: ResearchQuery) -> dict[str, Any]:
+        deadline = time.monotonic() + self.timeout_seconds
+        body = urlencode({"q": request.query, "format": "json"}).encode("ascii")
+        if len(body) > MAX_SEARXNG_REQUEST_BYTES:
+            raise ResearchAdapterError("SearXNG request exceeded its size limit")
+        parsed = urlsplit(self.endpoint)
+        if parsed.hostname is None:
+            raise ResearchAdapterError("SearXNG endpoint is invalid")
+        connection = _LoopbackHTTPConnection(
+            parsed.hostname,
+            port=parsed.port or 80,
+            timeout=_remaining_seconds(deadline),
+        )
+        response: http.client.HTTPResponse | None = None
+        try:
+            _connection_operation(connection.connect, connection, deadline)
+            _set_connection_deadline(connection, deadline)
+            _connection_operation(
+                lambda: connection.request(
+                    "POST",
+                    "/search",
+                    body=body,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                        "Accept-Encoding": "gzip, deflate",
+                    },
+                ),
+                connection,
+                deadline,
+            )
+            # Read one response directly: retain the pinned socket even when the
+            # server sends Connection: close, so all reads keep the same deadline.
+            if connection.sock is None:
+                raise ResearchAdapterError("SearXNG connection is unavailable")
+            response = http.client.HTTPResponse(connection.sock, method="POST")
+            _connection_operation(response.begin, connection, deadline)
+            if 300 <= response.status < 400:
+                raise ResearchAdapterError("SearXNG redirects are not allowed")
+            if not 200 <= response.status < 300:
+                raise ResearchAdapterError("SearXNG request failed")
+            result = _connection_operation(
+                lambda: _read_bounded_adapter_json(response, connection, deadline),
+                connection,
+                deadline,
+            )
+            normalized = _normalize_searxng_response(result, request.max_results)
+            _remaining_seconds(deadline)
+            return normalized
+        except ResearchAdapterError:
+            raise
+        except (http.client.HTTPException, OSError, TypeError, ValueError) as exc:
+            raise ResearchAdapterError("SearXNG request failed") from exc
+        finally:
+            if response is not None:
+                response.close()
+            connection.close()
+
+
 def ensure_result_size(result: dict[str, Any]) -> None:
     try:
         encoded = json.dumps(
@@ -917,7 +1101,7 @@ def ensure_result_contract(result: dict[str, Any]) -> None:
     ensure_result_size(result)
 
 
-def execute(adapter: ResearchAdapterClient, job: dict[str, Any]) -> dict[str, Any]:
+def execute(adapter: ResearchProvider, job: dict[str, Any]) -> dict[str, Any]:
     result = adapter.query(parse_research_job(job))
     ensure_result_contract(result)
     return result
@@ -927,7 +1111,7 @@ def run_once(
     base_url: str,
     agent_id: str,
     credential: str,
-    adapter: ResearchAdapterClient,
+    adapter: ResearchProvider,
     *,
     heartbeat_interval_seconds: float = 10,
 ) -> bool:
@@ -976,20 +1160,30 @@ def _bounded_float(value: str, name: str, minimum: float, maximum: float) -> flo
     return parsed
 
 
+def configured_provider() -> ResearchProvider:
+    timeout = _bounded_float(
+        os.environ.get("MONGARS_RESEARCH_TIMEOUT_SECONDS", "20"),
+        "research timeout",
+        1,
+        60,
+    )
+    provider = os.environ.get("MONGARS_RESEARCH_PROVIDER", "adapter")
+    if provider == "searxng":
+        return SearXNGClient(os.environ["MONGARS_SEARXNG_URL"], timeout_seconds=timeout)
+    if provider == "adapter":
+        return ResearchAdapterClient(
+            os.environ["MONGARS_RESEARCH_ADAPTER_URL"],
+            os.environ["MONGARS_RESEARCH_ADAPTER_TOKEN"],
+            timeout_seconds=timeout,
+        )
+    raise ValueError("research provider must be adapter or searxng")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    adapter = ResearchAdapterClient(
-        os.environ["MONGARS_RESEARCH_ADAPTER_URL"],
-        os.environ["MONGARS_RESEARCH_ADAPTER_TOKEN"],
-        timeout_seconds=_bounded_float(
-            os.environ.get("MONGARS_RESEARCH_TIMEOUT_SECONDS", "20"),
-            "research timeout",
-            1,
-            60,
-        ),
-    )
+    adapter = configured_provider()
     heartbeat_seconds = _bounded_float(
         os.environ.get("MONGARS_JOB_HEARTBEAT_SECONDS", "10"),
         "job heartbeat interval",

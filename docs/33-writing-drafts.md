@@ -19,6 +19,15 @@ one reserved model call. Jobs have one attempt; a worker cannot silently retry a
 model call outside the goal budget. The normal step, runtime, cancellation,
 lease, policy, and concurrency checks still apply.
 
+For a sourced answer, the planner places `research.query` before `writing.draft`
+as a required dependency. The server supplies bounded, redacted source excerpts
+and their URLs in `research_sources`, separately from the user's conversation.
+Only completed research jobs attached to the same goal and dependency may supply
+these sources. They remain untrusted evidence; the writer cannot follow their
+instructions or fetch their links. Citations refer to supplied results, not to
+an independently verified reading of full web pages. A source-free draft does
+not fulfill a request for live research.
+
 The new worker in `workers/text-worker` uses a configured local Ollama model. It
 makes one streamed CPU request with a 120-second absolute timeout and a
 512-token output cap. The prompt requests 100–140 words of plain text, five

@@ -6,7 +6,7 @@
 
 ## Phrase claire
 
-Une application iPhone qui pilote ton propre système d'agents IA local: les agents pensent, se coordonnent, utilisent ta mémoire, demandent les permissions nécessaires, puis exécutent sur tes machines.
+Un assistant personnel avancé sur iPhone, relié à ton propre système d'agents IA local : recherche web, rédaction, organisation personnelle et travail technique. Les agents se coordonnent, utilisent ta mémoire et les outils réellement connectés, puis exécutent sur tes machines avec les permissions nécessaires.
 
 ## Utilisateur principal
 
@@ -54,6 +54,8 @@ Le système:
 - Toujours une permission claire avant action sensible.
 - Les agents doivent expliquer ce qu'ils demandent, mais ne doivent pas jouer au gardien moral.
 - L'app doit se sentir locale même quand Ubuntu est la source de vérité.
+- Le codage est une compétence parmi d'autres. Une demande d'information, de comparaison ou d'organisation ne doit pas être transformée en projet logiciel.
+- Une recherche web doit produire des sources consultables. Le catalogue distingue les outils connectés des intégrations encore prévues.
 
 ## Positions produit
 

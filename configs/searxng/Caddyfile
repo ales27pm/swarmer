@@ -1,0 +1,35 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+	log default {
+		output discard
+	}
+}
+
+:8080 {
+	@search {
+		path /search
+		method POST
+	}
+
+	handle @search {
+		request_body {
+			max_size 32768
+		}
+		reverse_proxy searxng:8080 {
+			header_up -Authorization
+			header_up -Proxy-Authorization
+			header_up -Cookie
+			header_up -X-Forwarded-For
+			transport http {
+				dial_timeout 2s
+				response_header_timeout 12s
+			}
+		}
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

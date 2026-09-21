@@ -202,7 +202,7 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         return _research_payload(payload)
     if required_skill == WRITING_SKILL:
         try:
-            return WritingPayload.model_validate(payload).model_dump()
+            return WritingPayload.model_validate(payload).model_dump(exclude_unset=True)
         except ValueError as exc:
             raise RemoteJobPolicyError("writing draft payload is invalid") from exc
     if required_skill == PROJECT_SKILL:

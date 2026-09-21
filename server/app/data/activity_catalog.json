@@ -333,7 +333,7 @@
       },
       "requirements": [
         "Worker enregistré, autorisé et avec un heartbeat récent.",
-        "Adaptateur HTTPS de recherche configuré par l’opérateur."
+        "Adaptateur HTTPS ou instance locale SearXNG configurée par l’opérateur."
       ]
     },
     {

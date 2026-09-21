@@ -46,6 +46,29 @@ function general(): SwarmPlanProposal {
 }
 
 describe("local Swarm planning contract", () => {
+  it("preserves a personal research-to-writing plan and rejects a disconnected researcher", () => {
+    const researchContext: LocalSwarmPlanContext = { ...context,
+      goal: { ...context.goal, objective: "Rechercher les services des bibliothèques de Sorel-Tracy et les résumer avec sources.",
+        completion_criteria: ["Résumé en français avec liens obtenus par recherche"] },
+      agents: [...context.agents,
+        { ...context.agents[0], id: "search_1", skills: ["research.query"] },
+        { ...context.agents[0], id: "writer_1", skills: ["writing.draft"] }],
+    };
+    const plan = project();
+    plan.objective = researchContext.goal.objective;
+    plan.completion_criteria = [...researchContext.goal.completion_criteria];
+    plan.nodes = [
+      { ...plan.nodes[0], temporary_id: "search", title: "Rechercher les sources", required_skill: "research.query",
+        objective: "Bibliothèques Sorel-Tracy services site officiel", expected_output: "Liens et extraits des sources" },
+      { ...plan.nodes[0], temporary_id: "answer", title: "Résumer les services", required_skill: "writing.draft",
+        objective: researchContext.goal.objective, dependencies: ["search"], expected_output: "Résumé avec citations" },
+    ];
+    expect(parseLocalSwarmPlan(JSON.stringify(plan), researchContext)).toEqual(plan);
+    expect(() => parseLocalSwarmPlan(JSON.stringify(plan), { ...researchContext,
+      agents: researchContext.agents.map((agent) => agent.id === "search_1" ? { ...agent, status: "offline" } : agent),
+    })).toThrow("compétence sans agent actif compatible");
+  });
+
   it("accepts a real active writer for a planning-only deliverable without inventing code execution", () => {
     const writingContext: LocalSwarmPlanContext = { ...context,
       goal: { ...context.goal, objective: "Rédiger un plan détaillé pour un CRM Swift natif.", completion_criteria: ["Plan détaillé à relire"] },
