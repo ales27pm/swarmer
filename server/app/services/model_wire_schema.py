@@ -35,7 +35,7 @@ def model_wire_schema(model: type[BaseModel]) -> dict[str, Any]:
 def decode_research_query_nodes(
     value: Mapping[str, object], *, node_field: str
 ) -> dict[str, object]:
-    """Translate the model-only query name without relaxing public validation.
+    """Translate model-only capability/query names without relaxing validation.
 
     Callers first use the bounded, duplicate-safe JSON reader, then validate the
     returned object with the existing public model. Complete legacy objective
@@ -47,6 +47,11 @@ def decode_research_query_nodes(
         return result
     decoded: list[object] = []
     for node in nodes:
+        if isinstance(node, dict) and "00_required_skill" in node:
+            if "required_skill" in node:
+                raise PlanValidationError("worker capability wire fields are ambiguous")
+            node = dict(node)
+            node["required_skill"] = node.pop("00_required_skill")
         if not isinstance(node, dict) or "search_query" not in node:
             decoded.append(node)
             continue

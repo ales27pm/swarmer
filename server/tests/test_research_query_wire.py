@@ -41,11 +41,12 @@ def public_response(kind: Kind, skill: str | None = "research.query") -> dict[st
 
 
 def wire_response(kind: Kind, value: dict[str, Any]) -> dict[str, Any]:
-    wire = deepcopy(value if kind == "planner" else wire_decision(value))
+    wire = deepcopy(value if kind == "planner" else wire_decision(value, node_aliases=False))
     field = "nodes" if kind == "planner" else "50_suggested_new_nodes"
     for node in wire[field]:
         if node["required_skill"] == "research.query":
             node["search_query"] = node.pop("objective")
+        node["00_required_skill"] = node.pop("required_skill")
     return wire
 
 
@@ -96,7 +97,7 @@ def test_research_grammar_requires_dedicated_query_field_and_preserves_public_sc
     wire = wire_response(kind, public)
     validator = grammar(kind, ["research.query", "writing.draft"])
     assert validator.is_valid(wire)
-    legacy = public if kind == "planner" else wire_decision(public)
+    legacy = public if kind == "planner" else wire_decision(public, node_aliases=False)
     assert not validator.is_valid(legacy)
     mixed = deepcopy(wire)
     wire_nodes(kind, mixed)[0]["objective"] = "An instruction is not the query field."
@@ -134,7 +135,7 @@ async def test_new_wire_and_legacy_response_produce_identical_public_contract(
 ) -> None:
     public = public_response(kind)
     wire = (
-        (public if kind == "planner" else wire_decision(public))
+        (public if kind == "planner" else wire_decision(public, node_aliases=False))
         if legacy
         else wire_response(kind, public)
     )
@@ -170,9 +171,9 @@ async def test_invalid_research_alias_response_is_rejected_without_repair(
     if case == "mixed":
         node["objective"] = "private second instruction"
     elif case == "wrong_skill":
-        node["required_skill"] = "writing.draft"
+        node["00_required_skill"] = "writing.draft"
     elif case == "wrong_type":
-        node.update(node_type="synthesis", required_skill=None)
+        node.update(node_type="synthesis", **{"00_required_skill": None})
     elif case == "unknown_field":
         node["execute"] = "private command"
     elif case == "top_level_alias":
@@ -235,3 +236,54 @@ async def test_compact_legacy_plan_near_transport_limit_is_not_inflated_by_reenc
     with pytest.raises(SwarmPlannerProviderError) as failed:
         await through_provider("planner", json.dumps(public, separators=(",", ":")))
     assert failed.value.category == "invalid_response"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["planner", "evaluator"])
+@pytest.mark.parametrize("case", ["mixed", "duplicate", "missing", "unknown", "top_level"])
+async def test_skill_discriminator_rejects_ambiguous_or_misplaced_names(
+    kind: Kind, case: str
+) -> None:
+    wire = wire_response(kind, public_response(kind))
+    node = wire_nodes(kind, wire)[0]
+    if case == "mixed":
+        node["required_skill"] = node["00_required_skill"]
+    elif case == "missing":
+        node.pop("00_required_skill")
+    elif case == "unknown":
+        node["01_required_skill"] = node.pop("00_required_skill")
+    elif case == "top_level":
+        wire["00_required_skill"] = "research.query"
+    content = json.dumps(wire)
+    if case == "duplicate":
+        content = content.replace(
+            '"00_required_skill": ',
+            '"00_required_skill": "writing.draft", "00_required_skill": ',
+            1,
+        )
+    with pytest.raises((SwarmPlannerProviderError, EvaluatorProviderError)) as failure:
+        await through_provider(kind, content)
+    assert failure.value.category == "invalid_response"
+
+
+@pytest.mark.parametrize("kind", ["planner", "evaluator"])
+def test_sorted_grammar_selects_capability_before_branch_parameters(kind: Kind) -> None:
+    validator = grammar(kind, ["research.query", "writing.draft", "code.build_project"])
+    branches = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            properties = value.get("properties", {})
+            if "00_required_skill" in properties:
+                branches.append(properties)
+                assert min(properties) == "00_required_skill"
+                assert "required_skill" not in properties
+                assert "00_required_skill" in value["required"]
+            for item in value.values():
+                visit(item)
+
+    visit(validator.schema)
+    assert len(branches) >= 4  # research, writing, project and synthesis

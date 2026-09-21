@@ -91,7 +91,7 @@ def continue_decision() -> dict[str, object]:
     }
 
 
-def wire_decision(decision: dict[str, object]) -> dict[str, object]:
+def wire_decision(decision: dict[str, object], *, node_aliases: bool = True) -> dict[str, object]:
     names = {
         "schema_version": "00_schema_version",
         "invalid_results": "10_invalid_results",
@@ -102,7 +102,13 @@ def wire_decision(decision: dict[str, object]) -> dict[str, object]:
         "user_question": "60_user_question",
         "completion_summary": "70_completion_summary",
     }
-    return {names[key]: value for key, value in decision.items()}
+    wire = deepcopy({names[key]: value for key, value in decision.items()})
+    if node_aliases:
+        for node in wire.get("50_suggested_new_nodes", []):
+            node["00_required_skill"] = node.pop("required_skill")
+            if node["00_required_skill"] == "research.query":
+                node["search_query"] = node.pop("objective")
+    return wire
 
 
 def test_evaluation_context_keeps_legacy_defaults_and_accepts_user_answers() -> None:

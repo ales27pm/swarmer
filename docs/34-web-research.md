@@ -8,6 +8,13 @@ contient la requête destinée au moteur; les autres nœuds conservent `objectiv
 Le serveur traduit ce champ en `objective` avant la validation habituelle. Les
 contrats publics, la base et l'API mobile ne changent pas.
 
+Chaque nœud généré commence aussi par `00_required_skill`, traduit ensuite en
+`required_skill`. Ce nom place le choix de la compétence avant les paramètres
+dans une grammaire qui trie les clés : le modèle choisit la recherche avant de
+remplir `search_query`. Les synthèses utilisent une valeur nulle. Les deux noms
+de compétence dans le même nœud sont refusés; le nom public historique reste
+compatible dans une réponse ancienne.
+
 Une réponse mélangeant les deux noms, utilisant `search_query` sur une autre
 compétence ou ajoutant des champs inconnus est rejetée. Les réponses historiques
 complètes avec `objective` restent compatibles, tandis que la nouvelle grammaire

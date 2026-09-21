@@ -129,8 +129,11 @@ Return exactly one JSON object matching the supplied schema and no prose.
 The transport schema uses numbered top-level names to preserve assessment order:
 00_schema_version, 10_invalid_results, 20_missing_requirements, 30_reason_summary,
 40_status, 50_suggested_new_nodes, 60_user_question, 70_completion_summary.
-Use exactly those top-level keys, never mixed with unprefixed names. Nested node
-keys remain unchanged. The explanations below use the public names;
+Use exactly those top-level keys, never mixed with unprefixed names. In each proposed
+node, choose 00_required_skill FIRST (the wire name of required_skill), or null for
+synthesis, before writing the capability's parameters. Never emit both skill names.
+Other nested node keys remain unchanged except search_query for research workers.
+Context node_results retain public field names. The explanations below use public names;
 add the specified prefixes in your response. Assess evidence before choosing status
 or writing a completion summary.
 Evaluate only the bounded goal state in the user message.

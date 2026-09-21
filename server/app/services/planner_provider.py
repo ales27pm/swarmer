@@ -103,17 +103,25 @@ def worker_node_array_schema(
     Execution eligibility remains independently validated by the control plane.
     """
 
+    # Ollama sorts object keys. Select the capability before a branch-specific
+    # objective/search_query can commit decoding to an unrelated worker type.
+    node_schema = deepcopy(node_schema)
+    node_schema["properties"]["00_required_skill"] = node_schema["properties"].pop("required_skill")
+    node_schema["required"] = [
+        "00_required_skill" if field == "required_skill" else field
+        for field in node_schema["required"]
+    ]
     skills = set(SUPPORTED_AGENT_SKILLS if available_skills is None else available_skills)
     synthesis = deepcopy(node_schema)
     synthesis["properties"]["node_type"] = {"type": "string", "const": "synthesis"}
-    synthesis["properties"]["required_skill"] = {"type": "null"}
+    synthesis["properties"]["00_required_skill"] = {"type": "null"}
     synthesis["properties"]["preferred_agent_constraints"] = {"type": "null"}
     general_nodes = [synthesis]
     if "research.query" in skills:
         research = deepcopy(node_schema)
         properties = research["properties"]
         properties["node_type"] = {"type": "string", "const": "worker"}
-        properties["required_skill"] = {"type": "string", "const": "research.query"}
+        properties["00_required_skill"] = {"type": "string", "const": "research.query"}
         properties["search_query"] = properties.pop("objective")
         properties["search_query"]["title"] = "Search Query"
         research["required"] = [
@@ -123,7 +131,7 @@ def worker_node_array_schema(
     if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"}:
         worker = deepcopy(node_schema)
         worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
-        worker["properties"]["required_skill"] = {
+        worker["properties"]["00_required_skill"] = {
             "type": "string",
             "enum": sorted(general_skills),
         }
@@ -136,7 +144,7 @@ def worker_node_array_schema(
         return general_array
     project = deepcopy(node_schema)
     project["properties"]["node_type"] = {"type": "string", "const": "worker"}
-    project["properties"]["required_skill"] = {"type": "string", "enum": sorted(project_skills)}
+    project["properties"]["00_required_skill"] = {"type": "string", "enum": sorted(project_skills)}
     for field in ("dependencies", "optional_dependencies"):
         project["properties"][field]["maxItems"] = 0
     return {
@@ -179,6 +187,10 @@ class UbuntuSwarmPlannerProvider:
 
     source = PlannerSource.UBUNTU_LOCAL
     SYSTEM_PROMPT = """You are the monGARS personal-assistant multi-agent goal planner.
+For every proposed node, choose 00_required_skill FIRST from the advertised skills,
+or null for synthesis. This is the model-wire name of the public required_skill field.
+Choose the capability matching the user's requested outcome before writing its parameters.
+Never emit both names. Context cards retain their normal public field names.
 Return exactly one JSON object matching the supplied schema and no prose.
 Decompose only the bounded, redacted context supplied by the Ubuntu control plane.
 The goal card's objective and current user guidance define the requested outcome.

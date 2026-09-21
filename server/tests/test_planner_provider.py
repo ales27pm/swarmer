@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from typing import Literal
 from unittest.mock import AsyncMock, patch
 
@@ -57,6 +58,15 @@ def _proposal(skill: str | None = "code.build_project") -> dict[str, object]:
             }
         ],
     }
+
+
+def _wire_proposal(proposal: dict[str, object]) -> dict[str, object]:
+    wire = deepcopy(proposal)
+    for node in wire["nodes"]:
+        node["00_required_skill"] = node.pop("required_skill")
+        if node["00_required_skill"] == "research.query":
+            node["search_query"] = node.pop("objective")
+    return wire
 
 
 @pytest.mark.asyncio
@@ -139,18 +149,18 @@ def test_planner_schema_limits_workers_to_presented_skills(skills: list[str]) ->
     )["json_schema"]["schema"]
     Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema)
-    assert validator.is_valid(_proposal(None))
+    assert validator.is_valid(_wire_proposal(_proposal(None)))
     for requested in [
         "code.build_project",
         "code.generate_python",
         "workspace.list_dir",
         "workspace.read_text",
     ]:
-        assert validator.is_valid(_proposal(requested)) is (requested in skills)
+        assert validator.is_valid(_wire_proposal(_proposal(requested))) is (requested in skills)
     malformed = _proposal(None)
     assert isinstance(malformed["nodes"], list)
     malformed["nodes"][0]["node_type"] = "worker"
-    assert not validator.is_valid(malformed)
+    assert not validator.is_valid(_wire_proposal(malformed))
 
 
 def test_planner_schema_keeps_project_work_exclusive_with_other_advertised_skills() -> None:
@@ -160,13 +170,13 @@ def test_planner_schema_keeps_project_work_exclusive_with_other_advertised_skill
     validator = Draft202012Validator(schema)
     mixed = _proposal()
     assert isinstance(mixed["nodes"], list)
-    assert validator.is_valid(mixed)
+    assert validator.is_valid(_wire_proposal(mixed))
     mixed["nodes"].append(_proposal("workspace.list_dir")["nodes"][0])
-    assert not validator.is_valid(mixed)
+    assert not validator.is_valid(_wire_proposal(mixed))
     project = _proposal()
     assert isinstance(project["nodes"], list)
     project["nodes"][0]["optional_dependencies"] = ["context_hint"]
-    assert not validator.is_valid(project)
+    assert not validator.is_valid(_wire_proposal(project))
 
 
 @pytest.mark.asyncio
@@ -224,7 +234,7 @@ async def test_planner_rejects_unadvertised_worker_even_when_transport_ignores_s
     assert post.await_count == 1
     assert post.await_args is not None
     schema = post.await_args.kwargs["json"]["response_format"]["json_schema"]["schema"]
-    assert not Draft202012Validator(schema).is_valid(raw)
+    assert not Draft202012Validator(schema).is_valid(_wire_proposal(raw))
 
 
 @pytest.mark.asyncio
