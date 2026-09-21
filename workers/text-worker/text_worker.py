@@ -102,6 +102,7 @@ _FAILURE_REASONS = frozenset(
         "response_limit",
         "wall_timeout",
         "request_busy",
+        "unsupported_citation",
     }
 )
 
@@ -235,7 +236,41 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
         raise GenerationError("invalid draft payload", reason="invalid_payload") from exc
 
 
-def validate_result(value: object) -> dict[str, str]:
+def unsupported_citation(text: str, allowed_urls: set[str]) -> bool:
+    """Check bounded HTTP(S) tokens exactly; never normalize a destination."""
+    for match in re.finditer(r"https?://(?:(?!\]\()[^\s<>\"`])+", text, flags=re.IGNORECASE):
+        token = match.group()
+        if match.start() and text[match.start() - 1] == "'":
+            # An apostrophe inside a URL is otherwise a real path/query byte.
+            quoted_end = re.search(r"'[.,;:!]*$", token)
+            if quoted_end is not None:
+                token = token[: quoted_end.start()]
+        if token in allowed_urls:
+            continue
+        # Strip only unmatched surrounding closing delimiters, with sentence
+        # punctuation outside them. Balanced URL parentheses remain part of it.
+        for _ in range(8):  # Bound work even for adversarial delimiter runs.
+            closing = re.search(r"([)\]}])([.,;:!]*)$", token)
+            if closing is None:
+                break
+            end = closing.group(1)
+            opening = {")": "(", "]": "[", "}": "{"}[end]
+            prefix = token[: closing.start() + 1]
+            if prefix.count(end) <= prefix.count(opening):
+                break
+            token = token[: closing.start()]
+        if token in allowed_urls:
+            continue
+        # Query/fragment punctuation is ambiguous: require its exact bytes.
+        # Markdown/autolinks still delimit those URLs without rewriting them.
+        if "?" not in token and "#" not in token:
+            token = token.rstrip(".,;:!")
+        if token not in allowed_urls:
+            return True
+    return False
+
+
+def validate_result(value: object, payload: dict[str, Any] | None = None) -> dict[str, str]:
     if (
         not isinstance(value, dict)
         or set(value) != set(RESPONSE_SCHEMA["required"])
@@ -247,6 +282,9 @@ def validate_result(value: object) -> dict[str, str]:
     summary = _text(value["summary"], 1_200)
     if len(text.encode()) > MAX_TEXT_BYTES:
         raise GenerationError("draft exceeds its UTF-8 byte limit")
+    allowed = {source["url"] for source in (payload or {}).get("research_sources", [])}
+    if allowed and any(unsupported_citation(content, allowed) for content in (text, summary)):
+        raise GenerationError("unsupported_citation", reason="unsupported_citation")
     return {"schema_version": "1.0", "content_trust": "untrusted", "text": text, "summary": summary}
 
 
@@ -384,7 +422,7 @@ class TextGenerator:
                     "local text model stream ended without completion", reason="incomplete_stream"
                 )
             check()
-            return validate_result(_parse_model_json("".join(parts)))
+            return validate_result(_parse_model_json("".join(parts)), payload)
         finally:
             response.close()
 
@@ -441,7 +479,7 @@ class TextGenerator:
                     continue
                 check()
                 if accepted:
-                    return validate_result(value)
+                    return validate_result(value, payload)
                 if isinstance(value, (protocol.LeaseLost, protocol.LeaseUnavailable)):
                     raise value
                 if isinstance(value, GenerationError):
@@ -489,7 +527,7 @@ def run_once(
             payload = parse_job(job)
             heartbeat.ensure_active()
             result = validate_result(
-                generator.generate(payload, ensure_active=heartbeat.ensure_active)
+                generator.generate(payload, ensure_active=heartbeat.ensure_active), payload
             )
             result_body: dict[str, Any] = {"status": "completed", "result": result}
         except (GenerationError, OSError, TypeError, UnicodeError, ValueError) as exc:

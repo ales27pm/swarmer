@@ -27,6 +27,7 @@ from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
+from app.services.writing_contracts import UnsupportedCitationError, validate_writing_result
 
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "quarantined"})
 DISPATCHABLE_TASK_STATUSES = frozenset({"created", "planned"})
@@ -770,6 +771,15 @@ class AgentDispatcher:
                 raise AgentDispatchConflict(
                     "job cannot finish while an iPhone capability request is pending"
                 )
+            if status == "completed" and row["required_skill"] == "writing.draft":
+                try:
+                    validate_writing_result(result, payload=json.loads(str(row["payload_json"])))
+                except UnsupportedCitationError:
+                    await db.rollback()
+                    raise AgentDispatchConflict("unsupported_citation") from None
+                except (TypeError, ValueError):
+                    await db.rollback()
+                    raise AgentDispatchConflict("invalid_writing_result") from None
             try:
                 await AgentJobStateMachine.transition_locked(
                     db,

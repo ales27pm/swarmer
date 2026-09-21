@@ -657,3 +657,30 @@ def test_startup_requires_operator_model_and_uses_native_loopback_endpoint(
     monkeypatch.delenv("MONGARS_TEXT_MODEL_ID")
     with pytest.raises(KeyError):
         worker.main()
+
+
+@pytest.mark.parametrize("unchecked_generator", [False, True])
+def test_unsupported_citation_is_not_submitted_or_logged(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    unchecked_generator: bool,
+) -> None:
+    client = FakeClient()
+    client.job["payload"]["research_sources"] = [research_source()]
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    value = {
+        **draft(),
+        "text": "PRIVATE-DRAFT-SENTINEL https://www.ville.sorel-tracy.qc.ca/contact",
+    }
+    generator, _ = generator_for(worker, monkeypatch, stream(value))
+    if unchecked_generator:
+        monkeypatch.setattr(generator, "generate", lambda *args, **kwargs: value)
+    assert worker.run_once("http://127.0.0.1", "agent", "secret", generator)
+    assert client.submitted == [
+        {"status": "failed", "error": "Text draft generation failed validation"}
+    ]
+    assert client.renewals == 2
+    assert "reason=unsupported_citation" in caplog.text
+    assert "PRIVATE-DRAFT-SENTINEL" not in caplog.text
+    assert "sorel-tracy" not in caplog.text

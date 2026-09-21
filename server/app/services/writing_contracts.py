@@ -166,6 +166,53 @@ class WritingResult(_StrictModel):
         return _checked_text(value)
 
 
-def validate_writing_result(value: object) -> dict[str, Any]:
+class UnsupportedCitationError(ValueError):
+    def __init__(self) -> None:
+        super().__init__("unsupported_citation")
+
+
+def unsupported_citation(text: str, allowed_urls: set[str]) -> bool:
+    """Check bounded HTTP(S) tokens exactly; never normalize a destination."""
+    for match in re.finditer(r"https?://(?:(?!\]\()[^\s<>\"`])+", text, flags=re.IGNORECASE):
+        token = match.group()
+        if match.start() and text[match.start() - 1] == "'":
+            # An apostrophe inside a URL is otherwise a real path/query byte.
+            quoted_end = re.search(r"'[.,;:!]*$", token)
+            if quoted_end is not None:
+                token = token[: quoted_end.start()]
+        if token in allowed_urls:
+            continue
+        # Strip only unmatched surrounding closing delimiters, with sentence
+        # punctuation outside them. Balanced URL parentheses remain part of it.
+        for _ in range(8):  # Bound work even for adversarial delimiter runs.
+            closing = re.search(r"([)\]}])([.,;:!]*)$", token)
+            if closing is None:
+                break
+            end = closing.group(1)
+            opening = {")": "(", "]": "[", "}": "{"}[end]
+            prefix = token[: closing.start() + 1]
+            if prefix.count(end) <= prefix.count(opening):
+                break
+            token = token[: closing.start()]
+        if token in allowed_urls:
+            continue
+        # Query/fragment punctuation is ambiguous: require its exact bytes.
+        # Markdown/autolinks still delimit those URLs without rewriting them.
+        if "?" not in token and "#" not in token:
+            token = token.rstrip(".,;:!")
+        if token not in allowed_urls:
+            return True
+    return False
+
+
+def validate_writing_result(value: object, *, payload: object = None) -> dict[str, Any]:
     """Validate the full draft without treating it as proof of external actions."""
-    return WritingResult.model_validate(value).model_dump()
+    result = WritingResult.model_validate(value).model_dump()
+    if payload is not None:
+        sources = WritingPayload.model_validate(payload).research_sources
+        allowed = {source.url for source in sources}
+        if allowed and any(
+            unsupported_citation(result[key], allowed) for key in ("text", "summary")
+        ):
+            raise UnsupportedCitationError()
+    return result
