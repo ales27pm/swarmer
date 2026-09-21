@@ -5,6 +5,7 @@ import { KeyboardInputGroup, KeyboardTextInput } from "@/components/screen-shell
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle } from "@/components/swarm-ui";
 import { ApiError, getGoalConversation, type GoalConversationSession, type GoalDetail, type GoalReplyAttempt } from "@/lib/application-api/server";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
+import { projectPausePresentation } from "@/lib/project-pause";
 
 type Props = {
   goal: GoalDetail["goal"];
@@ -72,6 +73,9 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, 
     if (!disabled && !sending && deferredRefresh.current) void reload(false);
   }, [disabled, reload, sending]);
 
+  const conversation = session?.conversation;
+  const question = conversation?.messages.find((message) => message.id === conversation.pending_question_id);
+  const pause = question ? projectPausePresentation(question.content) : null;
   const canPlanLocal = Boolean(onOpenLocalPlan) && Boolean(session?.conversation.project_id)
     && ["completed", "failed", "cancelled", "budget_exhausted"].includes(goal.status)
     && session?.conversation.active_goal_id === goal.id;
@@ -103,7 +107,9 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, 
       if (cause instanceof ApiError && cause.status >= 400 && cause.status < 500) {
         setPending(null);
         await reload();
-        setError("L’état de la conversation a changé. Relisez la question actuelle avant d’envoyer votre réponse.");
+        setError(pause?.kind === "model_timeout"
+          ? "L’état de la conversation a changé. Consultez le message actuel avant d’envoyer votre demande de reprise."
+          : "L’état de la conversation a changé. Relisez la question actuelle avant d’envoyer votre réponse.");
       } else {
         setError(`${cause instanceof Error ? cause.message : String(cause)}${attempt ? " Réessayez le même envoi : son identifiant reste inchangé pour éviter un doublon." : ""}`);
       }
@@ -113,8 +119,6 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, 
     }
   };
 
-  const conversation = session?.conversation;
-  const question = conversation?.messages.find((message) => message.id === conversation.pending_question_id);
   const unavailable = disabled || loading || sending || !session;
   const tooLong = Array.from(input.trim()).length > 4_000;
   return (
@@ -133,12 +137,12 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, 
             <Text selectable style={{ color: COLORS.text, lineHeight: 21 }}>{message.content}</Text>
           </View>
         ))}
-        {question ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning }}>Une précision est demandée. Votre réponse sera liée à cette question et permettra de poursuivre le travail sur le projet. L’application des fichiers dans votre espace de travail nécessitera une approbation distincte.</Text> : null}
+        {pause ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning }}>{pause.notice}</Text> : null}
         {notice ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.accent }}>{notice}</Text> : null}
         <KeyboardInputGroup testID="goal-conversation-composer">
           <KeyboardTextInput
-            accessibilityLabel={question ? "Réponse à la question du projet" : "Message pour le projet"}
-            placeholder={question ? "Votre réponse…" : "Précisez le besoin, demandez un changement ou poursuivez le projet…"}
+            accessibilityLabel={pause?.inputLabel ?? "Message pour le projet"}
+            placeholder={pause?.placeholder ?? "Précisez le besoin, demandez un changement ou poursuivez le projet…"}
             placeholderTextColor={COLORS.subtle}
             value={input}
             onChangeText={setInput}
@@ -147,7 +151,7 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, 
             style={{ minHeight: 104, maxHeight: 200, padding: 12, color: COLORS.text, backgroundColor: COLORS.background, borderRadius: 10, textAlignVertical: "top" }}
           />
           <Text style={{ color: tooLong ? COLORS.danger : COLORS.subtle }}>{Array.from(input.trim()).length}/4000 caractères</Text>
-          <ActionButton label={pending ? "Réessayer le même envoi" : question ? "Répondre à la question" : "Envoyer au projet"} disabled={unavailable || (!pending && (!input.trim() || tooLong))} busy={sending} onPress={() => void send()} variant="accent" />
+          <ActionButton label={pending ? "Réessayer le même envoi" : pause?.submitLabel ?? "Envoyer au projet"} disabled={unavailable || (!pending && (!input.trim() || tooLong))} busy={sending} onPress={() => void send()} variant="accent" />
           {canPlanLocal && !pending ? <ActionButton label="Planifier la suite sur l’iPhone" disabled={unavailable || !input.trim() || tooLong} onPress={() => void send("iphone_local")} /> : null}
           {canPlanLocal ? <Text style={{ color: COLORS.subtle }}>La suite locale conserve le projet et attendra ton plan iPhone avant de lancer les agents.</Text> : null}
         </KeyboardInputGroup>

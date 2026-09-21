@@ -2250,3 +2250,284 @@ def test_context_labels_partial_reads_and_historical_memory_without_exceeding_by
         json.dumps(context, ensure_ascii=False, separators=(",", ":")).encode()
     )
     assert total <= worker.MAX_PROMPT_BYTES
+
+
+def compact_recovery_payload() -> dict[str, Any]:
+    return {
+        **payload(),
+        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
+        "plan": ["Preserve accepted behavior", "Repair the failing test"],
+        "checks": [node_check(["python", "-m", "pytest", "-q"], "app.py:1: failure", code=1)],
+        "conversation": [
+            {"role": "user", "content": "Keep the existing requirements and repair the failure."},
+            {"role": "assistant", "content": worker.MODEL_TIMEOUT_DIAGNOSTIC},
+        ],
+        "iteration": 3,
+    }
+
+
+def compact_step(**changes: Any) -> dict[str, Any]:
+    return {
+        "action": "continue",
+        "message": "Correction à vérifier.",
+        "edits": [{"path": "app.py", "content": "VALUE = 2\n"}],
+        "patches": [],
+        "focus_paths": [],
+        "run_instructions": "python -m pytest -q",
+        "runtime": "python",
+        **changes,
+    }
+
+
+def test_timeout_repair_uses_smaller_contract_and_preserves_worker_owned_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = compact_recovery_payload()
+    data["memory"] = {
+        "mode": "semantic",
+        "reason": "matched",
+        "items": [{"summary": "OMIT_MEMORY"}],
+    }
+    original = copy.deepcopy(data)
+    body = capture_project_request(monkeypatch, data, compact_step())
+    assert data == original
+    assert body["options"]["num_predict"] == 512
+    assert worker.model_wall_seconds(data, False) == 240
+    assert sum(len(m["content"].encode()) for m in body["messages"]) <= 10_000
+    assert data["conversation"][0] in body["messages"]
+    assert "OMIT_MEMORY" not in json.dumps(body["messages"])
+    validator = Draft202012Validator(body["format"])
+    assert validator.is_valid(compact_step())
+    assert not validator.is_valid(compact_step(plan=["model cannot rewrite the plan"]))
+    expanded = worker.expand_compact_repair(compact_step(), data)
+    assert expanded["plan"] == data["plan"] and expanded["plan"] is not data["plan"]
+    assert expanded["requested_checks"] == expanded["deletions"] == []
+
+
+def test_compact_recovery_keeps_missing_node_manifest_priority_and_python_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {
+        **missing_node_manifest_payload(),
+        "conversation": compact_recovery_payload()["conversation"],
+    }
+    manifest = compact_step(
+        runtime="node",
+        edits=[
+            {"path": "package.json", "content": '{"scripts":{"build":"node --check app.js"}}\n'}
+        ],
+    )
+    body = capture_project_request(monkeypatch, data, manifest)
+    validator = Draft202012Validator(body["format"])
+    assert validator.is_valid(manifest)
+    assert not validator.is_valid(compact_step(runtime="node"))
+    assert validator.is_valid(compact_step(runtime="python"))
+    assert validator.is_valid(compact_step(runtime="node", edits=[], focus_paths=["README.md"]))
+    task = body["messages"][-1]["content"]
+    assert "root package.json is missing" in task and "static HTML/JS" in task
+    assert body["options"]["num_predict"] == 512
+
+
+def test_compact_recovery_schema_permits_one_addressed_patch_or_read_but_no_combination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = capture_project_request(monkeypatch, compact_recovery_payload(), compact_step())
+    branch = next(b for b in body["format"]["oneOf"] if b["properties"]["patches"]["maxItems"] == 1)
+    address = branch["properties"]["patches"]["items"]["oneOf"][0]["properties"]["span_id"]["enum"][
+        0
+    ]
+    patch = {"path": "app.py", "span_id": address, "new": "VALUE = 2\n"}
+    validator = Draft202012Validator(body["format"])
+    assert validator.is_valid(compact_step(edits=[], patches=[patch]))
+    assert validator.is_valid(compact_step(edits=[], focus_paths=["app.py"]))
+    assert not validator.is_valid(compact_step(patches=[patch]))
+    assert not validator.is_valid(compact_step(edits=[], patches=[patch, patch]))
+    assert not validator.is_valid(compact_step(edits=[], focus_paths=["app.py", "app.py"]))
+    assert not validator.is_valid(compact_step(edits=[{"path": "app.py", "content": "x" * 801}]))
+    assert not validator.is_valid(compact_step(message="x" * 161))
+    assert not validator.is_valid(compact_step(run_instructions="x" * 241))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"plan": ["invented"]},
+        {"edits": []},
+        {"edits": [{"path": "app.py", "content": "x" * 801}]},
+        {"focus_paths": ["app.py"]},
+        {"message": "x" * 161},
+    ],
+)
+def test_compact_recovery_enforces_limits_after_model_response(changes: dict[str, Any]) -> None:
+    with pytest.raises(ProjectError, match="compact repair"):
+        worker.expand_compact_repair(compact_step(**changes), compact_recovery_payload())
+
+
+@pytest.mark.parametrize("mode", ["edit", "patch"])
+def test_compact_repair_reaches_normal_merge_and_checks(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    data = compact_recovery_payload()
+    requests = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, **kwargs: Any) -> Response:
+            body = json.loads(request.data)
+            requests.append(body)
+            response = compact_step()
+            if mode == "patch":
+                branch = next(
+                    b
+                    for b in body["format"]["oneOf"]
+                    if b["properties"]["patches"]["maxItems"] == 1
+                )
+                span = branch["properties"]["patches"]["items"]["oneOf"][0]
+                response = compact_step(
+                    edits=[],
+                    patches=[
+                        {
+                            "path": "app.py",
+                            "span_id": span["properties"]["span_id"]["enum"][0],
+                            "new": "VALUE = 2\n",
+                        }
+                    ],
+                )
+            return Response(
+                json.dumps(
+                    {
+                        "message": {"content": json.dumps(response)},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    runner = Runner(fail=True)
+    result = worker.run_iteration(
+        data,
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b"),
+        runner,
+        lambda: None,
+    )
+    assert len(requests) == runner.calls == 1
+    assert result["files"] == [{"path": "app.py", "content": "VALUE = 2\n"}]
+    assert runner.files == result["files"] and result["plan"] == data["plan"]
+    assert result["action"] == "continue" and result["checks"][0]["status"] == "failed"
+
+
+def test_compact_response_cannot_bypass_missing_node_manifest_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {
+        **missing_node_manifest_payload(),
+        "conversation": compact_recovery_payload()["conversation"],
+    }
+    with pytest.raises(worker.ModelStepError, match="create exactly package.json"):
+        capture_project_request(monkeypatch, data, compact_step(runtime="node"))
+
+
+def test_compact_context_retains_valid_large_unicode_user_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = compact_recovery_payload()
+    data["objective"] = "Requirement " * 180
+    data["conversation"][0]["content"] = "é" * 4_000
+    response = compact_step(edits=[], focus_paths=["app.py"])
+    body = capture_project_request(monkeypatch, data, response)
+    size = sum(len(m["content"].encode()) for m in body["messages"])
+    assert worker.MAX_RECOVERY_PROMPT_BYTES < size <= worker.MAX_PROMPT_BYTES
+    assert data["conversation"][0] in body["messages"]
+    assert body["options"]["num_predict"] == 512
+
+
+@pytest.mark.parametrize("kind", ["no_timeout", "user_resumed", "checks_passed"])
+def test_compact_recovery_does_not_change_other_generation_phases(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    data = compact_recovery_payload()
+    if kind == "no_timeout":
+        data["conversation"].pop()
+    elif kind == "user_resumed":
+        data["conversation"].append(
+            {"role": "user", "content": "Resume with this new requirement."}
+        )
+    else:
+        data["checks"][0].update(status="passed", exit_code=0)
+        data["files"].append({"path": "README.md", "content": "Existing instructions"})
+    body = capture_project_request(monkeypatch, data)
+    assert body["options"]["num_predict"] == 2000
+    assert "plan" in body["format"]["oneOf"][0]["properties"]
+
+
+@pytest.mark.parametrize("terminal", ["missing", "length"])
+def test_compact_recovery_rejects_truncated_json_without_edits_or_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+) -> None:
+    data = compact_recovery_payload()
+    raw = json.dumps({"message": {"content": '{"edits":['}, "done": False}).encode() + b"\n"
+    if terminal == "length":
+        raw += json.dumps(
+            {"message": {"content": ""}, "done": True, "done_reason": "length"}
+        ).encode()
+    calls = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, **kwargs: Any) -> Response:
+            calls.append(request)
+            return Response(raw)
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    runner = Runner()
+    result = worker.run_iteration(
+        data,
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b"),
+        runner,
+        lambda: None,
+    )
+    assert len(calls) == 1 and runner.calls == 0
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+    assert "incomplete" in result["message"]
+
+
+def test_recovery_timeout_metrics_survive_partial_stream_without_source_or_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    data = compact_recovery_payload()
+
+    class Response(io.BytesIO):
+        status = 200
+        count = 0
+
+        def readline(self, size: int = -1) -> bytes:
+            self.count += 1
+            if self.count == 1:
+                return b'{"message":{"content":"PRIVATE_SOURCE"},"done":false}\n'
+            raise TimeoutError("PRIVATE_EXCEPTION")
+
+    class Opener:
+        def open(self, request: Any, **kwargs: Any) -> Response:
+            return Response()
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    runner = Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    metrics = generator.last_transport_metrics
+    assert result["action"] == "clarify" and runner.calls == 0
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+    assert metrics["compact_repair"] == 1 and metrics["output_token_limit"] == 512
+    assert metrics["chunks"] == 1 and metrics["content_bytes"] == len("PRIVATE_SOURCE")
+    assert metrics["terminal_received"] == 0 and metrics["response_bytes"] > 0
+    assert 0 <= metrics["first_content_ms"] <= metrics["elapsed_ms"]
+    assert all(type(value) is int and value >= 0 for value in metrics.values())
+    assert "PRIVATE" not in caplog.text and "127.0.0.1" not in caplog.text

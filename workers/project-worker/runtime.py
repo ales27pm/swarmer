@@ -325,6 +325,11 @@ class DockerRunner:
                                 "--ignore-scripts",
                                 "--no-audit",
                                 "--no-fund",
+                                # Keep registry downloads off the 256 MiB /tmp
+                                # tmpfs. This private job directory is removed
+                                # with the dependencies on success or failure.
+                                "--cache",
+                                "/dependencies/.npm-cache",
                                 "--registry=https://registry.npmjs.org",
                                 f"--https-proxy=http://{proxy}:8080",
                                 f"--proxy=http://{proxy}:8080",

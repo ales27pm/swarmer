@@ -4,6 +4,7 @@ import { GoalConversation } from "@/components/goal-conversation";
 import { ApiError, getGoalConversation, type GoalConversationSession, type GoalDetail } from "@/lib/api/client";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { projectGoalFixture } from "@/testing/project-fixtures";
+import { PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC } from "@/lib/project-pause";
 
 jest.mock("@/lib/api/client", () => ({
   ApiError: class extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } },
@@ -28,6 +29,41 @@ beforeEach(() => {
   updated.mockResolvedValue();
 });
 describe("GoalConversation", () => {
+  it("presents a persisted model timeout as a technical pause and requires an explicit bound reply", async () => {
+    const user = userEvent.setup();
+    load.mockResolvedValue({ conversation: { ...conversation, messages: [{ ...question, content: PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC }] }, prepareReply });
+    await render(<GoalConversation {...props} />);
+    expect(await screen.findByText(/Le modèle a dépassé son délai deux fois/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Une précision est demandée/)).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Répondre à la question" })).not.toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Envoyer au projet" })).toBeDisabled();
+    expect(send).not.toHaveBeenCalled();
+    await fireEvent.changeText(screen.getByLabelText("Message pour reprendre le projet"), "Reprends avec une étape plus courte.");
+    await user.press(screen.getByRole("button", { name: "Envoyer au projet" }));
+    expect(prepareReply).toHaveBeenCalledWith("Reprends avec une étape plus courte.");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "Quel délai de timeout voulez-vous pour l’application?",
+    `${PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC} Quelle interface voulez-vous?`,
+  ])("preserves clarification semantics for unknown or extended text: %s", async (content) => {
+    load.mockResolvedValue({ conversation: { ...conversation, messages: [{ ...question, content }] }, prepareReply });
+    await render(<GoalConversation {...props} />);
+    expect(await screen.findByText(/Une précision est demandée/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText("Message pour reprendre le projet")).not.toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Répondre à la question" })).toBeDisabled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not display an old technical pause after its pending binding was cleared", async () => {
+    load.mockResolvedValue({ conversation: { ...conversation, pending_question_id: null, messages: [{ ...question, content: PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC }] }, prepareReply });
+    await render(<GoalConversation {...props} />);
+    await screen.findByText(PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC);
+    expect(screen.queryByText(/Le modèle a dépassé son délai deux fois/)).not.toBeOnTheScreen();
+    expect(screen.getByLabelText("Message pour le projet")).toBeOnTheScreen();
+  });
+
   it("refreshes a rejected stale question while preserving the unsent answer", async () => {
     const user = userEvent.setup();
     send.mockRejectedValueOnce(new ApiError(409, "stale question"));

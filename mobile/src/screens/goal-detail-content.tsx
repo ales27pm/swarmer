@@ -138,7 +138,7 @@ function hasEvaluatorRetryAction(goal: GoalDetail["goal"]) {
 function goalLabel(goal: GoalDetail["goal"]) {
   if (awaitsEvaluatorRetry(goal)) return EVALUATOR_RETRY_PHASE.label;
   if (goal.status === "running" && RUNNING_PHASES[goal.current_phase]) return RUNNING_PHASES[goal.current_phase].label;
-  if (goal.status === "waiting_permission" && goal.current_phase === "needs_user") return "Votre réponse est attendue";
+  if (goal.status === "waiting_permission" && goal.current_phase === "needs_user") return "Intervention attendue";
   if (goal.status === "waiting_permission" && goal.current_phase === "project_ready") return "Projet prêt à relire";
   return goal.status === "planning" && goal.current_phase === "waiting_for_workers"
     ? PLANNING_PHASES.waiting_for_workers.label
@@ -585,7 +585,7 @@ function GoalOverview({ controller, navigation }: {
   if (!goal) return null;
   const phaseNotice = awaitsEvaluatorRetry(goal) ? EVALUATOR_RETRY_PHASE
     : goal.status === "waiting_permission" ? goal.current_phase === "needs_user"
-      ? { label: "Votre réponse est attendue", description: "Répondez à la question dans la conversation du projet pour poursuivre le travail." }
+      ? { label: "Intervention attendue", description: "Consultez le message dans la conversation du projet pour préciser la demande ou reprendre le travail." }
       : goal.current_phase === "project_ready"
         ? { label: "Projet prêt à relire", description: "Examinez les fichiers et les vérifications avant de préparer une autorisation d’écriture." }
         : goal.current_phase === "code_proposal_ready" ? CODE_PROPOSAL_PHASE : undefined

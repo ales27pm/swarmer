@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 import runtime
@@ -131,6 +133,45 @@ def test_container_command_contains_only_explicit_isolation_and_no_worker_secret
     assert "--pids-limit" in command and "--memory" in command and "--cpus" in command
     assert "must-never-enter-container" not in str(command)
     assert "/var/run/docker.sock" not in str(command)
+
+
+def test_node_install_cache_uses_private_dependency_scratch_and_is_cleaned_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(runtime.os, "getuid", lambda: 1000)
+    runner = runtime.DockerRunner("sha256:" + "a" * 64)
+    cache_paths: list[Path] = []
+
+    def process(
+        command: list[str], directory: Path, timeout: float, ensure_active: Callable[[], None]
+    ) -> tuple[int, str, int]:
+        ensure_active()
+        if runner.image in command and command[command.index(runner.image) + 1] == "npm":
+            # Exercise the real install assembly: cache belongs to this job's
+            # writable dependency mount, not its small in-memory HOME or a host cache.
+            cache = command[command.index("--cache") + 1]
+            assert cache == "/dependencies/.npm-cache"
+            mount = next(item for item in command if item.endswith("target=/dependencies"))
+            dependency_root = Path(mount.split("source=", 1)[1].split(",", 1)[0])
+            assert dependency_root == directory / "deps"
+            private_cache = dependency_root / ".npm-cache"
+            private_cache.mkdir()
+            (private_cache / "download").write_bytes(b"partial registry download")
+            cache_paths.append(private_cache)
+            assert "--ignore-scripts" in command
+            return 1, "registry unavailable", 1
+        return 0, "", 1
+
+    monkeypatch.setattr(runner, "_process", process)
+    result = runner.run(
+        [{"path": "package.json", "content": '{"dependencies":{"express":"4.21.2"}}'}],
+        "node", [], lambda: None,
+    )
+    assert cache_paths and all(not path.exists() for path in cache_paths)
+    assert not result["build_passed"] and result["tests_executed"] == 0
+    assert result["checks"][0]["command"] == ["npm", "install", "--ignore-scripts"]
+    assert result["checks"][0]["status"] == "failed"
 
 
 def live_runner() -> runtime.DockerRunner:

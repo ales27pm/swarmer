@@ -5,6 +5,7 @@ import * as SecureStore from "expo-secure-store";
 import { getGoalConversation, reviewGoalProject } from "@/lib/api/client";
 import { parseGoalConversation, parseProjectPreview } from "@/lib/api/project";
 import { projectFixture, projectGoalFixture } from "@/testing/project-fixtures";
+import { PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC } from "@/lib/project-pause";
 
 jest.mock("expo-secure-store", () => ({ deleteItemAsync: jest.fn(), getItemAsync: jest.fn(), setItemAsync: jest.fn() }));
 jest.mock("expo/fetch", () => ({ fetch: jest.fn() }));
@@ -27,6 +28,21 @@ beforeEach(() => {
 });
 
 describe("project conversation transport", () => {
+  it("keeps the existing question binding and idempotency key for a technical pause", async () => {
+    request.mockResolvedValueOnce(response({ ...conversation, messages: [{ ...conversation.messages[0], content: PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC }] }))
+      .mockRejectedValueOnce(new Error("reply response lost")).mockResolvedValueOnce(response(projectGoalFixture));
+    const session = await getGoalConversation("goal_old");
+    const attempt = session.prepareReply("Reprends avec une étape plus courte.");
+    await expect(attempt.send()).rejects.toThrow("reply response lost");
+    await expect(attempt.send()).resolves.toEqual(projectGoalFixture);
+    expect(request.mock.calls[1][0]).toBe("https://control.example/goals/goal_active/messages");
+    expect(JSON.parse(request.mock.calls[1][1]?.body as string)).toEqual({
+      message: "Reprends avec une étape plus courte.", client_message_id: attempt.clientMessageId,
+      reply_to_message_id: "message_question",
+    });
+    expect(request.mock.calls[2]).toEqual(request.mock.calls[1]);
+  });
+
   it("binds an explicit answer and uncertain retry to one message ID and the active linked goal", async () => {
     request.mockResolvedValueOnce(response(conversation)).mockRejectedValueOnce(new Error("reply response lost")).mockResolvedValueOnce(response(projectGoalFixture));
     const session = await getGoalConversation("goal_old");

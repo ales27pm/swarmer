@@ -4,6 +4,7 @@ import { GoalProjectReview } from "@/components/goal-project-review";
 import { reviewGoalProject } from "@/lib/api/client";
 import { projectFixture } from "@/testing/project-fixtures";
 import { notifyConnectionChanged } from "@/lib/connection-events";
+import { PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC } from "@/lib/project-pause";
 
 jest.mock("@/lib/api/client", () => ({
   ApiError: class extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } },
@@ -30,6 +31,14 @@ async function acknowledge(user: ReturnType<typeof userEvent.setup>) {
   await user.press(screen.getByRole("button", { name: "J’ai relu les fichiers et les vérifications" }));
 }
 describe("GoalProjectReview", () => {
+  it("labels a runtime pause without making an incomplete revision approvable", async () => {
+    load.mockResolvedValue({ project: { ...projectFixture, state: "needs_user", message: PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC }, prepareApproval });
+    await inspectProject();
+    expect(await screen.findByText(`Pause technique du modèle · révision ${projectFixture.revision}`)).toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Préparer l’autorisation du projet" })).not.toBeOnTheScreen();
+    expect(prepareApproval).not.toHaveBeenCalled();
+  });
+
   it("clears private source and review acknowledgement after pairing changes", async () => {
     const user = await inspectProject();
     await acknowledge(user);

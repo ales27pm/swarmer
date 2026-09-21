@@ -480,6 +480,18 @@ describe("GoalDetailScreen", () => {
     expect(screen.queryByRole("button", { name: "Répondre à la question" })).not.toBeOnTheScreen();
   });
 
+  it("keeps the needs_user overview neutral until the conversation explains the pause", async () => {
+    mockGetGoal.mockResolvedValue({
+      ...waitingForEvaluation,
+      goal: { ...waitingForEvaluation.goal, current_phase: "needs_user", evaluator_summary: "Project needs your clarification." },
+    });
+    await render(<GoalDetailScreen />);
+    expect(await screen.findByText("Phase : Intervention attendue")).toBeOnTheScreen();
+    expect(screen.getByText(/Consultez le message dans la conversation du projet/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Répondez à la question dans la conversation/)).not.toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
   it.each(["manual", "assisted", "autonomous"] as const)(
     "explicitly retries a paused evaluation for the %s profile without inventing a question",
     async (autonomy_profile) => {

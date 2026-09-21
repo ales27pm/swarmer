@@ -5,6 +5,7 @@ import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle } from "@/compone
 import { ApiError, reviewGoalProject, type ProjectReview } from "@/lib/application-api/server";
 import type { ProjectCheck, ProjectPreview } from "@/lib/api/project";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
+import { projectPausePresentation } from "@/lib/project-pause";
 
 const STATES: Record<ProjectPreview["state"], string> = {
   building: "Construction en cours", needs_user: "Votre réponse est attendue", ready: "Révision prête à relire",
@@ -84,7 +85,7 @@ export function GoalProjectReview({ goalId, disabled, onOpenTask }: { goalId: st
         <ErrorBanner message={error} />
         {project ? (
           <>
-            <Text style={{ color: COLORS.accent, fontWeight: "800" }}>{STATES[project.state]} · révision {project.revision}</Text>
+            <Text style={{ color: COLORS.accent, fontWeight: "800" }}>{project.state === "needs_user" ? projectPausePresentation(project.message).label : STATES[project.state]} · révision {project.revision}</Text>
             <Text selectable style={{ color: COLORS.subtle }}>Révision {project.revision_id} · SHA-256 {project.sha256}</Text>
             <Text selectable style={{ color: COLORS.text }}>{project.message}</Text>
             <Text style={{ color: COLORS.muted }}>Plan du projet</Text>

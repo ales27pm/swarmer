@@ -89,6 +89,26 @@ wall and larger validation reserve. Model selection is a candidate configuration
 passing unit checks does not establish project quality. Release acceptance requires
 actual independent application tests.
 
+After a timeout, the next separately charged iteration uses a compact repair
+contract when checks have failed and files already exist. It may create one
+small complete file (including a missing `package.json`), apply one addressed
+patch, or request one focused read. File content/replacement is limited to 800
+characters and output to 512 tokens. The worker preserves the prior plan and
+runs the normal checks; it does not ask the model to repeat unchanged metadata.
+The prompt targets 10KB, removes historical hints and duplicate planning data,
+and retains the latest user message. Irreducible user/context metadata may use
+the existing 22KB hard ceiling. Node manifest/test priorities and the Python
+static-web alternative remain in effect. The model and 240-second wall budget
+do not change. Missing terminal chunks, token-limit endings and incomplete JSON
+still reject the entire batch. A second consecutive timeout still pauses the
+project without accepting files or spending a third model call.
+
+`last_transport_metrics` records numeric request sizes, response bytes/chunks,
+time to headers/first chunk/first content, elapsed time and terminal receipt,
+including timed-out attempts. Timeout logs contain only these numbers, never
+source, response text, endpoints or credentials. Terminal Ollama evaluation
+metrics remain separately available in `last_metrics`.
+
 `focus_paths` requests a separately charged read iteration for omitted files.
 Complete focused files are prioritized; oversized files are explicitly labelled
 fragments and never treated as safe full-file replacements. Exact patches can
@@ -141,6 +161,9 @@ disposable internal Docker network. A credential-free proxy allows CONNECT only
 to public IPs for pypi.org, files.pythonhosted.org and registry.npmjs.org. No project
 source is mounted into the dependency-install container. Package lifecycle
 scripts, non-registry sources and network-dependent tests are unsupported.
+The npm registry cache lives in the job-private `/dependencies/.npm-cache`
+scratch directory, avoiding the install container's 256 MiB `/tmp` tmpfs.
+It is removed with the dependencies after success or failure.
 
 Each build/test runs in a fresh container with **network=none**, a read-only root,
 read-only input source/dependencies, a private tmpfs working copy, no capabilities,
