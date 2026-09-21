@@ -124,3 +124,29 @@ replies keeps the 512-token recovery limit immediately. An ordinary assistant
 response exits this mode. Consecutive-timeout accounting remains separate, so a
 new user reply resets the pause counter. Five additional regression cases passed;
 this predicate-only follow-up did not repeat the live model canary.
+
+## Worker deployment
+
+Final worker source commit `c4c6bf62168ad1dcc51195b49794725b993906db` was
+published to both remotes and deployed at 00:43:09 UTC to the immutable release
+`c4c6bf62168ad1dcc51195b49794725b993906db-c884b988cae6`.
+Only `project_worker.py` and `runtime.py` changed in the eight-file runtime.
+
+The reviewed operator helper passed 17 lifecycle/barrier tests and 7 self-checks.
+A first read-only inspection stopped on unordered systemd dependency text; the
+helper now canonicalizes only those dependency sets before comparison. A fresh
+baseline confirmed unchanged database, protected configuration, sources and PIDs.
+For cutover, the API cgroup briefly stopped accepting work while the final idle
+fence was checked and the worker switched. A remote recovery timer protected
+against operator disconnect; it was cleared after services were healthy. The API
+process was not restarted. Its PID remained 541717, freezer state returned to
+`running`, and local/HTTPS health plus authenticated worker heartbeat passed.
+
+All protected database fingerprints matched after deployment. The goal remained
+paused at revision 7, with two files, 16 model calls and no active job. No user
+project was resumed automatically. Existing drop-ins, credentials and prior
+release were preserved; the database was neither restored nor reset.
+
+Private deployment receipt SHA256:
+`5d66d54b5ea9c2dafc6d7c258dfd9939305789035738a5a678587e1d797b0aeb`.
+A subsequent real user-project repair is still unverified.
