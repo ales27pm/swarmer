@@ -1,6 +1,7 @@
 import { act, render, screen, userEvent, waitFor, within } from "@testing-library/react-native";
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { Alert } from "react-native";
+import { router } from "expo-router";
 
 import TaskDetailScreen from "@/../app/task/[id]";
 import {
@@ -16,7 +17,9 @@ import {
 } from "@/lib/api/client";
 import { localApprovals, localTask } from "@/lib/state/replica";
 
-jest.mock("expo-router", () => ({ useLocalSearchParams: () => ({ id: "tsk_test" }) }));
+jest.mock("expo-router", () => ({
+  useLocalSearchParams: () => ({ id: "tsk_test" }), router: { push: jest.fn() },
+}));
 jest.mock("@/lib/api/client", () => ({
   ApiError: Error,
   cancelTask: jest.fn(),
@@ -169,6 +172,42 @@ describe("TaskDetailScreen", () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it("shows distributed agent work even when the root task has no direct tool calls", async () => {
+    mockGetTask.mockResolvedValue({ ...detail, goal_execution: {
+      schema_version: "1.0", task_id: detail.task.id, goal_run_id: "goal_crm",
+      root_task_id: detail.task.id, status: "running", truncated: false,
+      nodes: [{
+        node_id: "node_files", node_type: "worker", status: "completed", title: "Inspecter les fichiers",
+        output_summary: "La liste des fichiers est disponible.", error_summary: null,
+        provenance: { node_id: "node_files", required_skill: "workspace.list_dir", agent_id: "agt_files", worker_job_id: "job_files", result_digest: null },
+      }],
+    } });
+    const user = userEvent.setup();
+    await render(<TaskDetailScreen />);
+    expect(await screen.findByTestId("task-agent-work")).toBeOnTheScreen();
+    expect(screen.getByText("workspace.list_dir")).toBeOnTheScreen();
+    expect(screen.getByText("Terminé")).toBeOnTheScreen();
+    expect(screen.getByText(/Aucun appel d’outil direct pour cette tâche/)).toBeOnTheScreen();
+    expect(screen.queryByText("Aucun outil proposé ou exécuté.")).not.toBeOnTheScreen();
+    await user.press(screen.getByTestId("task-open-goal-button"));
+    expect(router.push).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_crm" } });
+  });
+
+  it("shows failed agent work and a bounded-list notice without claiming a passed check", async () => {
+    mockGetTask.mockResolvedValue({ ...detail, goal_execution: {
+      schema_version: "1.0", task_id: detail.task.id, goal_run_id: "goal_crm",
+      root_task_id: detail.task.id, status: "failed", truncated: true,
+      nodes: [{ node_id: "node_failed", node_type: "worker", status: "failed", title: "Vérifier le projet",
+        output_summary: null, error_summary: "Le contrôle a échoué.",
+        provenance: { node_id: "node_failed", required_skill: "code.build_project", agent_id: null, worker_job_id: "job_failed", result_digest: null } }],
+    } });
+    await render(<TaskDetailScreen />);
+    expect(await screen.findByText("Le contrôle a échoué.")).toBeOnTheScreen();
+    expect(screen.getByText("Échoué")).toBeOnTheScreen();
+    expect(screen.getByText(/Les 20 premiers travaux sont affichés/)).toBeOnTheScreen();
+    expect(screen.queryByText("Terminé")).not.toBeOnTheScreen();
   });
 
   it("shows an explicit initial loading state without claiming the task is missing", async () => {

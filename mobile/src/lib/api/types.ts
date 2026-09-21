@@ -495,6 +495,7 @@ export type TaskDetail = {
   messages: Message[];
   approvals: Approval[];
   tool_calls: ToolCall[];
+  goal_execution?: import("@/lib/api/task-execution").TaskGoalExecution | null;
 };
 
 export type Bootstrap = {

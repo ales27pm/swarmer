@@ -135,6 +135,7 @@ from app.services.swarm_contracts import (
     PlannerSource,
     PlanNode,
 )
+from app.services.task_execution import read_task_goal_execution
 from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.services.writing_drafts import WritingDraftPreview, read_writing_draft
@@ -1705,11 +1706,18 @@ def create_app(config: Settings | None = None) -> FastAPI:
         task = await state_service.get_task(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="task not found")
+        try:
+            goal_execution = await read_task_goal_execution(settings.db_path, task_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail="task execution evidence unavailable") from exc
         return {
             "task": task.model_dump(mode="json"),
             "messages": await state_service.list_messages_for_task(task_id),
             "approvals": approvals,
             "tool_calls": await execution_engine.list_for_task(task_id),
+            "goal_execution": (
+                goal_execution.model_dump(mode="json") if goal_execution is not None else None
+            ),
         }
 
     @app.post("/tasks/{task_id}/cancel")

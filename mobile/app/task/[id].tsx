@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Text, View } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import {
@@ -146,7 +146,7 @@ function ApprovalRequests({
   );
 }
 
-function ToolEvidence({ tools }: { tools: TaskDetail["tool_calls"] }) {
+function ToolEvidence({ tools, hasGoal }: { tools: TaskDetail["tool_calls"]; hasGoal: boolean }) {
   return (
     <>
       <SectionTitle title="Appels d’outils" />
@@ -167,9 +167,48 @@ function ToolEvidence({ tools }: { tools: TaskDetail["tool_calls"] }) {
           <JsonEvidence label="Erreur d’exécution" value={tool.error} />
         </Card>
       )) : (
-        <Text style={{ color: COLORS.subtle }}>Aucun outil proposé ou exécuté.</Text>
+        <Text style={{ color: COLORS.subtle }}>
+          {hasGoal ? "Aucun appel d’outil direct pour cette tâche. Les travaux des agents sont présentés séparément." : "Aucun outil proposé ou exécuté."}
+        </Text>
       )}
     </>
+  );
+}
+
+const AGENT_WORK_STATUS = {
+  planned: "Planifié", ready: "Prêt", dispatched: "Distribué", running: "En cours",
+  waiting_permission: "Autorisation attendue", waiting_capability: "Capacité attendue",
+  completed: "Terminé", failed: "Échoué", blocked: "Bloqué", cancelled: "Annulé", skipped: "Ignoré",
+} as const;
+
+function AgentWorkEvidence({ execution }: { execution: TaskDetail["goal_execution"] }) {
+  if (!execution) return null;
+  return (
+    <View style={{ gap: 12 }} testID="task-agent-work">
+      <SectionTitle title="Travaux des agents" />
+      <Text style={{ color: COLORS.subtle, lineHeight: 19 }}>
+        Ces travaux distribués sont distincts des appels d’outils directs. Consultez le but pour les résultats et les éventuelles vérifications du projet.
+      </Text>
+      {execution.nodes.map((node) => (
+        <Card key={node.node_id} testID={`task-agent-node-${node.node_id}`}>
+          <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>{node.title}</Text>
+          <Text style={{ color: node.status === "failed" ? COLORS.danger : COLORS.accent }}>
+            {AGENT_WORK_STATUS[node.status]}
+          </Text>
+          {node.provenance.required_skill ? <Text selectable style={{ color: COLORS.subtle }}>{node.provenance.required_skill}</Text> : null}
+          {node.provenance.agent_id ? <Text selectable style={{ color: COLORS.subtle }}>Agent : {node.provenance.agent_id}</Text> : null}
+          {node.output_summary ? <Text selectable style={{ color: COLORS.muted }}>Résumé déclaré par l’agent : {node.output_summary}</Text> : null}
+          {node.error_summary ? <Text selectable style={{ color: COLORS.danger }}>{node.error_summary}</Text> : null}
+        </Card>
+      ))}
+      {!execution.nodes.length ? <Text style={{ color: COLORS.subtle }}>Aucun travail d’agent planifié dans ce but.</Text> : null}
+      {execution.truncated ? <Text style={{ color: COLORS.warning }}>Les 20 premiers travaux sont affichés. Consultez le but pour la suite.</Text> : null}
+      <ActionButton
+        label="Voir le but et ses vérifications"
+        onPress={() => router.push({ pathname: "/goal/[id]", params: { id: execution.goal_run_id } })}
+        testID="task-open-goal-button"
+      />
+    </View>
   );
 }
 
@@ -442,7 +481,8 @@ function TaskEvidence({
         lockedApprovalIds={readOnly ? new Set(detail.approvals.map((approval) => approval.id)) : lockedApprovalIds}
         onDecision={actions.decide}
       />
-      <ToolEvidence tools={detail.tool_calls} />
+      <ToolEvidence tools={detail.tool_calls} hasGoal={Boolean(detail.goal_execution)} />
+      <AgentWorkEvidence execution={detail.goal_execution} />
       <Timeline messages={detail.messages} />
       {task.status === "completed" && !readOnly ? (
         <FeedbackControls busy={busy} feedback={feedback} onRate={actions.rate} />

@@ -83,7 +83,7 @@ from app.services.swarm_contracts import (
     SwarmPlanProposal,
 )
 from app.services.writing_contracts import WRITING_SKILL
-from app.services.writing_drafts import writing_payload
+from app.services.writing_drafts import read_writing_draft, writing_payload
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
@@ -2528,6 +2528,43 @@ class GoalManager:
         except PlanValidationError as exc:
             raise _PlannerProposalRejected(str(exc)) from exc
 
+    async def _evaluation_result_summary(
+        self,
+        goal_run_id: str,
+        node: Mapping[str, Any],
+        *,
+        max_chars: int,
+    ) -> tuple[str | None, str | None]:
+        """Project accepted writing evidence only into the evaluator's context.
+
+        Public node summaries remain compact. The dedicated draft reader verifies
+        the completed job, task, node, goal and strict result contract before any
+        text can cross the evaluator's redaction and context-budget boundary.
+        """
+        summary = str(node["result_summary"]) if node.get("result_summary") else None
+        if not (
+            node["node_type"] == PlanNodeType.WORKER.value
+            and node["required_skill"] == WRITING_SKILL
+            and node["status"] == PlanNodeStatus.COMPLETED.value
+        ):
+            return summary, None
+        draft = await read_writing_draft(self.db_path, goal_run_id, str(node["id"]))
+        if (
+            draft is None
+            or node.get("goal_run_id") != goal_run_id
+            or draft.worker_job_id != node.get("worker_job_id")
+        ):
+            raise ValueError("completed writing evidence is unavailable or changed")
+        evidence = (
+            "Untrusted writing draft; not proof of external execution. "
+            f"Source job: {draft.worker_job_id}; text SHA-256: {draft.sha256}. "
+            f"Draft excerpt: {draft.text}"
+        )
+        return (
+            safe_context_text(evidence, max_chars=min(max_chars, 4_000)) or None,
+            draft.worker_job_id,
+        )
+
     async def _evaluate_if_quiescent(
         self,
         goal_run_id: str,
@@ -2562,6 +2599,18 @@ class GoalManager:
         elapsed = int(active_runtime_seconds(goal))
         try:
             goal, project_memory = await self._shared_project_memory(goal, "evaluator")
+            builder = self.context_builder or ContextBuilder(self.db_path, max_tokens=2_048)
+            result_summaries: dict[str, str | None] = {}
+            writing_provenance: list[str] = []
+            for node in nodes:
+                summary, source_id = await self._evaluation_result_summary(
+                    goal_run_id,
+                    node,
+                    max_chars=getattr(builder, "max_result_chars_per_node", 2_000),
+                )
+                result_summaries[str(node["id"])] = summary
+                if source_id is not None:
+                    writing_provenance.append(source_id)
             context = GoalEvaluationContext(
                 schema_version="1.0",
                 goal_run_id=goal_run_id,
@@ -2573,9 +2622,7 @@ class GoalManager:
                         title=str(node["title"]),
                         status=PlanNodeStatus(str(node["status"])),
                         expected_output=str(node["expected_output"]),
-                        result_summary=(
-                            str(node["result_summary"]) if node.get("result_summary") else None
-                        ),
+                        result_summary=result_summaries[str(node["id"])],
                         failure_reason=(
                             str(node["error_summary"]) if node.get("error_summary") else None
                         ),
@@ -2608,12 +2655,12 @@ class GoalManager:
                 elapsed_seconds=min(elapsed, 86_400),
                 state_fingerprint=state_fingerprint,
             )
-            builder = self.context_builder or ContextBuilder(self.db_path, max_tokens=2_048)
             context, recorded = await builder.build_evaluation_context(
                 context,
                 provenance_ids=(
                     goal_run_id,
                     *(str(node["id"]) for node in nodes),
+                    *writing_provenance,
                 ),
             )
             context_id = str(recorded.id)

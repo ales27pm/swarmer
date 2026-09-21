@@ -57,7 +57,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "org.27pm.mongars",
-      "buildNumber": "20260921012604",
+      "buildNumber": "20260921041035",
       "entitlements": {
         "com.apple.developer.background-tasks.continued-processing.gpu": true
       },

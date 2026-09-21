@@ -19,6 +19,7 @@ import {
   type GoalCodeProposalReview,
 } from "@/lib/api/code-proposal";
 import { parseGoalWritingDraft, type GoalWritingDraft } from "@/lib/api/writing-draft";
+import { parseTaskGoalExecution } from "@/lib/api/task-execution";
 import {
   assertCapabilityRequestFresh,
   CapabilityProtocolError,
@@ -878,8 +879,9 @@ export function listTasks(status?: TaskStatus): Promise<Task[]> {
   return request<Task[]>(`/tasks${query}`);
 }
 
-export function getTask(taskId: string): Promise<TaskDetail> {
-  return request<TaskDetail>(`/tasks/${resourceId(taskId)}`);
+export async function getTask(taskId: string): Promise<TaskDetail> {
+  const detail = await request<TaskDetail>(`/tasks/${resourceId(taskId)}`);
+  return { ...detail, goal_execution: parseTaskGoalExecution(detail.goal_execution, taskId) };
 }
 
 export function listGoals(

@@ -43,9 +43,10 @@ and an absolute wall budget of 1–120 seconds. The prompt requests a complete
 assumptions, dependencies, and limits) with a summary within 80 characters,
 including JSON overhead within the token budget. The result contract retains its
 larger byte and character bounds; the generation budget does not relax validation.
-CPU inference (`num_gpu: 0`) avoids
-displacing resident GPU workloads. The worker does not download, unload, or
-switch other model processes. Set an existing small local model alias through
+CPU inference (`num_gpu: 0`) limits the writer's GPU use. When roles share the
+same alias, Ollama may reuse its CPU placement for later planner/evaluator calls;
+their deadlines must account for CPU latency (see `docs/33-writing-drafts.md`).
+The worker sends no download or unload requests. Set an existing small local model alias through
 `MONGARS_TEXT_MODEL_ID`; there is deliberately no invented default alias.
 
 Model URLs use numeric loopback HTTP(S), or `localhost` normalized to
