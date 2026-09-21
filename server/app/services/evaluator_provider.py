@@ -180,6 +180,8 @@ If fresh research is missing and research.query is available, suggest a research
 For that worker only, use search_query instead of objective in the proposed node.
 search_query contains concise search-engine terms preserving the requested subject, place,
 language and time constraints; omit drafting instructions and the rest of the goal.
+Keep source-quality requirements in expected_output and the dependent writer's
+objective; do not add labels meaning official or reliable sources to search terms.
 The server maps this wire field to the public objective. Do not emit both fields.
 All other proposed node types retain objective.
 If a sourced draft is also needed, make its writing.draft node depend on that research node;
