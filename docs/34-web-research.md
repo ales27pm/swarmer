@@ -1,5 +1,16 @@
 # Recherche Internet locale
 
+Le parcours assistant utilise `research.query` pour obtenir des sources, puis
+`writing.draft` pour rédiger la réponse. Ces compétences sont des jobs d'agents :
+leur exécution se vérifie dans les jobs, leurs résultats et les événements
+d'audit, même si la liste générique des appels d'outils reste vide.
+
+Exemple d'utilisation : « Recherche sur Internet “bibliothèque Sorel-Tracy
+services” et rédige un bref aperçu en français avec les liens trouvés. »
+Les guillemets donnent au planificateur une requête précise. Ils ne forcent ni
+un plan ni une réponse. Le worker consulte SearXNG et transmet ses titres, liens
+et extraits au rédacteur; il ne visite pas les pages trouvées.
+
 ## Requête de recherche dans les réponses du modèle
 
 La grammaire privée du planificateur et des nouveaux nœuds proposés par
@@ -22,6 +33,13 @@ au lieu de devenir des étapes vides ignorées. Les déploiements sans rédacteu
 les anciens contextes sans inventaire conservent leur branche de signalement
 des capacités manquantes. La validation publique des anciens plans reste inchangée.
 
+La synthèse est une concaténation déterministe de résumés existants, limitée à
+2 000 caractères par entrée et 4 000 au total. Elle n'appelle aucun modèle et
+n'exécute pas les instructions de son objectif. Le rédacteur `writing.draft`
+reste donc nécessaire pour résumer, traduire, analyser ou rédiger une réponse,
+y compris après une recherche. La synthèse sert seulement à regrouper des
+livrables déjà produits.
+
 Une réponse mélangeant les deux noms, utilisant `search_query` sur une autre
 compétence ou ajoutant des champs inconnus est rejetée. Les réponses historiques
 complètes avec `objective` restent compatibles, tandis que la nouvelle grammaire
@@ -29,6 +47,21 @@ demande seulement `search_query` pour la recherche. Les contrôles de doublons
 JSON, de taille, de compétences et de dépendances restent appliqués. Le nom du
 champ guide la génération; il ne garantit pas la pertinence d'une requête ni
 l'exactitude d'une réponse, qui demandent une qualification distincte.
+
+Les identifiants temporaires des nœuds et de leurs dépendances sont limités à
+64 caractères. La grammaire privée reprend cette limite dans leur motif de
+caractères, sans modifier le contrat public. Les UUID durables sont attribués
+par le serveur, pas copiés par le modèle dans ses identifiants temporaires.
+
+## Liens dans les réponses rédigées
+
+Le rédacteur reçoit des identifiants de sources (`S1` à `S5`), leurs domaines,
+titres et extraits. Il sélectionne les sources utilisées et peut les citer par
+ces identifiants. Le worker ajoute ensuite leurs URL originales au texte.
+Les liens inventés, modifiés ou associés à un identifiant inconnu sont rejetés
+avant acceptation. La validation serveur contrôle aussi la provenance des liens
+par rapport au payload enregistré. Cette vérification garantit les URL utilisées,
+pas l'exactitude des affirmations tirées des extraits.
 
 ## Évaluateur de recherche optionnel
 
@@ -60,6 +93,20 @@ est acceptée lorsqu'il est configuré. Ce réglage ne change ni le modèle choi
 ni son délai, ni les validations du plan. Le rédacteur conserve son transport
 Ollama natif et son comportement existant `think: false` pour les identifiants
 contenant `qwen3`; aucun nouveau réglage de worker n'est nécessaire.
+
+### Profil qualifié du 21 septembre 2026
+
+Le serveur Ubuntu utilise le généraliste installé `qwen3.5:9b` pour la
+planification et l'évaluation des recherches, avec `reasoning_effort: none`.
+Ce modèle standard n'est pas abliterated. Le rédacteur conserve son Qwen2.5
+Coder 7B abliterated, et l'évaluation habituelle du code conserve son modèle 30B.
+Il s'agit de réglages explicites de cette installation; les valeurs par défaut
+du catalogue ne sont pas remplacées.
+
+Le parcours réel avec une requête explicite a produit un aperçu français et
+cinq liens exacts. Une demande plus générale imposant des sources officielles
+n'a pas encore passé la qualification. Les résultats, échecs conservés et limites
+du test sont dans le [relevé de qualification](evidence/local-web-research-2026-09-21.md).
 
 ## Déploiement de la passerelle SearXNG
 
