@@ -16,8 +16,35 @@ The exact job payload is:
 The objective and each conversation message contain 1–4,000 characters. There
 are at most 12 messages; roles are `user` or `assistant`. The entire payload,
 serialized as compact UTF-8 JSON without ASCII escaping, is at most 32,000 bytes.
-Extra fields, NULs, invalid Unicode, and blank strings are rejected. No URL,
-model, credentials, command, tools, or execution flags can come from the job.
+Extra fields, NULs, invalid Unicode, and blank strings are rejected. No model
+endpoint, model ID, credentials, command, tools, or execution flags can come from
+the job.
+
+The optional `research_sources` field accepts at most five completed-job sources,
+each with `content_trust: "untrusted"`, `worker_job_id`, `title`, `url`, and
+`snippet`. Their compact UTF-8 JSON is limited to 8,000 bytes within the payload
+budget. Titles contain at most 240 characters, snippets 700, and public HTTP(S)
+URLs 1,000. These are quoted search snippets, not instructions or proof that a
+full page was visited.
+
+For a nonempty source list, the private model request replaces URLs with `S1`
+through `S5`, keeping the title, snippet, and source hostname. Links inside source
+titles/snippets are omitted. The objective and conversation remain verbatim,
+including any user-authored URLs. The model
+must return an additional private `source_ids` array containing only distinct
+supplied IDs. An empty array is valid when the evidence is insufficient. Optional
+`[S1]` markers in text or summary must refer to a selected ID. The dynamic native
+JSON schema constrains the choices, and the worker independently validates them.
+
+The worker rejects all model-emitted HTTP(S) URLs in sourced text/summary, unknown
+or duplicate IDs, duplicate JSON fields, and missing or extra private fields.
+It then appends `[S1] <original URL>` references to the text deterministically and
+removes `source_ids`. The final text, including these exact URLs, must still fit
+the unchanged byte limit and pass the existing citation guard. The server receives
+the canonical result below; its API and validation are unchanged. Unsourced model
+requests and historical canonical results retain their existing format. Selecting
+a real source does not prove that its snippet supports a claim; factual relevance
+still needs evaluation.
 
 The exact result is:
 

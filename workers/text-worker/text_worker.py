@@ -78,6 +78,21 @@ RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["schema_version", "content_trust", "text", "summary"],
 }
 
+SOURCED_SYSTEM_PROMPT = (
+    SYSTEM_PROMPT.replace(
+        "Use relevant snippets as limited evidence and cite only exact URLs supplied there.",
+        "Use relevant snippets as limited evidence. Cite their source IDs, never URLs.",
+    )
+    + """
+For this sourced request, also return source_ids: an array of distinct supplied IDs
+such as S1. Select only sources actually supporting the text. Use [S1] markers in
+text when useful; every marker must be selected in source_ids. The worker attaches
+the original URLs exactly. Do not emit any URL in text or summary. Hostnames identify
+provenance, not a URL to construct. If evidence is insufficient, say so honestly and
+return source_ids: [] rather than inventing facts or citing unrelated sources.
+"""
+)
+
 
 class GenerationError(ValueError):
     """No complete, bounded text draft could be accepted."""
@@ -288,6 +303,83 @@ def validate_result(value: object, payload: dict[str, Any] | None = None) -> dic
     return {"schema_version": "1.0", "content_trust": "untrusted", "text": text, "summary": summary}
 
 
+def _model_input(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Project validated evidence into a private, URL-free citation vocabulary."""
+    sources = payload.get("research_sources", [])
+    if not sources:
+        return payload, RESPONSE_SCHEMA
+    ids = [f"S{index}" for index in range(1, len(sources) + 1)]
+
+    def source_text(text: str) -> str:
+        # Search titles/snippets can themselves contain links. They are evidence,
+        # never another source URL for the model to copy or reconstruct.
+        return re.sub(r"https?://[^\s<>\"`]+", "[URL omitted]", text, flags=re.IGNORECASE)
+
+    projected = {
+        **payload,
+        "research_sources": [
+            {
+                "source_id": source_id,
+                "content_trust": "untrusted",
+                "hostname": urlsplit(source["url"]).hostname,
+                "title": source_text(source["title"]),
+                "snippet": source_text(source["snippet"]),
+            }
+            for source, source_id in zip(sources, ids, strict=True)
+        ],
+    }
+    if len(json.dumps(projected, ensure_ascii=False, separators=(",", ":")).encode()) > (
+        MAX_PAYLOAD_BYTES
+    ):
+        raise GenerationError(
+            "draft model input exceeds its UTF-8 byte limit", reason="invalid_payload"
+        )
+    schema = {
+        **RESPONSE_SCHEMA,
+        "properties": {
+            **RESPONSE_SCHEMA["properties"],
+            "source_ids": {
+                "type": "array",
+                "items": {"type": "string", "enum": ids},
+                "uniqueItems": True,
+                "maxItems": len(ids),
+            },
+        },
+        "required": [*RESPONSE_SCHEMA["required"], "source_ids"],
+    }
+    return projected, schema
+
+
+def _decode_model_result(value: object, payload: dict[str, Any]) -> dict[str, str]:
+    """Resolve private IDs before the unchanged canonical contract and URL guard."""
+    sources = payload.get("research_sources", [])
+    if not sources:
+        return validate_result(value, payload)
+    if not isinstance(value, dict) or set(value) != {*RESPONSE_SCHEMA["required"], "source_ids"}:
+        raise GenerationError("sourced draft fields are invalid")
+    ids = value["source_ids"]
+    by_id = {f"S{index}": source for index, source in enumerate(sources, 1)}
+    if (
+        not isinstance(ids, list)
+        or len(ids) > len(by_id)
+        or any(not isinstance(source_id, str) or source_id not in by_id for source_id in ids)
+        or len(set(ids)) != len(ids)
+    ):
+        raise GenerationError("draft source IDs are invalid")
+    canonical = {key: value[key] for key in RESPONSE_SCHEMA["required"]}
+    for key in ("text", "summary"):
+        content = _text(canonical[key])
+        if re.search(r"https?://", content, flags=re.IGNORECASE):
+            raise GenerationError("unsupported_citation", reason="unsupported_citation")
+        if any(source_id not in ids for source_id in re.findall(r"\[(S[^\]\r\n]*)\]", content)):
+            raise GenerationError("draft source reference is not selected")
+    if ids:
+        canonical["text"] += "\n\n" + "\n".join(
+            f"[{source_id}] <{by_id[source_id]['url']}>" for source_id in ids
+        )
+    return validate_result(canonical, payload)
+
+
 def _abort_connection(connection: http.client.HTTPConnection) -> None:
     # shutdown also interrupts an HTTPResponse that still owns a socket file.
     sock = connection.sock or getattr(connection, "_text_worker_socket", None)
@@ -321,15 +413,21 @@ class TextGenerator:
         payload: dict[str, Any],
         check: Callable[[], None],
     ) -> dict[str, str]:
+        model_payload, response_schema = _model_input(payload)
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": SOURCED_SYSTEM_PROMPT
+                    if payload.get("research_sources")
+                    else SYSTEM_PROMPT,
+                },
                 # Keep historical assistant messages as quoted task data, not authority.
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                {"role": "user", "content": json.dumps(model_payload, ensure_ascii=False)},
             ],
             "stream": True,
-            "format": RESPONSE_SCHEMA,
+            "format": response_schema,
             "options": {"temperature": 0, "num_predict": MAX_OUTPUT_TOKENS, "num_gpu": 0},
         }
         if "qwen3" in self.model.casefold():
@@ -422,7 +520,7 @@ class TextGenerator:
                     "local text model stream ended without completion", reason="incomplete_stream"
                 )
             check()
-            return validate_result(_parse_model_json("".join(parts)), payload)
+            return _decode_model_result(_parse_model_json("".join(parts)), payload)
         finally:
             response.close()
 
