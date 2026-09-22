@@ -42,15 +42,16 @@ async def _projection_rows(database: Path, goal_id: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read", [False, True])
 async def test_expired_maintenance_lease_rolls_back_stall_projection_after_history_scan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read: bool
 ) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
     goal_id = detail["goal"]["id"]
     await _result(manager, agent, action="continue")
-    await iteration(manager, agent)
-    await iteration(manager, agent)
-    job, _ = await iteration(manager, agent, receive=False)
+    for _ in range(3 if read else 2):
+        await iteration(manager, agent, read=read)
+    job, _ = await iteration(manager, agent, read=read, receive=False)
     before = await _projection_rows(manager.db_path, goal_id)
     async with aiosqlite.connect(manager.db_path) as db:
         revisions_before = await (
@@ -66,7 +67,7 @@ async def test_expired_maintenance_lease_rolls_back_stall_projection_after_histo
     guard = MaintenanceLeaseGuard(leases, lease)
     original = manager._project_stalled_locked
 
-    async def expire_after_scan(db: aiosqlite.Connection, goal: str, revision: int) -> bool:
+    async def expire_after_scan(db: aiosqlite.Connection, goal: str, revision: int) -> str | None:
         stalled = await original(db, goal, revision)
         assert stalled
         clock.advance(2)
