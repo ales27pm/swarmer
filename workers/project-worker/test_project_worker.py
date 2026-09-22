@@ -94,6 +94,21 @@ def test_clarification_charges_one_model_call_without_execution() -> None:
     assert result["action"] == "clarify" and result["checks"] == []
 
 
+@pytest.mark.parametrize("action", ["continue", "complete"])
+def test_empty_initial_response_preserves_checks_without_running_an_empty_project(
+    action: str,
+) -> None:
+    generator = Generator(step(action=action, edits=[], message="I will create the CRM now."))
+    runner = Runner()
+    before = payload()
+    result = worker.run_iteration(before, generator, runner, lambda: None)
+    assert runner.calls == 0
+    assert result["files"] == [] and result["checks"] == before["checks"]
+    assert result["action"] == "continue"
+    assert "no application files" in result["message"]
+    assert "I will create" not in result["message"]
+
+
 @pytest.mark.parametrize("count,fail", [(0, False), (1, True)])
 def test_model_complete_cannot_override_empty_or_failed_real_tests(count: int, fail: bool) -> None:
     generator = Generator(step())
@@ -1462,6 +1477,33 @@ def test_real_empty_node_test_receipt_prioritizes_real_test_creation(
     assert "real API" in task and "do not invent" in task
     assert source in request["messages"][-1]["content"]
     assert next(iter(request["format"]["oneOf"][0]["properties"])) == "edits"
+
+
+@pytest.mark.parametrize("runtime", ["python", "node"])
+def test_missing_tests_cannot_select_an_empty_mutation(
+    monkeypatch: pytest.MonkeyPatch, runtime: str
+) -> None:
+    path = "app.py" if runtime == "python" else "app.js"
+    data = {
+        **payload(),
+        "files": [{"path": path, "content": "value = 1"}],
+        "checks": [
+            node_check(["python", "-m", "pytest", "-q"], "no tests ran in 0.00s")
+            if runtime == "python"
+            else node_check(["node", "--test"], NODE_EMPTY_TAP)
+        ],
+    }
+    if runtime == "node":
+        data["files"].append({"path": "package.json", "content": '{"type":"module"}'})
+    request = capture_project_request(monkeypatch, data)
+    validator = Draft202012Validator(request["format"])
+    empty = step(action="continue", edits=[], patches=[], focus_paths=[])
+    assert not validator.is_valid(empty)
+    read = {**empty, "focus_paths": [path]}
+    assert validator.is_valid(read)
+    with pytest.raises(worker.ModelStepError, match="returned no test file"):
+        capture_project_request(monkeypatch, data, empty)
+    capture_project_request(monkeypatch, data, read)
 
 
 @pytest.mark.parametrize(
