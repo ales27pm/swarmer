@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -402,3 +403,111 @@ async def test_http_200_invalid_response_has_safe_stage_and_digest(
     assert caught.value.diagnostic == stage
     assert "SECRET" not in str(caught.value)
     assert (caught.value.output_digest is None) == (stage == "envelope")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete_json", [False, True])
+async def test_length_finish_rejects_even_valid_json_before_decision_parsing(
+    tmp_path: Path, complete_json: bool
+) -> None:
+    manager = await _manager(tmp_path / "state.db", _worker_plan())
+    provider = UbuntuEvaluatorProvider(
+        base_url="http://invalid.test/v1", model="test", policy=manager.permission_policy
+    )
+    content = (
+        json.dumps(continue_decision())
+        if complete_json
+        else '{"00_schema_version":"1.0","30_reason_summary":"SECRET_PARTIAL'
+    )
+    response = httpx.Response(
+        200,
+        request=httpx.Request("POST", "http://invalid.test/v1/chat/completions"),
+        json={"choices": [{"finish_reason": "length", "message": {"content": content}}]},
+    )
+    post = AsyncMock(return_value=response)
+    with (
+        patch("httpx.AsyncClient.post", post),
+        patch("app.services.evaluator_provider._parse_wire_decision") as parse,
+        pytest.raises(EvaluatorProviderError) as caught,
+    ):
+        await provider.evaluate(evaluation_context())
+    assert caught.value.category == "invalid_response"
+    assert caught.value.diagnostic == "truncated"
+    assert caught.value.output_digest == hashlib.sha256(content.encode()).hexdigest()
+    assert "SECRET" not in str(caught.value)
+    parse.assert_not_called()
+    post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_truncation_replaces_stale_summary_and_preserves_bounded_retry_accounting(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(tmp_path / "state.db", _worker_plan())
+    manager.evaluator = UbuntuEvaluatorProvider(
+        base_url="http://invalid.test/v1", model="test", policy=manager.permission_policy
+    )
+    goal_id = await failed_worker_goal(manager)
+    prior_summary = "Previously accepted evaluation: implementation remains missing."
+    prior = {
+        **continue_decision(),
+        "reason_summary": prior_summary,
+        "suggested_new_nodes": [],
+    }
+    partial = '{"00_schema_version":"1.0","30_reason_summary":"SECRET_PARTIAL'
+
+    def response(content: str, finish_reason: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "http://invalid.test/v1/chat/completions"),
+            json={"choices": [{"finish_reason": finish_reason, "message": {"content": content}}]},
+        )
+
+    post = AsyncMock(
+        side_effect=[response(json.dumps(prior), "stop")]
+        + [response(partial, "length") for _ in range(3)]
+    )
+    with patch("httpx.AsyncClient.post", post):
+        await manager._evaluate_if_quiescent(goal_id)
+        before = await manager.graph.get_goal(goal_id)
+        assert before and before["evaluator_summary"] == prior_summary
+        for attempt in range(1, 4):
+            await manager._evaluate_if_quiescent(goal_id)
+            latest = await manager.graph.get_goal(goal_id)
+            assert latest is not None
+            assert latest["model_call_count"] == before["model_call_count"] + attempt
+            assert "output or context limit" in latest["failure_reason"]
+            assert latest["evaluator_summary"] == latest["failure_reason"]
+            assert prior_summary not in latest["evaluator_summary"]
+            assert "SECRET" not in str(latest)
+            for field in ("started_at", "step_count", "replan_count", "max_model_calls"):
+                assert latest[field] == before[field]
+            assert latest["status"] == ("waiting_permission" if attempt == 3 else "running")
+            assert latest["current_phase"] == (
+                "evaluator_retry_required" if attempt == 3 else "evaluator_invalid_response"
+            )
+            assert await manager.reconcile() == 0
+            assert post.await_count == attempt + 1
+            if attempt < 3:
+                await expire_cooldown(manager, goal_id)
+    history = await manager.conversation_messages(goal_id)
+    assert history["pending_question_id"] is None
+    assert "output or context limit" in str(history)
+    assert "SECRET" not in str(history)
+    async with aiosqlite.connect(manager.db_path) as db:
+        evaluations = await (
+            await db.execute(
+                "SELECT reason_summary FROM goal_evaluations WHERE goal_run_id=?", (goal_id,)
+            )
+        ).fetchall()
+        failures = await (
+            await db.execute(
+                "SELECT payload_json FROM audit_events WHERE event_type='goal.evaluator.failed'"
+            )
+        ).fetchall()
+    assert evaluations == [(prior_summary,)]  # Accepted history is retained, never overwritten.
+    assert len(failures) == 3
+    for failure in failures:
+        payload = json.loads(failure[0])
+        assert payload["category"] == "invalid_response"
+        assert payload["diagnostic"] == "truncated"

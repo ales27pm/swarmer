@@ -35,7 +35,7 @@ EvaluatorFailureCategory = Literal[
     "transport_unavailable", "request_rejected", "invalid_response", "invalid_context"
 ]
 EvaluatorDiagnostic = Literal[
-    "transport", "http_status", "envelope", "json", "schema", "graph", "context"
+    "transport", "http_status", "envelope", "truncated", "json", "schema", "graph", "context"
 ]
 
 # Ollama may sort schema keys lexicographically before grammar generation.
@@ -357,7 +357,9 @@ The Ubuntu control plane independently validates your proposal and remains autho
 
         try:
             body = response.json()
-            content = body["choices"][0]["message"]["content"]
+            choice = body["choices"][0]
+            content = choice["message"]["content"]
+            finish_reason = choice.get("finish_reason")
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise EvaluatorProviderError(
                 "invalid evaluator response envelope",
@@ -375,6 +377,15 @@ The Ubuntu control plane independently validates your proposal and remains autho
                 output_digest = hashlib.sha256(encoded).hexdigest()
         except UnicodeError:
             pass
+        if finish_reason == "length":
+            # A syntactically complete prefix is still not a complete decision.
+            # The provider can exhaust either its output cap or context window.
+            raise EvaluatorProviderError(
+                "evaluator response was truncated by a model limit",
+                category="invalid_response",
+                diagnostic="truncated",
+                output_digest=output_digest,
+            )
         try:
             decision = _parse_wire_decision(content.strip())
         except PlanValidationError as exc:

@@ -1,0 +1,6 @@
+# Existing local model only. Verify this source digest before creating the alias:
+# 6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7
+# Alias: swarmer-research-qwen35:9b-8k-6488c96fa5fa
+FROM qwen3.5:9b
+PARAMETER num_ctx 8192
+PARAMETER num_predict 2048

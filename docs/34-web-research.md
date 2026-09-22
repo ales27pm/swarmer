@@ -103,6 +103,41 @@ Coder 7B abliterated, et l'évaluation habituelle du code conserve son modèle 3
 Il s'agit de réglages explicites de cette installation; les valeurs par défaut
 du catalogue ne sont pas remplacées.
 
+### Contexte du planificateur et de l'évaluateur
+
+Le prompt système, les preuves et la réponse partagent la fenêtre du modèle.
+La limite du constructeur de contexte ne réserve pas, à elle seule, de place
+pour les instructions système et le JSON de sortie. Un profil Ollama limité
+à 4 096 jetons peut donc couper une évaluation pourtant conforme à cette limite.
+
+Le profil dédié
+`swarmer-research-qwen35:9b-8k-6488c96fa5fa` conserve les poids installés de
+`qwen3.5:9b`, avec `num_ctx=8192` et `num_predict=2048`. Son
+[Modelfile](../configs/ollama/research-qwen35-9b-8k.Modelfile) et les empreintes
+du modèle source et du profil sont conservés dans le manifeste. Vérifier
+l'empreinte du modèle installé avant de créer ce profil; ne pas remplacer
+le modèle source ni télécharger implicitement une autre révision.
+
+Pour activer ce profil, configurer ces réglages explicites après qualification :
+
+```dotenv
+MONGARS_PLANNER_MODEL=swarmer-research-qwen35:9b-8k-6488c96fa5fa
+MONGARS_RESEARCH_EVALUATOR_MODEL=swarmer-research-qwen35:9b-8k-6488c96fa5fa
+MONGARS_PLANNER_REASONING_EFFORT=none
+```
+
+La [compatibilité OpenAI d'Ollama](https://docs.ollama.com/api/openai-compatibility#setting-the-local-context-size)
+demande un profil de modèle pour régler la fenêtre locale; `max_tokens`
+ne constitue pas ce réglage. Vérifier également le `context_length` réellement
+chargé avec `/api/ps`.
+
+Une réponse avec `finish_reason="length"` est rejetée avant le parsing, même si
+son préfixe est un JSON valide. Le diagnostic interne est `truncated`; le résumé
+courant explique la limite de contexte/sortie au lieu d'afficher une ancienne
+évaluation. L'historique accepté, les budgets, le délai de 60 secondes et la pause
+après trois réponses invalides restent inchangés. Une réponse complète prouve
+le respect du contrat, pas la pertinence des sources ni l'achèvement du but.
+
 Le parcours réel avec une requête explicite a produit un aperçu français et
 cinq liens exacts. Une demande plus générale imposant des sources officielles
 n'a pas encore passé la qualification. Les résultats, échecs conservés et limites

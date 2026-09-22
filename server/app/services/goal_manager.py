@@ -108,6 +108,10 @@ _EVALUATOR_RETRY_REASON = (
     "Evaluation is paused after repeated invalid responses. "
     "Retry evaluation or send new instructions to continue."
 )
+_EVALUATOR_TRUNCATED_REASON = (
+    "The evaluator response reached its output or context limit and was cut short. "
+    "No evaluation was accepted."
+)
 PROJECT_SKILL = "code.build_project"
 _PLANNER_FAILURE_DETAILS = {
     "transport_unavailable": ("planner_unavailable", "Planner transport is unavailable."),
@@ -2394,6 +2398,9 @@ class GoalManager:
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> bool:
         phase, reason = _EVALUATOR_FAILURE_DETAILS[error.category]
+        truncated = error.category == "invalid_response" and error.diagnostic == "truncated"
+        if truncated:
+            reason = _EVALUATOR_TRUNCATED_REASON
         now = self._now()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -2447,7 +2454,7 @@ class GoalManager:
                 phase = "evaluator_retry_required"
                 reason = (
                     f"{reason} Retry evaluation or send new instructions to continue."
-                    if error.category == "invalid_context"
+                    if error.category == "invalid_context" or truncated
                     else _EVALUATOR_RETRY_REASON
                 )
             await db.execute(
@@ -2461,7 +2468,7 @@ class GoalManager:
                     now,
                     pause,
                     now,
-                    pause,
+                    pause or truncated,
                     reason,
                     goal_id,
                 ),

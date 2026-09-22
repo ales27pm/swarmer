@@ -14,6 +14,22 @@ profiles:
     notes: "Dolphin3.0 3B is the compact iteration preset; Core ML has a 2048-token context. Device memory, latency, and quality still require an iPhone test."
 
 models:
+  - id: qwen35_9b_research_8k
+    ollama_source: qwen3.5:9b
+    ollama_source_digest: 6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7
+    served_model_id: swarmer-research-qwen35:9b-8k-6488c96fa5fa
+    ollama_digest: cc81d93f910b2a4fbb2b5cbd38faf70de1b39178871f866f2cd80f09f4172a3d
+    quant: Q4_K_M
+    role: research_planner_evaluator
+    abliterated: false
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434/v1
+    context_tokens: 8192
+    max_output_tokens: 2048
+    modelfile: configs/ollama/research-qwen35-9b-8k.Modelfile
+    active_by_default: false
+    notes: "Explicit Ubuntu research override; reuse the verified installed source without downloading or replacing it. Set both planner and research evaluator to this alias, with reasoning_effort none. The context includes system instructions, bounded evidence and the response."
+
   - id: hermes3_3b_abliterated_orchestrator
     hf: mradermacher/Hermes-3-Llama-3.2-3B-abliterated-GGUF
     hf_revision: 403aef223f9fecdd5326e4a1fdabb28b935fff77
