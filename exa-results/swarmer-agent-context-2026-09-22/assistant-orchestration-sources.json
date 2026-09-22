@@ -1,0 +1,731 @@
+{
+  "scope": "Axe3 — rôles assistant personnel, outils, orchestration, observabilité",
+  "as_of": "2026-09-22",
+  "recent_window": {
+    "start": "2026-03-22",
+    "end": "2026-09-22",
+    "calculation": "2026-09-22 moins six mois calendaires =2026-03-22"
+  },
+  "counts": {
+    "search_calls": 6,
+    "requested_result_slots": 60,
+    "sources_reviewed_skill_metric": 60,
+    "returned_result_slots": 60,
+    "unique_returned_urls": 60,
+    "fetch_calls": 2,
+    "fetched_url_slots": 10,
+    "distinct_fetched_urls": 10,
+    "useful_fetched_pages": 9,
+    "moved_notice_pages": 1,
+    "curated_sources": 19
+  },
+  "count_warning": "Le compteur sources_reviewed est la somme numResults demandés, pas le nombre de sources uniques lues ou validées.",
+  "method": "Exa connecté; six angles diversifiés, filtrage primaire, lecture de dix URL. Aucun accès live production, installation, modèle, workflow ou modification runtime.",
+  "queries": [
+    {
+      "id": "Q1",
+      "query": "Official Python MCP and A2A protocol documentation updated March 22 to September 22 2026 on progressive tool discovery tool schemas authorization task lifecycle capabilities and what remote agent execution actually guarantees",
+      "objective": "Prioritize modelcontextprotocol.io, a2a-protocol.org and project maintainers. Extract discovery, authorization, task-state and result-evidence limitations; exclude promotional listicles.",
+      "numResults": 10,
+      "returned_results": [
+        {
+          "title": "README.v2.md at e8e64842 · modelcontextprotocol/python-sdk",
+          "url": "https://github.com/modelcontextprotocol/python-sdk/blob/e8e64842/README.v2.md",
+          "published": "N/A"
+        },
+        {
+          "title": "5fa24f7 refactor: migrate `a2a-mcp-without-framework` python sample to `v1.0` (#509)",
+          "url": "https://github.com/a2aproject/a2a-samples/commit/5fa24f72b7a94b66c1566ae6be51d2a9e4591db4",
+          "published": "N/A"
+        },
+        {
+          "title": "MCP Integration ",
+          "url": "https://python-a2a.readthedocs.io/en/latest/guides/mcp.html",
+          "published": "N/A"
+        },
+        {
+          "title": "docs/mcp.md at main · openai/openai-agents-python",
+          "url": "https://github.com/openai/openai-agents-python/blob/main/docs/mcp.md",
+          "published": "N/A"
+        },
+        {
+          "title": "themanojdesai/python-a2a",
+          "url": "https://github.com/themanojdesai/python-a2a",
+          "published": "N/A"
+        },
+        {
+          "title": "MCP Integration · themanojdesai/python-a2a Wiki · GitHub",
+          "url": "https://github.com/themanojdesai/python-a2a/wiki/MCP-Integration",
+          "published": "N/A"
+        },
+        {
+          "title": "v2.0.0a3",
+          "url": "https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.0.0a3",
+          "published": "N/A"
+        },
+        {
+          "title": "Developer's Guide to AI Agent Protocols",
+          "url": "https://developers.googleblog.com/developers-guide-to-ai-agent-protocols/",
+          "published": "2026-03-18T00:00:00.000Z"
+        },
+        {
+          "title": "N/A",
+          "url": "https://python-a2a.readthedocs.io/en/stable/index.html",
+          "published": "N/A"
+        },
+        {
+          "title": "MCP, A2A, and A2UI: Compose Agent Boundaries Safely | QubitTool",
+          "url": "https://qubittool.com/blog/mcp-a2a-a2ui-protocol-stack-guide",
+          "published": "2026-04-23T00:00:00.000Z"
+        }
+      ],
+      "returned_count": 10
+    },
+    {
+      "id": "Q2",
+      "query": "Python LangGraph durable execution documentation and PydanticAI typed tool validation GitHub issues discussions replay idempotency duplicate side effects production experience March to September 2026",
+      "objective": "Prioritize official LangChain and Pydantic AI documentation plus reproducible maintainer GitHub issues. Identify small reusable patterns versus a framework migration.",
+      "numResults": 10,
+      "returned_results": [
+        {
+          "title": "Document retry and idempotency expectations for node tasks",
+          "url": "https://github.com/langchain-ai/langgraph/issues/8702",
+          "published": "N/A"
+        },
+        {
+          "title": "[Feature Proposal] Durable tool execution idempotency & retry middleware",
+          "url": "https://github.com/langchain-ai/langgraph/issues/8464",
+          "published": "N/A"
+        },
+        {
+          "title": "Long tool calls (~180s+) silently re-executed from checkpoint on LangGraph Cloud",
+          "url": "https://github.com/langchain-ai/langgraph/issues/7417",
+          "published": "N/A"
+        },
+        {
+          "title": "Durable Execution | Pydantic Docs",
+          "url": "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/",
+          "published": "N/A"
+        },
+        {
+          "title": "Durable dynamic-tool schema errors retry engine units instead of prompting the model",
+          "url": "https://github.com/pydantic/pydantic-ai/issues/6979",
+          "published": "N/A"
+        },
+        {
+          "title": "Background runs re-executed after ~180s despite BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS being set higher · Issue #7213 · langchain-ai/langgraph",
+          "url": "https://github.com/langchain-ai/langgraph/issues/7213",
+          "published": "2026-03-17T00:00:00.000Z"
+        },
+        {
+          "title": "LangGraph overview - Docs by LangChain",
+          "url": "https://docs.langchain.com/oss/python/langgraph/overview",
+          "published": "N/A"
+        },
+        {
+          "title": "Agent Durable Execution in Production: Preventing Duplicate Long-Running Tasks with Checkpoints, Idempotent Side Effects, and Replay Contracts | LLM Pioneer Hub",
+          "url": "https://oh-bug.com/posts/agent-durable-execution-production-guide/",
+          "published": "2026-09-01T21:07:24.000Z"
+        },
+        {
+          "title": "langchain-ai/langgraph: Build resilient agents.",
+          "url": "https://github.com/langchain-ai/langgraph",
+          "published": "N/A"
+        },
+        {
+          "title": "Durable Execution with Temporal | Pydantic Docs",
+          "url": "https://pydantic.dev/docs/ai/capabilities/durable_execution/temporal/",
+          "published": "N/A"
+        }
+      ],
+      "returned_count": 10
+    },
+    {
+      "id": "Q3",
+      "query": "Python SearXNG JSON search API Docling MarkItDown document conversion official GitHub limitations OCR tables license local document retrieval agents 2026",
+      "objective": "Prefer SearXNG, docling-project and microsoft/markitdown first-party docs and license files; extract factual capability limits, maintenance signals and document provenance requirements.",
+      "numResults": 10,
+      "returned_results": [
+        {
+          "title": "docs/dev/search_api.rst",
+          "url": "https://github.com/searxng/searxng/blob/b3e08f2a/docs/dev/search_api.rst",
+          "published": "N/A"
+        },
+        {
+          "title": "README.md at 11a1bb5d · docling-project/docling",
+          "url": "https://github.com/docling-project/docling/blob/11a1bb5d/README.md",
+          "published": "N/A"
+        },
+        {
+          "title": "searx.engines.json_engine - SearXNG Documentation (2026.9.15+ca4965040)",
+          "url": "https://docs.searxng.org/_modules/searx/engines/json_engine.html",
+          "published": "N/A"
+        },
+        {
+          "title": "GitHub - SeedeXR/markitdown: Robust tool for converting files and office documents to Markdown. · GitHub",
+          "url": "https://github.laiyagushi.com/SeedeXR/markitdown",
+          "published": "2026-06-04T00:00:00.000Z"
+        },
+        {
+          "title": "docs/usage.md",
+          "url": "https://github.com/docling-project/docling-serve/blob/0276ef1f/docs/usage.md",
+          "published": "N/A"
+        },
+        {
+          "title": "MarkItDown vs Docling vs PyMuPDF4LLM: Which Is Best for PDF to Markdown? | BSWEN",
+          "url": "https://docs.bswen.com/blog/2026-08-20-markitdown-docling-pymupdf4llm-comparison/",
+          "published": "2026-08-20T16:21:19.000Z"
+        },
+        {
+          "title": "Engine Overview - SearXNG Documentation (2026.8.29+d226b78bc)",
+          "url": "https://docs.searxng.org/dev/engines/engine_overview.html",
+          "published": "N/A"
+        },
+        {
+          "title": "bordessoules/searxng-mcp",
+          "url": "https://github.com/bordessoules/searxng-mcp",
+          "published": "N/A"
+        },
+        {
+          "title": "JamePeng/searxng_search",
+          "url": "https://github.com/JamePeng/searxng_search",
+          "published": "N/A"
+        },
+        {
+          "title": "How to Use Docling for PDF OCR, Table Extraction, and Markdown Export in Python (2026) | OpenClaw Skills Index",
+          "url": "https://openclawhub.tools/tutorial/how-to-use-docling-for-pdf-ocr-table-extraction-and-markdown-export-in-python/",
+          "published": "2026-07-02T15:05:57.000Z"
+        }
+      ],
+      "returned_count": 10
+    },
+    {
+      "id": "Q4",
+      "query": "Self hosted personal assistant calendar CRM documents automation Python n8n sustainable use license CalDAV Google Calendar HubSpot API OAuth idempotency official documentation 2026",
+      "objective": "Prioritize official connector APIs and n8n licensing, avoid claims that integration catalog alone is verified execution. Identify reversible drafts and commit confirmation seams.",
+      "numResults": 10,
+      "returned_results": [
+        {
+          "title": "n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n?tab=readme-ov-file",
+          "published": "N/A"
+        },
+        {
+          "title": "n8n Docs",
+          "url": "https://docs.n8n.io/welcome.md",
+          "published": "N/A"
+        },
+        {
+          "title": "Google Calendar and HubSpot integration",
+          "url": "https://n8n.io/integrations/google-calendar/and/hubspot/",
+          "published": "N/A"
+        },
+        {
+          "title": "N/A",
+          "url": "https://docs.n8n.io/deploy/host-n8n/install-options/install-with-docker.md",
+          "published": "N/A"
+        },
+        {
+          "title": "N/A",
+          "url": "https://docs.n8n.io/connect/n8n-api/credential",
+          "published": "N/A"
+        },
+        {
+          "title": "docs/api/v1/openapi.yml at main · n8n-io/n8n-docs",
+          "url": "https://github.com/n8n-io/n8n-docs/blob/main/docs/api/v1/openapi.yml",
+          "published": "N/A"
+        },
+        {
+          "title": "README.md",
+          "url": "https://github.com/n8n-io/n8n/blob/master/README.md",
+          "published": "N/A"
+        },
+        {
+          "title": "Convert seller leads into listing appointments with email, Google Calendar, and CRM | n8n workflow template",
+          "url": "https://n8n.io/workflows/18298-convert-seller-leads-into-listing-appointments-with-email-google-calendar-and-crm/",
+          "published": "N/A"
+        },
+        {
+          "title": "n8n + Google Calendar: Automate Your Schedule in 2026 | n8nautomation.cloud",
+          "url": "https://n8nautomation.cloud/blog/n8n-google-calendar-integration-automate-scheduling-workflows",
+          "published": "2026-04-10T18:10:06.000Z"
+        },
+        {
+          "title": "N8N + Google Calendar Integration: Automate Scheduling Workflows (2026) | Suyash Raj",
+          "url": "https://rajsuyash.com/blog/n8n-google-calendar-integration.html",
+          "published": "2026-05-18T00:00:00.000Z"
+        }
+      ],
+      "returned_count": 10
+    },
+    {
+      "id": "Q5",
+      "query": "OpenTelemetry generative AI agent semantic conventions OpenInference Phoenix Langfuse promptfoo official documentation traces evaluations tool results self hosting license 2026",
+      "objective": "Prefer official standards and project repositories. Extract trace propagation, sensitive content control, deterministic versus model-judge evaluations, licenses and maintenance caveats.",
+      "numResults": 10,
+      "returned_results": [
+        {
+          "title": "N/A",
+          "url": "https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/semantic-conventions",
+          "published": "N/A"
+        },
+        {
+          "title": "Tracing",
+          "url": "https://www.promptfoo.dev/docs/tracing/",
+          "published": "N/A"
+        },
+        {
+          "title": "spec/README.md",
+          "url": "https://github.com/Arize-ai/openinference/blob/main/spec/README.md",
+          "published": "N/A"
+        },
+        {
+          "title": "N/A",
+          "url": "https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/span-kinds",
+          "published": "N/A"
+        },
+        {
+          "title": "docs/gen-ai/gen-ai-spans.md",
+          "url": "https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/gen-ai/gen-ai-spans.md",
+          "published": "N/A"
+        },
+        {
+          "title": "openinference | OpenTelemetry Instrumentation for AI Observability",
+          "url": "https://arize-ai.github.io/openinference/",
+          "published": "N/A"
+        },
+        {
+          "title": "Arize-ai/openinference: OpenTelemetry Instrumentation for ...",
+          "url": "https://github.com/Arize-ai/openinference",
+          "published": "N/A"
+        },
+        {
+          "title": "N/A",
+          "url": "https://arize.com/docs/phoenix/release-notes/05-2026/05-15-2026-otel-semconv-conversion",
+          "published": "N/A"
+        },
+        {
+          "title": "N/A",
+          "url": "https://arize.com/docs/phoenix/cookbook/tracing/openinference-best-practices",
+          "published": "N/A"
+        },
+        {
+          "title": "Langfuse: Open Source Agent Evals & Observability",
+          "url": "https://langfuse.com/",
+          "published": "N/A"
+        }
+      ],
+      "returned_count": 10
+    },
+    {
+      "id": "Q6",
+      "query": "GitHub issues discussions Python MCP LangGraph PydanticAI n8n personal assistant tool reliability duplicate actions context tool discovery schema validation failure first hand reports March 22 September 22 2026",
+      "objective": "Find concrete first-hand issue reports with reproduction and maintainer discussion, not generalized product rankings. Treat unresolved issues as scoped signals rather than universal limitations.",
+      "numResults": 10,
+      "returned_results": [
+        {
+          "title": "MCP integration has no per-message authentication or integrity verification · Issue #4664 · pydantic/pydantic-ai",
+          "url": "https://github.com/pydantic/pydantic-ai/issues/4664",
+          "published": "2026-03-14T17:43:52.000Z"
+        },
+        {
+          "title": "fix: Preserve `structuredContent` in MCP nodes to prevent AI Agent reasoning loops · Issue #27297 · n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n/issues/27297",
+          "published": "2026-03-19T17:07:30.000Z"
+        },
+        {
+          "title": "Bug: Defs and ref in json schema of MCP tools are discarded · Issue #25964 · n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n/issues/25964",
+          "published": "2026-02-19T03:47:24.000Z"
+        },
+        {
+          "title": "Excessive MCP get_tools calls with Temporal · Issue #4317 · pydantic/pydantic-ai",
+          "url": "https://github.com/pydantic/pydantic-ai/issues/4317",
+          "published": "2026-02-13T21:14:25.000Z"
+        },
+        {
+          "title": "fix(AI Agent Node): Extract tool name correctly for MCP tool calls · Issue #27345 · n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n/issues/27345",
+          "published": "2026-03-20T00:00:00.000Z"
+        },
+        {
+          "title": "Bug: AI Agent send the node name to LLM instead of mcp tool name · Issue #25966 · n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n/issues/25966",
+          "published": "2026-02-19T05:21:53.000Z"
+        },
+        {
+          "title": "MCP-exposed assistant tool calls run as temporary runs so follow-up are impossible",
+          "url": "https://github.com/langchain-ai/langgraph/issues/8725",
+          "published": "N/A"
+        },
+        {
+          "title": "fix(core): MCP tools called after workflow execution failure · Issue #28021 · n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n/issues/28021",
+          "published": "2026-04-03T00:00:00.000Z"
+        },
+        {
+          "title": "MCP Server: Connection successful but tools are not being ...",
+          "url": "https://community.n8n.io/t/mcp-server-connection-successful-but-tools-are-not-being-invoked-by-n8n/270149?tl=en",
+          "published": "2026-02-25T00:00:00.000Z"
+        },
+        {
+          "title": "MCP server trigger stops working after a couple hours · Issue #26812 · n8n-io/n8n",
+          "url": "https://github.com/n8n-io/n8n/issues/26812",
+          "published": "2026-03-10T00:00:00.000Z"
+        }
+      ],
+      "returned_count": 10
+    }
+  ],
+  "fetched_pages": [
+    {
+      "url": "https://modelcontextprotocol.io/specification/2025-11-25/server/tools",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 13221,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://a2a-protocol.org/latest/specification/",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 18109,
+      "status": "content_returned",
+      "truncation_possible": true
+    },
+    {
+      "url": "https://docs.langchain.com/oss/python/langgraph/durable-execution",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 4317,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 1882,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://github.com/microsoft/markitdown",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 14632,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://github.com/docling-project/docling",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 6169,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://docs.n8n.io/sustainable-use-license/",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 10334,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 356,
+      "status": "moved_notice_only",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://github.com/langfuse/langfuse",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 15289,
+      "status": "content_returned",
+      "truncation_possible": false
+    },
+    {
+      "url": "https://github.com/n8n-io/n8n/issues/27297",
+      "tool": "web_fetch_exa",
+      "maxCharacters": 18000,
+      "extracted_characters": 18210,
+      "status": "content_returned",
+      "truncation_possible": true
+    }
+  ],
+  "sources": [
+    {
+      "id": "S01",
+      "url": "https://modelcontextprotocol.io/specification/2025-11-25/server/tools",
+      "kind": "specification primaire",
+      "dates": "Version 2025-11-25; fondamental hors fenêtre récente",
+      "quality": "Spécification normative; plus solide qu'un tutoriel pour les contrats.",
+      "facts": [
+        "tools/list paginé et notification list_changed",
+        "inputSchema et outputSchema; structuredContent distinct de content",
+        "Validation côté client et contrôles d'accès restent nécessaires"
+      ],
+      "decision": "adapter",
+      "limit": "La découverte progressive par domaine est un choix d'application, pas une garantie native d'autorisation ou d'exécution."
+    },
+    {
+      "id": "S02",
+      "url": "https://a2a-protocol.org/latest/specification/",
+      "kind": "specification primaire",
+      "dates": "Page latest consultée 2026-09-22; date de version non extraite",
+      "quality": "Spécification officielle; extraction bornée aux 18000 premiers caractères.",
+      "facts": [
+        "Agent Card décrit capacités, endpoint et authentification",
+        "Task/Message/Artifact et opérations de suivi/annulation",
+        "Message simple peut ne pas créer de tâche suivie"
+      ],
+      "decision": "différer",
+      "limit": "Ni preuve métier ni exactly-once inférés d'un statut completed; version à épingler avant adaptateur."
+    },
+    {
+      "id": "S03",
+      "url": "https://docs.langchain.com/oss/python/langgraph/durable-execution",
+      "kind": "documentation primaire",
+      "dates": "Non datée; récupérée 2026-09-22",
+      "quality": "Documentation officielle; URL renvoie un contenu titré Persistence.",
+      "facts": [
+        "Checkpointer par thread séparé du Store inter-threads",
+        "InMemorySaver ne survit pas au processus",
+        "Rétention des checkpoints et namespaces de sous-graphes à gérer"
+      ],
+      "decision": "adapter les motifs; différer migration",
+      "limit": "Pas de benchmark comparatif avec Swarmer; page durable-execution a changé de contenu."
+    },
+    {
+      "id": "S04",
+      "url": "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/",
+      "kind": "documentation primaire",
+      "dates": "Non datée; récupérée 2026-09-22",
+      "quality": "Éditeur du framework; promesse de fiabilité commerciale à tester localement.",
+      "facts": [
+        "Moteurs durables documentés: Temporal, DBOS, Prefect, Restate, AWS Lambda durable functions",
+        "Builder pour backend durable externe documenté"
+      ],
+      "decision": "adapter petits composants seulement",
+      "limit": "Un moteur supplémentaire doublerait potentiellement l'autorité SQLite/leases; aucune migration qualifiée ici."
+    },
+    {
+      "id": "S05",
+      "url": "https://github.com/microsoft/markitdown",
+      "kind": "dépôt primaire",
+      "dates": "Page affiche release0.1.6 du 2026-05-26; état d'index observé, pas promesse de dernier commit",
+      "quality": "README des développeurs, limites I/O explicites, commandes de tests et maintenance visibles.",
+      "facts": [
+        "Conversion vers Markdown orientée analyse plutôt que restitution fidèle",
+        "I/O avec privilèges du processus; convert_stream/convert_local plus étroits",
+        "Plugins désactivés par défaut; options cloud et Vision sont séparées"
+      ],
+      "decision": "recommander adaptateur initial",
+      "license": "Fichier LICENSE présent mais texte non récupéré: licence exacte non vérifiée dans cette collecte",
+      "limit": "La conversion n'est ni un index ni une garantie OCR; ne pas activer cloud/plugins par défaut."
+    },
+    {
+      "id": "S06",
+      "url": "https://github.com/docling-project/docling",
+      "kind": "dépôt primaire",
+      "dates": "Non datée; récupérée 2026-09-22",
+      "quality": "Mainteneurs, représentation et formats documentés; aucune performance locale mesurée.",
+      "facts": [
+        "DoclingDocument, export JSON/Markdown, structure/table/layout PDF",
+        "OCR et exécution locale documentés"
+      ],
+      "decision": "adapter pour PDF difficiles",
+      "license": "Code MIT explicitement documenté; licences des modèles à vérifier séparément",
+      "limit": "Quantité mémoire, latence OCR et fidélité tabulaire à mesurer sur corpus réel."
+    },
+    {
+      "id": "S07",
+      "url": "https://docs.n8n.io/sustainable-use-license/",
+      "kind": "licence officielle",
+      "dates": "Non datée; récupérée 2026-09-22",
+      "quality": "Interprétation officielle du concédant; pas un avis juridique sur le produit.",
+      "facts": [
+        "Sustainable Use License/source-available, exceptions Enterprise",
+        "Usage personnel/interne permis selon termes",
+        "Exemple d'app collectant credentials HubSpot de ses utilisateurs: usage non autorisé sous SUL"
+      ],
+      "decision": "adapter seulement usage interne; différer embedding commercial",
+      "license": "SUL et Enterprise, pas licence open source OSI standard",
+      "limit": "Contrat commercial éventuel à clarifier avant offrir monGARS à des tiers."
+    },
+    {
+      "id": "S08",
+      "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/",
+      "kind": "documentation primaire déplacée",
+      "dates": "Non datée; récupérée 2026-09-22",
+      "quality": "Source officielle mais contenu uniquement avis de déplacement.",
+      "facts": [
+        "Ancienne page n'est plus maintenue; renvoi vers nouveau dépôt GenAI"
+      ],
+      "decision": "retenir OTel transport; épingler conventions actuelles séparément",
+      "limit": "Aucune liste d'attributs actuelle validée par cette page."
+    },
+    {
+      "id": "S09",
+      "url": "https://github.com/langfuse/langfuse",
+      "kind": "dépôt primaire",
+      "dates": "Non datée; récupérée 2026-09-22",
+      "quality": "README mainteneurs; fonctionnalités déclarées, pas évaluation comparative.",
+      "facts": [
+        "Traces, datasets et évaluateurs code/modèle/humain",
+        "API/SDK et instrumentation OpenTelemetry",
+        "Télémétrie produit distincte des traces; opt-out documenté"
+      ],
+      "decision": "adapter en option, choisir un seul backend de traces",
+      "license": "MIT sauf dossiers ee, explicitement documenté",
+      "limit": "Vérifier exigences de stockage, contrôle d'accès et fonctions Enterprise au périmètre choisi."
+    },
+    {
+      "id": "S10",
+      "url": "https://github.com/n8n-io/n8n/issues/27297",
+      "kind": "retour et correction primaire",
+      "dates": "Créé2026-03-19; commentaires2026-04-24..28; résultat de recherche signale release2.19.0",
+      "quality": "Rapport reproductible + revue mainteneur + correctif; distinguer bots et humains.",
+      "facts": [
+        "Perte de structuredContent pouvant conduire aux répétitions d'outil",
+        "Commentaires corrigent préservation et tests"
+      ],
+      "decision": "adapter comme test de contrat",
+      "limit": "Texte fetch tronqué18000car; mention de release lue dans recherche complète, pas assertion de bug encore présent."
+    },
+    {
+      "id": "S11",
+      "url": "https://github.com/searxng/searxng/blob/b3e08f2a/docs/dev/search_api.rst",
+      "kind": "documentation primaire via recherche",
+      "dates": "Commit b3e08f2a; non daté",
+      "quality": "Document du dépôt, consulté en extraits Exa, pas fetch séparé.",
+      "facts": [
+        "Interface search documentée pour clients"
+      ],
+      "decision": "conserver adaptateur existant",
+      "limit": "Résultats de recherche ne prouvent pas contenu intégral ni exactitude d'une réponse; licence non vérifiée ici."
+    },
+    {
+      "id": "S12",
+      "url": "https://github.com/Arize-ai/openinference/blob/main/spec/README.md",
+      "kind": "specification primaire via recherche",
+      "dates": "Non datée",
+      "quality": "Spécification mainteneurs, extraits structurés détaillés.",
+      "facts": [
+        "Conventions IA au-dessus des spans OpenTelemetry",
+        "Typologie LLM/TOOL/RETRIEVER/EMBEDDING/EVALUATOR",
+        "Contexte de trace et annotations qualité"
+      ],
+      "decision": "recommander petit schéma de spans exportable",
+      "limit": "Main mutable; épingler version des attributs. Capturer données textuelles uniquement sur choix explicite."
+    },
+    {
+      "id": "S13",
+      "url": "https://arize.com/docs/phoenix/release-notes/05-2026/05-15-2026-otel-semconv-conversion",
+      "kind": "note de version primaire via recherche",
+      "dates": "2026-05-15",
+      "quality": "Annonce de capacité par son éditeur, pas mesure indépendante.",
+      "facts": [
+        "Conversion OTel GenAI vers OpenInference à ingestion",
+        "Les attributs OpenInference existants ont priorité"
+      ],
+      "decision": "adapter Phoenix si choisi",
+      "limit": "Licence Phoenix non vérifiée dans cette collecte; ne pas déployer conjointement avec Langfuse sans besoin distinct."
+    },
+    {
+      "id": "S14",
+      "url": "https://www.promptfoo.dev/docs/tracing/",
+      "kind": "documentation primaire via recherche",
+      "dates": "Non datée",
+      "quality": "Documentation de tests et assertions concrètes.",
+      "facts": [
+        "Assertions trace/tool-sequence, durées et erreurs",
+        "Récupération de traces existantes; traceparent",
+        "Un petit nombre de tours ne prouve pas que les outils ont été groupés"
+      ],
+      "decision": "recommander évaluation hors production",
+      "limit": "Licence exacte non relue; qualité sémantique ne doit pas reposer uniquement sur le juge LLM."
+    },
+    {
+      "id": "S15",
+      "url": "https://github.com/pydantic/pydantic-ai/issues/4317",
+      "kind": "retour de terrain primaire via recherche",
+      "dates": "Créé2026-02-13, fermé completed2026-02-19; hors fenêtre, fondamental",
+      "quality": "Versions/repro fournis, mainteneur annonce correctif PR4331.",
+      "facts": [
+        "Ancien cache MCP invalidé à fermeture de connexion induisait N×M découvertes"
+      ],
+      "decision": "adapter comme test de découverte bornée",
+      "limit": "Problème historique corrigé; pas un défaut actuel généralisé."
+    },
+    {
+      "id": "S16",
+      "url": "https://github.com/n8n-io/n8n/issues/28021",
+      "kind": "correctif primaire via recherche",
+      "dates": "2026-04-03; mention de release2.17.0",
+      "quality": "Cause technique et propagation AbortSignal documentées; avis de bots non traités comme validation autonome.",
+      "facts": [
+        "Outils MCP pouvaient continuer après erreur/annulation parent",
+        "Correctif transmet signal d'annulation au client MCP"
+      ],
+      "decision": "adapter comme test de cancellation et lease",
+      "limit": "Mention de sortie lue dans résultat Exa; pas de vérification du binaire actuellement installé."
+    },
+    {
+      "id": "S17",
+      "url": "https://github.com/langchain-ai/langgraph/issues/8702",
+      "kind": "discussion de documentation primaire via recherche",
+      "dates": "Date et état non fournis dans extrait",
+      "quality": "Proposition et PR5666 décrivent frontière idempotence; pas preuve de bug universel.",
+      "facts": [
+        "Les effets externes doivent avoir leur propre idempotence au-delà du checkpoint"
+      ],
+      "decision": "adapter principe",
+      "limit": "Date/merge non vérifiés; ne pas comptabiliser comme actualité récente datée."
+    },
+    {
+      "id": "S18",
+      "url": "https://n8n.io/integrations/google-calendar/and/hubspot/",
+      "kind": "catalogue fournisseur",
+      "dates": "Non datée",
+      "quality": "Page produit; utile pour découvrir connecteurs, insuffisante pour preuve d'exécution.",
+      "facts": [
+        "Connecteurs calendrier/CRM présentés"
+      ],
+      "decision": "adapter prototypes internes seulement",
+      "limit": "Scopes OAuth, endpoints, quotas et garanties providers non audités; aucune intégration monGARS démontrée."
+    },
+    {
+      "id": "S19",
+      "url": "https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.0.0a3",
+      "kind": "release primaire via recherche",
+      "dates": "Date non fournie; version alpha explicitement nommée",
+      "quality": "Notes mainteneurs, changements protocole et OTel visibles.",
+      "facts": [
+        "Version2.0.0a3 est une préversion; activité SDK/protocole visible"
+      ],
+      "decision": "différer adoption alpha",
+      "limit": "Ne démontre ni stabilité ni nécessité de migrer monGARS."
+    }
+  ],
+  "coverage_limits": [
+    "Dates absentes non interprétées comme récentes.",
+    "Page LangGraph durable-execution renvoie Persistence; page OTel déplacée.",
+    "Deux pages extraites jusqu'à18000 caractères; détails manquants explicitement signalés.",
+    "Licences vérifiées explicitement pour Docling, n8n et Langfuse; autres non affirmées.",
+    "Pas de validation directe API Calendar/HubSpot/CalDAV ni installation de connecteur.",
+    "Les diagnostics communautaires sont datés/scopés et ne prouvent pas que le défaut subsiste."
+  ],
+  "exclusions": [
+    "Listicles et miroirs non officiels non utilisés pour recommandations techniques.",
+    "Issue pydantic4664 promotion de protocole tiers: pas utilisée comme autorité sécurité.",
+    "Avis automatisés dans issues non assimilés à un verdict mainteneur.",
+    "Aucune promesse d'exactly-once ou de qualité fondée uniquement sur statut completed."
+  ]
+}

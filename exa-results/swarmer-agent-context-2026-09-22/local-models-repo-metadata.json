@@ -1,0 +1,75 @@
+[
+  {
+    "full_name": "ml-explore/mlx-swift-lm",
+    "html_url": "https://github.com/ml-explore/mlx-swift-lm",
+    "archived": false,
+    "pushed_at": "2026-09-15T22:26:24Z",
+    "updated_at": "2026-09-20T17:19:32Z",
+    "default_branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    }
+  },
+  {
+    "full_name": "ml-explore/mlx-swift",
+    "html_url": "https://github.com/ml-explore/mlx-swift",
+    "archived": false,
+    "pushed_at": "2026-09-17T18:40:55Z",
+    "updated_at": "2026-09-21T23:26:25Z",
+    "default_branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    }
+  },
+  {
+    "full_name": "john-rocky/CoreML-LLM",
+    "html_url": "https://github.com/john-rocky/CoreML-LLM",
+    "archived": false,
+    "pushed_at": "2026-09-14T10:26:47Z",
+    "updated_at": "2026-09-21T11:02:23Z",
+    "default_branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    }
+  },
+  {
+    "full_name": "ggml-org/llama.cpp",
+    "html_url": "https://github.com/ggml-org/llama.cpp",
+    "archived": false,
+    "pushed_at": "2026-09-22T09:15:27Z",
+    "updated_at": "2026-09-22T11:39:12Z",
+    "default_branch": "master",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    }
+  },
+  {
+    "full_name": "QwenLM/Qwen3-Embedding",
+    "html_url": "https://github.com/QwenLM/Qwen3-Embedding",
+    "archived": false,
+    "pushed_at": "2025-09-30T06:10:27Z",
+    "updated_at": "2026-09-21T21:14:41Z",
+    "default_branch": "main",
+    "license": null
+  },
+  {
+    "repo": "mteb/mteb",
+    "error": "HTTP Error 404: Not Found"
+  }
+]

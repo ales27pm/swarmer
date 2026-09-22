@@ -1,0 +1,953 @@
+{
+  "scope": "Spécialistes SQLite, Swift/iOS, Python et outillage de développement vérifiable pour Swarmer",
+  "inspected_date": "2026-09-22",
+  "recent_window": {
+    "from": "2026-03-22",
+    "to": "2026-09-22"
+  },
+  "methodology": {
+    "search_provider": "Exa",
+    "search_requests": 6,
+    "requested_results_per_search": 10,
+    "requested_result_slots": 60,
+    "returned_result_slots": 60,
+    "distinct_exact_search_urls": 60,
+    "unique_full_source_reviews_claimed": false,
+    "exa_fetch_calls": 1,
+    "exa_requested_pages": 10,
+    "exa_returned_pages": 10,
+    "github_repository_discovery_calls": 14,
+    "github_repository_api_metadata_calls": 14,
+    "github_latest_release_api_calls": 3,
+    "github_additional_readme_fetches": 6,
+    "note": "Les 60 résultats sont des emplacements de recherche, pas 60 revues intégrales distinctes; plusieurs URL correspondent au même dépôt. Les six lectures GitHub complètent dix pages Exa (notamment README GRDB, mal extrait par Exa). Aucun code téléchargé n'a été exécuté; aucune installation, mutation de service ou inférence.",
+    "provider_tools": [
+      "mcp__codex_apps__exa_web_search_exa",
+      "mcp__codex_apps__exa_web_fetch_exa",
+      "mcp__codex_apps__github_get_repo",
+      "mcp__codex_apps__github_fetch"
+    ]
+  },
+  "searches": [
+    {
+      "id": "sqlite-safety",
+      "query": "Official SQLite C API and Python sqlite3 documentation for read-only authorizer, online backup, transaction isolation and BEGIN IMMEDIATE for safe automated database inspection and migration agents.",
+      "objective": "Prioritize sqlite.org and docs.python.org. Extract concrete safe database APIs, WAL/transaction/backup limitations, authorizer boundaries. Exclude generic blogs.",
+      "numResults": 10
+    },
+    {
+      "id": "sqlite-vector-maintenance",
+      "query": "Maintainer documentation and GitHub releases comparing sqlite-vec with sqlite-vss for SQLite vector search in Python and iOS Swift applications, including maintenance or release updates published March 22 through September 22 2026.",
+      "objective": "Prioritize asg017 primary repositories and author docs; verify licensing, dependency footprint, current maintenance and exact vector/index limitations. Older foundations allowed.",
+      "numResults": 10
+    },
+    {
+      "id": "swift-ios-tools",
+      "query": "Official Swift iOS SQLite tooling repositories GRDB.swift and XcodeBuildMCP documentation for reliable database migrations, xcodebuild physical device builds, automated XCTest and xcresult receipts, with maintenance updates March 22 through September 22 2026.",
+      "objective": "Prioritize groue/GRDB.swift, XcodeBuildMCP upstream, Apple docs. Extract executable tool capabilities, host requirements and license; exclude tool aggregators.",
+      "numResults": 10
+    },
+    {
+      "id": "python-tooling",
+      "query": "Official documentation for Python coding agents using uv Ruff pytest and PydanticAI typed tools, sqlite-utils Datasette and Alembic SQLite batch migrations, including release updates March 22 through September 22 2026.",
+      "objective": "Prioritize maintainers Astral, pytest, Pydantic, Simon Willison and SQLAlchemy. Identify deterministic build/test receipts and SQLite migration limits, not marketing claims.",
+      "numResults": 10
+    },
+    {
+      "id": "code-agent-execution",
+      "query": "Official OpenHands Aider and SWE-agent repositories documentation comparing code editing, sandbox terminal execution, test results, structured API integration, local model support and license maintenance updates March 22 through September 22 2026.",
+      "objective": "Prioritize upstream GitHub/docs or research papers. Separate autonomous code-editing capability from benchmark claims; extract sandbox/runtime/API and license facts.",
+      "numResults": 10
+    },
+    {
+      "id": "apple-official-api",
+      "query": "Apple developer documentation Xcode 26 coding intelligence MCP server xcodebuild xcresulttool Swift Testing XCTest command line physical iPhone testing 2026.",
+      "objective": "Prioritize Apple developer and Swift.org primary sources. Verify supported programmatic build/test APIs, simulator versus physical-device constraints, artifacts and Xcode version requirements.",
+      "numResults": 10
+    }
+  ],
+  "search_results": [
+    {
+      "id": "sqlite-safety",
+      "results": [
+        {
+          "title": "sqlite3 — DB-API 2.0 interface for SQLite databases",
+          "url": "https://docs.python.org/3/library/sqlite3.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "SQLite Backup API",
+          "url": "https://www.sqlite.org/backup.html",
+          "published_date_reported_by_search": "2025-11-13T00:00:00.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Transaction",
+          "url": "https://www.sqlite.org/lang%5Ftransaction.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Compile-Time Authorization Callbacks",
+          "url": "https://sqlite.org/c3ref/set%5Fauthorizer.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Isolation In SQLite",
+          "url": "https://www.sqlite.org/isolation.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Online Backup API.",
+          "url": "https://www2.sqlite.org/c3ref/backup_finish.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Determine If An SQL Statement Writes The Database",
+          "url": "https://www.sqlite.org/c3ref/stmt_readonly.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Compile-Time Authorization Callbacks",
+          "url": "https://www2.sqlite.org/c3ref/set_authorizer.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Doc/library/sqlite3.rst",
+          "url": "https://github.com/python/cpython/blob/main/Doc/library/sqlite3.rst",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "C/C++ Interface For SQLite Version 3",
+          "url": "https://www2.sqlite.org/capi3ref.html",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        }
+      ]
+    },
+    {
+      "id": "sqlite-vector-maintenance",
+      "results": [
+        {
+          "title": "Releases · asg017/sqlite-vec · GitHub",
+          "url": "https://github.com/asg017/sqlite-vec/releases",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "asg017/sqlite-vec",
+          "url": "https://github.com/asg017/sqlite-vec?tab=readme-ov-file",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "site/using/python.md",
+          "url": "https://github.com/asg017/sqlite-vec/blob/main/site/using/python.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "v0.1.10-alpha.1",
+          "url": "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.10-alpha.1",
+          "published_date_reported_by_search": "2026-03-31T00:00:00.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "asg017/sqlite-vec: A vector search ...",
+          "url": "https://github.com/asg017/sqlite-vec",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "`sqlite-vec` is back: `v0.1.7`",
+          "url": "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.7",
+          "published_date_reported_by_search": "2026-03-17T00:00:00.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "docs.md",
+          "url": "https://github.com/asg017/sqlite-vss/blob/main/docs.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "README.md",
+          "url": "https://github.com/asg017/sqlite-vss/blob/main/README.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "v0.1.9 Bug fix for DELETE operations",
+          "url": "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.9",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "asg017/sqlite-vss",
+          "url": "https://github.com/asg017/sqlite-vss",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        }
+      ]
+    },
+    {
+      "id": "swift-ios-tools",
+      "results": [
+        {
+          "title": "groue/GRDB.swift",
+          "url": "https://github.com/groue/GRDB.swift?tab=readme-ov-file",
+          "published_date_reported_by_search": "2015-06-30T11:17:06.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "getsentry/XcodeBuildMCP",
+          "url": "https://github.com/getsentry/XcodeBuildMCP/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Introduction",
+          "url": "https://www.xcodebuildmcp.com/docs",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "CHANGELOG.md at main · getsentry/XcodeBuildMCP",
+          "url": "https://github.com/getsentry/XcodeBuildMCP/blob/main/CHANGELOG.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Release v2.2.0",
+          "url": "https://github.com/getsentry/XcodeBuildMCP/releases/tag/v2.2.0",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "README.md",
+          "url": "https://github.com/getsentry/XcodeBuildMCP/blob/main/README.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "GRDB.swift",
+          "url": "https://groue.github.io/GRDB.swift/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "README.md",
+          "url": "https://github.com/getsentry/XcodeBuildMCP/blob/HEAD/README.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "XcodeBuildMCP - AI-Powered Xcode Automation",
+          "url": "https://www.xcodebuildmcp.com/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "iOS Device Builds | cameroncooke/XcodeBuildMCP | DeepWiki",
+          "url": "https://deepwiki.com/cameroncooke/XcodeBuildMCP/7.3-ios-device-builds",
+          "published_date_reported_by_search": "2026-03-07T00:00:00.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        }
+      ]
+    },
+    {
+      "id": "python-tooling",
+      "results": [
+        {
+          "title": "Welcome to Alembic's documentation! — Alembic 1.20.0 ...",
+          "url": "https://alembic.sqlalchemy.org/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Unit testing",
+          "url": "https://pydantic.dev/docs/ai/guides/testing/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Pydantic AI | Pydantic Docs",
+          "url": "https://pydantic.dev/docs/ai/overview/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "pydantic/pydantic-ai: How Python does AI. Agents, realtime voice ...",
+          "url": "https://github.com/pydantic/pydantic-ai",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Pydantic AI v2: capable agentic loops",
+          "url": "https://pydantic.dev/articles/pydantic-ai-v2?from_theconsensus=1",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "N/A",
+          "url": "https://pydantic.dev/pydantic-ai?featured_on=talkpython",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Pydantic AI v2: capable agentic loops",
+          "url": "https://pydantic.dev/articles/pydantic-ai-v2",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Pydantic AI Harness",
+          "url": "https://pydantic.dev/docs/ai/harness/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "How to build a production agentic app, the Pydantic Way",
+          "url": "https://pydantic.dev/articles/building-agentic-application.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "SQL Generation",
+          "url": "https://pydantic.dev/docs/ai/examples/sql-gen/index.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        }
+      ]
+    },
+    {
+      "id": "code-agent-execution",
+      "results": [
+        {
+          "title": "N/A",
+          "url": "https://docs.openhands.dev/sdk.md",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "OpenHands/OpenHands",
+          "url": "https://github.com/OpenHands/OpenHands",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Open-Source Coding Agents in 2026: I Pitted Aider, OpenHands, and SWE-Agent Against Each Other on 50 Real Tickets - roiscale",
+          "url": "https://roiscale.ai/sites/roiscale/articles/c708654f-18c3-46fd-af00-964449f38e30/open-source-coding-agents-in-2026-i-pitted-aider-openhands-and-swe-agent",
+          "published_date_reported_by_search": "2026-08-29T00:00:00.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "N/A",
+          "url": "https://docs.openhands.dev/sdk/guides/agent-server/overview",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "page_exa_recuperee",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "v1.16.0",
+          "url": "https://github.com/OpenHands/software-agent-sdk/releases/tag/v1.16.0",
+          "published_date_reported_by_search": "2026-03-31T00:00:00.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "v1.15.0",
+          "url": "https://github.com/OpenHands/software-agent-sdk/releases/tag/v1.15.0",
+          "published_date_reported_by_search": "2026-03-26T00:00:00.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "OpenHands: AI-Driven Development",
+          "url": "https://github.com/OpenHands/openhands",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "OpenHands/software-agent-sdk",
+          "url": "https://github.com/All-Hands-AI/agent-sdk/",
+          "published_date_reported_by_search": "2025-08-23T20:34:39.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Aider vs OpenHands: Terminal Pair Programming vs Sandboxed AI Agent | HiveOS",
+          "url": "https://hiveoscity.com/compare/aider-vs-openhands/",
+          "published_date_reported_by_search": "2026-04-26T00:00:00.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Aider vs Claude Code vs OpenHands: CLI AI Coding Tested [2026] - DEV Community",
+          "url": "https://dev.to/kunal_d6a8fea2309e1571ee7/aider-vs-claude-code-vs-openhands-cli-ai-coding-tested-2026-5721",
+          "published_date_reported_by_search": "2026-07-10T20:10:01.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        }
+      ]
+    },
+    {
+      "id": "apple-official-api",
+      "results": [
+        {
+          "title": "Xcode 26 Release Notes | Apple Developer Documentation",
+          "url": "https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Setting up coding intelligence",
+          "url": "https://developer.apple.com/documentation/xcode/setting-up-coding-intelligence",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "artemnovichkov/xcode-tools-docs",
+          "url": "https://github.com/artemnovichkov/xcode-tools-docs",
+          "published_date_reported_by_search": "2026-02-04T16:15:54.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Xcode 26.4 cannot run app-hosted u… | Apple Developer Forums",
+          "url": "https://developer.apple.com/forums/thread/820586",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "What's new in Xcode 26 - WWDC25 - Videos",
+          "url": "https://developer.apple.com/videos/play/wwdc2025/247/",
+          "published_date_reported_by_search": "2025-06-09T14:53:06.000Z",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "WWDC26: Migrate to Swift Testing | Apple",
+          "url": "https://www.youtube.com/watch?v=565Tf50PUrQ",
+          "published_date_reported_by_search": "2026-06-22T11:41:10.310Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Xcode & Apple Build Tools — The Agentic Developer Cookbook",
+          "url": "https://agenticdevelopercookbook.com/appendix/research/developer-tools/apple/xcode-and-build",
+          "published_date_reported_by_search": "N/A",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Two MCP Servers Made Claude Code an iOS Build System",
+          "url": "https://blakecrosley.com/blog/xcode-mcp-claude-code",
+          "published_date_reported_by_search": "2026-02-09T14:29:58.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Meet Swift Testing - WWDC24 - Videos",
+          "url": "https://developer.apple.com/videos/play/wwdc2024/10179/",
+          "published_date_reported_by_search": "N/A",
+          "status": "source_primaire_documentation_ou_depot_amont",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        },
+        {
+          "title": "Xcode Tools Documentation — Claude Updates",
+          "url": "https://claude-updates.com/posts/xcode-tools-docs-m0sn5",
+          "published_date_reported_by_search": "2026-07-21T00:00:00.000Z",
+          "status": "non_retenu_pour_les_conclusions",
+          "read_level": "extrait_de_recherche_consulte",
+          "date_warning": "La date de l'index Exa n'est pas une preuve de publication; les versions recommandées ont une vérification GitHub distincte."
+        }
+      ]
+    }
+  ],
+  "exa_fetches": [
+    {
+      "url": "https://sqlite.org/c3ref/set_authorizer.html",
+      "characters_returned": 4797,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    },
+    {
+      "url": "https://github.com/groue/GRDB.swift",
+      "characters_returned": 1612,
+      "limit_per_page": 12000,
+      "scope": "Extraction sommaire; README récupéré séparément via GitHub"
+    },
+    {
+      "url": "https://github.com/getsentry/XcodeBuildMCP/blob/main/docs/TOOLS.md",
+      "characters_returned": 10762,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    },
+    {
+      "url": "https://developer.apple.com/documentation/xcode/giving-agentic-coding-tools-access-to-xcode",
+      "characters_returned": 2410,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    },
+    {
+      "url": "https://docs.astral.sh/uv/guides/projects/",
+      "characters_returned": 7120,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    },
+    {
+      "url": "https://docs.pytest.org/en/stable/how-to/usage.html",
+      "characters_returned": 7767,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    },
+    {
+      "url": "https://sqlite-utils.datasette.io/en/stable/python-api.html",
+      "characters_returned": 12081,
+      "limit_per_page": 12000,
+      "scope": "Texte plafonné, lecture ciblée"
+    },
+    {
+      "url": "https://alembic.sqlalchemy.org/en/latest/batch.html",
+      "characters_returned": 12151,
+      "limit_per_page": 12000,
+      "scope": "Texte plafonné, lecture ciblée"
+    },
+    {
+      "url": "https://aider.chat/docs/usage/lint-test.html",
+      "characters_returned": 3261,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    },
+    {
+      "url": "https://docs.openhands.dev/sdk/guides/agent-server/overview",
+      "characters_returned": 6334,
+      "limit_per_page": 12000,
+      "scope": "Texte consulté"
+    }
+  ],
+  "github_readmes": [
+    {
+      "url": "https://github.com/groue/GRDB.swift/blob/master/README.md",
+      "characters": 232085,
+      "read_scope": "pré-requis, connexions/WAL, observation/migrations, données protégées; lecture ciblée"
+    },
+    {
+      "url": "https://github.com/getsentry/XcodeBuildMCP/blob/main/README.md",
+      "characters": 5891,
+      "read_scope": "passages pertinents consultés; aucune exécution"
+    },
+    {
+      "url": "https://github.com/astral-sh/uv/blob/main/README.md",
+      "characters": 9853,
+      "read_scope": "passages pertinents consultés; aucune exécution"
+    },
+    {
+      "url": "https://github.com/SWE-agent/SWE-agent/blob/main/README.md",
+      "characters": 8142,
+      "read_scope": "passages pertinents consultés; aucune exécution"
+    },
+    {
+      "url": "https://github.com/astral-sh/ruff/blob/main/README.md",
+      "characters": 19607,
+      "read_scope": "passages pertinents consultés; aucune exécution"
+    },
+    {
+      "url": "https://github.com/simonw/datasette/blob/main/README.md",
+      "characters": 5051,
+      "read_scope": "passages pertinents consultés; aucune exécution"
+    }
+  ],
+  "github_metadata": [
+    {
+      "name": "getsentry/XcodeBuildMCP",
+      "url": "https://github.com/getsentry/XcodeBuildMCP",
+      "api_url": "https://api.github.com/repos/getsentry/XcodeBuildMCP",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-11T03:39:14Z",
+      "updated_at": "2026-09-22T07:30:30Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "groue/GRDB.swift",
+      "url": "https://github.com/groue/GRDB.swift",
+      "api_url": "https://api.github.com/repos/groue/GRDB.swift",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-15T12:36:34Z",
+      "updated_at": "2026-09-22T07:24:23Z",
+      "default_branch": "master"
+    },
+    {
+      "name": "asg017/sqlite-vec",
+      "url": "https://github.com/asg017/sqlite-vec",
+      "api_url": "https://api.github.com/repos/asg017/sqlite-vec",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_name": "Apache License 2.0",
+      "pushed_at": "2026-05-18T06:50:45Z",
+      "updated_at": "2026-09-22T09:13:00Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "asg017/sqlite-vss",
+      "url": "https://github.com/asg017/sqlite-vss",
+      "api_url": "https://api.github.com/repos/asg017/sqlite-vss",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2024-05-05T20:00:16Z",
+      "updated_at": "2026-09-20T13:57:27Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "simonw/sqlite-utils",
+      "url": "https://github.com/simonw/sqlite-utils",
+      "api_url": "https://api.github.com/repos/simonw/sqlite-utils",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_name": "Apache License 2.0",
+      "pushed_at": "2026-09-02T04:44:52Z",
+      "updated_at": "2026-09-18T14:33:26Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "simonw/datasette",
+      "url": "https://github.com/simonw/datasette",
+      "api_url": "https://api.github.com/repos/simonw/datasette",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_name": "Apache License 2.0",
+      "pushed_at": "2026-09-21T23:15:22Z",
+      "updated_at": "2026-09-22T11:32:01Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "sqlalchemy/alembic",
+      "url": "https://github.com/sqlalchemy/alembic",
+      "api_url": "https://api.github.com/repos/sqlalchemy/alembic",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-18T17:57:22Z",
+      "updated_at": "2026-09-21T14:41:00Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "astral-sh/uv",
+      "url": "https://github.com/astral-sh/uv",
+      "api_url": "https://api.github.com/repos/astral-sh/uv",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_name": "Apache License 2.0",
+      "pushed_at": "2026-09-22T10:58:14Z",
+      "updated_at": "2026-09-22T11:29:43Z",
+      "default_branch": "main",
+      "license_repository_declared": "Apache-2.0 OR MIT",
+      "license_declaration_url": "https://github.com/astral-sh/uv/blob/main/README.md"
+    },
+    {
+      "name": "astral-sh/ruff",
+      "url": "https://github.com/astral-sh/ruff",
+      "api_url": "https://api.github.com/repos/astral-sh/ruff",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-22T10:50:09Z",
+      "updated_at": "2026-09-22T10:50:14Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "pytest-dev/pytest",
+      "url": "https://github.com/pytest-dev/pytest",
+      "api_url": "https://api.github.com/repos/pytest-dev/pytest",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-21T21:29:09Z",
+      "updated_at": "2026-09-22T03:02:45Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "pydantic/pydantic-ai",
+      "url": "https://github.com/pydantic/pydantic-ai",
+      "api_url": "https://api.github.com/repos/pydantic/pydantic-ai",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-22T11:21:31Z",
+      "updated_at": "2026-09-22T11:00:48Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "OpenHands/software-agent-sdk",
+      "url": "https://github.com/OpenHands/software-agent-sdk",
+      "api_url": "https://api.github.com/repos/OpenHands/software-agent-sdk",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-22T09:06:59Z",
+      "updated_at": "2026-09-22T10:44:56Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "Aider-AI/aider",
+      "url": "https://github.com/Aider-AI/aider",
+      "api_url": "https://api.github.com/repos/Aider-AI/aider",
+      "archived": false,
+      "license": "Apache-2.0",
+      "license_name": "Apache License 2.0",
+      "pushed_at": "2026-05-22T14:02:20Z",
+      "updated_at": "2026-09-22T11:23:59Z",
+      "default_branch": "main"
+    },
+    {
+      "name": "SWE-agent/SWE-agent",
+      "url": "https://github.com/SWE-agent/SWE-agent",
+      "api_url": "https://api.github.com/repos/SWE-agent/SWE-agent",
+      "archived": false,
+      "license": "MIT",
+      "license_name": "MIT License",
+      "pushed_at": "2026-09-21T22:02:50Z",
+      "updated_at": "2026-09-22T08:14:31Z",
+      "default_branch": "main"
+    }
+  ],
+  "latest_release_metadata": [
+    {
+      "name": "asg017/sqlite-vec",
+      "api_url": "https://api.github.com/repos/asg017/sqlite-vec/releases/latest",
+      "tag_name": "v0.1.9",
+      "published_at": "2026-03-31T08:00:23Z",
+      "prerelease": false,
+      "html_url": "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.9"
+    },
+    {
+      "name": "groue/GRDB.swift",
+      "api_url": "https://api.github.com/repos/groue/GRDB.swift/releases/latest",
+      "tag_name": "v7.11.1",
+      "published_at": "2026-06-18T12:15:08Z",
+      "prerelease": false,
+      "html_url": "https://github.com/groue/GRDB.swift/releases/tag/v7.11.1"
+    },
+    {
+      "name": "getsentry/XcodeBuildMCP",
+      "api_url": "https://api.github.com/repos/getsentry/XcodeBuildMCP/releases/latest",
+      "tag_name": "v2.7.0",
+      "published_at": "2026-07-23T14:07:50Z",
+      "prerelease": false,
+      "html_url": "https://github.com/getsentry/XcodeBuildMCP/releases/tag/v2.7.0"
+    }
+  ],
+  "local_context": {
+    "provided_by_parent": [
+      "Xcode 26.3 build 17C529 sur iMac; non revérifié par cette sous-tâche",
+      "Swift absent des profils d'exécution actuels; compilation iMac nécessaire"
+    ],
+    "read_files": [
+      "workers/project-worker/README.md",
+      "server/app/services/project_contracts.py"
+    ],
+    "verified_runtime_literals": [
+      "python",
+      "node",
+      "python_node"
+    ],
+    "no_live_worker_readiness_claim": true
+  },
+  "recommendations": [
+    {
+      "id": "sqlite-specialist",
+      "decision": "recommander",
+      "implementation": "Adaptateur sqlite3 canonique lecture bornée / sauvegarde / validation de migration sur copie; autorisation de mutation distincte",
+      "proof": [
+        "hash snapshot source",
+        "schema before/after",
+        "integrity_check",
+        "foreign_key_check",
+        "transaction rollback",
+        "budget rows/bytes/time"
+      ]
+    },
+    {
+      "id": "swift-native-worker",
+      "decision": "adapter",
+      "implementation": "Worker iMac avec commandes build/test typées et XcodeBuildMCP 2.7.0 épinglé ou APIs Xcode déjà accessibles",
+      "proof": [
+        "source SHA",
+        "Xcode/SDK/destination",
+        "exit code",
+        "xcresult digest",
+        "tests executed",
+        "simulator vs physical device"
+      ]
+    },
+    {
+      "id": "grdb",
+      "decision": "adapter",
+      "implementation": "GRDB 7.11.1 pour module natif SQLite dédié si besoin; pas de deuxième propriétaire arbitraire de la base Expo"
+    },
+    {
+      "id": "sqlite-vec",
+      "decision": "adapter_en_pilote",
+      "implementation": "sqlite-vec stable 0.1.9, métriques et compatibilité iOS testées; embedding réel et synchronisation séparés"
+    },
+    {
+      "id": "sqlite-vss",
+      "decision": "differer",
+      "implementation": "Pas de nouvelle intégration; mainteneur recommande sqlite-vec"
+    },
+    {
+      "id": "python-toolchain",
+      "decision": "recommander",
+      "implementation": "Conserver runner actuel, ajouter profils déterministes Ruff/pytest et verrouillage uv optionnel sans élargir les permissions réseau/dépendances"
+    },
+    {
+      "id": "sqlite-utils-datasette",
+      "decision": "adapter",
+      "implementation": "Import/inspection de copies; Datasette pour consultation de corpus sélectionnés, pas une autre autorité sur la base Swarm"
+    },
+    {
+      "id": "alembic",
+      "decision": "differer_pour_base_swarm",
+      "implementation": "Pertinent pour nouveaux projets SQLAlchemy, migration SQLite batch testée sur copie"
+    },
+    {
+      "id": "pydantic-ai",
+      "decision": "adapter_idees",
+      "implementation": "Contrats typés et tests d'outils; pas de deuxième ordonnanceur/budget"
+    },
+    {
+      "id": "openhands",
+      "decision": "adapter_en_pilote",
+      "implementation": "AgentServer/SDK comme moteur sous lease et budgets existants, avec workspace Docker borné et événements normalisés"
+    },
+    {
+      "id": "aider",
+      "decision": "adapter_en_pilote",
+      "implementation": "Boucle lint/test sous worker canonique; disponibilité ne prouve pas sandbox ni comptabilité des appels"
+    },
+    {
+      "id": "swe-agent",
+      "decision": "differer",
+      "implementation": "Le mainteneur privilégie mini-swe-agent; nouvelle comparaison ciblée nécessaire avant adoption"
+    }
+  ]
+}

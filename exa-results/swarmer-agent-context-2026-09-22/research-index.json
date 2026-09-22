@@ -1,0 +1,1006 @@
+{
+  "as_of": "2026-09-22",
+  "counts": {
+    "workstreams": 4,
+    "search_calls": 26,
+    "requested_result_slots": 260,
+    "returned_result_slots": 260,
+    "exact_unique_search_urls": 258,
+    "normalized_unique_search_urls": 248,
+    "exa_fetch_url_slots": 59,
+    "normalized_unique_fetched_urls": 58
+  },
+  "interpretation": "Results include unselected secondary sources. Fetched pages are bounded extracts, not necessarily full documents read. One fetched OTel page was a moved notice; canonical specification later fetched. GitHub metadata and direct README reads counted separately in axis journals. URL normalization removes tracking, fragments, GitHub tab and arXiv representation/version variants; not a claim of independent papers.",
+  "queries": [
+    {
+      "axis": "context-memory",
+      "query": "Primary engineering articles from Anthropic on context engineering compaction durable structured notes long running agents published up to September 22 2026, including updates March 22 to September 22 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://www.anthropic.com/engineering/harness-design-long-running-apps?aid=rechn4YcJtAfIzqt6",
+        "https://www.anthropic.com/engineering/managed-agents?utm=",
+        "https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools",
+        "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents?email_hash=23463b99b62a72f26ed677cc556c44e8",
+        "https://github.com/anthropics/claude-cookbooks/pull/481",
+        "https://www.aicodex.to/articles/compaction-on-demand",
+        "https://deepwiki.com/anthropics/claude-cookbooks/7.4-context-engineering-for-agents",
+        "https://deepwiki.com/anthropics/claude-cookbooks/6.3-context-management-and-compaction",
+        "https://zylos.ai/research/2026-04-21-agent-context-compaction-long-running-sessions/"
+      ]
+    },
+    {
+      "axis": "context-memory",
+      "query": "Official Letta MemGPT memory blocks sleeptime agents documentation and LangGraph LangMem durable memory summarization documentation design limitations",
+      "requested": 10,
+      "returned_urls": [
+        "https://docs.letta.com/guides/core-concepts/memory/memory-blocks/index.md",
+        "https://docs.letta.com/agent-sdk/memory/index.md",
+        "https://langchain-ai.github.io/langmem/concepts/conceptual_guide/",
+        "https://docs.letta.com/guides/core-concepts/memory/shared-memory/index.md",
+        "https://www.letta.com/blog/sleep-time-compute/",
+        "https://github.com/letta-ai/skills/blob/HEAD/letta/letta-api-client/memory-architecture.md",
+        "https://www.mongodb.com/company/blog/product-release-announcements/powering-long-term-memory-for-agents-langgraph",
+        "https://www.letta.com/blog/agent-memory/",
+        "https://raw.githubusercontent.com/letta-ai/skills/main/letta/agent-development/SKILL.md",
+        "https://deepwiki.com/letta-ai/letta-python/12.3-sleeptime-agents"
+      ]
+    },
+    {
+      "axis": "context-memory",
+      "query": "Primary research papers LongMemEval LoCoMo long term agent memory benchmark Mem0 Zep Graphiti evaluation independent results",
+      "requested": 10,
+      "returned_urls": [
+        "https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf",
+        "https://arxiv.org/html/2504.19413v1",
+        "https://arxiv.org/html/2601.07978v2",
+        "https://aclanthology.org/anthology-files/anthology-files/pdf/acl/2024.acl-long.747.pdf",
+        "https://arxiv.org/html/2601.07978v4",
+        "https://aclanthology.org/2026.findings-acl.1835.pdf",
+        "https://github.com/JJerryJi/LongMemEval-V2",
+        "https://arxiv.org/html/2511.01448v1",
+        "https://aclanthology.org/2026.acl-long.1150.pdf",
+        "https://arxiv.org/html/2608.13334v1"
+      ]
+    },
+    {
+      "axis": "context-memory",
+      "query": "Research paper observation masking versus LLM summarization agent context management software engineering long horizon lost in the middle latest March 22 September 22 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://arxiv.org/abs/2508.21433",
+        "https://arxiv.org/html/2508.21433",
+        "https://arxiv.org/pdf/2508.21433",
+        "https://doi.org/10.48550/arxiv.2508.21433",
+        "https://arxiv.org/abs/2606.00408",
+        "https://aclanthology.org/2026.findings-acl.1032.pdf",
+        "https://github.com/JetBrains-Research/the-complexity-trap",
+        "https://arxiv.org/html/2606.28434",
+        "https://arxiv.org/pdf/2607.23809",
+        "https://arxiv.org/pdf/2607.00151"
+      ]
+    },
+    {
+      "axis": "context-memory",
+      "query": "Maintainer GitHub issues Letta mem0 Graphiti LangMem memory extraction deduplication wrong memories compaction context overflow race conditions",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/mem0ai/mem0/pull/6017",
+        "https://github.com/getzep/graphiti/issues/1275",
+        "https://github.com/letta-ai/letta/issues/3242",
+        "https://github.com/letta-ai/letta-code/issues/1224",
+        "https://github.com/mem0ai/mem0/issues/4573",
+        "https://github.com/mem0ai/mem0/pull/7082",
+        "https://github.com/letta-ai/letta/issues/3259",
+        "https://github.com/letta-ai/letta/issues/3388",
+        "https://github.com/letta-ai/letta/issues/957",
+        "https://github.com/mem0ai/mem0/pull/4505"
+      ]
+    },
+    {
+      "axis": "context-memory",
+      "query": "Primary new research agent structured durable memory compaction retrieval benchmark failure cases published March 22 2026 through September 22 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://arxiv.org/abs/2609.08279",
+        "https://arxiv.org/abs/2608.20400",
+        "https://arxiv.org/html/2605.11325v4",
+        "https://arxiv.org/html/2608.22752",
+        "https://arxiv.org/abs/2609.10413",
+        "https://arxiv.org/html/2608.22752v1",
+        "https://arxiv.org/abs/2609.03201",
+        "https://arxiv.org/abs/2609.09778",
+        "https://arxiv.org/abs/2606.24775",
+        "https://arxiv.org/abs/2609.16053"
+      ]
+    },
+    {
+      "axis": "assistant-orchestration",
+      "query": "Official Python MCP and A2A protocol documentation updated March 22 to September 22 2026 on progressive tool discovery tool schemas authorization task lifecycle capabilities and what remote agent execution actually guarantees",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/modelcontextprotocol/python-sdk/blob/e8e64842/README.v2.md",
+        "https://github.com/a2aproject/a2a-samples/commit/5fa24f72b7a94b66c1566ae6be51d2a9e4591db4",
+        "https://python-a2a.readthedocs.io/en/latest/guides/mcp.html",
+        "https://github.com/openai/openai-agents-python/blob/main/docs/mcp.md",
+        "https://github.com/themanojdesai/python-a2a",
+        "https://github.com/themanojdesai/python-a2a/wiki/MCP-Integration",
+        "https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.0.0a3",
+        "https://developers.googleblog.com/developers-guide-to-ai-agent-protocols/",
+        "https://python-a2a.readthedocs.io/en/stable/index.html",
+        "https://qubittool.com/blog/mcp-a2a-a2ui-protocol-stack-guide"
+      ]
+    },
+    {
+      "axis": "assistant-orchestration",
+      "query": "Python LangGraph durable execution documentation and PydanticAI typed tool validation GitHub issues discussions replay idempotency duplicate side effects production experience March to September 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/langchain-ai/langgraph/issues/8702",
+        "https://github.com/langchain-ai/langgraph/issues/8464",
+        "https://github.com/langchain-ai/langgraph/issues/7417",
+        "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/",
+        "https://github.com/pydantic/pydantic-ai/issues/6979",
+        "https://github.com/langchain-ai/langgraph/issues/7213",
+        "https://docs.langchain.com/oss/python/langgraph/overview",
+        "https://oh-bug.com/posts/agent-durable-execution-production-guide/",
+        "https://github.com/langchain-ai/langgraph",
+        "https://pydantic.dev/docs/ai/capabilities/durable_execution/temporal/"
+      ]
+    },
+    {
+      "axis": "assistant-orchestration",
+      "query": "Python SearXNG JSON search API Docling MarkItDown document conversion official GitHub limitations OCR tables license local document retrieval agents 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/searxng/searxng/blob/b3e08f2a/docs/dev/search_api.rst",
+        "https://github.com/docling-project/docling/blob/11a1bb5d/README.md",
+        "https://docs.searxng.org/_modules/searx/engines/json_engine.html",
+        "https://github.laiyagushi.com/SeedeXR/markitdown",
+        "https://github.com/docling-project/docling-serve/blob/0276ef1f/docs/usage.md",
+        "https://docs.bswen.com/blog/2026-08-20-markitdown-docling-pymupdf4llm-comparison/",
+        "https://docs.searxng.org/dev/engines/engine_overview.html",
+        "https://github.com/bordessoules/searxng-mcp",
+        "https://github.com/JamePeng/searxng_search",
+        "https://openclawhub.tools/tutorial/how-to-use-docling-for-pdf-ocr-table-extraction-and-markdown-export-in-python/"
+      ]
+    },
+    {
+      "axis": "assistant-orchestration",
+      "query": "Self hosted personal assistant calendar CRM documents automation Python n8n sustainable use license CalDAV Google Calendar HubSpot API OAuth idempotency official documentation 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/n8n-io/n8n?tab=readme-ov-file",
+        "https://docs.n8n.io/welcome.md",
+        "https://n8n.io/integrations/google-calendar/and/hubspot/",
+        "https://docs.n8n.io/deploy/host-n8n/install-options/install-with-docker.md",
+        "https://docs.n8n.io/connect/n8n-api/credential",
+        "https://github.com/n8n-io/n8n-docs/blob/main/docs/api/v1/openapi.yml",
+        "https://github.com/n8n-io/n8n/blob/master/README.md",
+        "https://n8n.io/workflows/18298-convert-seller-leads-into-listing-appointments-with-email-google-calendar-and-crm/",
+        "https://n8nautomation.cloud/blog/n8n-google-calendar-integration-automate-scheduling-workflows",
+        "https://rajsuyash.com/blog/n8n-google-calendar-integration.html"
+      ]
+    },
+    {
+      "axis": "assistant-orchestration",
+      "query": "OpenTelemetry generative AI agent semantic conventions OpenInference Phoenix Langfuse promptfoo official documentation traces evaluations tool results self hosting license 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/semantic-conventions",
+        "https://www.promptfoo.dev/docs/tracing/",
+        "https://github.com/Arize-ai/openinference/blob/main/spec/README.md",
+        "https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/span-kinds",
+        "https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/gen-ai/gen-ai-spans.md",
+        "https://arize-ai.github.io/openinference/",
+        "https://github.com/Arize-ai/openinference",
+        "https://arize.com/docs/phoenix/release-notes/05-2026/05-15-2026-otel-semconv-conversion",
+        "https://arize.com/docs/phoenix/cookbook/tracing/openinference-best-practices",
+        "https://langfuse.com/"
+      ]
+    },
+    {
+      "axis": "assistant-orchestration",
+      "query": "GitHub issues discussions Python MCP LangGraph PydanticAI n8n personal assistant tool reliability duplicate actions context tool discovery schema validation failure first hand reports March 22 September 22 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/pydantic/pydantic-ai/issues/4664",
+        "https://github.com/n8n-io/n8n/issues/27297",
+        "https://github.com/n8n-io/n8n/issues/25964",
+        "https://github.com/pydantic/pydantic-ai/issues/4317",
+        "https://github.com/n8n-io/n8n/issues/27345",
+        "https://github.com/n8n-io/n8n/issues/25966",
+        "https://github.com/langchain-ai/langgraph/issues/8725",
+        "https://github.com/n8n-io/n8n/issues/28021",
+        "https://community.n8n.io/t/mcp-server-connection-successful-but-tools-are-not-being-invoked-by-n8n/270149?tl=en",
+        "https://github.com/n8n-io/n8n/issues/26812"
+      ]
+    },
+    {
+      "axis": "specialists-tools",
+      "query": "Official SQLite C API and Python sqlite3 documentation for read-only authorizer, online backup, transaction isolation and BEGIN IMMEDIATE for safe automated database inspection and migration agents.",
+      "requested": 10,
+      "returned_urls": [
+        "https://docs.python.org/3/library/sqlite3.html",
+        "https://www.sqlite.org/backup.html",
+        "https://www.sqlite.org/lang%5Ftransaction.html",
+        "https://sqlite.org/c3ref/set%5Fauthorizer.html",
+        "https://www.sqlite.org/isolation.html",
+        "https://www2.sqlite.org/c3ref/backup_finish.html",
+        "https://www.sqlite.org/c3ref/stmt_readonly.html",
+        "https://www2.sqlite.org/c3ref/set_authorizer.html",
+        "https://github.com/python/cpython/blob/main/Doc/library/sqlite3.rst",
+        "https://www2.sqlite.org/capi3ref.html"
+      ]
+    },
+    {
+      "axis": "specialists-tools",
+      "query": "Maintainer documentation and GitHub releases comparing sqlite-vec with sqlite-vss for SQLite vector search in Python and iOS Swift applications, including maintenance or release updates published March 22 through September 22 2026.",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/asg017/sqlite-vec/releases",
+        "https://github.com/asg017/sqlite-vec?tab=readme-ov-file",
+        "https://github.com/asg017/sqlite-vec/blob/main/site/using/python.md",
+        "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.10-alpha.1",
+        "https://github.com/asg017/sqlite-vec",
+        "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.7",
+        "https://github.com/asg017/sqlite-vss/blob/main/docs.md",
+        "https://github.com/asg017/sqlite-vss/blob/main/README.md",
+        "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.9",
+        "https://github.com/asg017/sqlite-vss"
+      ]
+    },
+    {
+      "axis": "specialists-tools",
+      "query": "Official Swift iOS SQLite tooling repositories GRDB.swift and XcodeBuildMCP documentation for reliable database migrations, xcodebuild physical device builds, automated XCTest and xcresult receipts, with maintenance updates March 22 through September 22 2026.",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/groue/GRDB.swift?tab=readme-ov-file",
+        "https://github.com/getsentry/XcodeBuildMCP/",
+        "https://www.xcodebuildmcp.com/docs",
+        "https://github.com/getsentry/XcodeBuildMCP/blob/main/CHANGELOG.md",
+        "https://github.com/getsentry/XcodeBuildMCP/releases/tag/v2.2.0",
+        "https://github.com/getsentry/XcodeBuildMCP/blob/main/README.md",
+        "https://groue.github.io/GRDB.swift/",
+        "https://github.com/getsentry/XcodeBuildMCP/blob/HEAD/README.md",
+        "https://www.xcodebuildmcp.com/",
+        "https://deepwiki.com/cameroncooke/XcodeBuildMCP/7.3-ios-device-builds"
+      ]
+    },
+    {
+      "axis": "specialists-tools",
+      "query": "Official documentation for Python coding agents using uv Ruff pytest and PydanticAI typed tools, sqlite-utils Datasette and Alembic SQLite batch migrations, including release updates March 22 through September 22 2026.",
+      "requested": 10,
+      "returned_urls": [
+        "https://alembic.sqlalchemy.org/",
+        "https://pydantic.dev/docs/ai/guides/testing/",
+        "https://pydantic.dev/docs/ai/overview/",
+        "https://github.com/pydantic/pydantic-ai",
+        "https://pydantic.dev/articles/pydantic-ai-v2?from_theconsensus=1",
+        "https://pydantic.dev/pydantic-ai?featured_on=talkpython",
+        "https://pydantic.dev/articles/pydantic-ai-v2",
+        "https://pydantic.dev/docs/ai/harness/",
+        "https://pydantic.dev/articles/building-agentic-application.md",
+        "https://pydantic.dev/docs/ai/examples/sql-gen/index.md"
+      ]
+    },
+    {
+      "axis": "specialists-tools",
+      "query": "Official OpenHands Aider and SWE-agent repositories documentation comparing code editing, sandbox terminal execution, test results, structured API integration, local model support and license maintenance updates March 22 through September 22 2026.",
+      "requested": 10,
+      "returned_urls": [
+        "https://docs.openhands.dev/sdk.md",
+        "https://github.com/OpenHands/OpenHands",
+        "https://roiscale.ai/sites/roiscale/articles/c708654f-18c3-46fd-af00-964449f38e30/open-source-coding-agents-in-2026-i-pitted-aider-openhands-and-swe-agent",
+        "https://docs.openhands.dev/sdk/guides/agent-server/overview",
+        "https://github.com/OpenHands/software-agent-sdk/releases/tag/v1.16.0",
+        "https://github.com/OpenHands/software-agent-sdk/releases/tag/v1.15.0",
+        "https://github.com/OpenHands/openhands",
+        "https://github.com/All-Hands-AI/agent-sdk/",
+        "https://hiveoscity.com/compare/aider-vs-openhands/",
+        "https://dev.to/kunal_d6a8fea2309e1571ee7/aider-vs-claude-code-vs-openhands-cli-ai-coding-tested-2026-5721"
+      ]
+    },
+    {
+      "axis": "specialists-tools",
+      "query": "Apple developer documentation Xcode 26 coding intelligence MCP server xcodebuild xcresulttool Swift Testing XCTest command line physical iPhone testing 2026.",
+      "requested": 10,
+      "returned_urls": [
+        "https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes",
+        "https://developer.apple.com/documentation/xcode/setting-up-coding-intelligence",
+        "https://github.com/artemnovichkov/xcode-tools-docs",
+        "https://developer.apple.com/forums/thread/820586",
+        "https://developer.apple.com/videos/play/wwdc2025/247/",
+        "https://www.youtube.com/watch?v=565Tf50PUrQ",
+        "https://agenticdevelopercookbook.com/appendix/research/developer-tools/apple/xcode-and-build",
+        "https://blakecrosley.com/blog/xcode-mcp-claude-code",
+        "https://developer.apple.com/videos/play/wwdc2024/10179/",
+        "https://claude-updates.com/posts/xcode-tools-docs-m0sn5"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "Official model cards and benchmarks for small multilingual text embedding and reranker models that can run locally on iPhone MLX Core ML or Ubuntu, Qwen3 Embedding 0.6B multilingual E5 small EmbeddingGemma 2025 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://ai.google.dev/gemma/docs/embeddinggemma/model_card",
+        "https://github.com/QwenLM/Qwen3-Embedding?tab=readme-ov-file",
+        "https://huggingface.co/tamikisg/multilingual-e5-small-coreml",
+        "https://arxiv.org/pdf/2506.05176",
+        "https://qwenlm.github.io/blog/qwen3-embedding/",
+        "https://arxiv.org/pdf/2509.20354v3.pdf",
+        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF",
+        "https://huggingface.co/valindotai/embeddinggemma-300m-coreml",
+        "https://huggingface.co/backups/Qwen3-Reranker-0.6B",
+        "https://huggingface.co/NeuralMetrics/Qwen3-Embedding-0.6B"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "Official Apple and MLX Swift documentation repositories local LLM embeddings iPhone Core ML MLX GGUF llama.cpp constraints tokenization KV cache prompt caching 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/ekryski/mlx-swift-lm",
+        "https://developer.apple.com/videos/play/wwdc2025/298/",
+        "https://machinelearning.apple.com/research/core-ml-on-device-llama",
+        "https://github.com/john-rocky/CoreML-LLM/blob/b3dff6c60be4b0ec7ed253c96e885cc0997813ce/README.md",
+        "https://github.com/dpearson2699/swift-ios-skills/blob/HEAD/skills/apple-on-device-ai/references/mlx-swift.md",
+        "https://github.com/dpearson2699/swift-ios-skills/blob/cf3fe879a7a1f5d8cbe074032eea24c43fe55997/skills/apple-on-device-ai/SKILL.md",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/702e5a0e/skills/mlx-swift-lm/SKILL.md",
+        "https://github.com/rogelioRuiz/dust-llm-swift",
+        "https://github.com/ghost-in-the-droid/android-agent/blob/a8dde57f/docs/ios/ONDEVICE_LLM.md",
+        "https://github.com/osaurus-ai/vmlx-swift/"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "category:research paper evaluating multilingual retrieval embeddings long context agent memory factual provenance compaction benchmarks 2025 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://arxiv.org/html/2603.12572v6",
+        "https://aclanthology.org/2026.findings-acl.1408.pdf",
+        "https://proceedings.iclr.cc/paper_files/paper/2026/file/fd1eff9dd295df50a41f2521942fa31d-Paper-Conference.pdf",
+        "https://arxiv.org/pdf/2608.29606.pdf",
+        "https://arxiv.org/pdf/2608.15008",
+        "https://arxiv.org/pdf/2602.17913",
+        "https://aclanthology.org/2026.eacl-long.290.pdf",
+        "https://aclanthology.org/2026.acl-long.1150.pdf",
+        "https://arxiv.org/html/2607.25180v1",
+        "https://arxiv.org/abs/2608.22137"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "GitHub official documentation local LLM structured tool calling JSON schema grammar constrained generation Qwen3 Coder MLX llama.cpp Ollama context memory 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/ollama/ollama/blob/main/docs/capabilities/tool-calling.mdx",
+        "https://qwenlm.github.io/qwen-code-docs/en/users/features/structured-output/",
+        "https://github.com/QwenLM/Qwen3-Coder/",
+        "https://github.com/QwenLM/Qwen3/blob/main/docs/source/framework/function%5Fcall.md",
+        "https://qwen.readthedocs.io/en/stable/framework/function_call.html",
+        "https://github.com/ollama/ollama/issues/16563",
+        "https://github.com/nuxlear/llama.cpp/blob/374101fd742bb35cb9bf46c86836e54d51191ffd/docs/function-calling.md",
+        "https://github.com/QwenLM/Qwen3-Coder?tab=readme-ov-file",
+        "https://github.com/nobottomline/ullm",
+        "https://llmconfigurator.com/en/guides/coding-agents/tool-calling-local-models"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "Official multilingual MTEB MMTEB embedding benchmark GitHub 2026 French retrieval leaderboard embedding models evaluation limitations",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/embeddings-benchmark/mteb?tab=readme-ov-file",
+        "https://github.com/embeddings-benchmark/mteb/issues/1314",
+        "https://arxiv.org/html/2502.13595v3",
+        "https://github.com/embeddings-benchmark/mteb/",
+        "https://huggingface.co/spaces/mteb/leaderboard",
+        "https://openreview.net/forum?id=zl3pfz4VCV",
+        "https://github.com/embeddings-benchmark/mteb/blob/cd182883/README.md",
+        "https://iclr.cc/media/iclr-2025/Slides/27651_t5OXGO4.pdf",
+        "https://github.com/embeddings-benchmark",
+        "https://github.com/embeddings-benchmark/mteb/blob/cd182883/mteb/leaderboard/text_segments.py"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "MLX Swift iOS embedding models guided generation GitHub issues memory token cache Swift 6.2 3.31.4 Core ML 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/ml-explore/mlx-swift-lm/releases/tag/3.31.4",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/312",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/84",
+        "https://github.com/ml-explore/mlx-swift-lm",
+        "https://github.com/llm-case-studies/iHomeNerd/blob/main/docs/MLX_MODEL_SWITCH_MEMORY_RECIPE.md",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/main/skills/mlx-swift-lm/references/kv-cache.md",
+        "https://dev.to/software_mvp-factory/wiring-mlx-to-swift-running-fine-tuned-models-on-apple-silicon-with-zero-coreml-overhead-1d8i",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/282",
+        "https://github.com/dpearson2699/swift-ios-skills/blob/HEAD/skills/apple-on-device-ai/references/mlx-swift.md",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/233"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "Official model cards local agentic tool calling compact 3B 4B models Qwen3.5 4B Gemma 4 Dolphin iPhone MLX 2026",
+      "requested": 10,
+      "returned_urls": [
+        "https://huggingface.co/Qwen/Qwen3.5-4B",
+        "https://ai.google.dev/gemma/docs/core/model_card_4",
+        "https://huggingface.co/Qwen/Qwen3-4B",
+        "https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit",
+        "https://huggingface.co/YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx",
+        "https://github.com/john-rocky/CoreML-LLM",
+        "https://huggingface.co/idah4/qwen3.5-4b-distilled/blob/1f78b48a7ec2f0063c93d31ae947128a7986c9f1/README.md",
+        "https://huggingface.co/jc-builds/Qwen3.5-4B-Q4_K_M-GGUF",
+        "https://github.com/john-rocky/coreml-llm",
+        "https://github.com/carolinacherry/local-ai"
+      ]
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "query": "Official OpenTelemetry GenAI semantic conventions current moved specification agent tool retrieval spans 2026 and Google Calendar API incremental synchronization custom event IDs documentation",
+      "requested": 10,
+      "returned_urls": [
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-spans.md",
+        "https://github.com/open-telemetry/semantic-conventions-genai/tree/main/model/gen-ai",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/README.md",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md",
+        "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/",
+        "https://pondero.ai/enterprise/guides/observability-agents-opentelemetry-genai/",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/b028dceecdad117461a785c3af35315e7184e813/docs/gen-ai/non-normative/examples-llm-calls.md",
+        "https://john-hodge.com/blog/opentelemetry-genai-semantic-conventions/",
+        "https://dev.to/azena-ai/opentelemetrys-genai-semantic-conventions-are-not-stable-yet-heres-what-actually-shipped-in-2026-3mke"
+      ]
+    }
+  ],
+  "fetches": [
+    {
+      "axis": "context-memory",
+      "url": "https://www.anthropic.com/engineering/managed-agents"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://docs.letta.com/guides/core-concepts/memory/memory-blocks/index.md"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://langchain-ai.github.io/langmem/concepts/conceptual_guide/"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://arxiv.org/html/2504.19413v1"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://github.com/getzep/graphiti"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://aclanthology.org/2024.acl-long.747/"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://arxiv.org/html/2508.21433"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://arxiv.org/html/2608.22752v1"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://arxiv.org/abs/2609.03201"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://arxiv.org/abs/2608.15008"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://arxiv.org/abs/2608.22752"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://aclanthology.org/2024.tacl-1.9/"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"
+    },
+    {
+      "axis": "context-memory",
+      "url": "https://docs.langchain.com/oss/python/langgraph/memory"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://modelcontextprotocol.io/specification/2025-11-25/server/tools"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://a2a-protocol.org/latest/specification/"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://docs.langchain.com/oss/python/langgraph/durable-execution"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://github.com/microsoft/markitdown"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://github.com/docling-project/docling"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://docs.n8n.io/sustainable-use-license/"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://github.com/langfuse/langfuse"
+    },
+    {
+      "axis": "assistant-orchestration",
+      "url": "https://github.com/n8n-io/n8n/issues/27297"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://sqlite.org/c3ref/set_authorizer.html"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://github.com/groue/GRDB.swift"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://github.com/getsentry/XcodeBuildMCP/blob/main/docs/TOOLS.md"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://developer.apple.com/documentation/xcode/giving-agentic-coding-tools-access-to-xcode"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://docs.astral.sh/uv/guides/projects/"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://docs.pytest.org/en/stable/how-to/usage.html"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://sqlite-utils.datasette.io/en/stable/python-api.html"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://alembic.sqlalchemy.org/en/latest/batch.html"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://aider.chat/docs/usage/lint-test.html"
+    },
+    {
+      "axis": "specialists-tools",
+      "url": "https://docs.openhands.dev/sdk/guides/agent-server/overview"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ml-explore/mlx-swift-lm"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://ai.google.dev/gemma/docs/embeddinggemma/model_card"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://huggingface.co/intfloat/multilingual-e5-small"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/john-rocky/CoreML-LLM"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://docs.ollama.com/capabilities/structured-outputs"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ollama/ollama/issues/16563"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ml-explore/mlx-swift-lm/releases/tag/3.31.4"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ml-explore/mlx-swift-lm/blob/3.31.4/Package.swift"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ml-explore/mlx-swift-lm/issues/312"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/embeddings-benchmark/mteb/issues/1314"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://huggingface.co/Qwen/Qwen3.5-4B"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://ai.google.dev/gemma/docs/core/model_card_4"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/embeddings-benchmark/mteb"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://arxiv.org/abs/2607.25180"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://huggingface.co/hotchpotch/bekko-embedding-v1-a25m"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ml-explore/mlx-swift-lm/blob/main/Package.swift"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/ml-explore/mlx-swift-lm/blob/3.31.4/Libraries/MLXEmbedders/README.md"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://developers.google.com/workspace/calendar/api/guides/sync"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://developers.google.com/workspace/calendar/api/guides/create-events"
+    },
+    {
+      "axis": "local-models-runtime-embeddings",
+      "url": "https://developer.apple.com/documentation/eventkit/accessing-calendar-using-eventkit-and-eventkitui"
+    }
+  ],
+  "normalized_search_urls": [
+    "https://aclanthology.org/2026.acl-long.1150.pdf",
+    "https://aclanthology.org/2026.eacl-long.290.pdf",
+    "https://aclanthology.org/2026.findings-acl.1032.pdf",
+    "https://aclanthology.org/2026.findings-acl.1408.pdf",
+    "https://aclanthology.org/2026.findings-acl.1835.pdf",
+    "https://aclanthology.org/anthology-files/anthology-files/pdf/acl/2024.acl-long.747.pdf",
+    "https://agenticdevelopercookbook.com/appendix/research/developer-tools/apple/xcode-and-build",
+    "https://ai.google.dev/gemma/docs/core/model_card_4",
+    "https://ai.google.dev/gemma/docs/embeddinggemma/model_card",
+    "https://alembic.sqlalchemy.org",
+    "https://arize-ai.github.io/openinference",
+    "https://arize.com/docs/phoenix/cookbook/tracing/openinference-best-practices",
+    "https://arize.com/docs/phoenix/release-notes/05-2026/05-15-2026-otel-semconv-conversion",
+    "https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/semantic-conventions",
+    "https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/span-kinds",
+    "https://arxiv.org/abs/2502.13595",
+    "https://arxiv.org/abs/2504.19413",
+    "https://arxiv.org/abs/2506.05176",
+    "https://arxiv.org/abs/2508.21433",
+    "https://arxiv.org/abs/2509.20354",
+    "https://arxiv.org/abs/2511.01448",
+    "https://arxiv.org/abs/2601.07978",
+    "https://arxiv.org/abs/2602.17913",
+    "https://arxiv.org/abs/2603.12572",
+    "https://arxiv.org/abs/2605.11325",
+    "https://arxiv.org/abs/2606.00408",
+    "https://arxiv.org/abs/2606.24775",
+    "https://arxiv.org/abs/2606.28434",
+    "https://arxiv.org/abs/2607.00151",
+    "https://arxiv.org/abs/2607.23809",
+    "https://arxiv.org/abs/2607.25180",
+    "https://arxiv.org/abs/2608.13334",
+    "https://arxiv.org/abs/2608.15008",
+    "https://arxiv.org/abs/2608.20400",
+    "https://arxiv.org/abs/2608.22137",
+    "https://arxiv.org/abs/2608.22752",
+    "https://arxiv.org/abs/2608.29606",
+    "https://arxiv.org/abs/2609.03201",
+    "https://arxiv.org/abs/2609.08279",
+    "https://arxiv.org/abs/2609.09778",
+    "https://arxiv.org/abs/2609.10413",
+    "https://arxiv.org/abs/2609.16053",
+    "https://blakecrosley.com/blog/xcode-mcp-claude-code",
+    "https://claude-updates.com/posts/xcode-tools-docs-m0sn5",
+    "https://community.n8n.io/t/mcp-server-connection-successful-but-tools-are-not-being-invoked-by-n8n/270149?tl=en",
+    "https://deepwiki.com/anthropics/claude-cookbooks/6.3-context-management-and-compaction",
+    "https://deepwiki.com/anthropics/claude-cookbooks/7.4-context-engineering-for-agents",
+    "https://deepwiki.com/cameroncooke/XcodeBuildMCP/7.3-ios-device-builds",
+    "https://deepwiki.com/letta-ai/letta-python/12.3-sleeptime-agents",
+    "https://dev.to/azena-ai/opentelemetrys-genai-semantic-conventions-are-not-stable-yet-heres-what-actually-shipped-in-2026-3mke",
+    "https://dev.to/kunal_d6a8fea2309e1571ee7/aider-vs-claude-code-vs-openhands-cli-ai-coding-tested-2026-5721",
+    "https://dev.to/software_mvp-factory/wiring-mlx-to-swift-running-fine-tuned-models-on-apple-silicon-with-zero-coreml-overhead-1d8i",
+    "https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes",
+    "https://developer.apple.com/documentation/xcode/setting-up-coding-intelligence",
+    "https://developer.apple.com/forums/thread/820586",
+    "https://developer.apple.com/videos/play/wwdc2024/10179",
+    "https://developer.apple.com/videos/play/wwdc2025/247",
+    "https://developer.apple.com/videos/play/wwdc2025/298",
+    "https://developers.googleblog.com/developers-guide-to-ai-agent-protocols",
+    "https://docs.bswen.com/blog/2026-08-20-markitdown-docling-pymupdf4llm-comparison",
+    "https://docs.langchain.com/oss/python/langgraph/overview",
+    "https://docs.letta.com/agent-sdk/memory/index.md",
+    "https://docs.letta.com/guides/core-concepts/memory/memory-blocks/index.md",
+    "https://docs.letta.com/guides/core-concepts/memory/shared-memory/index.md",
+    "https://docs.n8n.io/connect/n8n-api/credential",
+    "https://docs.n8n.io/deploy/host-n8n/install-options/install-with-docker.md",
+    "https://docs.n8n.io/welcome.md",
+    "https://docs.openhands.dev/sdk.md",
+    "https://docs.openhands.dev/sdk/guides/agent-server/overview",
+    "https://docs.python.org/3/library/sqlite3.html",
+    "https://docs.searxng.org/_modules/searx/engines/json_engine.html",
+    "https://docs.searxng.org/dev/engines/engine_overview.html",
+    "https://doi.org/10.48550/arxiv.2508.21433",
+    "https://github.com/a2aproject/a2a-samples/commit/5fa24f72b7a94b66c1566ae6be51d2a9e4591db4",
+    "https://github.com/all-hands-ai/agent-sdk",
+    "https://github.com/anthropics/claude-cookbooks/pull/481",
+    "https://github.com/arize-ai/openinference",
+    "https://github.com/arize-ai/openinference/blob/main/spec/readme.md",
+    "https://github.com/artemnovichkov/xcode-tools-docs",
+    "https://github.com/asg017/sqlite-vec",
+    "https://github.com/asg017/sqlite-vec/blob/main/site/using/python.md",
+    "https://github.com/asg017/sqlite-vec/releases",
+    "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.10-alpha.1",
+    "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.7",
+    "https://github.com/asg017/sqlite-vec/releases/tag/v0.1.9",
+    "https://github.com/asg017/sqlite-vss",
+    "https://github.com/asg017/sqlite-vss/blob/main/docs.md",
+    "https://github.com/asg017/sqlite-vss/blob/main/readme.md",
+    "https://github.com/bordessoules/searxng-mcp",
+    "https://github.com/carolinacherry/local-ai",
+    "https://github.com/docling-project/docling-serve/blob/0276ef1f/docs/usage.md",
+    "https://github.com/docling-project/docling/blob/11a1bb5d/readme.md",
+    "https://github.com/dpearson2699/swift-ios-skills/blob/cf3fe879a7a1f5d8cbe074032eea24c43fe55997/skills/apple-on-device-ai/skill.md",
+    "https://github.com/dpearson2699/swift-ios-skills/blob/head/skills/apple-on-device-ai/references/mlx-swift.md",
+    "https://github.com/ekryski/mlx-swift-lm",
+    "https://github.com/embeddings-benchmark",
+    "https://github.com/embeddings-benchmark/mteb",
+    "https://github.com/embeddings-benchmark/mteb/blob/cd182883/mteb/leaderboard/text_segments.py",
+    "https://github.com/embeddings-benchmark/mteb/blob/cd182883/readme.md",
+    "https://github.com/embeddings-benchmark/mteb/issues/1314",
+    "https://github.com/getsentry/xcodebuildmcp",
+    "https://github.com/getsentry/xcodebuildmcp/blob/head/readme.md",
+    "https://github.com/getsentry/xcodebuildmcp/blob/main/changelog.md",
+    "https://github.com/getsentry/xcodebuildmcp/blob/main/readme.md",
+    "https://github.com/getsentry/xcodebuildmcp/releases/tag/v2.2.0",
+    "https://github.com/getzep/graphiti/issues/1275",
+    "https://github.com/ghost-in-the-droid/android-agent/blob/a8dde57f/docs/ios/ondevice_llm.md",
+    "https://github.com/groue/grdb.swift",
+    "https://github.com/jamepeng/searxng_search",
+    "https://github.com/jetbrains-research/the-complexity-trap",
+    "https://github.com/jjerryji/longmemeval-v2",
+    "https://github.com/john-rocky/coreml-llm",
+    "https://github.com/john-rocky/coreml-llm/blob/b3dff6c60be4b0ec7ed253c96e885cc0997813ce/readme.md",
+    "https://github.com/langchain-ai/langgraph",
+    "https://github.com/langchain-ai/langgraph/issues/7213",
+    "https://github.com/langchain-ai/langgraph/issues/7417",
+    "https://github.com/langchain-ai/langgraph/issues/8464",
+    "https://github.com/langchain-ai/langgraph/issues/8702",
+    "https://github.com/langchain-ai/langgraph/issues/8725",
+    "https://github.com/letta-ai/letta-code/issues/1224",
+    "https://github.com/letta-ai/letta/issues/3242",
+    "https://github.com/letta-ai/letta/issues/3259",
+    "https://github.com/letta-ai/letta/issues/3388",
+    "https://github.com/letta-ai/letta/issues/957",
+    "https://github.com/letta-ai/skills/blob/head/letta/letta-api-client/memory-architecture.md",
+    "https://github.com/llm-case-studies/ihomenerd/blob/main/docs/mlx_model_switch_memory_recipe.md",
+    "https://github.com/mem0ai/mem0/issues/4573",
+    "https://github.com/mem0ai/mem0/pull/4505",
+    "https://github.com/mem0ai/mem0/pull/6017",
+    "https://github.com/mem0ai/mem0/pull/7082",
+    "https://github.com/ml-explore/mlx-swift-lm",
+    "https://github.com/ml-explore/mlx-swift-lm/blob/702e5a0e/skills/mlx-swift-lm/skill.md",
+    "https://github.com/ml-explore/mlx-swift-lm/blob/main/skills/mlx-swift-lm/references/kv-cache.md",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/233",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/282",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/312",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/84",
+    "https://github.com/ml-explore/mlx-swift-lm/releases/tag/3.31.4",
+    "https://github.com/modelcontextprotocol/python-sdk/blob/e8e64842/readme.v2.md",
+    "https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.0.0a3",
+    "https://github.com/n8n-io/n8n",
+    "https://github.com/n8n-io/n8n-docs/blob/main/docs/api/v1/openapi.yml",
+    "https://github.com/n8n-io/n8n/blob/master/readme.md",
+    "https://github.com/n8n-io/n8n/issues/25964",
+    "https://github.com/n8n-io/n8n/issues/25966",
+    "https://github.com/n8n-io/n8n/issues/26812",
+    "https://github.com/n8n-io/n8n/issues/27297",
+    "https://github.com/n8n-io/n8n/issues/27345",
+    "https://github.com/n8n-io/n8n/issues/28021",
+    "https://github.com/nobottomline/ullm",
+    "https://github.com/nuxlear/llama.cpp/blob/374101fd742bb35cb9bf46c86836e54d51191ffd/docs/function-calling.md",
+    "https://github.com/ollama/ollama/blob/main/docs/capabilities/tool-calling.mdx",
+    "https://github.com/ollama/ollama/issues/16563",
+    "https://github.com/open-telemetry/semantic-conventions-genai/blob/b028dceecdad117461a785c3af35315e7184e813/docs/gen-ai/non-normative/examples-llm-calls.md",
+    "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md",
+    "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-spans.md",
+    "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md",
+    "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/readme.md",
+    "https://github.com/open-telemetry/semantic-conventions-genai/tree/main/model/gen-ai",
+    "https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/gen-ai/gen-ai-spans.md",
+    "https://github.com/openai/openai-agents-python/blob/main/docs/mcp.md",
+    "https://github.com/openhands/openhands",
+    "https://github.com/openhands/software-agent-sdk/releases/tag/v1.15.0",
+    "https://github.com/openhands/software-agent-sdk/releases/tag/v1.16.0",
+    "https://github.com/osaurus-ai/vmlx-swift",
+    "https://github.com/pydantic/pydantic-ai",
+    "https://github.com/pydantic/pydantic-ai/issues/4317",
+    "https://github.com/pydantic/pydantic-ai/issues/4664",
+    "https://github.com/pydantic/pydantic-ai/issues/6979",
+    "https://github.com/python/cpython/blob/main/doc/library/sqlite3.rst",
+    "https://github.com/qwenlm/qwen3-coder",
+    "https://github.com/qwenlm/qwen3-embedding",
+    "https://github.com/qwenlm/qwen3/blob/main/docs/source/framework/function_call.md",
+    "https://github.com/rogelioruiz/dust-llm-swift",
+    "https://github.com/searxng/searxng/blob/b3e08f2a/docs/dev/search_api.rst",
+    "https://github.com/themanojdesai/python-a2a",
+    "https://github.com/themanojdesai/python-a2a/wiki/mcp-integration",
+    "https://github.laiyagushi.com/SeedeXR/markitdown",
+    "https://groue.github.io/GRDB.swift",
+    "https://hiveoscity.com/compare/aider-vs-openhands",
+    "https://huggingface.co/NeuralMetrics/Qwen3-Embedding-0.6B",
+    "https://huggingface.co/Qwen/Qwen3-4B",
+    "https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit",
+    "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF",
+    "https://huggingface.co/Qwen/Qwen3.5-4B",
+    "https://huggingface.co/YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx",
+    "https://huggingface.co/backups/Qwen3-Reranker-0.6B",
+    "https://huggingface.co/idah4/qwen3.5-4b-distilled/blob/1f78b48a7ec2f0063c93d31ae947128a7986c9f1/README.md",
+    "https://huggingface.co/jc-builds/Qwen3.5-4B-Q4_K_M-GGUF",
+    "https://huggingface.co/spaces/mteb/leaderboard",
+    "https://huggingface.co/tamikisg/multilingual-e5-small-coreml",
+    "https://huggingface.co/valindotai/embeddinggemma-300m-coreml",
+    "https://iclr.cc/media/iclr-2025/Slides/27651_t5OXGO4.pdf",
+    "https://john-hodge.com/blog/opentelemetry-genai-semantic-conventions",
+    "https://langchain-ai.github.io/langmem/concepts/conceptual_guide",
+    "https://langfuse.com",
+    "https://llmconfigurator.com/en/guides/coding-agents/tool-calling-local-models",
+    "https://machinelearning.apple.com/research/core-ml-on-device-llama",
+    "https://n8n.io/integrations/google-calendar/and/hubspot",
+    "https://n8n.io/workflows/18298-convert-seller-leads-into-listing-appointments-with-email-google-calendar-and-crm",
+    "https://n8nautomation.cloud/blog/n8n-google-calendar-integration-automate-scheduling-workflows",
+    "https://oh-bug.com/posts/agent-durable-execution-production-guide",
+    "https://openclawhub.tools/tutorial/how-to-use-docling-for-pdf-ocr-table-extraction-and-markdown-export-in-python",
+    "https://openreview.net/forum?id=zl3pfz4VCV",
+    "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans",
+    "https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools",
+    "https://pondero.ai/enterprise/guides/observability-agents-opentelemetry-genai",
+    "https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf",
+    "https://proceedings.iclr.cc/paper_files/paper/2026/file/fd1eff9dd295df50a41f2521942fa31d-Paper-Conference.pdf",
+    "https://pydantic.dev/articles/building-agentic-application.md",
+    "https://pydantic.dev/articles/pydantic-ai-v2",
+    "https://pydantic.dev/articles/pydantic-ai-v2?from_theconsensus=1",
+    "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview",
+    "https://pydantic.dev/docs/ai/capabilities/durable_execution/temporal",
+    "https://pydantic.dev/docs/ai/examples/sql-gen/index.md",
+    "https://pydantic.dev/docs/ai/guides/testing",
+    "https://pydantic.dev/docs/ai/harness",
+    "https://pydantic.dev/docs/ai/overview",
+    "https://pydantic.dev/pydantic-ai?featured_on=talkpython",
+    "https://python-a2a.readthedocs.io/en/latest/guides/mcp.html",
+    "https://python-a2a.readthedocs.io/en/stable/index.html",
+    "https://qubittool.com/blog/mcp-a2a-a2ui-protocol-stack-guide",
+    "https://qwen.readthedocs.io/en/stable/framework/function_call.html",
+    "https://qwenlm.github.io/blog/qwen3-embedding",
+    "https://qwenlm.github.io/qwen-code-docs/en/users/features/structured-output",
+    "https://rajsuyash.com/blog/n8n-google-calendar-integration.html",
+    "https://raw.githubusercontent.com/letta-ai/skills/main/letta/agent-development/SKILL.md",
+    "https://roiscale.ai/sites/roiscale/articles/c708654f-18c3-46fd-af00-964449f38e30/open-source-coding-agents-in-2026-i-pitted-aider-openhands-and-swe-agent",
+    "https://sqlite.org/c3ref/set_authorizer.html",
+    "https://www.aicodex.to/articles/compaction-on-demand",
+    "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+    "https://www.anthropic.com/engineering/harness-design-long-running-apps",
+    "https://www.anthropic.com/engineering/managed-agents",
+    "https://www.letta.com/blog/agent-memory",
+    "https://www.letta.com/blog/sleep-time-compute",
+    "https://www.mongodb.com/company/blog/product-release-announcements/powering-long-term-memory-for-agents-langgraph",
+    "https://www.promptfoo.dev/docs/tracing",
+    "https://www.sqlite.org/backup.html",
+    "https://www.sqlite.org/c3ref/stmt_readonly.html",
+    "https://www.sqlite.org/isolation.html",
+    "https://www.sqlite.org/lang_transaction.html",
+    "https://www.xcodebuildmcp.com",
+    "https://www.xcodebuildmcp.com/docs",
+    "https://www.youtube.com/watch?v=565Tf50PUrQ",
+    "https://www2.sqlite.org/c3ref/backup_finish.html",
+    "https://www2.sqlite.org/c3ref/set_authorizer.html",
+    "https://www2.sqlite.org/capi3ref.html",
+    "https://zylos.ai/research/2026-04-21-agent-context-compaction-long-running-sessions"
+  ],
+  "normalized_fetched_urls": [
+    "https://a2a-protocol.org/latest/specification",
+    "https://aclanthology.org/2024.acl-long.747",
+    "https://aclanthology.org/2024.tacl-1.9",
+    "https://ai.google.dev/gemma/docs/core/model_card_4",
+    "https://ai.google.dev/gemma/docs/embeddinggemma/model_card",
+    "https://aider.chat/docs/usage/lint-test.html",
+    "https://alembic.sqlalchemy.org/en/latest/batch.html",
+    "https://arxiv.org/abs/2504.19413",
+    "https://arxiv.org/abs/2508.21433",
+    "https://arxiv.org/abs/2607.25180",
+    "https://arxiv.org/abs/2608.15008",
+    "https://arxiv.org/abs/2608.22752",
+    "https://arxiv.org/abs/2609.03201",
+    "https://developer.apple.com/documentation/eventkit/accessing-calendar-using-eventkit-and-eventkitui",
+    "https://developer.apple.com/documentation/xcode/giving-agentic-coding-tools-access-to-xcode",
+    "https://developers.google.com/workspace/calendar/api/guides/create-events",
+    "https://developers.google.com/workspace/calendar/api/guides/sync",
+    "https://docs.astral.sh/uv/guides/projects",
+    "https://docs.langchain.com/oss/python/langgraph/durable-execution",
+    "https://docs.langchain.com/oss/python/langgraph/memory",
+    "https://docs.letta.com/guides/core-concepts/memory/memory-blocks/index.md",
+    "https://docs.n8n.io/sustainable-use-license",
+    "https://docs.ollama.com/capabilities/structured-outputs",
+    "https://docs.openhands.dev/sdk/guides/agent-server/overview",
+    "https://docs.pytest.org/en/stable/how-to/usage.html",
+    "https://github.com/docling-project/docling",
+    "https://github.com/embeddings-benchmark/mteb",
+    "https://github.com/embeddings-benchmark/mteb/issues/1314",
+    "https://github.com/getsentry/xcodebuildmcp/blob/main/docs/tools.md",
+    "https://github.com/getzep/graphiti",
+    "https://github.com/ggml-org/llama.cpp/blob/master/grammars/readme.md",
+    "https://github.com/groue/grdb.swift",
+    "https://github.com/john-rocky/coreml-llm",
+    "https://github.com/langfuse/langfuse",
+    "https://github.com/microsoft/markitdown",
+    "https://github.com/ml-explore/mlx-swift-lm",
+    "https://github.com/ml-explore/mlx-swift-lm/blob/3.31.4/libraries/mlxembedders/readme.md",
+    "https://github.com/ml-explore/mlx-swift-lm/blob/3.31.4/package.swift",
+    "https://github.com/ml-explore/mlx-swift-lm/blob/main/package.swift",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/312",
+    "https://github.com/ml-explore/mlx-swift-lm/releases/tag/3.31.4",
+    "https://github.com/n8n-io/n8n/issues/27297",
+    "https://github.com/ollama/ollama/issues/16563",
+    "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md",
+    "https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit",
+    "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+    "https://huggingface.co/Qwen/Qwen3.5-4B",
+    "https://huggingface.co/hotchpotch/bekko-embedding-v1-a25m",
+    "https://huggingface.co/intfloat/multilingual-e5-small",
+    "https://langchain-ai.github.io/langmem/concepts/conceptual_guide",
+    "https://modelcontextprotocol.io/specification/2025-11-25/server/tools",
+    "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans",
+    "https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf",
+    "https://pydantic.dev/docs/ai/capabilities/durable_execution/overview",
+    "https://sqlite-utils.datasette.io/en/stable/python-api.html",
+    "https://sqlite.org/c3ref/set_authorizer.html",
+    "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+    "https://www.anthropic.com/engineering/managed-agents"
+  ]
+}

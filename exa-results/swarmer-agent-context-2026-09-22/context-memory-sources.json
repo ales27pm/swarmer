@@ -1,0 +1,567 @@
+{
+  "scope": {
+    "as_of": "2026-09-22",
+    "six_month_start": "2026-03-22",
+    "language": "fr",
+    "target": "Swarmer custom FastAPI/SQLite runtime",
+    "no_inference_no_deployment": true
+  },
+  "accounting": {
+    "search_calls": 6,
+    "requested_results_per_call": 10,
+    "retrieval_slots": 60,
+    "returned_results": 60,
+    "exact_unique_search_urls": 60,
+    "primary_extract_fetches": 15,
+    "primary_logical_sources": 14,
+    "github_api_reads": 13,
+    "note": "URLs with tracking parameters or arXiv format/version variants are separate exact URLs but not independent sources. 10 core extracts plus 5 supplementary verification extracts; not 60 fully read sources."
+  },
+  "queries": [
+    {
+      "query": "Primary engineering articles from Anthropic on context engineering compaction durable structured notes long running agents published up to September 22 2026, including updates March 22 to September 22 2026",
+      "numResults": 10,
+      "results": [
+        {
+          "title": "Harness design for long-running application development \\ Anthropic",
+          "url": "https://www.anthropic.com/engineering/harness-design-long-running-apps?aid=rechn4YcJtAfIzqt6",
+          "published": "2026-03-24T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Scaling Managed Agents: Decoupling the brain from the hands \\ Anthropic",
+          "url": "https://www.anthropic.com/engineering/managed-agents?utm=",
+          "published": "2026-04-08T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Context engineering: memory, compaction, and tool clearing",
+          "url": "https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools",
+          "published": "2026-03-20T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Effective context engineering for AI agents",
+          "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+          "published": "2025-09-29T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Effective context engineering for AI agents \\ Anthropic",
+          "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents?email_hash=23463b99b62a72f26ed677cc556c44e8",
+          "published": "2025-09-29T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "feat(tool_use): add context engineering strategies cookbook",
+          "url": "https://github.com/anthropics/claude-cookbooks/pull/481",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Compaction on demand: summarizing a conversation when you decide, not when the API does — AI Codex",
+          "url": "https://www.aicodex.to/articles/compaction-on-demand",
+          "published": "2026-09-15T16:09:56.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Context Engineering for Agents | anthropics/claude-cookbooks | DeepWiki",
+          "url": "https://deepwiki.com/anthropics/claude-cookbooks/7.4-context-engineering-for-agents",
+          "published": "2026-08-20T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Context Management and Compaction | anthropics/claude-cookbooks | DeepWiki",
+          "url": "https://deepwiki.com/anthropics/claude-cookbooks/6.3-context-management-and-compaction",
+          "published": "2026-08-20T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Agent Context Compaction for Long-Running Sessions: Techniques and Tradeoffs | Zylos Research",
+          "url": "https://zylos.ai/research/2026-04-21-agent-context-compaction-long-running-sessions/",
+          "published": "2026-04-21T22:17:15.000Z",
+          "discovery_only": true
+        }
+      ]
+    },
+    {
+      "query": "Official Letta MemGPT memory blocks sleeptime agents documentation and LangGraph LangMem durable memory summarization documentation design limitations",
+      "numResults": 10,
+      "results": [
+        {
+          "title": "Index",
+          "url": "https://docs.letta.com/guides/core-concepts/memory/memory-blocks/index.md",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Memory | Letta Docs",
+          "url": "https://docs.letta.com/agent-sdk/memory/index.md",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Long-term Memory in LLM Applications",
+          "url": "https://langchain-ai.github.io/langmem/concepts/conceptual_guide/",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "N/A",
+          "url": "https://docs.letta.com/guides/core-concepts/memory/shared-memory/index.md",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Sleep-time Compute - Letta",
+          "url": "https://www.letta.com/blog/sleep-time-compute/",
+          "published": "2025-04-21T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "letta/letta-api-client/memory-architecture.md",
+          "url": "https://github.com/letta-ai/skills/blob/HEAD/letta/letta-api-client/memory-architecture.md",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Powering Long-Term Memory For Agents With LangGraph And ...",
+          "url": "https://www.mongodb.com/company/blog/product-release-announcements/powering-long-term-memory-for-agents-langgraph",
+          "published": "2025-08-19T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Agent Memory: How to Build Agents That Learn and Remember - Letta",
+          "url": "https://www.letta.com/blog/agent-memory/",
+          "published": "2025-07-07T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "N/A",
+          "url": "https://raw.githubusercontent.com/letta-ai/skills/main/letta/agent-development/SKILL.md",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Sleeptime Agents | letta-ai/letta-python | DeepWiki",
+          "url": "https://deepwiki.com/letta-ai/letta-python/12.3-sleeptime-agents",
+          "published": "2026-02-23T00:00:00.000Z",
+          "discovery_only": true
+        }
+      ]
+    },
+    {
+      "query": "Primary research papers LongMemEval LoCoMo long term agent memory benchmark Mem0 Zep Graphiti evaluation independent results",
+      "numResults": 10,
+      "results": [
+        {
+          "title": "LONGMEMEVAL:",
+          "url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory",
+          "url": "https://arxiv.org/html/2504.19413v1",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Cost and accuracy of long-term memory in Distributed Multi-Agent Systems based on Large Language Models",
+          "url": "https://arxiv.org/html/2601.07978v2",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Evaluating Very Long-Term Conversational Memory of LLM Agents",
+          "url": "https://aclanthology.org/anthology-files/anthology-files/pdf/acl/2024.acl-long.747.pdf",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Cost and Accuracy of Long-Term Memory in Distributed ...",
+          "url": "https://arxiv.org/html/2601.07978v4",
+          "published": "2026-07-13T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "LiCoMemory: Lightweight and Cognitive Agentic Memory for Efficient Long-Term Reasoning",
+          "url": "https://aclanthology.org/2026.findings-acl.1835.pdf",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "JJerryJi/LongMemEval-V2",
+          "url": "https://github.com/JJerryJi/LongMemEval-V2",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "LiCoMemory: Lightweight and Cognitive Agentic Memory for Efficient Long-Term Reasoning",
+          "url": "https://arxiv.org/html/2511.01448v1",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Locomo-Plus: Beyond-Factual Cognitive Memory Evaluation Framework for LLM Agents",
+          "url": "https://aclanthology.org/2026.acl-long.1150.pdf",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "RippleMem: From Isolated Retrieval to Associative Recollection for Long-Term Agent Memory",
+          "url": "https://arxiv.org/html/2608.13334v1",
+          "published": "N/A",
+          "discovery_only": true
+        }
+      ]
+    },
+    {
+      "query": "Research paper observation masking versus LLM summarization agent context management software engineering long horizon lost in the middle latest March 22 September 22 2026",
+      "numResults": 10,
+      "results": [
+        {
+          "title": "The Complexity Trap: Simple Observation Masking Is as ...",
+          "url": "https://arxiv.org/abs/2508.21433",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management",
+          "url": "https://arxiv.org/html/2508.21433",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Simple Observation Masking Is as Efficient as LLM ...",
+          "url": "https://arxiv.org/pdf/2508.21433",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management",
+          "url": "https://doi.org/10.48550/arxiv.2508.21433",
+          "published": "2025-08-29T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[2606.00408] Masking Stale Observations Helps Search Agents -- Until It Doesn't: A Regime Map and Its Mechanism",
+          "url": "https://arxiv.org/abs/2606.00408",
+          "published": "2026-05-29T01:57:03.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Context as a Tool: Context Management for Long-Horizon SWE-Agents",
+          "url": "https://aclanthology.org/2026.findings-acl.1032.pdf",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "JetBrains-Research/the-complexity-trap",
+          "url": "https://github.com/JetBrains-Research/the-complexity-trap",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "SWE-MeM: Learning Adaptive Memory Management for Long-Horizon Coding Agents",
+          "url": "https://arxiv.org/html/2606.28434",
+          "published": "2026-06-26T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "ACM: Agentic Context Management for Long Horizon Tasks",
+          "url": "https://arxiv.org/pdf/2607.23809",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "SmoothAgent: Efficient Long-Horizon LLM-Based Agent Serving with Lookahead Context Engineering",
+          "url": "https://arxiv.org/pdf/2607.00151",
+          "published": "N/A",
+          "discovery_only": true
+        }
+      ]
+    },
+    {
+      "query": "Maintainer GitHub issues Letta mem0 Graphiti LangMem memory extraction deduplication wrong memories compaction context overflow race conditions",
+      "numResults": 10,
+      "results": [
+        {
+          "title": "fix: detect and resolve conflicting memories during ADD extraction",
+          "url": "https://github.com/mem0ai/mem0/pull/6017",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "resolve_extracted_nodes sends all graph nodes to LLM — O(n) context growth causes max_tokens failures at scale",
+          "url": "https://github.com/getzep/graphiti/issues/1275",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Post-step compaction uses inflated context_token_estimate (total_tokens includes output), causing redundant compaction passes",
+          "url": "https://github.com/letta-ai/letta/issues/3242",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Critical: System-reminder injection causes context overflow loops · Issue #1224 · letta-ai/letta-code",
+          "url": "https://github.com/letta-ai/letta-code/issues/1224",
+          "published": "2026-03-01T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "97.8% were junk · Issue #4573 · mem0ai/mem0",
+          "url": "https://github.com/mem0ai/mem0/issues/4573",
+          "published": "2026-03-27T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "fix(proxy): stop _prepare_messages from aliasing caller messages",
+          "url": "https://github.com/mem0ai/mem0/pull/7082",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Feature: behavioral fingerprint hook at in-context → archival eviction boundary to detect and recover ghost vocabulary · Issue #3259 · letta-ai/letta",
+          "url": "https://github.com/letta-ai/letta/issues/3259",
+          "published": "2026-03-29T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[Bug]: Cross-Session State Leakage via Persistent Core Memory Poisoning (Sandbox Isolation Failure)",
+          "url": "https://github.com/letta-ai/letta/issues/3388",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "Memory context limit exceeded · Issue #957 · letta-ai/letta",
+          "url": "https://github.com/letta-ai/letta/issues/957",
+          "published": "2024-02-06T05:16:45.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "fix: clean up graph store data on Memory.delete() · Pull Request #4505 · mem0ai/mem0",
+          "url": "https://github.com/mem0ai/mem0/pull/4505",
+          "published": "2026-03-23T00:00:00.000Z",
+          "discovery_only": true
+        }
+      ]
+    },
+    {
+      "query": "Primary new research agent structured durable memory compaction retrieval benchmark failure cases published March 22 2026 through September 22 2026",
+      "numResults": 10,
+      "results": [
+        {
+          "title": "[2609.08279] What Eviction Destroys: A Restore-Counterfactual Audit of Forgetting in Agent Memory",
+          "url": "https://arxiv.org/abs/2609.08279",
+          "published": "2026-09-08T06:22:29.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[2608.20400] When Retrieval Fails Before It Begins: Structurally Indirect Prerequisite Eviction as a Retention Failure in Agentic Memory",
+          "url": "https://arxiv.org/abs/2608.20400",
+          "published": "2026-07-05T02:40:34.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "Structured Belief State and the First Precision-Aware Evaluation of LLM Memory Retrieval",
+          "url": "https://arxiv.org/html/2605.11325v4",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "The Compaction Cliff in Long-Running AI Agent Memory",
+          "url": "https://arxiv.org/html/2608.22752",
+          "published": "N/A",
+          "discovery_only": true
+        },
+        {
+          "title": "[2609.10413] Fortunate Recall: Ontology-Driven Memory Lifecycle Management for Persistent Coherence in LLMs",
+          "url": "https://arxiv.org/abs/2609.10413",
+          "published": "2026-09-09T05:42:04.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "The Compaction Cliff in Long-Running AI Agent Memory",
+          "url": "https://arxiv.org/html/2608.22752v1",
+          "published": "2026-08-24T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[2609.03201] MemoryLACE: Memory Lifecycle-Aware Consolidation and Evidence Retrieval",
+          "url": "https://arxiv.org/abs/2609.03201",
+          "published": "2026-09-02T04:54:15.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[2609.09778] ROAM: Robust Organization of Atomic Memories for Agents through Semantic Relations",
+          "url": "https://arxiv.org/abs/2609.09778",
+          "published": "2026-09-09T06:12:11.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[2606.24775] Are We Ready For An Agent-Native Memory System?",
+          "url": "https://arxiv.org/abs/2606.24775",
+          "published": "2026-06-23T00:00:00.000Z",
+          "discovery_only": true
+        },
+        {
+          "title": "[2609.16053] Retrieval-Driven Memory Reconsolidation for Long-Term LLM Agents",
+          "url": "https://arxiv.org/abs/2609.16053",
+          "published": "2026-09-13T18:02:20.000Z",
+          "discovery_only": true
+        }
+      ]
+    }
+  ],
+  "fetched_sources": [
+    {
+      "id": "S01",
+      "title": "Scaling Managed Agents: Decoupling the brain from the hands \\ Anthropic",
+      "url": "https://www.anthropic.com/engineering/managed-agents",
+      "extracted_characters": 13243,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": "2026-04-08",
+      "publication_date_note": null
+    },
+    {
+      "id": "S02",
+      "title": "(no title)",
+      "url": "https://docs.letta.com/guides/core-concepts/memory/memory-blocks/index.md",
+      "extracted_characters": 15000,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    },
+    {
+      "id": "S03",
+      "title": "Core Concepts",
+      "url": "https://langchain-ai.github.io/langmem/concepts/conceptual_guide/",
+      "extracted_characters": 16001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    },
+    {
+      "id": "S04",
+      "title": "Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory",
+      "url": "https://arxiv.org/html/2504.19413v1",
+      "extracted_characters": 16001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    },
+    {
+      "id": "S05",
+      "title": "getzep/graphiti",
+      "url": "https://github.com/getzep/graphiti",
+      "extracted_characters": 16001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    },
+    {
+      "id": "S06",
+      "title": "LONGMEMEVAL:",
+      "url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/d813d324dbf0598bbdc9c8e79740ed01-Paper-Conference.pdf",
+      "extracted_characters": 14001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    },
+    {
+      "id": "S07",
+      "title": "Evaluating Very Long-Term Conversational Memory of LLM Agents - ACL Anthology",
+      "url": "https://aclanthology.org/2024.acl-long.747/",
+      "extracted_characters": 1711,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": "2024",
+      "publication_date_note": null
+    },
+    {
+      "id": "S08",
+      "title": "The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management",
+      "url": "https://arxiv.org/html/2508.21433",
+      "extracted_characters": 14001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    },
+    {
+      "id": "S09",
+      "title": "The Compaction Cliff in Long-Running AI Agent Memory",
+      "url": "https://arxiv.org/html/2608.22752v1",
+      "extracted_characters": 14001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": "Search indicates August 2026, exact submission date not independently confirmed. Article footer refers to future November conference; no claim of already published proceedings."
+    },
+    {
+      "id": "S10",
+      "title": "[2609.03201] MemoryLACE: Memory Lifecycle-Aware Consolidation and Evidence Retrieval",
+      "url": "https://arxiv.org/abs/2609.03201",
+      "extracted_characters": 4870,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": "2026-09-02",
+      "publication_date_note": null
+    },
+    {
+      "id": "S11",
+      "title": "[2608.15008] Harness the Memory: A Holistic Evaluation of Memory Substrates in Memory Agents",
+      "url": "https://arxiv.org/abs/2608.15008",
+      "extracted_characters": 2307,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": "2026-08-15",
+      "publication_date_note": null
+    },
+    {
+      "id": "S12",
+      "title": "The Compaction Cliff in Long-Running AI Agent Memory",
+      "url": "https://arxiv.org/abs/2608.22752",
+      "extracted_characters": 6001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": "Search indicates August 2026, exact submission date not independently confirmed. Article footer refers to future November conference; no claim of already published proceedings."
+    },
+    {
+      "id": "S13",
+      "title": "Lost in the Middle: How Language Models Use Long Contexts - ACL Anthology",
+      "url": "https://aclanthology.org/2024.tacl-1.9/",
+      "extracted_characters": 2137,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": "2024",
+      "publication_date_note": null
+    },
+    {
+      "id": "S14",
+      "title": "Effective context engineering for AI agents \\ Anthropic",
+      "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+      "extracted_characters": 16001,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": "2025-09-29",
+      "publication_date_note": null
+    },
+    {
+      "id": "S15",
+      "title": "Memory overview",
+      "url": "https://docs.langchain.com/oss/python/langgraph/memory",
+      "extracted_characters": 15847,
+      "read_scope": "Retrieved extract; may be truncated, not a claim of full-paper review.",
+      "verified_publication_date": null,
+      "publication_date_note": null
+    }
+  ],
+  "github_evidence_file": "context-memory-github.json",
+  "exclusions": [
+    "DeepWiki, SEO roundups and other secondary pages not used for technical conclusions.",
+    "Search publication dates not trusted when inconsistent with arXiv ID or future conference footer.",
+    "No present-day efficacy claim inferred from GitHub stars, issue count or recent push alone."
+  ],
+  "evidence_quality": [
+    "Mem0 and vendor engineering results are author/vendor claims, not independent replication.",
+    "LongMemEval and LoCoMo are published research benchmarks with tasks different from executable Swarmer work.",
+    "Harness the Memory and MemoryLACE are research candidates; abstract-level methods/results read, not independently replicated.",
+    "Issue reports are firsthand anecdotes; maintainer comments may describe hosted products and are not proof current OSS code fixes the reported issue."
+  ]
+}

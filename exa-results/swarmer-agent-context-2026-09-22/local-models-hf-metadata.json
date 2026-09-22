@@ -1,0 +1,103 @@
+[
+  {
+    "id": "intfloat/multilingual-e5-small",
+    "sha": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+    "lastModified": "2026-04-02T02:16:05.000Z",
+    "gated": false,
+    "license": "mit",
+    "safetensors": {
+      "parameters": {
+        "I64": 512,
+        "F32": 117653760
+      },
+      "total": 117654272
+    },
+    "pipeline_tag": "sentence-similarity"
+  },
+  {
+    "id": "google/embeddinggemma-300m",
+    "sha": "57c266a740f537b4dc058e1b0cda161fd15afa75",
+    "lastModified": "2025-09-25T15:11:17.000Z",
+    "gated": "manual",
+    "license": "gemma",
+    "safetensors": {
+      "parameters": {
+        "F32": 302863104
+      },
+      "total": 302863104
+    },
+    "pipeline_tag": "sentence-similarity"
+  },
+  {
+    "id": "Qwen/Qwen3-Embedding-0.6B",
+    "sha": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "lastModified": "2026-04-20T02:45:58.000Z",
+    "gated": false,
+    "license": "apache-2.0",
+    "safetensors": {
+      "parameters": {
+        "BF16": 595776512
+      },
+      "total": 595776512
+    },
+    "pipeline_tag": "feature-extraction"
+  },
+  {
+    "id": "Qwen/Qwen3-Reranker-0.6B",
+    "sha": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
+    "lastModified": "2026-04-16T08:55:59.000Z",
+    "gated": false,
+    "license": "apache-2.0",
+    "safetensors": {
+      "parameters": {
+        "BF16": 595776512
+      },
+      "total": 595776512
+    },
+    "pipeline_tag": "text-ranking"
+  },
+  {
+    "id": "Qwen/Qwen3.5-4B",
+    "sha": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+    "lastModified": "2026-03-02T00:52:52.000Z",
+    "gated": false,
+    "license": "apache-2.0",
+    "safetensors": {
+      "parameters": {
+        "BF16": 4659861248,
+        "F32": 3840
+      },
+      "total": 4659865088
+    },
+    "pipeline_tag": "image-text-to-text"
+  },
+  {
+    "id": "Qwen/Qwen3-4B-MLX-4bit",
+    "sha": "52a5ab34fa604bc8af6d3ce0cac0cab10b7eb495",
+    "lastModified": "2025-08-29T08:19:39.000Z",
+    "gated": false,
+    "license": "apache-2.0",
+    "safetensors": {
+      "parameters": {
+        "U32": 4022272000,
+        "BF16": 196096
+      },
+      "total": 4022468096
+    },
+    "pipeline_tag": "text-generation"
+  },
+  {
+    "id": "google/gemma-4-E4B-it",
+    "sha": "ee0ef6023621cff504d758262d4e04895a5af4a2",
+    "lastModified": "2026-07-20T16:42:03.000Z",
+    "gated": false,
+    "license": "apache-2.0",
+    "safetensors": {
+      "parameters": {
+        "BF16": 7996156490
+      },
+      "total": 7996156490
+    },
+    "pipeline_tag": "any-to-any"
+  }
+]

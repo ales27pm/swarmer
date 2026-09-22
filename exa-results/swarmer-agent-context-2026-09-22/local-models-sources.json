@@ -1,0 +1,209 @@
+{
+  "as_of": "2026-09-22",
+  "axis": "local-models-runtime-embeddings",
+  "search_queries": [
+    {
+      "id": "embedding",
+      "query": "Official model cards and benchmarks for small multilingual text embedding and reranker models that can run locally on iPhone MLX Core ML or Ubuntu, Qwen3 Embedding 0.6B multilingual E5 small EmbeddingGemma 2025 2026",
+      "objective": "Prioritize original Hugging Face model cards, authors' papers and Apple MLX documentation. Identify model size, license, French performance evidence, context limit, reranker suitability. Exclude affiliate roundups; do not infer iPhone support from desktop MLX.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://ai.google.dev/gemma/docs/embeddinggemma/model_card",
+        "https://github.com/QwenLM/Qwen3-Embedding?tab=readme-ov-file",
+        "https://huggingface.co/tamikisg/multilingual-e5-small-coreml",
+        "https://arxiv.org/pdf/2506.05176",
+        "https://qwenlm.github.io/blog/qwen3-embedding/",
+        "https://arxiv.org/pdf/2509.20354v3.pdf",
+        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF",
+        "https://huggingface.co/valindotai/embeddinggemma-300m-coreml",
+        "https://huggingface.co/backups/Qwen3-Reranker-0.6B",
+        "https://huggingface.co/NeuralMetrics/Qwen3-Embedding-0.6B"
+      ]
+    },
+    {
+      "id": "mobile",
+      "query": "Official Apple and MLX Swift documentation repositories local LLM embeddings iPhone Core ML MLX GGUF llama.cpp constraints tokenization KV cache prompt caching 2026",
+      "objective": "Prioritize mlx-swift-lm, mlx-swift-examples, llama.cpp, Apple developer docs, CoreMLTools and model author primary sources. Extract actual iOS support, memory/context constraints and maintained tools as of September 22 2026.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://github.com/ekryski/mlx-swift-lm",
+        "https://developer.apple.com/videos/play/wwdc2025/298/",
+        "https://machinelearning.apple.com/research/core-ml-on-device-llama",
+        "https://github.com/john-rocky/CoreML-LLM/blob/b3dff6c60be4b0ec7ed253c96e885cc0997813ce/README.md",
+        "https://github.com/dpearson2699/swift-ios-skills/blob/HEAD/skills/apple-on-device-ai/references/mlx-swift.md",
+        "https://github.com/dpearson2699/swift-ios-skills/blob/cf3fe879a7a1f5d8cbe074032eea24c43fe55997/skills/apple-on-device-ai/SKILL.md",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/702e5a0e/skills/mlx-swift-lm/SKILL.md",
+        "https://github.com/rogelioRuiz/dust-llm-swift",
+        "https://github.com/ghost-in-the-droid/android-agent/blob/a8dde57f/docs/ios/ONDEVICE_LLM.md",
+        "https://github.com/osaurus-ai/vmlx-swift/"
+      ]
+    },
+    {
+      "id": "benchmarks",
+      "query": "category:research paper evaluating multilingual retrieval embeddings long context agent memory factual provenance compaction benchmarks 2025 2026",
+      "objective": "Find primary research and benchmark repositories for retrieval and agent memory eval, MTEB MMTEB LongMemEval, context compaction fidelity and latency. Distinguish paper benchmark claims from deployed iPhone measurements.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://arxiv.org/html/2603.12572v6",
+        "https://aclanthology.org/2026.findings-acl.1408.pdf",
+        "https://proceedings.iclr.cc/paper_files/paper/2026/file/fd1eff9dd295df50a41f2521942fa31d-Paper-Conference.pdf",
+        "https://arxiv.org/pdf/2608.29606.pdf",
+        "https://arxiv.org/pdf/2608.15008",
+        "https://arxiv.org/pdf/2602.17913",
+        "https://aclanthology.org/2026.eacl-long.290.pdf",
+        "https://aclanthology.org/2026.acl-long.1150.pdf",
+        "https://arxiv.org/html/2607.25180v1",
+        "https://arxiv.org/abs/2608.22137"
+      ]
+    },
+    {
+      "id": "local-routing",
+      "query": "GitHub official documentation local LLM structured tool calling JSON schema grammar constrained generation Qwen3 Coder MLX llama.cpp Ollama context memory 2026",
+      "objective": "Find primary docs model cards repositories on reliable local tool calling structured outputs, tokenizer token budgets, tool/result separation, limitations and schema constraints. Prioritize low-integration-cost improvements for existing FastAPI custom agent runtime.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://github.com/ollama/ollama/blob/main/docs/capabilities/tool-calling.mdx",
+        "https://qwenlm.github.io/qwen-code-docs/en/users/features/structured-output/",
+        "https://github.com/QwenLM/Qwen3-Coder/",
+        "https://github.com/QwenLM/Qwen3/blob/main/docs/source/framework/function%5Fcall.md",
+        "https://qwen.readthedocs.io/en/stable/framework/function_call.html",
+        "https://github.com/ollama/ollama/issues/16563",
+        "https://github.com/nuxlear/llama.cpp/blob/374101fd742bb35cb9bf46c86836e54d51191ffd/docs/function-calling.md",
+        "https://github.com/QwenLM/Qwen3-Coder?tab=readme-ov-file",
+        "https://github.com/nobottomline/ullm",
+        "https://llmconfigurator.com/en/guides/coding-agents/tool-calling-local-models"
+      ]
+    },
+    {
+      "id": "embedding-eval",
+      "query": "Official multilingual MTEB MMTEB embedding benchmark GitHub 2026 French retrieval leaderboard embedding models evaluation limitations",
+      "objective": "Find maintained primary benchmark repo, task/language coverage and reproducibility. Prioritize original project over copied scoreboards.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://github.com/embeddings-benchmark/mteb?tab=readme-ov-file",
+        "https://github.com/embeddings-benchmark/mteb/issues/1314",
+        "https://arxiv.org/html/2502.13595v3",
+        "https://github.com/embeddings-benchmark/mteb/",
+        "https://huggingface.co/spaces/mteb/leaderboard",
+        "https://openreview.net/forum?id=zl3pfz4VCV",
+        "https://github.com/embeddings-benchmark/mteb/blob/cd182883/README.md",
+        "https://iclr.cc/media/iclr-2025/Slides/27651_t5OXGO4.pdf",
+        "https://github.com/embeddings-benchmark",
+        "https://github.com/embeddings-benchmark/mteb/blob/cd182883/mteb/leaderboard/text_segments.py"
+      ]
+    },
+    {
+      "id": "mobile-limits",
+      "query": "MLX Swift iOS embedding models guided generation GitHub issues memory token cache Swift 6.2 3.31.4 Core ML 2026",
+      "objective": "Find maintainer documents or firsthand issues on MLXEmbedders MLXGuidedGeneration, package requirements, grammar support and iPhone memory. Exclude instruction-only skill repos and forks when upstream exists.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://github.com/ml-explore/mlx-swift-lm/releases/tag/3.31.4",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/312",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/84",
+        "https://github.com/ml-explore/mlx-swift-lm",
+        "https://github.com/llm-case-studies/iHomeNerd/blob/main/docs/MLX_MODEL_SWITCH_MEMORY_RECIPE.md",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/main/skills/mlx-swift-lm/references/kv-cache.md",
+        "https://dev.to/software_mvp-factory/wiring-mlx-to-swift-running-fine-tuned-models-on-apple-silicon-with-zero-coreml-overhead-1d8i",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/282",
+        "https://github.com/dpearson2699/swift-ios-skills/blob/HEAD/skills/apple-on-device-ai/references/mlx-swift.md",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/233"
+      ]
+    },
+    {
+      "id": "small-models",
+      "query": "Official model cards local agentic tool calling compact 3B 4B models Qwen3.5 4B Gemma 4 Dolphin iPhone MLX 2026",
+      "objective": "Identify credible comparison candidates for existing Dolphin3.0 Llama3.2 3B iPhone model, bounded 3-5B focus. Prefer authors HF/model docs incl license and hardware caveats. No leaderboard superiority without matching eval.",
+      "numResults": 10,
+      "returned_urls": [
+        "https://huggingface.co/Qwen/Qwen3.5-4B",
+        "https://ai.google.dev/gemma/docs/core/model_card_4",
+        "https://huggingface.co/Qwen/Qwen3-4B",
+        "https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit",
+        "https://huggingface.co/YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx",
+        "https://github.com/john-rocky/CoreML-LLM",
+        "https://huggingface.co/idah4/qwen3.5-4b-distilled/blob/1f78b48a7ec2f0063c93d31ae947128a7986c9f1/README.md",
+        "https://huggingface.co/jc-builds/Qwen3.5-4B-Q4_K_M-GGUF",
+        "https://github.com/john-rocky/coreml-llm",
+        "https://github.com/carolinacherry/local-ai"
+      ]
+    },
+    {
+      "id": "integration-gaps",
+      "query": "Official OpenTelemetry GenAI semantic conventions current moved specification agent tool retrieval spans 2026 and Google Calendar API incremental synchronization custom event IDs documentation",
+      "objective": "Close primary documentation gaps in observability and agenda",
+      "numResults": 10,
+      "returned_urls": [
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-spans.md",
+        "https://github.com/open-telemetry/semantic-conventions-genai/tree/main/model/gen-ai",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/README.md",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md",
+        "https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/",
+        "https://pondero.ai/enterprise/guides/observability-agents-opentelemetry-genai/",
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/b028dceecdad117461a785c3af35315e7184e813/docs/gen-ai/non-normative/examples-llm-calls.md",
+        "https://john-hodge.com/blog/opentelemetry-genai-semantic-conventions/",
+        "https://dev.to/azena-ai/opentelemetrys-genai-semantic-conventions-are-not-stable-yet-heres-what-actually-shipped-in-2026-3mke"
+      ]
+    }
+  ],
+  "search_result_slots_requested": 80,
+  "search_results_returned": 80,
+  "fetches": [
+    {
+      "key": "root_fetch_1",
+      "urls": [
+        "https://github.com/ml-explore/mlx-swift-lm",
+        "https://ai.google.dev/gemma/docs/embeddinggemma/model_card",
+        "https://huggingface.co/intfloat/multilingual-e5-small",
+        "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B"
+      ]
+    },
+    {
+      "key": "root_second_0",
+      "urls": [
+        "https://github.com/john-rocky/CoreML-LLM",
+        "https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md",
+        "https://docs.ollama.com/capabilities/structured-outputs",
+        "https://github.com/ollama/ollama/issues/16563"
+      ]
+    },
+    {
+      "key": "root_fetch_3",
+      "urls": [
+        "https://github.com/ml-explore/mlx-swift-lm/releases/tag/3.31.4",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/3.31.4/Package.swift",
+        "https://github.com/ml-explore/mlx-swift-lm/issues/312",
+        "https://github.com/embeddings-benchmark/mteb/issues/1314"
+      ]
+    },
+    {
+      "key": "root_fetch_4",
+      "urls": [
+        "https://huggingface.co/Qwen/Qwen3.5-4B",
+        "https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit",
+        "https://ai.google.dev/gemma/docs/core/model_card_4",
+        "https://github.com/embeddings-benchmark/mteb"
+      ]
+    },
+    {
+      "key": "root_fetch_5",
+      "urls": [
+        "https://arxiv.org/abs/2607.25180",
+        "https://huggingface.co/hotchpotch/bekko-embedding-v1-a25m",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/main/Package.swift",
+        "https://github.com/ml-explore/mlx-swift-lm/blob/3.31.4/Libraries/MLXEmbedders/README.md"
+      ]
+    },
+    {
+      "key": "root_fetch_6",
+      "urls": [
+        "https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md",
+        "https://developers.google.com/workspace/calendar/api/guides/sync",
+        "https://developers.google.com/workspace/calendar/api/guides/create-events",
+        "https://developer.apple.com/documentation/eventkit/accessing-calendar-using-eventkit-and-eventkitui"
+      ]
+    }
+  ],
+  "notes": "Search result slots include duplicates, forks and rejected secondary sources. Fetch content is bounded; these are pages inspected, not full papers read in entirety."
+}

@@ -1,0 +1,458 @@
+[
+  {
+    "url": "https://api.github.com/repos/letta-ai/letta",
+    "data": {
+      "full_name": "letta-ai/letta",
+      "html_url": "https://github.com/letta-ai/letta",
+      "description": "Platform for stateful agents: AI with advanced memory that can learn and self-improve over time.",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-10T17:59:08Z",
+      "updated_at": "2026-09-22T10:38:12Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "open_issues_count": 0
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/mem0ai/mem0",
+    "data": {
+      "full_name": "mem0ai/mem0",
+      "html_url": "https://github.com/mem0ai/mem0",
+      "description": "The Memory Layer for AI Agents - Drop-in memory infrastructure for AI agents and apps. Context that persists. Built for production.",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-21T15:41:34Z",
+      "updated_at": "2026-09-22T11:37:19Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "open_issues_count": 766
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/getzep/graphiti",
+    "data": {
+      "full_name": "getzep/graphiti",
+      "html_url": "https://github.com/getzep/graphiti",
+      "description": "Build Real-Time Knowledge Graphs for AI Agents",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-21T19:49:00Z",
+      "updated_at": "2026-09-22T11:21:04Z",
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      },
+      "open_issues_count": 500
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/langchain-ai/langmem",
+    "data": {
+      "full_name": "langchain-ai/langmem",
+      "html_url": "https://github.com/langchain-ai/langmem",
+      "description": null,
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-09T06:44:43Z",
+      "updated_at": "2026-09-22T08:40:08Z",
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "open_issues_count": 66
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/langchain-ai/langgraph",
+    "data": {
+      "full_name": "langchain-ai/langgraph",
+      "html_url": "https://github.com/langchain-ai/langgraph",
+      "description": "Build resilient agents.",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-21T21:00:44Z",
+      "updated_at": "2026-09-22T11:37:32Z",
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      },
+      "open_issues_count": 809
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/getzep/graphiti/issues/1275",
+    "data": {
+      "html_url": "https://github.com/getzep/graphiti/issues/1275",
+      "title": "resolve_extracted_nodes sends all graph nodes to LLM — O(n) context growth causes max_tokens failures at scale",
+      "state": "open",
+      "created_at": "2026-02-26T11:02:04Z",
+      "updated_at": "2026-02-26T11:02:04Z",
+      "closed_at": null,
+      "author_association": "NONE",
+      "comments": 0,
+      "body_sha256": "c2b511c33bd6b0d069ae63efcff2d43b19534476f651e5a50d247402c30c1384",
+      "body_read_in_research": true
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/letta-ai/letta/issues/3242",
+    "data": {
+      "html_url": "https://github.com/letta-ai/letta/issues/3242",
+      "title": "Post-step compaction uses inflated context_token_estimate (total_tokens includes output), causing redundant compaction passes",
+      "state": "closed",
+      "created_at": "2026-03-23T06:31:14Z",
+      "updated_at": "2026-08-08T02:15:31Z",
+      "closed_at": "2026-08-08T02:15:31Z",
+      "author_association": "NONE",
+      "comments": 9,
+      "body_sha256": "5807a70e720797d5eced93386b0ea41a74ed460e7862267e94719b57452929b1",
+      "body_read_in_research": true
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/mem0ai/mem0/issues/4573",
+    "data": {
+      "html_url": "https://github.com/mem0ai/mem0/issues/4573",
+      "title": "What we found after auditing 10,134 mem0 entries: 97.8% were junk",
+      "state": "closed",
+      "created_at": "2026-03-27T21:14:04Z",
+      "updated_at": "2026-09-16T06:53:59Z",
+      "closed_at": "2026-06-05T11:59:03Z",
+      "author_association": "NONE",
+      "comments": 24,
+      "body_sha256": "09b762a6d31889392db6a4311704add5f84469343ebf9a3db519d59fbf218c8d",
+      "body_read_in_research": true
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/mem0ai/mem0/issues/4505",
+    "data": {
+      "html_url": "https://github.com/mem0ai/mem0/pull/4505",
+      "title": "fix: clean up graph store data on Memory.delete()",
+      "state": "closed",
+      "created_at": "2026-03-23T12:48:04Z",
+      "updated_at": "2026-03-23T13:57:44Z",
+      "closed_at": "2026-03-23T13:57:38Z",
+      "author_association": "CONTRIBUTOR",
+      "comments": 1,
+      "body_sha256": "c86314c0922c225980f5142f2c7f7bd061fd26606e84d30f2dfa52ea53d6b331",
+      "body_read_in_research": true
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/getzep/graphiti/issues/1275/comments",
+    "data": []
+  },
+  {
+    "url": "https://api.github.com/repos/letta-ai/letta/issues/3242/comments",
+    "data": [
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4108374120",
+        "created_at": "2026-03-23T06:41:56Z",
+        "updated_at": "2026-03-23T06:41:56Z",
+        "author_association": "NONE",
+        "body_sha256": "55e8c81f66448ed48c6e554e587e23fbc697ea56c6602684cfd7a3f7d907aec8",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4301314406",
+        "created_at": "2026-04-23T02:21:22Z",
+        "updated_at": "2026-04-23T02:21:22Z",
+        "author_association": "CONTRIBUTOR",
+        "body_sha256": "f75ffdf96d33818892415bd771fbf4b464da54d7e13626cc495318974eaf07a2",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4337305336",
+        "created_at": "2026-04-28T16:43:21Z",
+        "updated_at": "2026-04-28T16:43:21Z",
+        "author_association": "NONE",
+        "body_sha256": "cf1d0b4cfaa4589330493cf2d65019efdd91060fa8cb41bd643ac3b1ec6b4ffc",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4337615291",
+        "created_at": "2026-04-28T17:18:55Z",
+        "updated_at": "2026-04-28T17:18:55Z",
+        "author_association": "NONE",
+        "body_sha256": "75bc82f8986e9213e3259de0f664025d9b89816b0cf40fd648fe49088c39e231",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4528941895",
+        "created_at": "2026-05-24T13:57:52Z",
+        "updated_at": "2026-05-24T13:57:52Z",
+        "author_association": "NONE",
+        "body_sha256": "82958a288875987d0fc5ddb6db246cc979a951c92389c78ecce1f68dcd079289",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4540620735",
+        "created_at": "2026-05-26T05:40:18Z",
+        "updated_at": "2026-05-26T05:40:18Z",
+        "author_association": "NONE",
+        "body_sha256": "fe0e7068f113829e9d03f6645b71cac0f7996f0facb53edd00de4f21165700a7",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-4689022484",
+        "created_at": "2026-06-12T08:13:12Z",
+        "updated_at": "2026-06-24T01:09:16Z",
+        "author_association": "NONE",
+        "body_sha256": "fdddafb692f460f52f111088a05b1f591cf027e99aba397ead5cced3e3662ed1",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-5065510040",
+        "created_at": "2026-07-24T02:19:37Z",
+        "updated_at": "2026-07-24T02:19:37Z",
+        "author_association": "CONTRIBUTOR",
+        "body_sha256": "f75ffdf96d33818892415bd771fbf4b464da54d7e13626cc495318974eaf07a2",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/letta-ai/letta/issues/3242#issuecomment-5224033912",
+        "created_at": "2026-08-08T02:15:31Z",
+        "updated_at": "2026-08-08T02:15:31Z",
+        "author_association": "CONTRIBUTOR",
+        "body_sha256": "91798db8b9254c0cfdc78af71e0bad048886894908edb829cee7893e96719a64",
+        "body_read_in_research": true
+      }
+    ]
+  },
+  {
+    "url": "https://api.github.com/repos/mem0ai/mem0/issues/4573/comments",
+    "data": [
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4145910922",
+        "created_at": "2026-03-27T23:29:05Z",
+        "updated_at": "2026-03-27T23:29:05Z",
+        "author_association": "NONE",
+        "body_sha256": "55b0ae621b6e5bd43f6d92f2c67e864fb65a4ed3290e3a02a293e601c5e0cb43",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4146341455",
+        "created_at": "2026-03-28T01:49:28Z",
+        "updated_at": "2026-03-28T01:49:28Z",
+        "author_association": "NONE",
+        "body_sha256": "81364f4739f47c4fcbc48dff6ec37cd7e267100b1ba02c7ee230b60303780266",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4149509702",
+        "created_at": "2026-03-29T05:55:54Z",
+        "updated_at": "2026-03-29T05:55:54Z",
+        "author_association": "NONE",
+        "body_sha256": "3a6bddfc00af864371c4068143ba7910bf33aaf86f625f0cb80cfa3aac1687da",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4149756085",
+        "created_at": "2026-03-29T09:11:10Z",
+        "updated_at": "2026-03-29T09:11:10Z",
+        "author_association": "NONE",
+        "body_sha256": "77159dddc2fde757a59e7568b700575230c3d2a056c1241ca1bf7d45f3161c54",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4149758276",
+        "created_at": "2026-03-29T09:12:39Z",
+        "updated_at": "2026-03-29T09:12:39Z",
+        "author_association": "NONE",
+        "body_sha256": "fc050158ec9724a843fef2c7922631757d43db3162dd6ed6cfbd4b01a45b192e",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4151196377",
+        "created_at": "2026-03-29T22:15:29Z",
+        "updated_at": "2026-03-29T22:15:29Z",
+        "author_association": "NONE",
+        "body_sha256": "9c9e4eacc45b651fa6775a6363abd697bebaec90a052a84de149c10cf85401ac",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4151477066",
+        "created_at": "2026-03-30T00:41:12Z",
+        "updated_at": "2026-03-30T00:41:12Z",
+        "author_association": "NONE",
+        "body_sha256": "4f089adfc9bf2c78e3ef4eb52c4b96b50852a26dca3adc67575bb70fe45839a2",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4151726285",
+        "created_at": "2026-03-30T02:25:31Z",
+        "updated_at": "2026-03-30T02:25:31Z",
+        "author_association": "NONE",
+        "body_sha256": "100deb0e928ea188829d93b4e83f52863044640fffb185bdc261d389935987ea",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4151800808",
+        "created_at": "2026-03-30T02:54:13Z",
+        "updated_at": "2026-03-30T02:54:13Z",
+        "author_association": "NONE",
+        "body_sha256": "5e9233a16b365320cd2c56a317b547ecd12af36fa7e0881c2a2fc6ef232c9f1e",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4152620820",
+        "created_at": "2026-03-30T06:36:02Z",
+        "updated_at": "2026-03-30T06:36:02Z",
+        "author_association": "NONE",
+        "body_sha256": "c2da56055138f7a550d3cfa365b3f4bc428b0b7160b22542603ea4010e187194",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4152789908",
+        "created_at": "2026-03-30T07:13:09Z",
+        "updated_at": "2026-03-30T07:13:09Z",
+        "author_association": "NONE",
+        "body_sha256": "a3767e6c38ec96f01d08e7fffca7b20d0d4b0b0f28123cd1cba477d1022d3890",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4152793622",
+        "created_at": "2026-03-30T07:13:58Z",
+        "updated_at": "2026-03-30T07:13:58Z",
+        "author_association": "NONE",
+        "body_sha256": "dfeaa1920f2c0edbae55f389b013251722ee157246690e54c25f6f33347282ba",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4152794465",
+        "created_at": "2026-03-30T07:14:08Z",
+        "updated_at": "2026-03-30T07:14:08Z",
+        "author_association": "NONE",
+        "body_sha256": "fedaddaaa6984146b202601ef6cbab6f68d842ca3d170d0507df55bfb575762f",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4152836143",
+        "created_at": "2026-03-30T07:22:31Z",
+        "updated_at": "2026-03-30T07:22:31Z",
+        "author_association": "NONE",
+        "body_sha256": "bf17d5f288b68f3a153579679bc00b76c27f8df54553f420ad4847f33318ac44",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4152948705",
+        "created_at": "2026-03-30T07:45:15Z",
+        "updated_at": "2026-03-30T07:45:15Z",
+        "author_association": "NONE",
+        "body_sha256": "3d02eacc2e4fd6c5c55574de3ab89db9fb2705057bb46b1e7c95ee50d8d5da08",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4153008070",
+        "created_at": "2026-03-30T07:57:12Z",
+        "updated_at": "2026-03-30T07:57:12Z",
+        "author_association": "NONE",
+        "body_sha256": "482c89b923c6116768f75e025601cee1d7c4eccfd1694eaa6c5fa441ae4dc608",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4194737696",
+        "created_at": "2026-04-06T20:13:35Z",
+        "updated_at": "2026-04-06T20:13:35Z",
+        "author_association": "NONE",
+        "body_sha256": "3289c7aa68357f8c7c983ec1ab8ebccb985951fe4933cbca4e23ad0d4e70930a",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4228456284",
+        "created_at": "2026-04-11T07:18:05Z",
+        "updated_at": "2026-04-11T07:22:31Z",
+        "author_association": "NONE",
+        "body_sha256": "e424f9ccfcec1e080fce9a52f88430d96c8ad3fd3b6f6b4caa77a7a8c22f37d5",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4232112514",
+        "created_at": "2026-04-12T17:43:51Z",
+        "updated_at": "2026-04-12T17:43:51Z",
+        "author_association": "NONE",
+        "body_sha256": "a61ee367d2705fb1626bf63c386b9a571f1c171009d11d0d579267f860055f64",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4274702908",
+        "created_at": "2026-04-18T22:43:32Z",
+        "updated_at": "2026-04-18T22:43:32Z",
+        "author_association": "NONE",
+        "body_sha256": "ca3ade1bc66866f45dc0f451e3d4fa2838e092869ea931d5fd6cfde9b3f24556",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4468149536",
+        "created_at": "2026-05-16T21:15:41Z",
+        "updated_at": "2026-05-16T21:15:41Z",
+        "author_association": "NONE",
+        "body_sha256": "06c49a69bebf5632b4fa4acba82febe3a8f33690069db198b00a2368c2108ceb",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-4631344261",
+        "created_at": "2026-06-05T11:58:59Z",
+        "updated_at": "2026-06-05T11:58:59Z",
+        "author_association": "CONTRIBUTOR",
+        "body_sha256": "e8a13a41ce09da756f5ba2ffb2f9c5eef5b0a198d5c6f928e9ef8728155a1e65",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-5076287150",
+        "created_at": "2026-07-25T02:11:08Z",
+        "updated_at": "2026-07-25T02:11:08Z",
+        "author_association": "NONE",
+        "body_sha256": "c01b047c4163e92a58f09d8f1b906264be7eed4d7eac7347c1b24f25098e230b",
+        "body_read_in_research": true
+      },
+      {
+        "html_url": "https://github.com/mem0ai/mem0/issues/4573#issuecomment-5693309501",
+        "created_at": "2026-09-16T06:53:58Z",
+        "updated_at": "2026-09-16T06:53:58Z",
+        "author_association": "NONE",
+        "body_sha256": "09072ccbfe101e73d414b588a3e59e641b91ee651e12ce3108f8af54a9e81be5",
+        "body_read_in_research": true
+      }
+    ]
+  },
+  {
+    "url": "https://api.github.com/repos/mem0ai/mem0/issues/4505/comments",
+    "data": [
+      {
+        "html_url": "https://github.com/mem0ai/mem0/pull/4505#issuecomment-4110677438",
+        "created_at": "2026-03-23T13:38:41Z",
+        "updated_at": "2026-03-23T13:38:41Z",
+        "author_association": "CONTRIBUTOR",
+        "body_sha256": "9bbedea6889cd2067b57b9288c6693ce606c7da8f5d3cd1b1434a1d8dca5e415",
+        "body_read_in_research": true
+      }
+    ]
+  }
+]
