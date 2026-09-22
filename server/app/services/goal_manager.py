@@ -91,10 +91,17 @@ _PLANNER_RETRY_COOLDOWN_SECONDS = 60
 _EVALUATOR_RETRY_COOLDOWN_SECONDS = 60
 _MAX_INVALID_EVALUATOR_ATTEMPTS = 3
 _MAX_UNPRODUCTIVE_PROJECT_ITERATIONS = 3
+_MAX_REPEATED_PROJECT_READS = 3
 _PROJECT_STALLED_REASON = (
     "Le projet est en pause après trois tentatives sans modification de fichier "
     "ni nouveau contrôle réussi. Les lectures intermédiaires ne remettent pas "
     "ce compteur à zéro. Les fichiers et les résultats de vérification sont conservés. "
+    "Envoyez un message au projet pour reprendre avec de nouvelles instructions."
+)
+_PROJECT_REPEATED_READ_REASON = (
+    "Le projet est en pause après trois demandes de lecture répétées sans modification "
+    "de fichier ni nouveau contrôle réussi. Aucun nouvel appel au modèle n'est lancé. "
+    "Les fichiers et les résultats de vérification sont conservés. "
     "Envoyez un message au projet pour reprendre avec de nouvelles instructions."
 )
 _EVALUATOR_FAILURE_DETAILS = {
@@ -555,7 +562,7 @@ class GoalManager:
     @staticmethod
     async def _project_stalled_locked(
         db: aiosqlite.Connection, goal_id: str, conversation_revision: int
-    ) -> bool:
+    ) -> str | None:
         """Count accepted no-progress receipts, never free-text model claims.
 
         A new user revision or real file/check progress resets the streak.
@@ -573,17 +580,29 @@ class GoalManager:
             )
         ).fetchall()
         attempts = 0
+        repeated_reads = 0
+        reads: set[tuple[str, ...]] = set()
         for row in rows:
             result = ProjectResult.model_validate_json(str(row[0]))
             payload = ProjectPayload.model_validate_json(str(row[1]))
             if result.action != "continue" or has_project_progress(payload, result):
-                return False
+                return None
             if result.focus_paths:
+                # First inspection of each selection is allowed. Reordering or
+                # alternating previously requested selections cannot erase the
+                # repeated-read count. File/check progress above resets both
+                # counters, so content hashes need not be retained here.
+                selection = tuple(sorted(result.focus_paths))
+                if selection in reads:
+                    repeated_reads += 1
+                    if repeated_reads >= _MAX_REPEATED_PROJECT_READS:
+                        return _PROJECT_REPEATED_READ_REASON
+                reads.add(selection)
                 continue
             attempts += 1
             if attempts >= _MAX_UNPRODUCTIVE_PROJECT_ITERATIONS:
-                return True
-        return False
+                return _PROJECT_STALLED_REASON
+        return None
 
     async def _accept_project_result(
         self,
@@ -642,16 +661,16 @@ class GoalManager:
                 if stale
                 else str(result["message"])
             )
-            stalled = (
-                not stale
-                and action == "continue"
-                and not result.get("focus_paths")
-                and await self._project_stalled_locked(
+            stall_reason = (
+                await self._project_stalled_locked(
                     db, goal_id, int(current["conversation_revision"])
                 )
+                if not stale and action == "continue"
+                else None
             )
+            stalled = stall_reason is not None
             if stalled:
-                message = _PROJECT_STALLED_REASON + "\n\n" + message[:3_000]
+                message = str(stall_reason) + "\n\n" + message[:3_000]
             await GoalConversationService.assistant_locked(
                 db, goal_id, message, question=action == "clarify", now=now
             )
@@ -678,7 +697,7 @@ class GoalManager:
                     else "project_ready"
                     if action == "complete"
                     else "project_continue",
-                    _PROJECT_STALLED_REASON
+                    stall_reason
                     if stalled
                     else "Project needs your clarification."
                     if action == "clarify"

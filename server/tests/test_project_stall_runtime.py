@@ -20,6 +20,7 @@ async def iteration(
     changed: bool = False,
     improved_check: bool = False,
     receive: bool = True,
+    focus_paths: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     job = await manager.agent_dispatcher.claim(agent)
     assert job is not None
@@ -47,7 +48,7 @@ async def iteration(
         "plan": payload["plan"],
         "run_instructions": "python3 app.py",
         "runtime": "python",
-        "focus_paths": ["app.py"] if read else [],
+        "focus_paths": focus_paths if focus_paths is not None else ["app.py"] if read else [],
         "base_revision_id": payload["base_revision_id"],
         "base_sha256": payload["base_sha256"],
     }
@@ -171,3 +172,97 @@ async def test_valid_check_only_completion_still_reaches_review(tmp_path: Path) 
     await _result(manager, agent, action="complete")
     current = await manager.get_goal(goal_id)
     assert current and current["goal"]["current_phase"] == "project_ready"
+
+
+@pytest.mark.asyncio
+async def test_repeated_reads_pause_without_dispatching_again_or_changing_files(
+    tmp_path: Path,
+) -> None:
+    manager, detail, agent = await _project(tmp_path, max_calls=30)
+    goal_id = detail["goal"]["id"]
+    await _result(manager, agent, action="continue")
+    assert manager.project_applications is not None
+    before = await manager.project_applications.get_project(goal_id)
+    for _ in range(3):
+        await iteration(manager, agent, read=True)
+        current = await manager.get_goal(goal_id)
+        assert current and current["goal"]["status"] == "running"
+    final_job, _ = await iteration(manager, agent, read=True)
+    paused = await manager.get_goal(goal_id)
+    assert paused and paused["goal"]["status"] == "waiting_permission"
+    assert "lecture" in paused["goal"]["evaluator_summary"]
+    assert len(paused["nodes"]) == 5
+    assert await manager.agent_dispatcher.claim(agent) is None
+    conversation = await manager.conversation_messages(goal_id)
+    assert conversation["pending_question_id"] is None
+    after = await manager.project_applications.get_project(goal_id)
+    assert before and after
+    assert after["files"] == before["files"] and after["checks"] == before["checks"]
+    await manager.on_job_result(final_job)
+    await manager.reconcile()
+    again = await manager.get_goal(goal_id)
+    assert again and again["goal"]["model_call_count"] == paused["goal"]["model_call_count"]
+    assert len(again["nodes"]) == 5
+    async with aiosqlite.connect(manager.db_path) as db:
+        assert await (await db.execute("SELECT COUNT(*) FROM approvals")).fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["reordered", "alternating"])
+async def test_read_loop_cannot_escape_by_reordering_or_alternating_paths(
+    tmp_path: Path, mode: str
+) -> None:
+    manager, detail, agent = await _project(tmp_path, max_calls=30)
+    await _result(manager, agent, action="continue")
+    reads = (
+        [["app.py", "README.md"], ["README.md", "app.py"]] * 2
+        if mode == "reordered"
+        else [["app.py"], ["README.md"], ["app.py"], ["README.md"], ["app.py"]]
+    )
+    for paths in reads:
+        await iteration(manager, agent, focus_paths=paths)
+    paused = await manager.get_goal(detail["goal"]["id"])
+    assert paused and paused["goal"]["status"] == "waiting_permission"
+    assert "lecture" in paused["goal"]["evaluator_summary"]
+    assert await manager.agent_dispatcher.claim(agent) is None
+
+
+@pytest.mark.asyncio
+async def test_distinct_reads_are_allowed_and_do_not_reset_failed_attempts(tmp_path: Path) -> None:
+    manager, detail, agent = await _project(tmp_path, max_calls=30)
+    await _result(manager, agent, action="continue")
+    for path in ["app.py", "README.md", "test_app.py"]:
+        await iteration(manager, agent, focus_paths=[path])
+    current = await manager.get_goal(detail["goal"]["id"])
+    assert current and current["goal"]["status"] == "running"
+    for _ in range(3):
+        await iteration(manager, agent)
+    paused = await manager.get_goal(detail["goal"]["id"])
+    assert paused and paused["goal"]["status"] == "waiting_permission"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", ["files", "check", "instruction"])
+async def test_read_allowance_resets_after_actual_progress_or_new_instruction(
+    tmp_path: Path, progress: str
+) -> None:
+    manager, detail, agent = await _project(tmp_path, max_calls=30)
+    goal_id = detail["goal"]["id"]
+    await _result(manager, agent, action="continue")
+    for _ in range(3):
+        await iteration(manager, agent, read=True)
+    if progress == "instruction":
+        stale, _ = await iteration(manager, agent, read=True, receive=False)
+        await manager.reply_goal(
+            goal_id,
+            GoalMessageRequest(message="Add CSV import", client_message_id="new-read-instruction"),
+            actor_id="phone",
+        )
+        await manager.on_job_result(stale)
+    else:
+        await iteration(
+            manager, agent, changed=progress == "files", improved_check=progress == "check"
+        )
+    await iteration(manager, agent, read=True)
+    current = await manager.get_goal(goal_id)
+    assert current and current["goal"]["status"] == "running"
