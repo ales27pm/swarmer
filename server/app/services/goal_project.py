@@ -24,6 +24,7 @@ from app.services.project_contracts import (
     project_digest,
 )
 from app.services.project_memory import ProjectMemoryService
+from app.services.project_progress import project_progress_message
 from app.services.state_service import StateService
 
 TERMINAL = frozenset({"completed", "failed", "cancelled", "budget_exhausted"})
@@ -146,6 +147,15 @@ class GoalProjectService:
         await self.ensure_project(goal_id)
         latest = await self._latest(goal_id)
         snapshot = ProjectResult.model_validate_json(latest["snapshot_json"]) if latest else None
+        # Revision numbers belong to the persistent project. The iteration
+        # budget belongs to this goal, including after a project is continued.
+        async with aiosqlite.connect(self.db_path) as db:
+            recorded = await (
+                await db.execute(
+                    "SELECT COUNT(*) FROM project_revisions WHERE goal_run_id=?", (goal_id,)
+                )
+            ).fetchone()
+        iteration = int(recorded[0]) + 1 if recorded else 1
         memory = None
         if self.memory is not None:
             async with aiosqlite.connect(self.db_path) as db:
@@ -182,7 +192,7 @@ class GoalProjectService:
                 "files": [file.model_dump() for file in snapshot.files] if snapshot else [],
                 "plan": snapshot.plan if snapshot else [],
                 "checks": [check.model_dump() for check in snapshot.checks] if snapshot else [],
-                "iteration": int(latest["revision"]) + 1 if latest else 1,
+                "iteration": iteration,
                 "base_revision_id": latest["id"] if latest else None,
                 "base_sha256": latest["sha256"] if latest else None,
                 "focus_paths": snapshot.focus_paths if snapshot else [],
@@ -246,6 +256,11 @@ class GoalProjectService:
                 result.base_sha256,
             ) != expected_base:
                 raise GoalProjectConflict("project changed while its iteration was running")
+            # The private job retains the original report. Public progress is
+            # derived from the accepted snapshot rather than model assertions.
+            result = result.model_copy(
+                update={"message": project_progress_message(payload, result)}
+            )
             now, revision_id = self._now(), f"revision_{uuid4().hex}"
             digest = project_digest(result.files)
             revision = int(latest[2]) + 1 if latest else 1

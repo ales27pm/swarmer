@@ -56,8 +56,9 @@ from app.services.planner_provider import (
     SwarmPlannerProviderError,
     advertised_worker_skills,
 )
-from app.services.project_contracts import ProjectMemoryContext
+from app.services.project_contracts import ProjectMemoryContext, ProjectPayload, ProjectResult
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
+from app.services.project_progress import has_project_progress
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.result_aggregator import (
     ResultAggregator,
@@ -89,6 +90,13 @@ logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
 _EVALUATOR_RETRY_COOLDOWN_SECONDS = 60
 _MAX_INVALID_EVALUATOR_ATTEMPTS = 3
+_MAX_UNPRODUCTIVE_PROJECT_ITERATIONS = 3
+_PROJECT_STALLED_REASON = (
+    "Le projet est en pause après trois tentatives sans modification de fichier "
+    "ni nouveau contrôle réussi. Les lectures intermédiaires ne remettent pas "
+    "ce compteur à zéro. Les fichiers et les résultats de vérification sont conservés. "
+    "Envoyez un message au projet pour reprendre avec de nouvelles instructions."
+)
 _EVALUATOR_FAILURE_DETAILS = {
     "transport_unavailable": ("evaluator_unavailable", "Evaluator transport is unavailable."),
     "request_rejected": (
@@ -535,6 +543,39 @@ class GoalManager:
             )
             await db.commit()
 
+    @staticmethod
+    async def _project_stalled_locked(
+        db: aiosqlite.Connection, goal_id: str, conversation_revision: int
+    ) -> bool:
+        """Count accepted no-progress receipts, never free-text model claims.
+
+        A new user revision or real file/check progress resets the streak.
+        Inspection is allowed between attempts without erasing their failures.
+        The bounded history is confined to this goal and instruction revision.
+        """
+        rows = await (
+            await db.execute(
+                """SELECT r.snapshot_json,j.payload_json FROM project_revisions r
+                JOIN plan_nodes n ON n.id=r.node_id
+                JOIN agent_jobs j ON j.id=r.worker_job_id
+                WHERE r.goal_run_id=? AND n.goal_run_id=? AND n.conversation_revision=?
+                ORDER BY r.revision DESC LIMIT 100""",
+                (goal_id, goal_id, conversation_revision),
+            )
+        ).fetchall()
+        attempts = 0
+        for row in rows:
+            result = ProjectResult.model_validate_json(str(row[0]))
+            payload = ProjectPayload.model_validate_json(str(row[1]))
+            if result.action != "continue" or has_project_progress(payload, result):
+                return False
+            if result.focus_paths:
+                continue
+            attempts += 1
+            if attempts >= _MAX_UNPRODUCTIVE_PROJECT_ITERATIONS:
+                return True
+        return False
+
     async def _accept_project_result(
         self,
         goal: Mapping[str, Any],
@@ -592,10 +633,20 @@ class GoalManager:
                 if stale
                 else str(result["message"])
             )
+            stalled = (
+                not stale
+                and action == "continue"
+                and not result.get("focus_paths")
+                and await self._project_stalled_locked(
+                    db, goal_id, int(current["conversation_revision"])
+                )
+            )
+            if stalled:
+                message = _PROJECT_STALLED_REASON + "\n\n" + message[:3_000]
             await GoalConversationService.assistant_locked(
                 db, goal_id, message, question=action == "clarify", now=now
             )
-            waiting = action in {"clarify", "complete"}
+            waiting = stalled or action in {"clarify", "complete"}
             await db.execute(
                 """UPDATE plan_nodes SET status=?,result_summary=?,updated_at=?,completed_at=? WHERE id=?""",
                 (
@@ -614,11 +665,13 @@ class GoalManager:
                 (
                     "waiting_permission" if waiting else "running",
                     "needs_user"
-                    if action == "clarify"
+                    if action == "clarify" or stalled
                     else "project_ready"
                     if action == "complete"
                     else "project_continue",
-                    "Project needs your clarification."
+                    _PROJECT_STALLED_REASON
+                    if stalled
+                    else "Project needs your clarification."
                     if action == "clarify"
                     else "Project iteration recorded.",
                     waiting,
@@ -631,8 +684,10 @@ class GoalManager:
                 "UPDATE tasks SET status=?,updated_at=? WHERE id=?",
                 ("waiting_permission" if waiting else "running", now, current["root_task_id"]),
             )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
-        if action == "continue":
+        if action == "continue" and not stalled:
             await self._resume_pending_conversation(goal_id, maintenance_guard=maintenance_guard)
             await self._advance_ready(
                 goal_id, explicit_user_action=False, maintenance_guard=maintenance_guard
