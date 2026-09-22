@@ -166,7 +166,9 @@ def test_node_install_cache_uses_private_dependency_scratch_and_is_cleaned_on_fa
     monkeypatch.setattr(runner, "_process", process)
     result = runner.run(
         [{"path": "package.json", "content": '{"dependencies":{"express":"4.21.2"}}'}],
-        "node", [], lambda: None,
+        "node",
+        [],
+        lambda: None,
     )
     assert cache_paths and all(not path.exists() for path in cache_paths)
     assert not result["build_passed"] and result["tests_executed"] == 0

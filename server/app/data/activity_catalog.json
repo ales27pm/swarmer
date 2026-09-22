@@ -1477,6 +1477,261 @@
         "Adaptateur métier à développer et à valider.",
         "Disponibilités et modalités de livraison connues."
       ]
+    },
+    {
+      "id": "database.sqlite.inspect",
+      "title": "Inspecter une base SQLite",
+      "description": "Inspecter une base SQLite avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "database.sqlite.inspect"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "database.sqlite.query",
+      "title": "Interroger une base SQLite",
+      "description": "Interroger une base SQLite avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "database.sqlite.query"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "database.sqlite.create",
+      "title": "Créer une base SQLite",
+      "description": "Créer une base SQLite avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "database.sqlite.create"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "database.sqlite.backup",
+      "title": "Sauvegarder une base SQLite",
+      "description": "Sauvegarder une base SQLite avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "database.sqlite.backup"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "database.sqlite.migrate",
+      "title": "Migrer une base SQLite",
+      "description": "Migrer une base SQLite avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "database.sqlite.migrate"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "code.swift.build",
+      "title": "Compiler un projet Swift",
+      "description": "Compiler un projet Swift avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "code.swift.build"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "code.swift.test",
+      "title": "Tester un projet Swift",
+      "description": "Tester un projet Swift avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "code.swift.test"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "crm.command",
+      "title": "Gérer le CRM 27PM",
+      "description": "Gérer le CRM 27PM avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "crm.command"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "documents.extract",
+      "title": "Extraire un document",
+      "description": "Extraire un document avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "worker",
+        "target": "documents.extract"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "iphone.calendar.calendars",
+      "title": "Choisir un calendrier",
+      "description": "Choisir un calendrier avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.calendars"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "iphone.calendar.reminders",
+      "title": "Lire les rappels",
+      "description": "Lire les rappels avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.reminders"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "iphone.calendar.event.create",
+      "title": "Créer un événement",
+      "description": "Créer un événement avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.event.create"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "iphone.calendar.event.update",
+      "title": "Modifier un événement",
+      "description": "Modifier un événement avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.event.update"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "iphone.calendar.reminder.create",
+      "title": "Créer un rappel",
+      "description": "Créer un rappel avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.reminder.create"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
+    },
+    {
+      "id": "iphone.calendar.reminder.update",
+      "title": "Modifier un rappel",
+      "description": "Modifier un rappel avec arguments explicites et résultat vérifiable.",
+      "inputs": [
+        "Arguments structurés de l’opération et cible autorisée"
+      ],
+      "output": "Résultat corrélé, identifiants et état vérifié.",
+      "execution": {
+        "kind": "iphone",
+        "target": "iphone.calendar.reminder.update"
+      },
+      "requirements": [
+        "Appareil ou worker enregistré et disponible.",
+        "Arguments validés ; permissions et configuration de la cible requises."
+      ]
     }
   ],
   "roles": [
@@ -1507,7 +1762,8 @@
         "code_review.git_show",
         "code_review.static_analysis",
         "software.dependency_review",
-        "software.test_design"
+        "software.test_design",
+        "code.swift.test"
       ],
       "examples": [
         "Relire un correctif avant son intégration.",
@@ -1553,7 +1809,8 @@
         "research.query",
         "research.source_compare",
         "research.reading_digest",
-        "research.claim_check"
+        "research.claim_check",
+        "documents.extract"
       ],
       "examples": [
         "Comparer trois documents sur une même question.",
@@ -1709,7 +1966,8 @@
         "iphone.contacts.lookup",
         "customers.record",
         "customers.history",
-        "customers.followup"
+        "customers.followup",
+        "crm.command"
       ],
       "examples": [
         "Préparer une fiche client avec les informations fournies.",
@@ -1724,7 +1982,8 @@
       "skill_ids": [
         "customers.estimate",
         "customers.quote",
-        "customers.record"
+        "customers.record",
+        "crm.command"
       ],
       "examples": [
         "Chiffrer une prestation à partir de quantités et tarifs fournis.",
@@ -1769,7 +2028,13 @@
       "skill_ids": [
         "iphone.calendar.events",
         "daily_life.week_plan",
-        "daily_life.conflicts"
+        "daily_life.conflicts",
+        "iphone.calendar.calendars",
+        "iphone.calendar.reminders",
+        "iphone.calendar.event.create",
+        "iphone.calendar.event.update",
+        "iphone.calendar.reminder.create",
+        "iphone.calendar.reminder.update"
       ],
       "examples": [
         "Repérer les conflits dans les événements d’une semaine.",
@@ -1814,7 +2079,8 @@
       "skill_ids": [
         "administration.document_checklist",
         "administration.deadlines",
-        "administration.expense_pack"
+        "administration.expense_pack",
+        "documents.extract"
       ],
       "examples": [
         "Vérifier les pièces disponibles contre une liste fournie.",
@@ -1878,6 +2144,62 @@
       "examples": [
         "Comparer des devis de fournitures avec les mêmes critères.",
         "Préparer la liste logistique d’un petit événement."
+      ]
+    },
+    {
+      "id": "sqlite_specialist",
+      "domain_id": "software",
+      "title": "Spécialiste SQLite",
+      "description": "Utiliser les outils disponibles et vérifier leurs résultats.",
+      "skill_ids": [
+        "database.sqlite.inspect",
+        "database.sqlite.query",
+        "database.sqlite.create",
+        "database.sqlite.backup",
+        "database.sqlite.migrate"
+      ],
+      "examples": [
+        "Vérifier un projet autorisé et fournir les preuves du résultat."
+      ]
+    },
+    {
+      "id": "swift_specialist",
+      "domain_id": "software",
+      "title": "Spécialiste Swift et iOS",
+      "description": "Utiliser les outils disponibles et vérifier leurs résultats.",
+      "skill_ids": [
+        "code.swift.build",
+        "code.swift.test"
+      ],
+      "examples": [
+        "Vérifier un projet autorisé et fournir les preuves du résultat."
+      ]
+    },
+    {
+      "id": "python_specialist",
+      "domain_id": "software",
+      "title": "Spécialiste Python",
+      "description": "Utiliser les outils disponibles et vérifier leurs résultats.",
+      "skill_ids": [
+        "code.build_project",
+        "code.generate_python"
+      ],
+      "examples": [
+        "Vérifier un projet autorisé et fournir les preuves du résultat."
+      ]
+    },
+    {
+      "id": "quality_specialist",
+      "domain_id": "software",
+      "title": "Qualité et tests",
+      "description": "Utiliser les outils disponibles et vérifier leurs résultats.",
+      "skill_ids": [
+        "code_review.static_analysis",
+        "code.swift.test",
+        "code.build_project"
+      ],
+      "examples": [
+        "Vérifier un projet autorisé et fournir les preuves du résultat."
       ]
     }
   ]

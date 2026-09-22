@@ -361,9 +361,14 @@ class GoalManager:
         if self.project_applications is None:
             raise GoalManagerConflict("The project application gateway is unavailable.")
         goal_id = str(node["goal_run_id"])
-        return await self.project_applications.payload(
-            goal_id, dict(node), await self.recent_conversation(goal_id)
-        )
+        from app.services.project_context import ProjectContextConflict
+
+        try:
+            return await self.project_applications.payload(
+                goal_id, dict(node), await self.recent_conversation(goal_id)
+            )
+        except ProjectContextConflict as exc:
+            raise GoalManagerConflict(str(exc)) from exc
 
     async def _resume_pending_conversation(
         self, goal_id: str, *, maintenance_guard: MaintenanceLeaseGuard | None = None
@@ -453,7 +458,11 @@ class GoalManager:
                     created_at=now,
                 )
             linked = await (
-                await db.execute("SELECT 1 FROM goal_project_links WHERE goal_run_id=?", (goal_id,))
+                await db.execute(
+                    """SELECT 1 FROM goal_project_links l JOIN project_revisions r
+                    ON r.project_id=l.project_id WHERE l.goal_run_id=? LIMIT 1""",
+                    (goal_id,),
+                )
             ).fetchone()
             project = linked is not None or any(n["required_skill"] == PROJECT_SKILL for n in nodes)
             if project and self.project_applications is not None:
@@ -969,6 +978,8 @@ class GoalManager:
     ) -> tuple[dict[str, Any], ProjectMemoryContext | None]:
         if self.project_memory is None:
             return dict(goal), None
+        if self.project_applications is not None and self.project_applications.context is not None:
+            await self.project_applications.ensure_project(str(goal["id"]))
         try:
             receipt = await self.project_memory.retrieve_for_goal(
                 str(goal["id"]), purpose, expected_goal_updated_at=str(goal["updated_at"])
@@ -1209,6 +1220,15 @@ class GoalManager:
                 "purpose": "planner",
                 "cards": [card.as_model_dict() for card in fallback_cards],
             }
+        if self.project_applications is not None and self.project_applications.context is not None:
+            durable = await self.project_applications.context.refresh(goal_id)
+            context_payload["durable_project_requirements"] = (
+                self.project_applications.context.prompt_state(durable)
+            )
+            if len(json.dumps(context_payload, ensure_ascii=False).encode()) > 22000:
+                raise GoalManagerConflict(
+                    "durable project requirements exceed planner context budget"
+                )
         input_digest = hashlib.sha256(
             json.dumps(
                 context_payload,
@@ -1662,6 +1682,7 @@ class GoalManager:
                 optional_dependencies = sorted(by_temp[item] for item in node.optional_dependencies)
                 dependencies = sorted(set(hard_dependencies + optional_dependencies))
                 metadata = {
+                    "worker_arguments": node.worker_arguments,
                     "schema_version": proposal.schema_version,
                     "temporary_id": node.temporary_id,
                     "preferred_agent_constraints": (
@@ -1883,6 +1904,14 @@ class GoalManager:
     @staticmethod
     def _payload_for_node(node: Mapping[str, Any]) -> dict[str, Any]:
         skill = str(node["required_skill"])
+        metadata = node.get("planner_metadata")
+        if metadata is None:
+            metadata = json.loads(str(node.get("planner_metadata_json") or "{}"))
+        if isinstance(metadata, dict) and metadata.get("worker_arguments") is not None:
+            try:
+                return validate_remote_job(skill, metadata["worker_arguments"])
+            except RemoteJobPolicyError as exc:
+                raise GoalManagerConflict("specialist arguments rejected before dispatch") from exc
         objective = str(node["objective"])
         if skill == "workspace.list_dir":
             payload: dict[str, Any] = {"path": "."}
@@ -3182,7 +3211,11 @@ class GoalManager:
                     json.dumps(dependencies, separators=(",", ":")),
                     proposal.expected_output,
                     json.dumps(
-                        {"source": "evaluator", "temporary_id": proposal.temporary_id},
+                        {
+                            "source": "evaluator",
+                            "temporary_id": proposal.temporary_id,
+                            "worker_arguments": proposal.worker_arguments,
+                        },
                         separators=(",", ":"),
                     ),
                     now,
@@ -3677,7 +3710,11 @@ class GoalManager:
                         json.dumps(dependencies, separators=(",", ":")),
                         node.expected_output,
                         json.dumps(
-                            {"source": "replan", "temporary_id": node.temporary_id},
+                            {
+                                "source": "replan",
+                                "temporary_id": node.temporary_id,
+                                "worker_arguments": node.worker_arguments,
+                            },
                             separators=(",", ":"),
                         ),
                         now,

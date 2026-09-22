@@ -166,7 +166,7 @@ class ProjectMemoryItem(StrictModel):
 
 
 class ProjectMemoryContext(StrictModel):
-    mode: Literal["semantic", "lexical"]
+    mode: Literal["semantic", "lexical", "hybrid"]
     reason: str = Field(min_length=1, max_length=100)
     items: list[ProjectMemoryItem] = Field(max_length=4)
 
@@ -186,6 +186,8 @@ class ProjectPayload(StrictModel):
         default_factory=list, max_length=8
     )
     memory: ProjectMemoryContext | None = None
+    durable_context: dict[str, Any] | None = None
+    context_compaction: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> ProjectPayload:

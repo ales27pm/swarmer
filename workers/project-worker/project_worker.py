@@ -209,7 +209,10 @@ STEP_SCHEMA: dict[str, Any] = {
             },
         },
         "deletions": {"type": "array", "maxItems": 3, "items": PATH_SCHEMA},
-        "requested_checks": {"type": "array", "items": {"type": "array", "items": STRING}},
+        "requested_checks": {
+            "type": "array",
+            "items": {"type": "array", "items": STRING},
+        },
         "run_instructions": STRING,
         "runtime": {"type": "string", "enum": ["python", "node", "python_node"]},
         "focus_paths": {"type": "array", "maxItems": 8, "items": PATH_SCHEMA},
@@ -289,7 +292,15 @@ def repair_follows_model_timeout(payload: dict[str, Any]) -> bool:
 
 def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Keep one small mutation or one read; unchanged metadata is worker-owned."""
-    fields = ("action", "message", "edits", "patches", "run_instructions", "runtime", "focus_paths")
+    fields = (
+        "action",
+        "message",
+        "edits",
+        "patches",
+        "run_instructions",
+        "runtime",
+        "focus_paths",
+    )
     branches = []
     for original in schema["oneOf"]:
         properties = original["properties"]
@@ -306,7 +317,10 @@ def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 branch["properties"][field]["minItems"] = 1 if field == mode else 0
                 branch["properties"][field]["maxItems"] = 1 if field == mode else 0
             branch["properties"]["message"] = {"type": "string", "maxLength": 160}
-            branch["properties"]["run_instructions"] = {"type": "string", "maxLength": 240}
+            branch["properties"]["run_instructions"] = {
+                "type": "string",
+                "maxLength": 240,
+            }
             branch["properties"]["edits"]["items"]["properties"]["content"] = {
                 "type": "string",
                 "maxLength": MAX_RECOVERY_EDIT_CHARACTERS,
@@ -322,7 +336,15 @@ def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def expand_compact_repair(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    fields = {"action", "message", "edits", "patches", "run_instructions", "runtime", "focus_paths"}
+    fields = {
+        "action",
+        "message",
+        "edits",
+        "patches",
+        "run_instructions",
+        "runtime",
+        "focus_paths",
+    }
     if not isinstance(value, dict) or set(value) != fields:
         raise ProjectError("compact repair fields are invalid")
     collections = [value[field] for field in ("edits", "patches", "focus_paths")]
@@ -387,9 +409,7 @@ def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
     }
 
 
-def valid_readme_completion(
-    payload: dict[str, Any], step: dict[str, Any]
-) -> bool:
+def valid_readme_completion(payload: dict[str, Any], step: dict[str, Any]) -> bool:
     return (
         readme_is_only_remaining_gate(payload)
         and step["action"] == "complete"
@@ -442,7 +462,11 @@ def render_workspace_context(context: dict[str, Any]) -> str:
         key: value
         for key, value in context.items()
         if key
-        not in {"selected_complete_files", "selected_file_fragments", "editable_span_previews"}
+        not in {
+            "selected_complete_files",
+            "selected_file_fragments",
+            "editable_span_previews",
+        }
     }
     rendered = [json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))]
     previews = context.get("editable_span_previews", [])
@@ -540,7 +564,10 @@ def diagnostic_functions(item: dict[str, str], diagnostics: str) -> list[tuple[i
         # AST columns are UTF8 byte offsets. Full-line spans use character
         # offsets instead and deliberately leave decorators outside the edit.
         matches.append(
-            (sum(map(len, lines[: node.lineno - 1])), sum(map(len, lines[: node.end_lineno])))
+            (
+                sum(map(len, lines[: node.lineno - 1])),
+                sum(map(len, lines[: node.end_lineno])),
+            )
         )
     return matches
 
@@ -662,13 +689,8 @@ def readme_is_only_remaining_gate(payload: dict[str, Any]) -> bool:
         and bool(payload["checks"])
         and all(check["status"] == "passed" for check in payload["checks"])
         and any(tuple(check["command"]) in test_commands for check in payload["checks"])
-        and (
-            not payload["conversation"]
-            or payload["conversation"][-1]["role"] != "user"
-        )
-        and not any(
-            item["path"].casefold() == "readme.md" for item in payload["files"]
-        )
+        and (not payload["conversation"] or payload["conversation"][-1]["role"] != "user")
+        and not any(item["path"].casefold() == "readme.md" for item in payload["files"])
     )
 
 
@@ -750,7 +772,13 @@ def constrained_step_schema(
     if "clarify" in allowed_actions:
         clarify = copy.deepcopy(schema)
         clarify["properties"]["action"]["enum"] = ["clarify"]
-        for field in ("edits", "patches", "deletions", "requested_checks", "focus_paths"):
+        for field in (
+            "edits",
+            "patches",
+            "deletions",
+            "requested_checks",
+            "focus_paths",
+        ):
             clarify["properties"][field].pop("minItems", None)
             clarify["properties"][field]["maxItems"] = 0
         branches.append(clarify)
@@ -758,7 +786,10 @@ def constrained_step_schema(
 
 
 def addressed_patch_spans(
-    context: dict[str, Any], payload: dict[str, Any], *, max_bytes: int = MAX_ADDRESS_BYTES
+    context: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    max_bytes: int = MAX_ADDRESS_BYTES,
 ) -> dict[str, dict[str, Any]]:
     originals = {item["path"]: item["content"] for item in payload["files"]}
     base = snapshot_sha(payload["files"])
@@ -908,7 +939,10 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         "plan": [item[:200] for item in payload["plan"]],
         "iteration": payload["iteration"],
         "checks": [
-            {**item, "output": "" if item["status"] == "passed" else item["output"][-1_000:]}
+            {
+                **item,
+                "output": "" if item["status"] == "passed" else item["output"][-1_000:],
+            }
             for item in payload["checks"]
         ],
         "file_manifest": [
@@ -924,6 +958,8 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         "omitted_files_are_preserved": True,
         "focus_paths": focused,
         "historical_memory_hints": payload.get("memory"),
+        "durable_project_requirements": payload.get("durable_context"),
+        "advisory_context_compaction": payload.get("context_compaction"),
     }
 
     def prompt_size() -> int:
@@ -1001,10 +1037,12 @@ class ProjectGenerator:
         diagnostics = "\n".join(item["output"] for item in payload["checks"])
         conversation = context.pop("conversation")
         latest_user_message = next(
-            (message for message in reversed(conversation) if message["role"] == "user"), None
+            (message for message in reversed(conversation) if message["role"] == "user"),
+            None,
         )
         last_user = next(
-            (item["content"] for item in reversed(conversation) if item["role"] == "user"), ""
+            (item["content"] for item in reversed(conversation) if item["role"] == "user"),
+            "",
         )
         answered = any(item["role"] == "assistant" for item in payload["conversation"]) and bool(
             last_user
@@ -1053,14 +1091,10 @@ class ProjectGenerator:
         if needs_readme and not needs_repair:
             schema["properties"]["action"]["enum"] = ["complete"]
             schema["properties"]["plan"] = {"const": payload["plan"]}
-            schema["properties"]["runtime"]["enum"] = [
-                runtime_for_files(payload["files"])
-            ]
+            schema["properties"]["runtime"]["enum"] = [runtime_for_files(payload["files"])]
             schema["properties"]["edits"]["minItems"] = 1
             schema["properties"]["edits"]["maxItems"] = 1
-            schema["properties"]["edits"]["items"]["properties"]["path"] = {
-                "const": "README.md"
-            }
+            schema["properties"]["edits"]["items"]["properties"]["path"] = {"const": "README.md"}
             schema["properties"]["edits"]["items"]["properties"]["content"] = {
                 "type": "string",
                 "maxLength": 1_800,
@@ -1288,9 +1322,7 @@ class ProjectGenerator:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC)
-                    set_stream_read_timeout(
-                        response, min(self.timeout_seconds, remaining)
-                    )
+                    set_stream_read_timeout(response, min(self.timeout_seconds, remaining))
                     line = response.readline(MAX_MODEL_RESPONSE_BYTES - total_bytes + 1)
                     if not line:
                         break
@@ -1360,7 +1392,8 @@ class ProjectGenerator:
             )
             if timed_out:
                 LOGGER.warning(
-                    "project model timeout metrics: %s", json.dumps(self.last_transport_metrics)
+                    "project model timeout metrics: %s",
+                    json.dumps(self.last_transport_metrics),
                 )
         try:
             self.last_metrics = {
@@ -1587,7 +1620,10 @@ def run_once(
             LOGGER.warning("project model transport failed: %s", exc.category)
             result_body = {"status": "failed", "error": "project_model_" + exc.category}
         except (ProjectError, OSError, TypeError, UnicodeError, ValueError):
-            result_body = {"status": "failed", "error": "Project iteration failed validation"}
+            result_body = {
+                "status": "failed",
+                "error": "Project iteration failed validation",
+            }
         heartbeat.ensure_active()
         client.submit_result(job_id, lease, result_body)
         return True

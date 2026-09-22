@@ -87,6 +87,11 @@ def test_activity_catalog_exposes_definitions_and_read_only_availability(
         assert skill["availability"]["reason"]
         assert skill["availability"]["agent_ids"] == []
         kind = skill["execution"]["kind"]
+        from app.services.iphone_capability_service import EXTENDED_AGENDA_CAPABILITIES
+
+        if skill["id"] in EXTENDED_AGENDA_CAPABILITIES:
+            assert skill["availability"]["state"] == "policy_denied"
+            continue
         assert (
             skill["availability"]["state"]
             == {"worker": "worker_unavailable", "iphone": "iphone_request", "planned": "planned"}[

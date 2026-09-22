@@ -10,11 +10,12 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from app import worker_admin
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 
 async def test_text_enrollment_keeps_secret_private_and_cannot_overwrite(

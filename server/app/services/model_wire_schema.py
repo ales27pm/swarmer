@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.services.plan_validation import PlanValidationError
 
 
-def model_wire_schema(model: type[BaseModel]) -> dict[str, Any]:
+def model_wire_schema(model: type[BaseModel] | dict[str, Any]) -> dict[str, Any]:
     """Build a local-LLM grammar schema without expanded string repetitions.
 
     Ollama/llama.cpp can reject otherwise valid schemas when ``maxLength``
@@ -39,7 +39,9 @@ def model_wire_schema(model: type[BaseModel]) -> dict[str, Any]:
             return result
         return value
 
-    schema: dict[str, Any] = normalize(model.model_json_schema())
+    schema: dict[str, Any] = normalize(
+        model if isinstance(model, dict) else model.model_json_schema()
+    )
     return schema
 
 

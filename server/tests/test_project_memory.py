@@ -39,6 +39,40 @@ class SemanticProvider:
         return vectors
 
 
+@pytest.mark.asyncio
+async def test_hybrid_change_invalidates_receipt_without_changing_vector_identity(
+    tmp_path: Path,
+) -> None:
+    manager, detail, _ = await _project(tmp_path)
+    goal_id, node_id = detail["goal"]["id"], detail["nodes"][0]["id"]
+    await _messages(manager, goal_id, ["Customer contact profiles must remain local."])
+    provider = SemanticProvider()
+    semantic = ProjectMemoryService(manager.db_path, provider, model_revision="pinned")
+    hybrid = ProjectMemoryService(manager.db_path, provider, model_revision="pinned", hybrid=True)
+    assert semantic.provider_identity == hybrid.provider_identity
+    first = await semantic.retrieve(goal_id, node_id, "Customer profiles", base_revision_id=None)
+    second = await hybrid.retrieve(goal_id, node_id, "Customer profiles", base_revision_id=None)
+    assert first["mode"] == "semantic"
+    assert second["mode"] == "hybrid"
+    assert second["reason"] == "lexical_semantic_rank_fusion"
+    assert second["items"] and all(0 < item["score"] <= 1 for item in second["items"])
+    assert (
+        await hybrid.retrieve(goal_id, node_id, "Customer profiles", base_revision_id=None)
+        == second
+    )
+
+
+@pytest.mark.asyncio
+async def test_hybrid_without_model_remains_explicit_lexical(tmp_path: Path) -> None:
+    manager, detail, _ = await _project(tmp_path)
+    goal_id, node_id = detail["goal"]["id"], detail["nodes"][0]["id"]
+    await _messages(manager, goal_id, ["Customer contact profiles"])
+    result = await ProjectMemoryService(manager.db_path, hybrid=True).retrieve(
+        goal_id, node_id, "Customer", base_revision_id=None
+    )
+    assert result["mode"] == "lexical" and result["items"]
+
+
 async def _messages(manager: Any, goal_id: str, contents: list[str]) -> list[str]:
     ids = [f"gmsg_{uuid4().hex}" for _ in contents]
     async with aiosqlite.connect(manager.db_path) as db:

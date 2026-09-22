@@ -110,6 +110,7 @@ class ProjectMemoryService:
         query_prefix: str = "",
         document_prefix: str = "",
         timeout_seconds: float = 10,
+        hybrid: bool = False,
     ) -> None:
         if not 0 < timeout_seconds <= 10:
             raise ValueError("project memory timeout must be at most ten seconds")
@@ -117,6 +118,7 @@ class ProjectMemoryService:
         self.model_revision = model_revision
         self.query_prefix, self.document_prefix = query_prefix, document_prefix
         self.timeout_seconds = timeout_seconds
+        self.hybrid = hybrid
         self.provider_identity = _digest(
             {
                 "format": 1,
@@ -198,6 +200,7 @@ class ProjectMemoryService:
                 "revision_id": goal["revision_id"],
                 "revision_sha256": goal["revision_sha256"],
                 "provider": self.provider_identity,
+                "retrieval": "hybrid_rrf_v1" if self.hybrid else "semantic_or_lexical_v1",
                 "query": goal["memory_query"],
                 "recent_conversation": goal["recent_conversation"],
             }
@@ -281,6 +284,7 @@ class ProjectMemoryService:
             base_revision_id,
             query_sha,
             self.provider_identity,
+            "hybrid_rrf_v1" if self.hybrid else "semantic_or_lexical_v1",
         ]
         if purpose != "worker":
             identity += [purpose, logical_fingerprint]
@@ -938,6 +942,15 @@ class ProjectMemoryService:
         if not ranked:
             return await fallback("embedding_index_unavailable")
         ranked.sort(key=lambda item: (-item["score"], item["id"]))
+        if self.hybrid:
+            lexical = self._rank_lexical(query, items, "hybrid")["items"]
+            fused: dict[str, dict[str, Any]] = {}
+            for results in (ranked, lexical):
+                for rank, item in enumerate(results, start=1):
+                    entry = fused.setdefault(item["id"], {**item, "score": 0.0})
+                    entry["score"] += 30.5 / (60 + rank)
+            ranked = sorted(fused.values(), key=lambda item: (-item["score"], item["id"]))
+            return _context("hybrid", "lexical_semantic_rank_fusion", ranked)
         return _context("semantic", "historical_hints_recent_replies_take_precedence", ranked)
 
     async def _context_current(self, goal: Mapping[str, Any], base_revision_id: str | None) -> bool:

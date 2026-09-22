@@ -1635,6 +1635,223 @@ paths:
       security:
       - bearerAuth: []
 
+  /goals/{goal_id}/context:
+    post:
+      summary: Refresh Project Context
+      operationId: refresh_project_context_goals__goal_id__context_post
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Refresh Project Context Goals  Goal Id  Context Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Device authentication required
+        '409':
+          description: Context changed, unavailable or feature disabled
+        '426':
+          description: HTTPS required
+      security:
+      - bearerAuth: []
+  /goals/{goal_id}/context/compact:
+    post:
+      summary: Compact Project Context
+      operationId: compact_project_context_goals__goal_id__context_compact_post
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Compact Project Context Goals  Goal Id  Context Compact
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Device authentication required
+        '409':
+          description: Context changed, unavailable or feature disabled
+        '426':
+          description: HTTPS required
+      security:
+      - bearerAuth: []
+  /memory/status:
+    get:
+      summary: Memory Provider Status
+      operationId: memory_provider_status_memory_status_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Memory Provider Status Memory Status Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Device authentication required
+        '409':
+          description: Context changed, unavailable or feature disabled
+        '426':
+          description: HTTPS required
+      security:
+      - bearerAuth: []
+  /goals/{goal_id}/context/sources/{source_id}:
+    get:
+      summary: Project Context Source
+      operationId: project_context_source_goals__goal_id__context_sources__source_id__get
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: source_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Source Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Project Context Source Goals  Goal Id  Context Sources  Source
+                  Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Device authentication required
+        '409':
+          description: Context changed, unavailable or feature disabled
+        '426':
+          description: HTTPS required
+      security:
+      - bearerAuth: []
+  /goals/{goal_id}/nodes/{node_id}/writing-draft:
+    get:
+      summary: Get Writing Draft
+      operationId: get_writing_draft_goals__goal_id__nodes__node_id__writing_draft_get
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: node_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Node Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritingDraftPreview'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Device authentication required
+        '409':
+          description: Context changed, unavailable or feature disabled
+        '426':
+          description: HTTPS required
+      security:
+      - bearerAuth: []
+
 x-websocket-endpoints:
   /ws:
     authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
@@ -2410,6 +2627,7 @@ components:
           enum:
           - semantic
           - lexical
+          - hybrid
           title: Mode
         reason:
           type: string
@@ -2629,33 +2847,84 @@ components:
           items: {type: string, minLength: 1, maxLength: 500, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*$'}
         runtime: {type: [string, 'null'], enum: [python, null]}
     SwarmPlanNodeProposal:
-      type: object
-      additionalProperties: false
-      description: Model-proposed node without execution or completion authority.
-      required: [temporary_id, node_type, title, objective, required_skill, dependencies, expected_output, priority]
       properties:
-        temporary_id: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_-]*$'}
-        node_type: {$ref: '#/components/schemas/PlanNodeType'}
-        title: {type: string, minLength: 1, maxLength: 500}
-        objective: {type: string, minLength: 1, maxLength: 4000}
-        required_skill: {type: [string, 'null'], minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
+        temporary_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[A-Za-z][A-Za-z0-9_-]*$
+          title: Temporary Id
+        node_type:
+          $ref: '#/components/schemas/PlanNodeType'
+        title:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Title
+        objective:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Objective
+        required_skill:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Required Skill
         dependencies:
+          items:
+            type: string
+            maxLength: 64
+            minLength: 1
+            pattern: ^[A-Za-z][A-Za-z0-9_-]*$
           type: array
           maxItems: 20
-          uniqueItems: true
-          items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_-]*$'}
+          title: Dependencies
         optional_dependencies:
+          items:
+            type: string
+            maxLength: 64
+            minLength: 1
+            pattern: ^[A-Za-z][A-Za-z0-9_-]*$
           type: array
           maxItems: 20
-          uniqueItems: true
-          default: []
-          items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z][A-Za-z0-9_-]*$'}
-        expected_output: {type: string, minLength: 1, maxLength: 4000}
-        priority: {type: integer, minimum: 0, maximum: 100}
+          title: Optional Dependencies
+        expected_output:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Expected Output
+        priority:
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          title: Priority
         preferred_agent_constraints:
           anyOf:
-            - $ref: '#/components/schemas/PreferredAgentConstraints'
-            - type: 'null'
+          - $ref: '#/components/schemas/PreferredAgentConstraints'
+          - type: 'null'
+        worker_arguments:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Worker Arguments
+      additionalProperties: false
+      type: object
+      required:
+      - temporary_id
+      - node_type
+      - title
+      - objective
+      - required_skill
+      - dependencies
+      - expected_output
+      - priority
+      title: SwarmPlanNodeProposal
+      description: A model-proposed node. It contains no execution or completion authority.
     SwarmPlanProposal:
       type: object
       additionalProperties: false
@@ -3457,44 +3726,108 @@ components:
     IPhoneCapabilityName:
       type: string
       enum:
-        - iphone.location.current
-        - iphone.contacts.lookup
-        - iphone.calendar.events
-        - iphone.photos.pick
-        - iphone.mail.compose
-        - iphone.sms.compose
+      - iphone.location.current
+      - iphone.contacts.lookup
+      - iphone.calendar.events
+      - iphone.calendar.calendars
+      - iphone.calendar.reminders
+      - iphone.calendar.event.create
+      - iphone.calendar.event.update
+      - iphone.calendar.reminder.create
+      - iphone.calendar.reminder.update
+      - iphone.photos.pick
+      - iphone.mail.compose
+      - iphone.sms.compose
     IPhoneCapabilityStatus:
       type: string
       enum: [waiting_approval, approved, consumed, completed, denied, failed, cancelled, expired]
     AgentCapabilityRequest:
       type: object
       additionalProperties: false
-      required: [claim_token, lease_id, lease_generation, capability_name, arguments]
+      required:
+      - claim_token
+      - lease_id
+      - lease_generation
+      - capability_name
+      - arguments
       properties:
-        claim_token: {type: string, minLength: 20, maxLength: 500, writeOnly: true}
-        lease_id: {type: string, minLength: 10, maxLength: 200}
-        lease_generation: {type: integer, minimum: 1}
-        capability_name: {$ref: '#/components/schemas/IPhoneCapabilityName'}
-        arguments: {type: object}
+        claim_token:
+          type: string
+          minLength: 20
+          maxLength: 500
+          writeOnly: true
+        lease_id:
+          type: string
+          minLength: 10
+          maxLength: 200
+        lease_generation:
+          type: integer
+          minimum: 1
+        capability_name:
+          $ref: '#/components/schemas/IPhoneCapabilityName'
+        arguments:
+          type: object
       oneOf:
-        - properties:
-            capability_name: {const: iphone.location.current}
-            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
-        - properties:
-            capability_name: {const: iphone.contacts.lookup}
-            arguments: {$ref: '#/components/schemas/IPhoneContactsLookupArguments'}
-        - properties:
-            capability_name: {const: iphone.calendar.events}
-            arguments: {$ref: '#/components/schemas/IPhoneCalendarEventsArguments'}
-        - properties:
-            capability_name: {const: iphone.photos.pick}
-            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
-        - properties:
-            capability_name: {const: iphone.mail.compose}
-            arguments: {$ref: '#/components/schemas/IPhoneMailComposeArguments'}
-        - properties:
-            capability_name: {const: iphone.sms.compose}
-            arguments: {$ref: '#/components/schemas/IPhoneSMSComposeArguments'}
+      - properties:
+          capability_name:
+            const: iphone.location.current
+          arguments:
+            $ref: '#/components/schemas/IPhoneEmptyArguments'
+      - properties:
+          capability_name:
+            const: iphone.contacts.lookup
+          arguments:
+            $ref: '#/components/schemas/IPhoneContactsLookupArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.events
+          arguments:
+            $ref: '#/components/schemas/IPhoneCalendarEventsArguments'
+      - properties:
+          capability_name:
+            const: iphone.photos.pick
+          arguments:
+            $ref: '#/components/schemas/IPhoneEmptyArguments'
+      - properties:
+          capability_name:
+            const: iphone.mail.compose
+          arguments:
+            $ref: '#/components/schemas/IPhoneMailComposeArguments'
+      - properties:
+          capability_name:
+            const: iphone.sms.compose
+          arguments:
+            $ref: '#/components/schemas/IPhoneSMSComposeArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.calendars
+          arguments:
+            $ref: '#/components/schemas/_EmptyCapabilityArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.event.create
+          arguments:
+            $ref: '#/components/schemas/_CalendarEventCreateArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.event.update
+          arguments:
+            $ref: '#/components/schemas/_CalendarEventUpdateArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.reminder.create
+          arguments:
+            $ref: '#/components/schemas/_ReminderCreateArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.reminder.update
+          arguments:
+            $ref: '#/components/schemas/_ReminderUpdateArguments'
+      - properties:
+          capability_name:
+            const: iphone.calendar.reminders
+          arguments:
+            $ref: '#/components/schemas/_CalendarRemindersArguments'
     AgentCapabilityPoll:
       type: object
       additionalProperties: false
@@ -3535,44 +3868,113 @@ components:
     IPhoneCapabilityRequestDetail:
       type: object
       additionalProperties: false
-      required: [schema_version, request_id, task_id, agent_id, target_device_id, capability, status, created_at, expires_at, arguments, action_digest, grant]
+      required:
+      - schema_version
+      - request_id
+      - task_id
+      - agent_id
+      - target_device_id
+      - capability
+      - status
+      - created_at
+      - expires_at
+      - arguments
+      - action_digest
+      - grant
       properties:
-        schema_version: {const: '0.9', description: Stable capability-envelope schema identifier retained by API release 0.14.2.}
-        request_id: {type: string}
-        task_id: {type: string}
-        agent_id: {type: string}
-        target_device_id: {type: string}
-        capability: {$ref: '#/components/schemas/IPhoneCapabilityName'}
-        status: {$ref: '#/components/schemas/IPhoneCapabilityStatus'}
-        created_at: {type: string, format: date-time}
-        expires_at: {type: string, format: date-time}
+        schema_version:
+          const: '0.9'
+          description: Stable capability-envelope schema identifier retained by API release
+            0.14.2.
+        request_id:
+          type: string
+        task_id:
+          type: string
+        agent_id:
+          type: string
+        target_device_id:
+          type: string
+        capability:
+          $ref: '#/components/schemas/IPhoneCapabilityName'
+        status:
+          $ref: '#/components/schemas/IPhoneCapabilityStatus'
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
         arguments:
           type: object
-          description: Validated arguments for the named capability; never included in WebSocket, audit, or board payloads.
-        action_digest: {$ref: '#/components/schemas/ActionDigest'}
+          description: Validated arguments for the named capability; never included in
+            WebSocket, audit, or board payloads.
+        action_digest:
+          $ref: '#/components/schemas/ActionDigest'
         grant:
           oneOf:
-            - {$ref: '#/components/schemas/IPhoneCapabilityGrant'}
-            - {type: 'null'}
+          - $ref: '#/components/schemas/IPhoneCapabilityGrant'
+          - type: 'null'
       oneOf:
-        - properties:
-            capability: {const: iphone.location.current}
-            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
-        - properties:
-            capability: {const: iphone.contacts.lookup}
-            arguments: {$ref: '#/components/schemas/IPhoneContactsLookupArguments'}
-        - properties:
-            capability: {const: iphone.calendar.events}
-            arguments: {$ref: '#/components/schemas/IPhoneCalendarEventsArguments'}
-        - properties:
-            capability: {const: iphone.photos.pick}
-            arguments: {$ref: '#/components/schemas/IPhoneEmptyArguments'}
-        - properties:
-            capability: {const: iphone.mail.compose}
-            arguments: {$ref: '#/components/schemas/IPhoneMailComposeArguments'}
-        - properties:
-            capability: {const: iphone.sms.compose}
-            arguments: {$ref: '#/components/schemas/IPhoneSMSComposeArguments'}
+      - properties:
+          capability:
+            const: iphone.location.current
+          arguments:
+            $ref: '#/components/schemas/IPhoneEmptyArguments'
+      - properties:
+          capability:
+            const: iphone.contacts.lookup
+          arguments:
+            $ref: '#/components/schemas/IPhoneContactsLookupArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.events
+          arguments:
+            $ref: '#/components/schemas/IPhoneCalendarEventsArguments'
+      - properties:
+          capability:
+            const: iphone.photos.pick
+          arguments:
+            $ref: '#/components/schemas/IPhoneEmptyArguments'
+      - properties:
+          capability:
+            const: iphone.mail.compose
+          arguments:
+            $ref: '#/components/schemas/IPhoneMailComposeArguments'
+      - properties:
+          capability:
+            const: iphone.sms.compose
+          arguments:
+            $ref: '#/components/schemas/IPhoneSMSComposeArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.calendars
+          arguments:
+            $ref: '#/components/schemas/_EmptyCapabilityArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.event.create
+          arguments:
+            $ref: '#/components/schemas/_CalendarEventCreateArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.event.update
+          arguments:
+            $ref: '#/components/schemas/_CalendarEventUpdateArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.reminder.create
+          arguments:
+            $ref: '#/components/schemas/_ReminderCreateArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.reminder.update
+          arguments:
+            $ref: '#/components/schemas/_ReminderUpdateArguments'
+      - properties:
+          capability:
+            const: iphone.calendar.reminders
+          arguments:
+            $ref: '#/components/schemas/_CalendarRemindersArguments'
     IPhoneCapabilityGrant:
       type: object
       additionalProperties: false
@@ -3666,66 +4068,215 @@ components:
     IPhoneCapabilityNativeResult:
       type: object
       additionalProperties: false
-      description: Strict native result stored server-side; its value is redacted from audit, board and WebSocket events.
-      required: [name, status]
+      description: Strict native result stored server-side; its value is redacted from
+        audit, board and WebSocket events.
+      required:
+      - name
+      - status
       properties:
-        name: {$ref: '#/components/schemas/IPhoneCapabilityName'}
-        status: {type: string, enum: [completed, cancelled, denied, failed]}
+        name:
+          $ref: '#/components/schemas/IPhoneCapabilityName'
+        status:
+          type: string
+          enum:
+          - completed
+          - cancelled
+          - denied
+          - failed
         value: {}
-        reason: {type: string, enum: [permission_denied, unavailable, native_error]}
+        reason:
+          type: string
+          enum:
+          - permission_denied
+          - unavailable
+          - native_error
       oneOf:
-        - required: [value]
-          not: {required: [reason]}
-          properties:
-            name: {const: iphone.location.current}
-            status: {const: completed}
-            value: {$ref: '#/components/schemas/IPhoneLocationValue'}
-        - required: [value]
-          not: {required: [reason]}
-          properties:
-            name: {const: iphone.contacts.lookup}
-            status: {const: completed}
-            value:
-              type: array
-              maxItems: 25
-              items: {$ref: '#/components/schemas/IPhoneContactValue'}
-        - required: [value]
-          not: {required: [reason]}
-          properties:
-            name: {const: iphone.calendar.events}
-            status: {const: completed}
-            value:
-              type: array
-              maxItems: 100
-              items: {$ref: '#/components/schemas/IPhoneCalendarEventValue'}
-        - required: [value]
-          not: {required: [reason]}
-          properties:
-            name: {const: iphone.photos.pick}
-            status: {const: completed}
-            value: {$ref: '#/components/schemas/IPhonePhotoValue'}
-        - required: [value]
-          not: {required: [reason]}
-          properties:
-            name: {type: string, enum: [iphone.mail.compose, iphone.sms.compose]}
-            status: {const: completed}
-            value: {$ref: '#/components/schemas/IPhoneComposerValue'}
-        - required: [value]
-          not: {required: [reason]}
-          properties:
-            name: {type: string, enum: [iphone.photos.pick, iphone.mail.compose, iphone.sms.compose]}
-            status: {const: cancelled}
-            value: {type: 'null'}
-        - required: [value, reason]
-          properties:
-            status: {const: denied}
-            value: {type: 'null'}
-            reason: {type: string, enum: [permission_denied, unavailable]}
-        - required: [value, reason]
-          properties:
-            status: {const: failed}
-            value: {type: 'null'}
-            reason: {const: native_error}
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.location.current
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhoneLocationValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.contacts.lookup
+          status:
+            const: completed
+          value:
+            type: array
+            maxItems: 25
+            items:
+              $ref: '#/components/schemas/IPhoneContactValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.events
+          status:
+            const: completed
+          value:
+            type: array
+            maxItems: 100
+            items:
+              $ref: '#/components/schemas/IPhoneCalendarEventValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.photos.pick
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhonePhotoValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            type: string
+            enum:
+            - iphone.mail.compose
+            - iphone.sms.compose
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhoneComposerValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            type: string
+            enum:
+            - iphone.photos.pick
+            - iphone.mail.compose
+            - iphone.sms.compose
+          status:
+            const: cancelled
+          value:
+            type: 'null'
+      - required:
+        - value
+        - reason
+        properties:
+          status:
+            const: denied
+          value:
+            type: 'null'
+          reason:
+            type: string
+            enum:
+            - permission_denied
+            - unavailable
+      - required:
+        - value
+        - reason
+        properties:
+          status:
+            const: failed
+          value:
+            type: 'null'
+          reason:
+            const: native_error
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.calendars
+          status:
+            const: completed
+          value:
+            type: array
+            maxItems: 100
+            items:
+              $ref: '#/components/schemas/IPhoneCalendarValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.event.create
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhoneCalendarEventValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.event.update
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhoneCalendarEventValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.reminder.create
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhoneReminderValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.reminder.update
+          status:
+            const: completed
+          value:
+            $ref: '#/components/schemas/IPhoneReminderValue'
+      - required:
+        - value
+        not:
+          required:
+          - reason
+        properties:
+          name:
+            const: iphone.calendar.reminders
+          status:
+            const: completed
+          value:
+            type: array
+            maxItems: 100
+            items:
+              $ref: '#/components/schemas/IPhoneReminderValue'
     IPhoneLocationValue:
       type: object
       additionalProperties: false
@@ -4258,3 +4809,223 @@ components:
       - msg
       - type
       title: ValidationError
+
+    WritingDraftPreview:
+      properties:
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+        content_trust:
+          type: string
+          const: untrusted
+          title: Content Trust
+        text:
+          type: string
+          maxLength: 24000
+          minLength: 1
+          title: Text
+        summary:
+          type: string
+          maxLength: 1200
+          minLength: 1
+          title: Summary
+        goal_run_id:
+          type: string
+          title: Goal Run Id
+        node_id:
+          type: string
+          title: Node Id
+        worker_job_id:
+          type: string
+          title: Worker Job Id
+        sha256:
+          type: string
+          title: Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - content_trust
+      - text
+      - summary
+      - goal_run_id
+      - node_id
+      - worker_job_id
+      - sha256
+      title: WritingDraftPreview
+
+    _EmptyCapabilityArguments:
+      additionalProperties: false
+      properties: {}
+      title: _EmptyCapabilityArguments
+      type: object
+
+    _CalendarEventCreateArguments:
+      additionalProperties: false
+      properties:
+        start:
+          format: date-time
+          title: Start
+          type: string
+        end:
+          format: date-time
+          title: End
+          type: string
+        calendar_id:
+          maxLength: 500
+          minLength: 1
+          pattern: ^\S(?:[\s\S]*\S)?$
+          title: Calendar Id
+          type: string
+        title:
+          maxLength: 500
+          minLength: 1
+          title: Title
+          type: string
+      required:
+      - start
+      - end
+      - calendar_id
+      - title
+      title: _CalendarEventCreateArguments
+      type: object
+
+    _CalendarEventUpdateArguments:
+      additionalProperties: false
+      properties:
+        start:
+          format: date-time
+          title: Start
+          type: string
+        end:
+          format: date-time
+          title: End
+          type: string
+        id:
+          maxLength: 500
+          minLength: 1
+          pattern: ^\S(?:[\s\S]*\S)?$
+          title: Id
+          type: string
+        title:
+          maxLength: 500
+          minLength: 1
+          title: Title
+          type: string
+      required:
+      - start
+      - end
+      - id
+      - title
+      title: _CalendarEventUpdateArguments
+      type: object
+
+    _ReminderCreateArguments:
+      additionalProperties: false
+      properties:
+        calendar_id:
+          maxLength: 500
+          minLength: 1
+          pattern: ^\S(?:[\s\S]*\S)?$
+          title: Calendar Id
+          type: string
+        title:
+          maxLength: 500
+          minLength: 1
+          title: Title
+          type: string
+        due:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Due
+      required:
+      - calendar_id
+      - title
+      - due
+      title: _ReminderCreateArguments
+      type: object
+
+    _ReminderUpdateArguments:
+      additionalProperties: false
+      properties:
+        id:
+          maxLength: 500
+          minLength: 1
+          pattern: ^\S(?:[\s\S]*\S)?$
+          title: Id
+          type: string
+        title:
+          maxLength: 500
+          minLength: 1
+          title: Title
+          type: string
+        due:
+          title: Due
+          type: string
+        completed:
+          title: Completed
+          type: boolean
+      required:
+      - id
+      - title
+      - due
+      - completed
+      title: _ReminderUpdateArguments
+      type: object
+
+    _CalendarRemindersArguments:
+      additionalProperties: false
+      properties:
+        calendar_id:
+          maxLength: 500
+          minLength: 1
+          pattern: ^\S(?:[\s\S]*\S)?$
+          title: Calendar Id
+          type: string
+      required:
+      - calendar_id
+      title: _CalendarRemindersArguments
+      type: object
+
+    IPhoneCalendarValue:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - entityType
+      - allowsModifications
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        entityType:
+          enum:
+          - event
+          - reminder
+        allowsModifications:
+          type: boolean
+
+    IPhoneReminderValue:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - due
+      - completed
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        due:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        completed:
+          type: boolean

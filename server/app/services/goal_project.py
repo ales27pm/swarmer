@@ -16,6 +16,8 @@ from app.services.context_builder import safe_context_text
 from app.services.execution_engine import AuthenticatedRequester, ExecutionConflict, ExecutionEngine
 from app.services.goal_limits import runtime_expired
 from app.services.maintenance_lease import MaintenanceLeaseGuard
+from app.services.project_compaction import ProjectCompactionService
+from app.services.project_context import ProjectContextService
 from app.services.project_contracts import (
     PROJECT_SKILL,
     ProjectPayload,
@@ -47,6 +49,8 @@ class GoalProjectService:
         self.db_path = db_path
         self.execution_engine = execution_engine
         self.memory = memory
+        self.context: ProjectContextService | None = None
+        self.compaction: ProjectCompactionService | None = None
 
     @staticmethod
     def _now() -> str:
@@ -179,7 +183,7 @@ class GoalProjectService:
                 base_revision_id=str(latest["id"]) if latest else None,
                 conversation_revision=int(goal[0]) if goal else None,
             )
-        return ProjectPayload.model_validate(
+        payload = ProjectPayload.model_validate(
             {
                 "objective": safe_context_text(str(node["objective"]), max_chars=4_000),
                 "conversation": [
@@ -197,8 +201,22 @@ class GoalProjectService:
                 "base_sha256": latest["sha256"] if latest else None,
                 "focus_paths": snapshot.focus_paths if snapshot else [],
                 "memory": memory,
+                "durable_context": (
+                    self.context.prompt_state(await self.context.refresh(goal_id))
+                    if self.context is not None
+                    else None
+                ),
             }
-        ).model_dump()
+        ).model_dump(
+            exclude=(
+                {"durable_context", "context_compaction"}
+                if self.context is None
+                else {"context_compaction"}
+            )
+        )
+        if self.compaction is not None:
+            payload = await self.compaction.prepare(goal_id, payload)
+        return payload
 
     async def capture_result(
         self,

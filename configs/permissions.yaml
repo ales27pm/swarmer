@@ -75,6 +75,42 @@ capability_rules:
     decision: ask
     risk: high
     approval_ttl_seconds: 180
+  iphone.calendar.calendars:
+    id: ask-iphone-calendar-calendars
+    description: This calendar or reminder operation requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.calendar.reminders:
+    id: ask-iphone-calendar-reminders
+    description: This calendar or reminder operation requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.calendar.event.create:
+    id: ask-iphone-calendar-event-create
+    description: This calendar or reminder operation requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.calendar.event.update:
+    id: ask-iphone-calendar-event-update
+    description: This calendar or reminder operation requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.calendar.reminder.create:
+    id: ask-iphone-calendar-reminder-create
+    description: This calendar or reminder operation requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
+  iphone.calendar.reminder.update:
+    id: ask-iphone-calendar-reminder-update
+    description: This calendar or reminder operation requires explicit device approval.
+    decision: ask
+    risk: high
+    approval_ttl_seconds: 180
   iphone.photos.pick:
     id: ask-iphone-photos-pick
     description: Opening the iOS photo picker requires explicit device approval.
@@ -98,6 +134,60 @@ capability_rules:
 # executable allowlist for dispatch. Only the two original workspace reads are
 # safe for automatic lease redistribution.
 worker_skill_rules:
+  code.swift.build:
+    id: allow-code-swift-build
+    description: Build or test a source-hash-bound operator-approved checkout on the configured Mac worker.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  code.swift.test:
+    id: allow-code-swift-test
+    description: Build or test a source-hash-bound operator-approved checkout on the configured Mac worker.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  database.sqlite.inspect:
+    id: allow-database-sqlite-inspect
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  database.sqlite.query:
+    id: allow-database-sqlite-query
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  database.sqlite.create:
+    id: allow-database-sqlite-create
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  database.sqlite.backup:
+    id: allow-database-sqlite-backup
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  database.sqlite.migrate:
+    id: allow-database-sqlite-migrate
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  crm.command:
+    id: allow-crm-command
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  documents.extract:
+    id: allow-documents-extract
+    description: Bounded specialist operation within its configured workspace or scoped integration.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   writing.draft:
     id: allow-worker-text-draft
     description: A local model worker may produce a bounded textual draft without writing files or executing actions.

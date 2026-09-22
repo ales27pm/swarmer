@@ -66,6 +66,15 @@ def test_agent_skill_allowlist_is_exact() -> None:
             "code.generate_python",
             "code.build_project",
             "writing.draft",
+            "database.sqlite.inspect",
+            "database.sqlite.query",
+            "database.sqlite.create",
+            "database.sqlite.backup",
+            "database.sqlite.migrate",
+            "code.swift.build",
+            "code.swift.test",
+            "crm.command",
+            "documents.extract",
         }
     )
 

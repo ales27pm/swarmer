@@ -18,6 +18,9 @@ from typing import Any
 import pytest
 
 PREFIX = "SWARMER_RUNNER_RECEIPT="
+PROJECT_ROOT = Path("/workspace/project")
+RUFF_BINARY = "/usr/local/bin/ruff"
+RUFF_RULES = "E9,F821,F822,F823"
 
 
 def prepare() -> None:
@@ -33,7 +36,34 @@ def prepare() -> None:
 
 
 def python_build() -> dict[str, int]:
-    files = sorted(Path("/workspace/project").rglob("*.py"))
+    files = sorted(PROJECT_ROOT.rglob("*.py"))
+    if not files:
+        return {"exit_code": 1, "tests_executed": 0, "test_failures": 0}
+    # Trusted image binary and isolated config: generated pyproject/.ruff files
+    # cannot weaken the gate, replace the binary, or enable autofixes.
+    print(
+        "Python build: isolated Ruff E9/F821/F822/F823, then byte compilation.",
+        flush=True,
+    )
+    lint = subprocess.run(  # nosec B603 - fixed trusted executable inside runtime
+        [
+            RUFF_BINARY,
+            "check",
+            "--isolated",
+            "--no-cache",
+            "--select",
+            RUFF_RULES,
+            "--target-version",
+            "py312",
+            "--output-format",
+            "concise",
+            str(PROJECT_ROOT),
+        ],
+        check=False,
+        timeout=30,
+    )
+    if lint.returncode:
+        return {"exit_code": lint.returncode, "tests_executed": 0, "test_failures": 0}
     with tempfile.TemporaryDirectory(prefix="compiled-") as compiled:
         for index, path in enumerate(files):
             py_compile.compile(str(path), cfile=str(Path(compiled) / f"{index}.pyc"), doraise=True)
@@ -96,7 +126,11 @@ def node_test() -> dict[str, int]:
         return {"exit_code": code or 5, "tests_executed": 0, "test_failures": 0}
     failures = int(failed[-1])
     count = int(passed[-1]) + failures
-    return {"exit_code": code if count else 5, "tests_executed": count, "test_failures": failures}
+    return {
+        "exit_code": code if count else 5,
+        "tests_executed": count,
+        "test_failures": failures,
+    }
 
 
 def main() -> None:
@@ -123,7 +157,13 @@ def main() -> None:
             result = node_test()
         else:
             raise ValueError("unknown fixed check profile")
-    except (OSError, ValueError, py_compile.PyCompileError, RuntimeError) as exc:
+    except (
+        OSError,
+        ValueError,
+        py_compile.PyCompileError,
+        RuntimeError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         print(f"Check failed: {type(exc).__name__}: {str(exc)[:1_000]}")
         result = {"exit_code": 1, "tests_executed": 0, "test_failures": 1}
     print("\n" + PREFIX + json.dumps(result, separators=(",", ":")), flush=True)

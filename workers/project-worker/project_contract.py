@@ -172,7 +172,11 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("required_skill") != SKILL:
         raise ProjectError("unsupported project worker skill")
     value = job.get("payload")
-    if not isinstance(value, dict) or set(value) - {"focus_paths", "memory"} != PAYLOAD_FIELDS:
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"focus_paths", "memory", "durable_context", "context_compaction"}
+        != PAYLOAD_FIELDS
+    ):
         raise ProjectError("project job payload has invalid fields")
     objective = text_value(value["objective"], 4_000)
     conversation = value["conversation"]
@@ -217,7 +221,48 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
         "base_sha256": sha,
         "focus_paths": focus,
         "memory": memory_value(value.get("memory")),
+        "durable_context": durable_context_value(value.get("durable_context")),
+        "context_compaction": compaction_value(value.get("context_compaction")),
     }
+
+
+def compaction_value(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or len(json.dumps(value, allow_nan=False).encode()) > 12000:
+        raise ProjectError("context compaction is invalid")
+    if value.get("grants_authority", False) is not False:
+        raise ProjectError("context compaction cannot grant authority")
+    return value
+
+
+def durable_context_value(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "version",
+        "fingerprint",
+        "requirements",
+        "base_revision_id",
+    }:
+        raise ProjectError("durable context has invalid fields")
+    if type(value["version"]) is not int or value["version"] < 1:
+        raise ProjectError("durable context version is invalid")
+    if not isinstance(value["fingerprint"], str) or not re.fullmatch(
+        r"[a-f0-9]{64}", value["fingerprint"]
+    ):
+        raise ProjectError("durable context fingerprint is invalid")
+    if not isinstance(value["requirements"], list) or len(value["requirements"]) > 10000:
+        raise ProjectError("durable context requirements are invalid")
+    for item in value["requirements"]:
+        if not isinstance(item, dict) or set(item) != {"text", "source_id"}:
+            raise ProjectError("durable requirement has invalid fields")
+        text_value(item["text"], 4000)
+        if not isinstance(item["source_id"], str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", item["source_id"]
+        ):
+            raise ProjectError("durable requirement source is invalid")
+    return value
 
 
 def memory_value(value: object) -> dict[str, Any] | None:
@@ -225,14 +270,19 @@ def memory_value(value: object) -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict) or set(value) != {"mode", "reason", "items"}:
         raise ProjectError("project memory has invalid fields")
-    if value["mode"] not in {"semantic", "lexical"}:
+    if value["mode"] not in {"semantic", "lexical", "hybrid"}:
         raise ProjectError("project memory mode is invalid")
     reason = text_value(value["reason"], 100)
     if not isinstance(value["items"], list) or len(value["items"]) > 4:
         raise ProjectError("project memory item count exceeds its limit")
     items = []
     for item in value["items"]:
-        if not isinstance(item, dict) or set(item) != {"id", "summary", "score", "source_id"}:
+        if not isinstance(item, dict) or set(item) != {
+            "id",
+            "summary",
+            "score",
+            "source_id",
+        }:
             raise ProjectError("project memory item has invalid fields")
         score = item["score"]
         if (

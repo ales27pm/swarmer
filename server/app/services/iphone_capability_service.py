@@ -28,6 +28,16 @@ from app.services.permission_policy import PermissionPolicy, PermissionPolicyErr
 TERMINAL_CAPABILITY_STATUSES = frozenset({"completed", "denied", "failed", "cancelled", "expired"})
 _EXPIRY_BATCH_SIZE = 25
 _MAX_EXPIRATIONS_PER_INVOCATION = 250
+EXTENDED_AGENDA_CAPABILITIES = frozenset(
+    {
+        "iphone.calendar.calendars",
+        "iphone.calendar.reminders",
+        "iphone.calendar.event.create",
+        "iphone.calendar.event.update",
+        "iphone.calendar.reminder.create",
+        "iphone.calendar.reminder.update",
+    }
+)
 
 
 class IPhoneCapabilityConflict(RuntimeError):
@@ -49,8 +59,10 @@ class IPhoneCapabilityService:
         outbox_instance_id: str | None = None,
         outbox_publication_lease_seconds: int = 30,
         clock: Callable[[], datetime] | None = None,
+        extended_agenda_enabled: bool = False,
     ) -> None:
         self.db_path = db_path
+        self.extended_agenda_enabled = extended_agenda_enabled
         self.policy = policy
         self.grant_ttl_seconds = grant_ttl_seconds
         self.outbox = OutboxService(
@@ -90,6 +102,10 @@ class IPhoneCapabilityService:
         capability_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
+        if capability_name in EXTENDED_AGENDA_CAPABILITIES and not self.extended_agenda_enabled:
+            raise IPhoneCapabilityConflict(
+                "extended agenda disabled until compatible iPhone rollout"
+            )
         try:
             rule = self.policy.evaluate_capability(capability_name)
         except PermissionPolicyError as exc:

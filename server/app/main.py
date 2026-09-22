@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import (
     Depends,
     FastAPI,
@@ -110,6 +111,12 @@ from app.services.model_router import ModelRouter
 from app.services.orchestrator_service import OrchestratorError, OrchestratorService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.planner_provider import UbuntuLLMPlannerProvider, UbuntuSwarmPlannerProvider
+from app.services.project_compaction import (
+    CompactionInvalid,
+    OpenAICompactionProvider,
+    ProjectCompactionService,
+)
+from app.services.project_context import ProjectContextConflict, ProjectContextService
 from app.services.project_contracts import ProjectApplication, ProjectApplyRequest, ProjectPreview
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
@@ -310,6 +317,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     activity_catalog = ActivityCatalogService(
         settings.db_path,
         permission_policy,
+        extended_agenda_enabled=settings.iphone_agenda_extended_enabled,
         offline_timeout_seconds=settings.agent_offline_timeout_seconds,
     )
     agent_lease_reaper = AgentLeaseReaper(
@@ -326,6 +334,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         message_board,
         permission_policy,
         grant_ttl_seconds=settings.iphone_capability_grant_ttl_seconds,
+        extended_agenda_enabled=settings.iphone_agenda_extended_enabled,
         maintenance_leases=maintenance_leases,
         owner_instance_id=control_plane_instance.instance_id,
         outbox_instance_id=f"{control_plane_instance.instance_id}:iphone",
@@ -430,10 +439,33 @@ def create_app(config: Settings | None = None) -> FastAPI:
         model_revision=settings.project_embedding_model_revision,
         query_prefix=settings.project_memory_query_prefix,
         document_prefix=settings.project_memory_document_prefix,
+        hybrid=settings.project_memory_hybrid_enabled,
     )
     if goal_manager.project_applications is not None:
         goal_manager.project_applications.memory = project_memory
     goal_manager.project_memory = project_memory
+    project_context = ProjectContextService(settings.db_path)
+    if settings.project_context_enabled and goal_manager.project_applications is not None:
+        goal_manager.project_applications.context = project_context
+    project_compaction = ProjectCompactionService(
+        project_context,
+        goal_manager,
+        OpenAICompactionProvider(
+            settings.llm_base_url,
+            settings.summarizer_model or settings.planner_model or settings.orchestrator_model,
+            reasoning_effort="none",
+        ),
+        enabled=settings.project_context_enabled and settings.project_compaction_enabled,
+        context_tokens=24000,
+        output_tokens=2000,
+        overhead_tokens=8000,
+    )
+    if (
+        settings.project_context_enabled
+        and settings.project_compaction_enabled
+        and goal_manager.project_applications is not None
+    ):
+        goal_manager.project_applications.compaction = project_compaction
     consumer_checkpoints = ConsumerCheckpointStore(settings.db_path)
     agent_scoring = AgentScoringService(
         settings.db_path,
@@ -642,6 +674,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.research_evaluator = research_evaluator
     app.state.goal_manager = goal_manager
     app.state.project_memory = project_memory
+    app.state.project_context = project_context
+    app.state.project_compaction = project_compaction
     app.state.vector_projection = vector_projection
     app.state.websocket_notifications = websocket_notifications
     app.state.run_maintenance_cycle = run_distributed_runtime_maintenance_cycle
@@ -1385,6 +1419,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
         # Paired devices share this control plane's goals; project scope is server-derived.
         del principal
         try:
+            if settings.project_context_enabled and goal_manager.project_applications is not None:
+                await goal_manager.project_applications.ensure_project(goal_id)
             context = await project_memory.retrieve_for_goal(
                 goal_id, request.purpose, expected_goal_updated_at=request.expected_goal_updated_at
             )
@@ -1394,6 +1430,70 @@ def create_app(config: Settings | None = None) -> FastAPI:
             ) from exc
         response.headers["Cache-Control"] = "no-store"
         return context
+
+    @app.post("/goals/{goal_id}/context")
+    async def refresh_project_context(
+        goal_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        if not settings.project_context_enabled:
+            return {"enabled": False}
+        try:
+            if goal_manager.project_applications is not None:
+                await goal_manager.project_applications.ensure_project(goal_id)
+            return await project_context.refresh(goal_id)
+        except (ProjectContextConflict, GoalProjectConflict) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/goals/{goal_id}/context/compact")
+    async def compact_project_context(
+        goal_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        if not settings.project_context_enabled or not settings.project_compaction_enabled:
+            raise HTTPException(status_code=409, detail="project compaction disabled")
+        try:
+            return await project_compaction.compact(goal_id)
+        except (ProjectContextConflict, GoalManagerConflict) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (CompactionInvalid, httpx.HTTPError, TimeoutError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="context compaction failed; original project sources preserved",
+            ) from exc
+
+    @app.get("/memory/status")
+    async def memory_provider_status(
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        return {
+            "context_enabled": settings.project_context_enabled,
+            "compaction_enabled": settings.project_compaction_enabled,
+            "hybrid_enabled": settings.project_memory_hybrid_enabled,
+            "embedding_configured": project_embedding_service is not None,
+            "embedding_model": settings.project_embedding_model,
+            "embedding_revision": settings.project_embedding_model_revision,
+            "provider_fingerprint": project_memory.provider_identity,
+            "readiness": "configured_not_probed"
+            if project_embedding_service
+            else "lexical_fallback",
+            "context_token_count_method": "conservative_utf8_bytes",  # nosec B105 - public metric
+        }
+
+    @app.get("/goals/{goal_id}/context/sources/{source_id}")
+    async def project_context_source(
+        goal_id: str,
+        source_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        try:
+            return await project_context.source(goal_id, source_id)
+        except ProjectContextConflict as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/goals/{goal_id}/messages", response_model=GoalMessagesResponse)
     async def goal_messages(
@@ -1723,7 +1823,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
         try:
             goal_execution = await read_task_goal_execution(settings.db_path, task_id)
         except ValueError as exc:
-            raise HTTPException(status_code=503, detail="task execution evidence unavailable") from exc
+            raise HTTPException(
+                status_code=503, detail="task execution evidence unavailable"
+            ) from exc
         return {
             "task": task.model_dump(mode="json"),
             "messages": await state_service.list_messages_for_task(task_id),

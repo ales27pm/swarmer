@@ -133,7 +133,18 @@ def worker_node_array_schema(
             "search_query" if field == "objective" else field for field in research["required"]
         ]
         general_nodes.append(research)
-    if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"}:
+    from app.services.specialist_contracts import SPECIALIST_SKILLS, specialist_argument_schema
+
+    for skill in sorted(skills & SPECIALIST_SKILLS):
+        specialist = deepcopy(node_schema)
+        specialist["properties"]["node_type"] = {"type": "string", "const": "worker"}
+        specialist["properties"]["00_required_skill"] = {"type": "string", "const": skill}
+        specialist["properties"]["worker_arguments"] = model_wire_schema(
+            specialist_argument_schema(skill)
+        )
+        specialist["required"] = [*specialist["required"], "worker_arguments"]
+        general_nodes.append(specialist)
+    if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"} - SPECIALIST_SKILLS:
         worker = deepcopy(node_schema)
         worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
         worker["properties"]["00_required_skill"] = {
@@ -195,6 +206,10 @@ class UbuntuSwarmPlannerProvider:
 For every proposed node, choose 00_required_skill FIRST from the advertised skills,
 or null for synthesis. This is the model-wire name of the public required_skill field.
 Choose the capability matching the user's requested outcome before writing its parameters.
+For database.sqlite.*, code.swift.*, crm.command and documents.extract, worker_arguments
+must contain the operation's bounded JSON arguments from supplied source information.
+Never guess a workspace path, source hash, record ID, calendar ID or permission.
+Use null worker_arguments for skills with existing server-derived payloads.
 Never emit both names. Context cards retain their normal public field names.
 Return exactly one JSON object matching the supplied schema and no prose.
 Decompose only the bounded, redacted context supplied by the Ubuntu control plane.

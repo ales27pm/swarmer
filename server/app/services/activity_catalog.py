@@ -11,8 +11,13 @@ from typing import Annotated, Any, Literal, Self
 import aiosqlite
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.services.agent_card import SUPPORTED_AGENT_PROTOCOL, SUPPORTED_AGENT_SKILLS
+from app.services.agent_card import (
+    SPECIALIST_SKILLS,
+    SUPPORTED_AGENT_PROTOCOL,
+    SUPPORTED_AGENT_SKILLS,
+)
 from app.services.agent_liveness import DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS, agent_is_fresh
+from app.services.iphone_capability_service import EXTENDED_AGENDA_CAPABILITIES
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import (
     WorkerSkillPolicySnapshot,
@@ -42,7 +47,9 @@ AvailabilityState = Literal[
 
 # These two implemented jobs need explicit paths that a generic goal node does
 # not carry. The remaining worker targets have a bounded GoalManager mapping.
-PARAMETER_BOUND_SKILLS = frozenset({"workspace.read_text", "code_review.static_analysis"})
+PARAMETER_BOUND_SKILLS = (
+    frozenset({"workspace.read_text", "code_review.static_analysis"}) | SPECIALIST_SKILLS
+)
 GOAL_READY_SKILLS = frozenset(
     {
         "workspace.list_dir",
@@ -191,10 +198,12 @@ class ActivityCatalogService:
         *,
         offline_timeout_seconds: int = DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
         clock: Callable[[], datetime] | None = None,
+        extended_agenda_enabled: bool = False,
     ) -> None:
         if offline_timeout_seconds <= 0:
             raise ValueError("agent offline timeout must be positive")
         self.db_path = db_path
+        self.extended_agenda_enabled = extended_agenda_enabled
         self.permission_policy = permission_policy
         self.offline_timeout_seconds = offline_timeout_seconds
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -277,6 +286,11 @@ class ActivityCatalogService:
             if self.permission_policy is None:
                 return result(
                     "unknown", "Les autorisations de cet outil iPhone ne sont pas vérifiables."
+                )
+            if target in EXTENDED_AGENDA_CAPABILITIES and not self.extended_agenda_enabled:
+                return result(
+                    "policy_denied",
+                    "Cet outil attend l’activation après la mise à jour de l’iPhone.",
                 )
             try:
                 rule = self.permission_policy.evaluate_capability(target)

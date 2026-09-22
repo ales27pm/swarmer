@@ -51,9 +51,7 @@ class Generator:
         self.response = response
         self.calls = 0
 
-    def generate(
-        self, payload: dict[str, Any], ensure_active: Any | None = None
-    ) -> dict[str, Any]:
+    def generate(self, payload: dict[str, Any], ensure_active: Any | None = None) -> dict[str, Any]:
         self.calls += 1
         if ensure_active is not None:
             ensure_active()
@@ -433,26 +431,29 @@ def test_streaming_native_response_assembles_chunks_and_checks_active_lease(
     expected = single_file_step()
     serialized = json.dumps(expected)
     midpoint = len(serialized) // 2
-    raw = b"\n".join(
-        json.dumps(item).encode()
-        for item in (
-            {
-                "message": {"content": serialized[:midpoint]},
-                "done": False,
-            },
-            {
-                "message": {"content": serialized[midpoint:]},
-                "done": False,
-            },
-            {
-                "message": {"content": ""},
-                "done": True,
-                "done_reason": "stop",
-                "prompt_eval_count": 22,
-                "eval_count": 33,
-            },
+    raw = (
+        b"\n".join(
+            json.dumps(item).encode()
+            for item in (
+                {
+                    "message": {"content": serialized[:midpoint]},
+                    "done": False,
+                },
+                {
+                    "message": {"content": serialized[midpoint:]},
+                    "done": False,
+                },
+                {
+                    "message": {"content": ""},
+                    "done": True,
+                    "done_reason": "stop",
+                    "prompt_eval_count": 22,
+                    "eval_count": 33,
+                },
+            )
         )
-    ) + b"\n"
+        + b"\n"
+    )
     requests = []
     active_checks = 0
 
@@ -469,9 +470,7 @@ def test_streaming_native_response_assembles_chunks_and_checks_active_lease(
         active_checks += 1
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
-    generator = worker.ProjectGenerator(
-        "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-    )
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
     assert generator.generate(payload(), active)["edits"] == expected["edits"]
     assert requests[0]["stream"] is True
     assert active_checks >= 4
@@ -481,10 +480,7 @@ def test_streaming_native_response_assembles_chunks_and_checks_active_lease(
 def test_streaming_native_response_rejects_eof_before_terminal_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw = (
-        json.dumps({"message": {"content": "{\"action\":"}, "done": False})
-        + "\n"
-    ).encode()
+    raw = (json.dumps({"message": {"content": '{"action":'}, "done": False}) + "\n").encode()
 
     class Response(io.BytesIO):
         status = 200
@@ -495,9 +491,7 @@ def test_streaming_native_response_rejects_eof_before_terminal_chunk(
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
     with pytest.raises(worker.ModelStepError, match="incomplete"):
-        worker.ProjectGenerator(
-            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-        ).generate(payload())
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(payload())
 
 
 def test_streaming_native_response_rejects_malformed_chunk(
@@ -512,9 +506,7 @@ def test_streaming_native_response_rejects_malformed_chunk(
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
     with pytest.raises(worker.ModelStepError, match="incomplete"):
-        worker.ProjectGenerator(
-            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-        ).generate(payload())
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(payload())
 
 
 def test_streaming_native_response_enforces_total_byte_limit(
@@ -531,9 +523,7 @@ def test_streaming_native_response_enforces_total_byte_limit(
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
     with pytest.raises(worker.ProjectError, match="byte limit"):
-        worker.ProjectGenerator(
-            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-        ).generate(payload())
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(payload())
 
 
 def test_streaming_native_response_enforces_productive_wall_limit(
@@ -545,17 +535,14 @@ def test_streaming_native_response_enforces_productive_wall_limit(
     class Opener:
         def open(self, request: Any, *, timeout: float) -> Response:
             return Response(
-                json.dumps({"message": {"content": "{"}, "done": False}).encode()
-                + b"\n"
+                json.dumps({"message": {"content": "{"}, "done": False}).encode() + b"\n"
             )
 
     clock = iter((0.0, worker.MAX_MODEL_WALL_SECONDS + 0.01))
     monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
     with pytest.raises(worker.ModelTimeoutError, match="timed out"):
-        worker.ProjectGenerator(
-            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-        ).generate(payload())
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(payload())
 
 
 def test_streaming_native_response_bounds_each_read_by_remaining_wall_time(
@@ -588,9 +575,7 @@ def test_streaming_native_response_bounds_each_read_by_remaining_wall_time(
     monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
     with pytest.raises(worker.ModelTimeoutError, match="timed out") as error:
-        worker.ProjectGenerator(
-            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-        ).generate(payload())
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(payload())
     assert configured == [pytest.approx(1.25)]
     assert "private" not in str(error.value)
 
@@ -637,9 +622,7 @@ def test_readme_route_uses_its_reserved_model_wall_budget(
     clock = iter((0.0, worker.MAX_MODEL_WALL_SECONDS + 30.0))
     monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
-    result = worker.ProjectGenerator(
-        "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-    ).generate(data)
+    result = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(data)
     assert worker.MAX_README_MODEL_WALL_SECONDS > worker.MAX_MODEL_WALL_SECONDS + 30
     assert worker.model_wall_seconds(data, True) == worker.MAX_README_MODEL_WALL_SECONDS
     assert result["edits"][0]["path"] == "README.md"
@@ -683,9 +666,7 @@ def test_streaming_native_error_event_is_a_fixed_transport_failure(
 
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
     with pytest.raises(worker.ModelTransportError) as error:
-        worker.ProjectGenerator(
-            "http://127.0.0.1:11434/v1", "qwen3-coder:30b"
-        ).generate(payload())
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(payload())
     assert error.value.category == "unavailable"
     assert "private" not in str(error.value)
 
@@ -695,9 +676,7 @@ def test_second_consecutive_timeout_pauses_instead_of_charging_a_third_iteration
 ) -> None:
     data = {
         **payload(),
-        "conversation": [
-            {"role": "assistant", "content": worker.MODEL_TIMEOUT_DIAGNOSTIC}
-        ],
+        "conversation": [{"role": "assistant", "content": worker.MODEL_TIMEOUT_DIAGNOSTIC}],
     }
 
     class Opener:
@@ -2084,12 +2063,8 @@ def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
     assert schema["properties"]["runtime"]["enum"] == ["python"]
     assert schema["properties"]["edits"]["minItems"] == 1
     assert schema["properties"]["edits"]["maxItems"] == 1
-    assert schema["properties"]["edits"]["items"]["properties"]["path"] == {
-        "const": "README.md"
-    }
-    assert schema["properties"]["edits"]["items"]["properties"]["content"][
-        "maxLength"
-    ] == 1_800
+    assert schema["properties"]["edits"]["items"]["properties"]["path"] == {"const": "README.md"}
+    assert schema["properties"]["edits"]["items"]["properties"]["content"]["maxLength"] == 1_800
     assert body["options"]["num_predict"] == worker.MAX_README_OUTPUT_TOKENS == 700
     for field in ("patches", "deletions", "requested_checks", "focus_paths"):
         assert schema["properties"][field]["maxItems"] == 0
@@ -2215,9 +2190,7 @@ def test_new_user_request_takes_priority_over_missing_readme(
     body = capture_project_request(monkeypatch, data)
     schema = body["format"]["oneOf"][0]
     assert schema["properties"]["edits"]["maxItems"] == 1
-    assert schema["properties"]["edits"]["items"]["properties"]["path"].get(
-        "const"
-    ) is None
+    assert schema["properties"]["edits"]["items"]["properties"]["path"].get("const") is None
     assert body["options"]["num_predict"] == worker.MAX_OUTPUT_TOKENS
     task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
     assert "Add CSV export first." in task

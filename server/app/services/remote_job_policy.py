@@ -9,6 +9,12 @@ from pydantic import ValidationError
 from app.models import CAPABILITY_ARGUMENT_MODELS
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
+from app.services.specialist_contracts import (
+    PERSONAL_SKILLS,
+    SQLITE_SKILLS,
+    SWIFT_SKILLS,
+    validate_specialist_payload,
+)
 from app.services.writing_contracts import WRITING_SKILL, WritingPayload
 
 MAX_QUERY_CHARACTERS = 2_000
@@ -96,7 +102,7 @@ def _capability_request(raw: object) -> dict[str, Any]:
         raise RemoteJobPolicyError("capability is not supported")
     try:
         normalized_arguments = model.model_validate(arguments).model_dump(
-            mode="json", exclude_none=True
+            mode="json", exclude_none=capability_name != "iphone.calendar.reminder.create"
         )
     except ValidationError as exc:
         raise RemoteJobPolicyError("capability arguments are invalid") from exc
@@ -196,6 +202,11 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         raise RemoteJobPolicyError("remote job requires an unsupported or privileged skill")
     if not isinstance(payload, dict):
         raise RemoteJobPolicyError("remote job payload must be an object")
+    if required_skill in SQLITE_SKILLS | PERSONAL_SKILLS | SWIFT_SKILLS:
+        try:
+            return validate_specialist_payload(required_skill, payload)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise RemoteJobPolicyError("specialist arguments invalid") from exc
     if required_skill in {"workspace.list_dir", "workspace.read_text"}:
         return _workspace_payload(required_skill, payload)
     if required_skill == "research.query":
@@ -207,7 +218,11 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
             raise RemoteJobPolicyError("writing draft payload is invalid") from exc
     if required_skill == PROJECT_SKILL:
         try:
-            return ProjectPayload.model_validate(payload).model_dump()
+            return ProjectPayload.model_validate(payload).model_dump(
+                exclude={
+                    key for key in ("durable_context", "context_compaction") if key not in payload
+                }
+            )
         except ValueError as exc:
             raise RemoteJobPolicyError("project iteration payload is invalid") from exc
     if required_skill == "code.generate_python":

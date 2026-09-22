@@ -198,6 +198,12 @@ IPhoneCapabilityName = Literal[
     "iphone.location.current",
     "iphone.contacts.lookup",
     "iphone.calendar.events",
+    "iphone.calendar.calendars",
+    "iphone.calendar.reminders",
+    "iphone.calendar.event.create",
+    "iphone.calendar.event.update",
+    "iphone.calendar.reminder.create",
+    "iphone.calendar.reminder.update",
     "iphone.photos.pick",
     "iphone.mail.compose",
     "iphone.sms.compose",
@@ -232,6 +238,59 @@ class _CalendarEventsArguments(BaseModel):
         return self
 
 
+CalendarIdentity = Annotated[
+    str, Field(min_length=1, max_length=500, pattern=r"^\S(?:[\s\S]*\S)?$")
+]
+CalendarTitle = Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class _CalendarEventCreateArguments(_CalendarEventsArguments):
+    calendar_id: CalendarIdentity
+    title: CalendarTitle
+
+
+class _CalendarEventUpdateArguments(_CalendarEventsArguments):
+    id: CalendarIdentity
+    title: CalendarTitle
+
+
+class _CalendarRemindersArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    calendar_id: CalendarIdentity
+
+
+class _ReminderCreateArguments(_CalendarRemindersArguments):
+    title: CalendarTitle
+    due: str | None
+
+    @field_validator("due", mode="before")
+    @classmethod
+    def validate_due(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not _is_bounded_rfc3339_timestamp(value):
+            raise ValueError("reminder due must be bounded RFC3339")
+        parsed = datetime.fromisoformat(value)
+        if parsed.microsecond:
+            raise ValueError("reminder due requires whole-second precision")
+        return value
+
+
+class _ReminderUpdateArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: CalendarIdentity
+    title: CalendarTitle
+    due: str
+    completed: bool = Field(strict=True)
+
+    @field_validator("due", mode="before")
+    @classmethod
+    def validate_due(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("clearing reminder due is not supported")
+        return _ReminderCreateArguments.validate_due(value)
+
+
 CapabilityRecipient = Annotated[str, Field(max_length=1_000)]
 
 
@@ -252,6 +311,12 @@ CAPABILITY_ARGUMENT_MODELS: dict[str, type[BaseModel]] = {
     "iphone.location.current": _EmptyCapabilityArguments,
     "iphone.contacts.lookup": _ContactsLookupArguments,
     "iphone.calendar.events": _CalendarEventsArguments,
+    "iphone.calendar.calendars": _EmptyCapabilityArguments,
+    "iphone.calendar.reminders": _CalendarRemindersArguments,
+    "iphone.calendar.event.create": _CalendarEventCreateArguments,
+    "iphone.calendar.event.update": _CalendarEventUpdateArguments,
+    "iphone.calendar.reminder.create": _ReminderCreateArguments,
+    "iphone.calendar.reminder.update": _ReminderUpdateArguments,
     "iphone.photos.pick": _EmptyCapabilityArguments,
     "iphone.mail.compose": _MailComposeArguments,
     "iphone.sms.compose": _SMSComposeArguments,
@@ -270,7 +335,9 @@ class AgentCapabilityRequest(BaseModel):
     @model_validator(mode="after")
     def validate_capability_arguments(self) -> "AgentCapabilityRequest":
         validated = CAPABILITY_ARGUMENT_MODELS[self.capability_name].model_validate(self.arguments)
-        self.arguments = validated.model_dump(mode="json", exclude_none=True)
+        self.arguments = validated.model_dump(
+            mode="json", exclude_none=self.capability_name != "iphone.calendar.reminder.create"
+        )
         return self
 
 
@@ -382,10 +449,15 @@ class IPhoneCapabilityNativeResult(BaseModel):
                     or not self._string_list(contact["emails"], 20, 1_000)
                 ):
                     raise ValueError("contacts result is invalid")
-        elif self.name == "iphone.calendar.events":
-            if not isinstance(self.value, list) or len(self.value) > 100:
+        elif self.name in {
+            "iphone.calendar.events",
+            "iphone.calendar.event.create",
+            "iphone.calendar.event.update",
+        }:
+            values = self.value if self.name == "iphone.calendar.events" else [self.value]
+            if not isinstance(values, list) or len(values) > 100:
                 raise ValueError("calendar result is invalid")
-            for event in self.value:
+            for event in values:
                 if not isinstance(event, dict) or set(event) != {"id", "title", "start", "end"}:
                     raise ValueError("calendar result is invalid")
                 if (
@@ -395,6 +467,48 @@ class IPhoneCapabilityNativeResult(BaseModel):
                     or not self._timestamp(event["end"])
                 ):
                     raise ValueError("calendar result is invalid")
+        elif self.name == "iphone.calendar.calendars":
+            if not isinstance(self.value, list) or len(self.value) > 100:
+                raise ValueError("calendar list is invalid")
+            for calendar in self.value:
+                if not isinstance(calendar, dict) or set(calendar) != {
+                    "id",
+                    "title",
+                    "entityType",
+                    "allowsModifications",
+                }:
+                    raise ValueError("calendar list is invalid")
+                if (
+                    not self._strict_string(calendar["id"], 500)
+                    or not self._text(calendar["title"], 2000)
+                    or calendar["entityType"] not in ("event", "reminder")
+                    or not isinstance(calendar["allowsModifications"], bool)
+                ):
+                    raise ValueError("calendar list is invalid")
+        elif self.name in {
+            "iphone.calendar.reminders",
+            "iphone.calendar.reminder.create",
+            "iphone.calendar.reminder.update",
+        }:
+            values = self.value if self.name == "iphone.calendar.reminders" else [self.value]
+            if not isinstance(values, list) or len(values) > 100:
+                raise ValueError("reminder result is invalid")
+            for reminder in values:
+                if not isinstance(reminder, dict) or set(reminder) != {
+                    "id",
+                    "title",
+                    "due",
+                    "completed",
+                }:
+                    raise ValueError("reminder result is invalid")
+                if (
+                    not self._strict_string(reminder["id"], 500)
+                    or not self._text(reminder["title"], 2000)
+                    or reminder["due"] is not None
+                    and not self._timestamp(reminder["due"])
+                    or not isinstance(reminder["completed"], bool)
+                ):
+                    raise ValueError("reminder result is invalid")
         elif self.name == "iphone.photos.pick":
             if not isinstance(self.value, dict) or set(self.value) != {"uri", "width", "height"}:
                 raise ValueError("photo result is invalid")

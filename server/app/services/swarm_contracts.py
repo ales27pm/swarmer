@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -376,9 +376,20 @@ class SwarmPlanNodeProposal(BaseModel):
     expected_output: LongText
     priority: int = Field(strict=True, ge=0, le=100)
     preferred_agent_constraints: PreferredAgentConstraints | None = None
+    worker_arguments: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_role_shape(self) -> SwarmPlanNodeProposal:
+        from app.services.specialist_contracts import SPECIALIST_SKILLS
+
+        if self.required_skill in SPECIALIST_SKILLS and self.worker_arguments is None:
+            raise ValueError("specialist workers require explicit operation arguments")
+        if self.worker_arguments is not None:
+            from app.services.remote_job_policy import validate_remote_job
+
+            if self.node_type is not PlanNodeType.WORKER or self.required_skill is None:
+                raise ValueError("only worker nodes accept operation arguments")
+            self.worker_arguments = validate_remote_job(self.required_skill, self.worker_arguments)
         if set(self.dependencies) & set(self.optional_dependencies):
             raise ValueError("a dependency cannot be both hard and optional")
         if self.node_type is PlanNodeType.WORKER and self.required_skill is None:

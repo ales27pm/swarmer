@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     project_embedding_model: str | None = None
     project_embedding_model_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     project_memory_query_prefix: str = Field(default="", max_length=200)
+    project_context_enabled: bool = False
+    project_compaction_enabled: bool = False
+    project_memory_hybrid_enabled: bool = False
+    iphone_agenda_extended_enabled: bool = False
     project_memory_document_prefix: str = Field(default="", max_length=200)
     permissions_path: Path = DEFAULT_PERMISSIONS_PATH
     pairing_bootstrap_token: SecretStr | None = None

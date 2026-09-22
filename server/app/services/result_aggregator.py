@@ -270,8 +270,7 @@ def summarize_untrusted_worker_output(
         # Project source and runner output are available only on the private
         # revision endpoint. Generic summaries never serialize this envelope.
         return "Project iteration recorded; inspect its private revision and check results."
-    if validate_worker_evidence("research.query", value):
-        assert isinstance(value, dict)
+    if isinstance(value, dict) and validate_worker_evidence("research.query", value):
         return _research_summary(value["results"], max_chars=max_chars)
     sanitized = sanitize_dataset_value(value, max_text_chars=min(max_chars, 1_000))
     if sanitized in (None, "", [], {}):

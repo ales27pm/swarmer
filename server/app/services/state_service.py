@@ -45,9 +45,10 @@ from app.services.iphone_capability_binding import (
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
+from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -602,6 +603,16 @@ CREATE TABLE IF NOT EXISTS project_revisions (
     apply_task_id TEXT REFERENCES tasks(id), created_at TEXT NOT NULL,
     UNIQUE(project_id,revision)
 );
+CREATE TABLE IF NOT EXISTS project_context_snapshots (
+    project_id TEXT NOT NULL REFERENCES coding_projects(id),
+    version INTEGER NOT NULL,
+    goal_run_id TEXT NOT NULL REFERENCES goal_runs(id),
+    fingerprint TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(project_id,version),
+    UNIQUE(project_id,fingerprint)
+);
 CREATE TABLE IF NOT EXISTS project_memory_items (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES coding_projects(id),
@@ -833,6 +844,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 class StateConflict(RuntimeError):
     pass
+
+
+SCHEMA += COMPACTION_SCHEMA
 
 
 class StateService:

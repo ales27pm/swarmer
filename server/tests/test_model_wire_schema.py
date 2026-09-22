@@ -3,12 +3,13 @@ from typing import Annotated, Any
 from unittest.mock import patch
 
 import pytest
+from jsonschema import Draft202012Validator
+from pydantic import BaseModel, Field
+
 from app.services.evaluator_provider import UbuntuEvaluatorProvider
 from app.services.model_wire_schema import model_wire_schema
 from app.services.planner_provider import UbuntuSwarmPlannerProvider
 from app.services.swarm_contracts import EvaluationDecision, SwarmPlanProposal
-from jsonschema import Draft202012Validator
-from pydantic import BaseModel, Field
 
 
 @pytest.mark.parametrize("model", [SwarmPlanProposal, EvaluationDecision])

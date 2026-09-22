@@ -102,10 +102,14 @@ printf 'check: running server format, lint, type, test, and security gates\n'
   cd "$SERVER_DIR"
   "$SERVER_BIN/ruff" format --check . "$ROOT/scripts/validate_openapi.py" \
     "$ROOT/workers/file-worker" "$ROOT/workers/research-worker" \
-    "$ROOT/workers/code-review-worker" "$ROOT/workers/code-worker" "$ROOT/workers/project-worker"
+    "$ROOT/workers/code-review-worker" "$ROOT/workers/code-worker" "$ROOT/workers/project-worker" \
+    "$ROOT/workers/sqlite-worker" "$ROOT/workers/swift-worker" "$ROOT/workers/personal-worker" \
+    "$ROOT/scripts/evaluate_personal_context.py"
   "$SERVER_BIN/ruff" check . "$ROOT/scripts/validate_openapi.py" \
     "$ROOT/workers/file-worker" "$ROOT/workers/research-worker" \
-    "$ROOT/workers/code-review-worker" "$ROOT/workers/code-worker" "$ROOT/workers/project-worker"
+    "$ROOT/workers/code-review-worker" "$ROOT/workers/code-worker" "$ROOT/workers/project-worker" \
+    "$ROOT/workers/sqlite-worker" "$ROOT/workers/swift-worker" "$ROOT/workers/personal-worker" \
+    "$ROOT/scripts/evaluate_personal_context.py"
   "$SERVER_BIN/mypy" app
   MYPYPATH="$SERVER_DIR" "$SERVER_BIN/mypy" --strict "$ROOT/scripts/validate_openapi.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/file-worker/file_worker.py"
@@ -113,6 +117,8 @@ printf 'check: running server format, lint, type, test, and security gates\n'
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/code-review-worker/code_review_worker.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/code-worker/code_worker.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/code-worker/launch_sandboxed.py"
+  "$SERVER_BIN/mypy" --strict "$ROOT/workers/sqlite-worker/sqlite_worker.py" \
+    "$ROOT/workers/swift-worker/swift_worker.py" "$ROOT/workers/personal-worker/personal_worker.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/project-worker/project_worker.py" \
     "$ROOT/workers/project-worker/project_contract.py" "$ROOT/workers/project-worker/runtime.py" \
     "$ROOT/workers/project-worker/check_harness.py" "$ROOT/workers/project-worker/registry_proxy.py" \
@@ -123,13 +129,16 @@ printf 'check: running server format, lint, type, test, and security gates\n'
     "$ROOT/workers/research-worker/test_research_worker.py" \
     "$ROOT/workers/code-review-worker/test_code_review_worker.py" \
     "$ROOT/workers/code-worker/test_code_worker.py" \
-    "$ROOT/workers/code-worker/test_launch_sandboxed.py" "$ROOT/workers/project-worker"
+    "$ROOT/workers/code-worker/test_launch_sandboxed.py" "$ROOT/workers/project-worker" \
+    "$ROOT/workers/sqlite-worker" "$ROOT/workers/swift-worker" "$ROOT/workers/personal-worker"
   "$SERVER_BIN/bandit" -r app
   "$SERVER_BIN/bandit" "$ROOT/workers/file-worker/file_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/research-worker/research_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/code-review-worker/code_review_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/code-worker/code_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/code-worker/launch_sandboxed.py"
+  "$SERVER_BIN/bandit" "$ROOT/workers/sqlite-worker/sqlite_worker.py" \
+    "$ROOT/workers/swift-worker/swift_worker.py" "$ROOT/workers/personal-worker/personal_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/project-worker/project_worker.py" \
     "$ROOT/workers/project-worker/project_contract.py" "$ROOT/workers/project-worker/runtime.py" \
     "$ROOT/workers/project-worker/check_harness.py" "$ROOT/workers/project-worker/registry_proxy.py" \
