@@ -1083,6 +1083,8 @@ class ProjectGenerator:
             if needs_repair:
                 schema["properties"]["deletions"]["maxItems"] = 0
             needs_creation = needs_tests or needs_node_manifest or needs_node_tests or needs_readme
+            if needs_tests or needs_node_tests:
+                schema["properties"]["edits"]["minItems"] = 1
             first_field = "patches" if payload["files"] and not needs_creation else "edits"
             schema["properties"] = {
                 first_field: schema["properties"][first_field],
@@ -1421,6 +1423,12 @@ class ProjectGenerator:
             if compact_repair:
                 value = expand_compact_repair(value, payload)
             step = parse_step(resolve_model_patches(value, addresses))
+            if (needs_tests or needs_node_tests) and not step["edits"] and not step["focus_paths"]:
+                raise ModelStepError(
+                    "The test runner found no tests, but the model returned no test file. "
+                    "No changes were accepted. Create a small complete test file or read "
+                    "the application source first."
+                )
             if (
                 needs_node_manifest
                 and step["runtime"] in {"node", "python_node"}
@@ -1507,6 +1515,15 @@ def run_iteration(
             payload,
             "The model requested a file absent from the current project manifest. "
             "No changes were accepted. Use only existing manifest paths in focus_paths.",
+        )
+    if not payload["files"] and not files and step["action"] != "clarify":
+        # Running an empty workspace fabricates a missing-test diagnostic. That
+        # diagnostic would prioritize test creation before any application API
+        # exists, instead of requiring the missing first source module.
+        return rejected_step(
+            payload,
+            "The model returned no application files. No changes or checks were accepted. "
+            "Create one small complete source module in the next iteration.",
         )
     if readme_is_only_remaining_gate(payload) and not valid_readme_completion(payload, step):
         return rejected_step(

@@ -1,0 +1,33 @@
+{
+  "id": "offline-crm-sqlite-modules-v1",
+  "steps": [
+    {
+      "path": "crm_store.py",
+      "instruction": "Create only crm_store.py now. Define class Store: __init__(path) connects sqlite3 to self.connection, row_factory sqlite3.Row; create tables customers(id integer primary key,name text,email text), quotes(id integer primary key,customer_id integer,description text,total_cents integer), events(id integer primary key,title text,starts_at text), email_drafts(id integer primary key,customer_id integer,subject text,body text). All writes commit. close() closes connection. _rows(sql,params=()) returns list[dict]. _insert(sql,params) executes parameterized INSERT, commits, returns integer lastrowid. _customer(customer_id) raises ValueError if no such customers.id. Keep this complete module concise, below 3000 characters. Other public CRM methods will be implemented in later modules; do not implement them here. Return action continue. Do not create tests or README yet."
+    },
+    {
+      "path": "tests/test_store.py",
+      "instruction": "Create only tests/test_store.py. Test the existing Store class in crm_store with pytest and tmp_path: insert a customer via _insert with SQL parameters, close and reopen the database, verify _rows returns the exact persisted Unicode/apostrophe name and integer id. Verify _customer on an absent id raises ValueError. No fake tests, no conftest or configuration. Keep below 2000 characters. Store is currently the only implemented module; public CRM features follow in subsequent stages. Return continue. Import Store with from crm_store import Store; do not import crm because the facade is not implemented yet."
+    },
+    {
+      "path": "crm_people.py",
+      "instruction": "Create only crm_people.py. Define class People mixin, using Store helpers self._rows, self._insert and self._customer already in the snapshot. Implement add_customer(name,email) rejecting blank names, list_customers(), add_quote(customer_id,description,total_cents) rejecting negative amounts and absent customers, list_quotes(customer_id). Use exact schema and public return contract. No constructor; no class import needed for the mixin. Concise complete module below 3000 characters. Return continue."
+    },
+    {
+      "path": "crm_work.py",
+      "instruction": "Create only crm_work.py. Define class Work mixin, using Store helpers self._rows, self._insert and self._customer. Implement add_event(title,starts_at), list_events(), draft_email(customer_id,subject,body), list_email_drafts(customer_id). Drafts must validate customer presence. Preserve strings exactly. No network or email sending. No constructor. Concise complete module below 3000 characters. Return continue."
+    },
+    {
+      "path": "crm.py",
+      "instruction": "Create only crm.py as the public facade. Import Store from crm_store, People from crm_people, Work from crm_work. Define CRM(People, Work, Store), inheriting methods and Store constructor. Do not duplicate implementation. Keep below 700 characters, return continue."
+    },
+    {
+      "path": "tests/test_crm.py",
+      "instruction": "Create only tests/test_crm.py with real pytest tests using from crm import CRM and tmp_path. Cover customer persistence after close/reopen, quote validation, calendar persistence and persistent email drafts. No conftest, external dependencies or test configuration. Concise complete tests below 3000 characters; return continue."
+    },
+    {
+      "path": "README.md",
+      "instruction": "Create only README.md. Document Python 3.12 and standard-library-only CRM use, pytest for tests, SQLite persistence, API usage example and limitations: library only, calendar records only, email drafts never sent. Run instructions python -m pytest -q. Return complete only if existing application tests pass. Keep below 1800 characters and preserve existing files, plan and runtime."
+    }
+  ]
+}
