@@ -275,3 +275,22 @@ describe("iPhone capability transport", () => {
     expect(state.authorizeRequest).not.toHaveBeenCalled();
   });
 });
+
+
+describe("foreground availability", () => {
+  it("leaves authorization unconsumed while unavailable and executes once after return", async () => {
+    const fixture = setup();
+    let available = false;
+    const transport = new IPhoneCapabilityTransport({ execute: fixture.executeNative }, {
+      createSession: fixture.createSession, now: () => NOW, canExecute: () => available,
+    });
+    await transport.authorize(REQUEST_ID, "approve");
+    await expect(transport.execute(REQUEST_ID)).rejects.toThrow("unavailable");
+    expect(fixture.consumeRequest).not.toHaveBeenCalled();
+    expect(fixture.executeNative).not.toHaveBeenCalled();
+    available = true;
+    await expect(transport.execute(REQUEST_ID)).resolves.toEqual(result());
+    expect(fixture.consumeRequest).toHaveBeenCalledTimes(1);
+    expect(fixture.executeNative).toHaveBeenCalledTimes(1);
+  });
+});

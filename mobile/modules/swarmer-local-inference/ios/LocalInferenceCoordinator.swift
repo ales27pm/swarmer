@@ -31,6 +31,9 @@ actor LocalInferenceCoordinator {
   }
 
   private let store = LocalModelStore()
+  private let embedder = MLXEmbeddingRuntime()
+  private var embeddingReserved = false
+  private var embeddingEpoch = 0
   private var handle: Handle?
   private var loadOperation: LoadOperation?
   private var generationOperation: GenerationOperation?
@@ -42,6 +45,38 @@ actor LocalInferenceCoordinator {
   private var message: String?
   private var lifecycleEpoch = 0
   private var activity = GenerationActivityFence()
+
+  func embeddingStatus() async -> EmbeddingStatusRecord { await embedder.status() }
+
+  func loadEmbedder(options: LoadEmbedderOptions) async throws -> EmbeddingStatusRecord {
+    let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
+    guard !snapshot.inactive else { throw LocalInferenceError.generationInProgress }
+    guard !embeddingReserved, !activity.isSuspended, handle == nil,
+          state == "idle" || state == "failed",
+          loadOperation == nil, generationOperation == nil, importOperation == nil else {
+      throw LocalInferenceError.generationInProgress
+    }
+    embeddingEpoch += 1
+    let epoch = embeddingEpoch
+    embeddingReserved = true
+    do { return try await embedder.load(options: options, store: store) }
+    catch { if embeddingEpoch == epoch { embeddingReserved = false }; throw error }
+  }
+
+  func embed(options: EmbedOptions) async throws -> EmbeddingResultRecord {
+    let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
+    guard !snapshot.inactive else { throw LocalInferenceError.generationInProgress }
+    guard embeddingReserved, !activity.isSuspended else { throw LocalInferenceError.modelNotLoaded }
+    return try await embedder.embed(options: options)
+  }
+
+  func unloadEmbedder() async {
+    embeddingEpoch += 1
+    let epoch = embeddingEpoch
+    embeddingReserved = true
+    await embedder.unload()
+    if embeddingEpoch == epoch { embeddingReserved = false }
+  }
 
   func capabilities() -> CapabilitiesRecord {
     CapabilitiesRecord()
@@ -61,7 +96,7 @@ actor LocalInferenceCoordinator {
     displayName: String?
   ) async throws -> LocalModelRecord {
     let runtime = try LocalRuntime(wireValue: runtimeValue)
-    guard !activity.isSuspended,
+    guard !embeddingReserved, !activity.isSuspended,
           importOperation == nil,
           loadOperation == nil,
           generationOperation == nil,
@@ -88,7 +123,7 @@ actor LocalInferenceCoordinator {
       sizeBytes: options.sizeBytes,
       displayName: options.displayName
     )
-    guard !activity.isSuspended,
+    guard !embeddingReserved, !activity.isSuspended,
           importOperation == nil,
           loadOperation == nil,
           generationOperation == nil,
@@ -132,7 +167,7 @@ actor LocalInferenceCoordinator {
   }
 
   func loadModel(options: LoadModelOptions) async throws -> StatusRecord {
-    guard !activity.isSuspended,
+    guard !embeddingReserved, !activity.isSuspended,
           importOperation == nil,
           state != "loading", state != "generating", state != "cancelling" else {
       throw LocalInferenceError.generationInProgress
@@ -365,10 +400,14 @@ actor LocalInferenceCoordinator {
 
   func shutdown() async {
     activity.shutdown()
+    await unloadEmbedder()
     await unload()
   }
 
-  func prepareForInactivity() async { await reconcileActivity(cancelAllWhenInactive: false) }
+  func prepareForInactivity() async {
+    if embeddingReserved { await unloadEmbedder() }
+    await reconcileActivity(cancelAllWhenInactive: false)
+  }
 
   func suspend() async { await reconcileActivity(cancelAllWhenInactive: true) }
 

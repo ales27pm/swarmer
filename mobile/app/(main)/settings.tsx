@@ -3,6 +3,7 @@ import { Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
+import { SemanticMemoryPanel } from "@/components/semantic-memory-panel";
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle, timeAgo, useAccessibilityAnnouncement } from "@/components/swarm-ui";
 import {
   bootstrapSync,
@@ -384,6 +385,7 @@ export default function SettingsScreen() {
           testID="open-local-model-button"
         />
       </Card>
+      <SemanticMemoryPanel />
       <SectionTitle title="Modèles des agents du swarm" />
       <Card>
         <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>Préréglages serveur abliterated</Text>

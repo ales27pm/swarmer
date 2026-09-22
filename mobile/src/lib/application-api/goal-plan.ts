@@ -3,7 +3,8 @@ import { buildLocalSwarmPlanPrompt, parseLocalSwarmPlan, type LocalSwarmPlanCont
 import type { LocalGenerationResult } from "@/lib/local-inference";
 import { ApplicationApiError } from "./schema";
 
-export type GoalPlanSession = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
+type Session = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
+export type GoalPlanSession = Omit<Session, "projectContext"> & Partial<Pick<Session, "projectContext">>;
 export type GoalPlanSnapshot = { detail: GoalDetail; context: LocalSwarmPlanContext & { memory: GoalMemoryContext }; fingerprint: string };
 
 export async function readInitialGoal(session: GoalPlanSession, goalId: string): Promise<GoalPlanSnapshot> {
@@ -17,6 +18,7 @@ export async function readInitialGoal(session: GoalPlanSession, goalId: string):
     throw new ApplicationApiError("invalid_state", "Ce but a déjà démarré ou changé. Consulte son état avant de préparer un plan initial.");
   }
   const memory = await session.memoryContext(goalId, before.goal.updated_at);
+  const durableContext = await session.projectContext?.(goalId);
   // Retrieval can reserve one model call. Only the server's traced planning credits allow it.
   const detail = await session.getGoal(goalId);
   await session.assertCurrent();
@@ -37,9 +39,9 @@ export async function readInitialGoal(session: GoalPlanSession, goalId: string):
     objective: goal.objective, completion_criteria: goal.completion_criteria,
     max_steps: goal.max_steps, step_count: goal.step_count, max_parallelism: goal.max_parallelism,
     max_model_calls: goal.max_model_calls, model_call_count: goal.model_call_count,
-  }, agents, memory };
+  }, agents, memory, ...(durableContext ? { durable_context: durableContext } : {}) };
   return { detail, context, fingerprint: JSON.stringify({ goal, agents, memory: memory.context_fingerprint,
-    provider: memory.provider_fingerprint }) };
+    provider: memory.provider_fingerprint, durable: durableContext?.fingerprint ?? null }) };
 }
 
 

@@ -292,7 +292,7 @@ export type GoalMemoryContext = {
   base_revision_id: string | null;
   provider_fingerprint: string;
   context_fingerprint: string;
-  mode: "semantic" | "lexical";
+  mode: "semantic" | "lexical" | "hybrid";
   reason: string;
   items: { id: string; source_id: string; summary: string; score: number }[];
   embedding: {
@@ -301,6 +301,7 @@ export type GoalMemoryContext = {
     model_revision: string | null;
     storage: "ubuntu_sqlite";
   };
+  worker_arguments?: Record<string, unknown> | null;
   local_planning_eligible: boolean;
   planning_embedding_call_count: number;
   recent_conversation: { role: "user" | "assistant"; content: string }[];

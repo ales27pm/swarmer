@@ -42,8 +42,8 @@
       [
         "expo-calendar",
         {
-          "calendarPermission": "monGARS consulte vos événements uniquement après votre autorisation explicite pour répondre à la demande affichée.",
-          "remindersPermission": "monGARS n’accède aux rappels qu’après votre autorisation explicite."
+          "calendarPermission": "monGARS consulte, crée et modifie vos événements uniquement après votre autorisation explicite pour la demande affichée.",
+          "remindersPermission": "monGARS crée, consulte et modifie vos rappels uniquement après votre autorisation explicite pour la demande affichée."
         }
       ],
       [
@@ -57,7 +57,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "org.27pm.mongars",
-      "buildNumber": "20260921232500",
+      "buildNumber": "20260922181000",
       "entitlements": {
         "com.apple.developer.background-tasks.continued-processing.gpu": true
       },
@@ -77,7 +77,10 @@
         "LSSupportsOpeningDocumentsInPlace": true,
         "NSLocalNetworkUsageDescription": "monGARS Swarm se connecte à votre serveur d’agents autorisé sur le réseau local.",
         "NSContactsUsageDescription": "monGARS recherche vos contacts uniquement après votre autorisation explicite.",
-        "NSCalendarsFullAccessUsageDescription": "monGARS consulte vos événements uniquement après votre autorisation explicite.",
+        "NSCalendarsFullAccessUsageDescription": "monGARS consulte, crée et modifie vos événements uniquement après votre autorisation explicite.",
+        "NSCalendarsUsageDescription": "monGARS consulte, crée et modifie vos événements uniquement après votre autorisation explicite.",
+        "NSRemindersFullAccessUsageDescription": "monGARS crée, consulte et modifie vos rappels uniquement après votre autorisation explicite.",
+        "NSRemindersUsageDescription": "monGARS crée, consulte et modifie vos rappels uniquement après votre autorisation explicite.",
         "NSLocationWhenInUseUsageDescription": "monGARS utilise votre position uniquement après votre autorisation explicite.",
         "NSPhotoLibraryUsageDescription": "monGARS ouvre le sélecteur de photos uniquement après votre autorisation explicite."
       }

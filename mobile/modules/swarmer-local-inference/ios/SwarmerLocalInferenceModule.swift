@@ -159,6 +159,19 @@ public final class SwarmerLocalInferenceModule: Module {
       return BackgroundExecutionRecord(snapshot)
     }
 
+    AsyncFunction("embeddingStatus") { [coordinator] () async -> EmbeddingStatusRecord in
+      await coordinator.embeddingStatus()
+    }
+    AsyncFunction("loadEmbedder") { [coordinator] (options: LoadEmbedderOptions) async throws -> EmbeddingStatusRecord in
+      try await coordinator.loadEmbedder(options: options)
+    }
+    AsyncFunction("embed") { [coordinator] (options: EmbedOptions) async throws -> EmbeddingResultRecord in
+      try await coordinator.embed(options: options)
+    }
+    AsyncFunction("unloadEmbedder") { [coordinator] () async -> Void in
+      await coordinator.unloadEmbedder()
+    }
+
     AsyncFunction("status") { [coordinator] () async -> StatusRecord in
       await coordinator.status()
     }

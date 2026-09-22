@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import { AppState, Platform } from "react-native";
 import type { GoalCreateInput, GoalFeedbackInput, TaskMode, TaskStatus } from "@/lib/api/types";
 import * as inference from "@/lib/local-inference";
+import * as embeddings from "@/lib/local-embeddings";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import * as settings from "@/lib/local-model-settings";
 import { applicationSessions } from "./sessions";
@@ -145,6 +146,15 @@ register<{ id: string; decision: "approve" | "deny"; confirm: true }>("approvals
   return { authoritativeResult: receipt.authoritativeResult, localReplicaError: receipt.localReplicaError ? "La décision est enregistrée ; la copie locale doit être actualisée." : null };
 } });
 register("memory.list", noInput, () => server.listMemory());
+register("memory.status", noInput, () => server.getMemoryProviderStatus());
+register<{ goalId: string }>("context.inspect", object({ goalId: identifier }), ({ goalId }) => server.getProjectContext(goalId), mutation);
+register<{ goalId: string }>("context.compact", object({ goalId: identifier }), ({ goalId }) => server.compactProjectContext(goalId), mutation);
+register<{ goalId: string; sourceId: string }>("context.source", object({ goalId: identifier, sourceId: identifier }), ({ goalId, sourceId }) => server.getProjectContextSource(goalId, sourceId));
+const embeddingAvailability = { available: embeddings.isLocalEmbeddingAvailable(), unavailableReason: "Cette version native ne fournit pas les embeddings." };
+register("embeddings.status", noInput, () => embeddings.getLocalEmbeddingStatus(), { ...device, ...embeddingAvailability });
+register<embeddings.LocalEmbeddingLoadInput>("embeddings.load", object({ modelId: text(200), revision: text(40), experimental: boolean }), (input) => embeddings.loadLocalEmbedder(input), { ...device, ...mutation, ...embeddingAvailability, requiresForeground: true });
+register<embeddings.LocalEmbeddingInput>("embeddings.generate", object({ texts: list(text(16384), 8), kind: choice("query", "document") }), (input) => embeddings.embedLocalTexts(input), { ...device, ...mutation, ...embeddingAvailability, requiresForeground: true });
+register("embeddings.unload", noInput, () => embeddings.unloadLocalEmbedder(), { ...device, ...mutation, ...embeddingAvailability, requiresForeground: true });
 register<{ query: string }>("memory.search", object({ query: text(2000) }), ({ query }) => server.searchMemory(query));
 register<Parameters<typeof server.rememberMemory>[0]>("memory.create", object({
   content: text(32_000), summary: text(2000, 0), scope: text(100), kind: text(100), pinned: boolean,

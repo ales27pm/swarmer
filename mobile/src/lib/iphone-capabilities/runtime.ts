@@ -1,3 +1,4 @@
+import { AppState } from "react-native";
 import {
   createIPhoneCapabilityApiSession,
 } from "@/lib/api/client";
@@ -9,5 +10,6 @@ export const iphoneCapabilityTransport = new IPhoneCapabilityTransport(
   new IPhoneCapabilityBroker(),
   {
     createSession: createIPhoneCapabilityApiSession,
+    canExecute: () => AppState.currentState === "active",
   },
 );

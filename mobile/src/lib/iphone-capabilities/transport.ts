@@ -42,6 +42,7 @@ export type CapabilityTransportSession = {
 export type CapabilityTransportDependencies = {
   createSession: () => Promise<CapabilityTransportSession>;
   now?: () => number;
+  canExecute?: () => boolean;
 };
 
 type AuthorizationInFlight = {
@@ -81,6 +82,7 @@ function nativeRequest(envelope: CapabilityRequestEnvelope): CapabilityRequest {
 export class IPhoneCapabilityTransport {
   private readonly createSession: CapabilityTransportDependencies["createSession"];
   private readonly now: () => number;
+  private readonly canExecute: () => boolean;
   private readonly notifications = new Map<string, CapabilityNotification>();
   private readonly previews = new Map<string, CapabilityRequestPreview>();
   private readonly details = new Map<string, CapabilityRequestDetail>();
@@ -103,6 +105,7 @@ export class IPhoneCapabilityTransport {
   ) {
     this.createSession = dependencies.createSession;
     this.now = dependencies.now ?? Date.now;
+    this.canExecute = dependencies.canExecute ?? (() => true);
   }
 
   receiveNotification(value: unknown): boolean {
@@ -326,6 +329,9 @@ export class IPhoneCapabilityTransport {
 
     const session = await this.boundSession(epoch);
     this.assertEpoch(epoch);
+    if (!this.canExecute()) {
+      throw new CapabilityProtocolError("iPhone unavailable: open the app to execute this pending request.");
+    }
     const rawReceipt = await session.consumeRequest(envelope);
     this.assertEpoch(epoch);
     if (rawReceipt === null || typeof rawReceipt !== "object") {

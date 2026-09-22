@@ -1,4 +1,5 @@
 import { fetch } from "expo/fetch";
+import { parseProjectContext } from "./project-context";
 import * as SecureStore from "expo-secure-store";
 import {
   newGoalMessageId,
@@ -942,6 +943,20 @@ export async function createLocalGoalPlanSession() {
   return {
     assertCurrent,
     getGoal: (goalId: string) => read<GoalDetail>(`/goals/${resourceId(goalId)}`),
+    projectContext: async (goalId: string) => {
+      await assertCurrent();
+      let result: unknown;
+      try {
+        result = await requestAt<unknown>(connection.baseUrl, `/goals/${resourceId(goalId)}/context`, { method: "POST" }, connection.token);
+      } catch (error) {
+        await assertCurrent();
+        // Older servers have no optional durable-context endpoint yet.
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+      await assertCurrent();
+      return parseProjectContext(result, goalId);
+    },
     memoryContext: async (goalId: string, expectedGoalUpdatedAt: string): Promise<GoalMemoryContext> => {
       if (typeof expectedGoalUpdatedAt !== "string" || expectedGoalUpdatedAt.length > 100
           || !Number.isFinite(Date.parse(expectedGoalUpdatedAt))) throw new Error("La version du but est invalide.");
@@ -1511,4 +1526,17 @@ export function createFeedback(input: {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function getProjectContext(goalId: string) {
+  return parseProjectContext(await request<unknown>(`/goals/${resourceId(goalId)}/context`, { method: "POST" }), goalId);
+}
+export function compactProjectContext(goalId: string): Promise<Record<string, unknown>> {
+  return request(`/goals/${resourceId(goalId)}/context/compact`, { method: "POST" });
+}
+export function getProjectContextSource(goalId: string, sourceId: string): Promise<Record<string, unknown>> {
+  return request(`/goals/${resourceId(goalId)}/context/sources/${resourceId(sourceId)}`);
+}
+export function getMemoryProviderStatus(): Promise<Record<string, unknown>> {
+  return request('/memory/status');
 }

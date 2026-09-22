@@ -27,6 +27,12 @@ const CAPABILITIES = new Set<IPhoneCapabilityName>([
   "iphone.location.current",
   "iphone.contacts.lookup",
   "iphone.calendar.events",
+  "iphone.calendar.reminders",
+  "iphone.calendar.calendars",
+  "iphone.calendar.event.create",
+  "iphone.calendar.event.update",
+  "iphone.calendar.reminder.create",
+  "iphone.calendar.reminder.update",
   "iphone.photos.pick",
   "iphone.mail.compose",
   "iphone.sms.compose",
@@ -213,6 +219,33 @@ function parseCalendarArguments(
   return { start: start.value, end: end.value };
 }
 
+function parseEventWrite(arguments_: Record<string, unknown>, update: boolean) {
+  requireExactKeys(arguments_, [update ? "id" : "calendar_id", "title", "start", "end"], "arguments");
+  const interval = parseCalendarArguments({ start: arguments_.start, end: arguments_.end });
+  return { ...interval, title: requireText(arguments_.title, "arguments.title", 500),
+    identity: requireString(arguments_[update ? "id" : "calendar_id"], "arguments.id", 500) };
+}
+
+function reminderDue(value: unknown): string {
+  const due = requireTimestamp(value, "arguments.due");
+  if (due.milliseconds % 1_000 !== 0) throw new CapabilityProtocolError("Reminder due times require whole-second precision.");
+  return due.value;
+}
+
+function parseReminderCreate(arguments_: Record<string, unknown>): CapabilityArgumentsByName["iphone.calendar.reminder.create"] {
+  requireExactKeys(arguments_, ["calendar_id", "title", "due"], "arguments");
+  return { calendar_id: requireString(arguments_.calendar_id, "arguments.calendar_id", 500),
+    title: requireText(arguments_.title, "arguments.title", 500),
+    due: arguments_.due === null ? null : reminderDue(arguments_.due) };
+}
+
+function parseReminderUpdate(arguments_: Record<string, unknown>): CapabilityArgumentsByName["iphone.calendar.reminder.update"] {
+  requireExactKeys(arguments_, ["id", "title", "due", "completed"], "arguments");
+  if (typeof arguments_.completed !== "boolean") throw new CapabilityProtocolError("arguments.completed is invalid.");
+  return { id: requireString(arguments_.id, "arguments.id", 500), title: requireText(arguments_.title, "arguments.title", 500),
+    due: reminderDue(arguments_.due), completed: arguments_.completed };
+}
+
 function optionalRecipients(
   arguments_: Record<string, unknown>,
 ): Pick<CapabilityArgumentsByName["iphone.mail.compose"], "recipients"> | object {
@@ -264,6 +297,12 @@ const CAPABILITY_ARGUMENT_PARSERS: CapabilityArgumentParsers = {
   "iphone.location.current": parseEmptyArguments,
   "iphone.contacts.lookup": parseContactsArguments,
   "iphone.calendar.events": parseCalendarArguments,
+  "iphone.calendar.reminders": (args) => { requireExactKeys(args, ["calendar_id"], "arguments"); return { calendar_id: requireString(args.calendar_id, "arguments.calendar_id", 500) }; },
+  "iphone.calendar.calendars": parseEmptyArguments,
+  "iphone.calendar.event.create": (args) => { const { identity, ...fields } = parseEventWrite(args, false); return { calendar_id: identity, ...fields }; },
+  "iphone.calendar.event.update": (args) => { const { identity, ...fields } = parseEventWrite(args, true); return { id: identity, ...fields }; },
+  "iphone.calendar.reminder.create": parseReminderCreate,
+  "iphone.calendar.reminder.update": parseReminderUpdate,
   "iphone.photos.pick": parseEmptyArguments,
   "iphone.mail.compose": parseMailArguments,
   "iphone.sms.compose": parseSmsArguments,
@@ -824,6 +863,28 @@ function validateCalendarResult(value: unknown): void {
   value.forEach(validateCalendarEventResult);
 }
 
+function validateCalendarsResult(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 100) throw new CapabilityProtocolError("Calendar list is invalid.");
+  for (const entry of value) {
+    const calendar = requireRecord(entry, "calendar");
+    requireExactKeys(calendar, ["id", "title", "entityType", "allowsModifications"], "calendar");
+    requireString(calendar.id, "calendar.id", 500);
+    requireText(calendar.title, "calendar.title", 2000, true);
+    if (!["event", "reminder"].includes(calendar.entityType as string) || typeof calendar.allowsModifications !== "boolean") {
+      throw new CapabilityProtocolError("Calendar metadata is invalid.");
+    }
+  }
+}
+
+function validateReminderResult(value: unknown): void {
+  const reminder = requireRecord(value, "reminder");
+  requireExactKeys(reminder, ["id", "title", "due", "completed"], "reminder");
+  requireString(reminder.id, "reminder.id", 500);
+  requireText(reminder.title, "reminder.title", 2000, true);
+  if (reminder.due !== null) requireTimestamp(reminder.due, "reminder.due");
+  if (typeof reminder.completed !== "boolean") throw new CapabilityProtocolError("Reminder completion is invalid.");
+}
+
 function validatePhotoResult(value: unknown): void {
   const asset = requireRecord(value, "photo result");
   requireExactKeys(asset, ["uri", "width", "height"], "photo result");
@@ -849,6 +910,15 @@ const COMPLETED_RESULT_VALIDATORS: Record<IPhoneCapabilityName, (value: unknown)
   "iphone.location.current": validateLocationResult,
   "iphone.contacts.lookup": validateContactsResult,
   "iphone.calendar.events": validateCalendarResult,
+  "iphone.calendar.reminders": (value) => {
+    if (!Array.isArray(value) || value.length > 100) throw new CapabilityProtocolError("Reminder list is invalid.");
+    value.forEach(validateReminderResult);
+  },
+  "iphone.calendar.calendars": validateCalendarsResult,
+  "iphone.calendar.event.create": validateCalendarEventResult,
+  "iphone.calendar.event.update": validateCalendarEventResult,
+  "iphone.calendar.reminder.create": validateReminderResult,
+  "iphone.calendar.reminder.update": validateReminderResult,
   "iphone.photos.pick": validatePhotoResult,
   "iphone.mail.compose": validateComposerResult,
   "iphone.sms.compose": validateComposerResult,

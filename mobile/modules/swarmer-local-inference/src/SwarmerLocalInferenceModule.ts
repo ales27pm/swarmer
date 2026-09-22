@@ -2,6 +2,7 @@ import { NativeModule, requireNativeModule } from "expo";
 
 import type {
   LocalGenerationResult,
+  LocalEmbeddingStatus, LocalEmbeddingLoadInput, LocalEmbeddingInput, LocalEmbeddingResult,
   LocalInferenceCapabilities,
   LocalInferenceRuntime,
   LocalInferenceStatus,
@@ -11,6 +12,10 @@ import type {
 
 declare class SwarmerLocalInferenceModule extends NativeModule {
   capabilities(): Promise<LocalInferenceCapabilities>;
+  embeddingStatus(): Promise<LocalEmbeddingStatus>;
+  loadEmbedder(input: LocalEmbeddingLoadInput): Promise<LocalEmbeddingStatus>;
+  embed(input: LocalEmbeddingInput): Promise<LocalEmbeddingResult>;
+  unloadEmbedder(): Promise<void>;
   importModel(input: {
     runtime: LocalInferenceRuntime;
     uri: string;

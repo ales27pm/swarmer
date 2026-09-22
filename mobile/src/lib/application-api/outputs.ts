@@ -8,6 +8,8 @@ export type CommandOutputDescriptor = {
 };
 
 const types = {
+  "memory.status": "JsonValue", "context.inspect": "JsonValue", "context.compact": "JsonValue", "context.source": "JsonValue",
+  "embeddings.status": "JsonValue", "embeddings.load": "JsonValue", "embeddings.generate": "JsonValue", "embeddings.unload": "null",
   "app.status": "AppStatus", "connection.status": "ConnectionStatus", "sync.refresh": "SyncSummary",
   "connection.pair": "PairingSummary", "connection.origin": "string", "sync.status": "ApplicationSyncState",
   "goals.list": "GoalRecord[]", "goals.get": "GoalDetail", "goals.nodes": "PlanNode[]", "goals.result": "GoalResult|null",

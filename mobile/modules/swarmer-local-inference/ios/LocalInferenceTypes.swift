@@ -275,3 +275,44 @@ enum LocalInferenceValidation {
     return revision.lowercased()
   }
 }
+
+struct LoadEmbedderOptions: Record, Sendable {
+  @Field var modelId: String = ""
+  @Field var revision: String? = nil
+  @Field var experimental: Bool = false
+}
+
+struct EmbedOptions: Record, Sendable {
+  @Field var texts: [String] = []
+  @Field var kind: String = ""
+}
+
+struct EmbeddingStatusRecord: Record, Sendable {
+  @Field var state: String = "disabled"
+  @Field var modelId: String? = nil
+  @Field var revision: String? = nil
+  @Field var dimensions: Int = 384
+  @Field var pipeline: String = "e5-prefixes-mean-l2-specialtokens-v1"
+  @Field var message: String? = nil
+
+  init() {}
+  init(state: String, modelId: String?, revision: String?, message: String?) {
+    self.state = state; self.modelId = modelId; self.revision = revision; self.message = message
+  }
+}
+
+struct EmbeddingResultRecord: Record, Sendable {
+  @Field var modelId: String = ""
+  @Field var revision: String = ""
+  @Field var dimensions: Int = 384
+  @Field var pipeline: String = "e5-prefixes-mean-l2-specialtokens-v1"
+  @Field var kind: String = ""
+  @Field var vectors: [[Float]] = []
+  @Field var tokenCounts: [Int] = []
+
+  init() {}
+  init(modelId: String, revision: String, kind: String, vectors: [[Float]], tokenCounts: [Int]) {
+    self.modelId = modelId; self.revision = revision; self.kind = kind
+    self.vectors = vectors; self.tokenCounts = tokenCounts
+  }
+}

@@ -35,7 +35,7 @@ Pod::Spec.new do |s|
     s,
     url: 'https://github.com/ml-explore/mlx-swift-lm.git',
     requirement: { :kind => 'exactVersion', :version => '3.31.4' },
-    products: ['MLXLLM', 'MLXLMCommon', 'MLXHuggingFace']
+    products: ['MLXLLM', 'MLXLMCommon', 'MLXHuggingFace', 'MLXEmbedders']
   )
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

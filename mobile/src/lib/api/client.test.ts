@@ -1280,7 +1280,7 @@ describe("goal API contract and connection fencing", () => {
     expect(await session.bootstrapSync()).toEqual(verifiedBootstrap);
     await session.assertCurrent();
     await expect(session.startGoal("goal_1", localInput())).resolves.toEqual(goalDetail);
-    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "memoryContext", "startGoal"]);
+    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "memoryContext", "projectContext", "startGoal"]);
     expect(mockApplyBootstrap).not.toHaveBeenCalled();
     expect(request.mock.calls.map(([url]) => String(url))).toEqual([
       "https://control.example/goals/goal_1", "https://control.example/sync/bootstrap", "https://control.example/goals/goal_1/start",
@@ -1296,6 +1296,23 @@ describe("goal API contract and connection fencing", () => {
     embedding: { configured: false, model: null, model_revision: null, storage: "ubuntu_sqlite" },
     local_planning_eligible: true, planning_embedding_call_count: 0, recent_conversation: [],
   };
+
+  it("allows an older server without durable context, while preserving other errors", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ detail: "Not Found" }) } as never);
+    await expect(session.projectContext("goal_1")).resolves.toBeNull();
+    request.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ detail: "Unavailable" }) } as never);
+    await expect(session.projectContext("goal_1")).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("rejects an unsupported-context response if the pairing changed in flight", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockImplementationOnce(async () => {
+      mockConnections({ [CONNECTION_KEY]: storedConnection("https://control.example", "replacement-token") });
+      return { ok: false, status: 404, json: async () => ({ detail: "Not Found" }) } as never;
+    });
+    await expect(session.projectContext("goal_1")).rejects.toThrow("connexion jumelée a changé");
+  });
 
   it("retrieves planner memory at the exact goal version and submits its receipt with the reviewed plan", async () => {
     const session = await createLocalGoalPlanSession();

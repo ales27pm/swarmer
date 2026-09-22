@@ -39,3 +39,23 @@ export type LocalGenerationResult = {
   finishReason: "stop" | "length" | "cancelled";
   tokenCount: number;
 };
+
+export type LocalEmbeddingStatus = {
+  state: "disabled" | "loading" | "ready" | "embedding" | "unloading" | "failed";
+  modelId: string | null;
+  revision: string | null;
+  dimensions: 384;
+  pipeline: "e5-prefixes-mean-l2-specialtokens-v1";
+  message?: string | null;
+};
+export type LocalEmbeddingLoadInput = { modelId: "intfloat/multilingual-e5-small"; revision: string; experimental: boolean };
+export type LocalEmbeddingInput = { texts: string[]; kind: "query" | "document" };
+export type LocalEmbeddingResult = {
+  modelId: "intfloat/multilingual-e5-small";
+  revision: string;
+  dimensions: 384;
+  pipeline: "e5-prefixes-mean-l2-specialtokens-v1";
+  kind: "query" | "document";
+  vectors: number[][];
+  tokenCounts: number[];
+};

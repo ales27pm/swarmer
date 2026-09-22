@@ -30,7 +30,7 @@ export function parseGoalMemoryContext(value: unknown, goalId: string): GoalMemo
   if (raw.schema_version !== "1.0" || raw.goal_id !== goalId
       || typeof raw.provider_fingerprint !== "string" || !MEMORY_FINGERPRINT.test(raw.provider_fingerprint)
       || typeof raw.context_fingerprint !== "string" || !MEMORY_FINGERPRINT.test(raw.context_fingerprint)
-      || (raw.mode !== "semantic" && raw.mode !== "lexical")
+      || (raw.mode !== "semantic" && raw.mode !== "lexical" && raw.mode !== "hybrid")
       || typeof raw.local_planning_eligible !== "boolean"
       || !Array.isArray(raw.items) || raw.items.length > 4
       || !Array.isArray(raw.recent_conversation) || raw.recent_conversation.length > 40

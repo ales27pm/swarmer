@@ -4,6 +4,12 @@ export type IPhoneCapabilityName =
   | "iphone.location.current"
   | "iphone.contacts.lookup"
   | "iphone.calendar.events"
+  | "iphone.calendar.reminders"
+  | "iphone.calendar.calendars"
+  | "iphone.calendar.event.create"
+  | "iphone.calendar.event.update"
+  | "iphone.calendar.reminder.create"
+  | "iphone.calendar.reminder.update"
   | "iphone.photos.pick"
   | "iphone.mail.compose"
   | "iphone.sms.compose";
@@ -12,6 +18,12 @@ export type CapabilityArgumentsByName = {
   "iphone.location.current": Record<string, never>;
   "iphone.contacts.lookup": { query: string };
   "iphone.calendar.events": { start: string; end: string };
+  "iphone.calendar.reminders": { calendar_id: string };
+  "iphone.calendar.calendars": Record<string, never>;
+  "iphone.calendar.event.create": { calendar_id: string; title: string; start: string; end: string };
+  "iphone.calendar.event.update": { id: string; title: string; start: string; end: string };
+  "iphone.calendar.reminder.create": { calendar_id: string; title: string; due: string | null };
+  "iphone.calendar.reminder.update": { id: string; title: string; due: string; completed: boolean };
   "iphone.photos.pick": Record<string, never>;
   "iphone.mail.compose": { recipients?: string[]; subject?: string; body?: string };
   "iphone.sms.compose": { recipients?: string[]; message?: string };
@@ -24,7 +36,14 @@ export type CapabilityRequest = {
   };
 }[IPhoneCapabilityName];
 
+export type CalendarEventReceipt = { id: string; title: string; start: string; end: string };
+export type CalendarReminderReceipt = { id: string; title: string; due: string | null; completed: boolean };
+
 type CapabilityCompletedResult =
+  | { name: "iphone.calendar.reminders"; status: "completed"; value: CalendarReminderReceipt[] }
+  | { name: "iphone.calendar.calendars"; status: "completed"; value: { id: string; title: string; entityType: "event" | "reminder"; allowsModifications: boolean }[] }
+  | { name: "iphone.calendar.event.create" | "iphone.calendar.event.update"; status: "completed"; value: CalendarEventReceipt }
+  | { name: "iphone.calendar.reminder.create" | "iphone.calendar.reminder.update"; status: "completed"; value: CalendarReminderReceipt }
   | { name: "iphone.location.current"; status: "completed"; value: { latitude: number; longitude: number; accuracy: number | null } }
   | { name: "iphone.contacts.lookup"; status: "completed"; value: { id: string; name: string; phoneNumbers: string[]; emails: string[] }[] }
   | { name: "iphone.calendar.events"; status: "completed"; value: { id: string; title: string; start: string; end: string }[] }

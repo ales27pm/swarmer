@@ -1,3 +1,4 @@
+import { executeAgenda } from "./calendar";
 import * as Calendar from "expo-calendar";
 import * as Contacts from "expo-contacts";
 import * as ImagePicker from "expo-image-picker";
@@ -66,6 +67,12 @@ export class IPhoneCapabilityBroker {
       case "iphone.location.current": result = await this.location(); break;
       case "iphone.contacts.lookup": result = await this.contacts(request.arguments.query); break;
       case "iphone.calendar.events": result = await this.events(request.arguments.start, request.arguments.end); break;
+      case "iphone.calendar.reminders":
+      case "iphone.calendar.calendars":
+      case "iphone.calendar.event.create":
+      case "iphone.calendar.event.update":
+      case "iphone.calendar.reminder.create":
+      case "iphone.calendar.reminder.update": result = await executeAgenda(request); break;
       case "iphone.photos.pick": result = await this.photo(); break;
       case "iphone.mail.compose": result = await this.mail(request.arguments); break;
       case "iphone.sms.compose": result = await this.sms(request.arguments); break;

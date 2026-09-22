@@ -36,6 +36,12 @@ const CAPABILITY_LABELS: Record<IPhoneCapabilityName, string> = {
   "iphone.location.current": "Partager la position actuelle",
   "iphone.contacts.lookup": "Rechercher un contact",
   "iphone.calendar.events": "Consulter une période du calendrier",
+  "iphone.calendar.reminders": "Consulter une liste de rappels",
+  "iphone.calendar.calendars": "Lister les calendriers et listes de rappels",
+  "iphone.calendar.event.create": "Créer un événement",
+  "iphone.calendar.event.update": "Modifier un événement",
+  "iphone.calendar.reminder.create": "Créer un rappel",
+  "iphone.calendar.reminder.update": "Modifier un rappel",
   "iphone.photos.pick": "Choisir une photo",
   "iphone.mail.compose": "Composer un courriel",
   "iphone.sms.compose": "Composer un SMS",
@@ -67,6 +73,27 @@ const CAPABILITY_SAFE_SUMMARIES: Record<IPhoneCapabilityName, CapabilitySummaryF
   "iphone.calendar.events": (request) => {
     const arguments_ = capabilityArguments(request, "iphone.calendar.events");
     return `Période exacte : ${arguments_.start} → ${arguments_.end}. Aucun événement n’est préaffiché.`;
+  },
+  "iphone.calendar.reminders": (request) => {
+    const args = capabilityArguments(request, "iphone.calendar.reminders");
+    return `Consulter les rappels de la liste ${args.calendar_id}, au maximum 100 résultats.`;
+  },
+  "iphone.calendar.calendars": () => "Afficher les noms et les identifiants des calendriers et des listes de rappels disponibles.",
+  "iphone.calendar.event.create": (request) => {
+    const args = capabilityArguments(request, "iphone.calendar.event.create");
+    return `Créer « ${args.title} » dans ${args.calendar_id} : ${args.start} → ${args.end}. L’événement sera relu après enregistrement.`;
+  },
+  "iphone.calendar.event.update": (request) => {
+    const args = capabilityArguments(request, "iphone.calendar.event.update");
+    return `Modifier ${args.id} : « ${args.title} », ${args.start} → ${args.end}. Les séries récurrentes ne seront pas modifiées.`;
+  },
+  "iphone.calendar.reminder.create": (request) => {
+    const args = capabilityArguments(request, "iphone.calendar.reminder.create");
+    return `Créer « ${args.title} » dans ${args.calendar_id}, échéance : ${args.due ?? "aucune"}. Le rappel sera relu après enregistrement.`;
+  },
+  "iphone.calendar.reminder.update": (request) => {
+    const args = capabilityArguments(request, "iphone.calendar.reminder.update");
+    return `Modifier ${args.id} : « ${args.title} », échéance : ${args.due}, ${args.completed ? "terminé" : "à faire"}. Les rappels récurrents ne seront pas modifiés.`;
   },
   "iphone.photos.pick": () =>
     "Aucun identifiant de photo. Le sélecteur iOS exigera un choix manuel.",

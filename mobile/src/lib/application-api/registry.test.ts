@@ -52,7 +52,7 @@ describe("application API contract", () => {
       expect(command).not.toHaveProperty("handler");
       expect(command.output).toMatchObject({ envelope: "ApplicationResult", contractVersion: "1.0" });
       if (command.available) expect(command.output.dataType).not.toBe("unavailable");
-      expect(command.available).toBe(true);
+      expect(command.available).toBe(!command.name.startsWith("embeddings."));
     }
     expect(() => JSON.stringify(catalog)).not.toThrow();
   });
@@ -63,7 +63,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: null, active: false, operationId: null, outputBytes: 0, state: "idle" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(68);
+    expect(applicationApi.catalog().commands).toHaveLength(76);
     expect(applicationApi.catalog().commands.find((command) => command.name === "models.status")).toMatchObject({ effect: "read", output: { dataType: "LocalInferenceStatus", validation: "existing_parser" } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(native.loadLocalModel).not.toHaveBeenCalled();
@@ -75,7 +75,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: "cpu", active: true, operationId: "cpu-operation", outputBytes: 42, state: "active" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(68);
+    expect(applicationApi.catalog().commands).toHaveLength(76);
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
   });
 
@@ -200,6 +200,7 @@ describe("application API contract", () => {
       local_planning_eligible: true, planning_embedding_call_count: 0, recent_conversation: [],
     };
     const session = {
+      projectContext: jest.fn<() => Promise<null>>().mockResolvedValue(null),
       getGoal: jest.fn<() => Promise<server.GoalDetail>>().mockResolvedValue(detail),
       assertCurrent: jest.fn<() => Promise<void>>().mockResolvedValue(),
       memoryContext: jest.fn<() => Promise<server.GoalMemoryContext>>().mockResolvedValue(memory),
