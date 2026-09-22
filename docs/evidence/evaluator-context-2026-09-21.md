@@ -77,5 +77,52 @@ responses remain outside Git.
 | `scoped-research-model-verified.json` | `c57df4199c6c579de276500a0dbb4471e69898d42ec21ac5b9a4591eaa52a48e` |
 | `baseline-checks/baseline-proof.json` | `600481a6484a976e4a3f80a2f8a3d2aa2ac4b9af2abec4eeadc3cbf734d1d81e` |
 
-Deployment is a separate guarded step. These qualification receipts alone do not
-establish that the running API has selected the new profile or code.
+## Deployment and independent runtime verification
+
+The backend source `d17c1d3394ab8c78651f03ad03bd9ada582e310f` was activated on
+21 September at 20:38 Montréal time (22 September 00:38 UTC). Its immutable wheel
+SHA256 is `23b9e1cb348bb56860a7dfe8f666122f0ee8737fb0181928c757c74577bf9aea`.
+All 66 packaged application files matched the staged source and installation.
+Canonical initialization on a private database copy preserved schema version 24,
+all 57 tables, `sqlite_sequence` and pairing records. The deployment helpers passed
+34 tests before activation.
+
+The original supervised command exited **1** after activation: the file, code
+review and research workers automatically restarted when their API connection was
+temporarily refused. Their process identities therefore violated the helper's
+unchanged-PID assumption. The original `activated` journal and failure receipt were
+preserved; neither was rewritten as successful. No second deployment was run and
+no database was restored. The API, project worker and text worker had the planned
+restart; the other three restarts are an explicit deviation from the rollout plan.
+
+A separate read-only reconciliation at **00:41:43 UTC** confirmed the new API was
+healthy and all five workers were online with heartbeats less than four seconds
+old. Worker sources, configuration, credentials, identities and systemd bindings
+were unchanged. Their journals showed the connection refusal and automatic
+systemd recovery.
+
+The coordinator then independently verified the running installation at
+**00:43:13–00:43:14 UTC**. HTTP health returned 200, the two changed installed runtime
+files matched the committed hashes, and the live process used the qualified 8K
+alias. Parsed settings differed only in `planner_model` and
+`research_evaluator_model`; the writer, code evaluator, timeouts and leases were
+preserved. All six service bindings were unchanged. The verifier reports the three
+automatic worker restarts explicitly and does not claim the original PID condition
+passed.
+
+Exact row hashes matched for all 18 protected collections of the reported goal
+and all 19 collections of the other paused goal, including goal-level audit
+events, contexts, evaluations, messages and existing project revisions. All eight
+admission counters were zero. No user goal was resumed, no new search was submitted
+and no additional inference was performed during deployment or post-deployment
+verification. The existing **Réessayer l’évaluation** action remains available to
+resume the paused evaluation. This backend change needs no new TestFlight build.
+
+Additional private receipts under the same evidence directory:
+
+| Receipt | SHA256 |
+| --- | --- |
+| `deploy/baseline.json` | `b24447a336c632aa6f4fffa504f3e4cf12ce1250db2d02ce933dce2ddbfd3d14` |
+| `deploy/cutover.json` (original failure preserved) | `84ee5dd582397aeb62b42e398b97e1551a05b8645f096cf14eefcf5b6737d96a` |
+| `deploy/post-activation-reconciliation.json` | `78af72efb5d9bfee36aa321c659e4d02988e1630f2a68b4e0ae9f3bc6c916b83` |
+| `deploy/independent-post-cutover-result.json` | `c26bc09f15b1066056b369139d9687c108b65e06e170c3074576c3c86041967e` |
