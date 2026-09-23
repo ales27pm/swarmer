@@ -100,7 +100,10 @@ async def test_invalid_goal_dependency_keeps_failure_category_cooldown_and_one_c
     assert post.await_count == 1
     current = await manager.graph.get_goal(str(goal["id"]))
     assert current["current_phase"] == "planner_invalid_response"
-    assert current["failure_reason"] == "The planner response did not pass server validation."
+    assert current["failure_reason"] == (
+        "The planner response did not pass server validation. "
+        "Le plan contient une dépendance inconnue."
+    )
     assert current["model_call_count"] == 1
     assert await manager.graph.list_nodes(str(goal["id"])) == []
     async with aiosqlite.connect(manager.db_path) as db:

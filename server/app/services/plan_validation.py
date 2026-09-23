@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.services.agent_card import PROJECT_BUILD_SKILLS
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
+from app.services.planner_diagnostics import known_diagnostic
 from app.services.swarm_contracts import (
     MAX_PLAN_NODES,
     MAX_PLAN_PARALLELISM,
@@ -26,6 +27,10 @@ MAX_PROPOSAL_BYTES = 131_072
 
 class PlanValidationError(ValueError):
     """A model proposal failed a structural or server-policy invariant."""
+
+    def __init__(self, message: str, *, diagnostic_code: str | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic_code = known_diagnostic(diagnostic_code)
 
 
 @dataclass(frozen=True)
@@ -58,18 +63,24 @@ def _coerce_model[ModelT: BaseModel](
     try:
         return model_type.model_validate(raw)
     except ValidationError as exc:
-        raise PlanValidationError(_format_validation_error(exc)) from exc
+        raise PlanValidationError(
+            _format_validation_error(exc), diagnostic_code="invalid_fields"
+        ) from exc
 
 
 def _reject_json_constant(value: str) -> NoReturn:
-    raise PlanValidationError(f"non-finite JSON constant is not allowed: {value}")
+    raise PlanValidationError(
+        f"non-finite JSON constant is not allowed: {value}", diagnostic_code="invalid_json"
+    )
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise PlanValidationError(f"duplicate JSON key is not allowed: {key}")
+            raise PlanValidationError(
+                f"duplicate JSON key is not allowed: {key}", diagnostic_code="duplicate_json_key"
+            )
         result[key] = value
     return result
 
@@ -78,9 +89,13 @@ def _parse_json_object(text: str) -> Mapping[str, object]:
     try:
         encoded_size = len(text.encode("utf-8"))
     except UnicodeError as exc:
-        raise PlanValidationError("proposal contains invalid Unicode") from exc
+        raise PlanValidationError(
+            "proposal contains invalid Unicode", diagnostic_code="invalid_json"
+        ) from exc
     if encoded_size > MAX_PROPOSAL_BYTES:
-        raise PlanValidationError("proposal exceeds the maximum JSON size")
+        raise PlanValidationError(
+            "proposal exceeds the maximum JSON size", diagnostic_code="invalid_json"
+        )
     try:
         value = json.loads(
             text,
@@ -88,9 +103,11 @@ def _parse_json_object(text: str) -> Mapping[str, object]:
             parse_constant=_reject_json_constant,
         )
     except json.JSONDecodeError as exc:
-        raise PlanValidationError("proposal is not valid JSON") from exc
+        raise PlanValidationError(
+            "proposal is not valid JSON", diagnostic_code="invalid_json"
+        ) from exc
     if not isinstance(value, dict):
-        raise PlanValidationError("proposal must be a JSON object")
+        raise PlanValidationError("proposal must be a JSON object", diagnostic_code="invalid_json")
     return value
 
 
@@ -117,7 +134,8 @@ def _validate_project_plan_shape(nodes: Sequence[SwarmPlanNodeProposal]) -> None
         or projects[0].optional_dependencies
     ):
         raise PlanValidationError(
-            "a project plan requires exactly one worker with no hard or optional dependencies"
+            "a project plan requires exactly one worker with no hard or optional dependencies",
+            diagnostic_code="project_plan_shape",
         )
 
 
@@ -130,11 +148,13 @@ def _validate_worker_policy(node: SwarmPlanNodeProposal, policy: PermissionPolic
         rule = policy.evaluate_worker_skill(node.required_skill)
     except PermissionPolicyError as exc:
         raise PlanValidationError(
-            f"node {node.temporary_id} requests an unsupported worker skill"
+            f"node {node.temporary_id} requests an unsupported worker skill",
+            diagnostic_code="unavailable_skill",
         ) from exc
     if rule.decision != "allow":
         raise PlanValidationError(
-            f"node {node.temporary_id} requests a worker skill denied by policy"
+            f"node {node.temporary_id} requests a worker skill denied by policy",
+            diagnostic_code="policy_denied",
         )
 
 
@@ -152,7 +172,8 @@ def validate_worker_capabilities(
     for node in nodes:
         if node.node_type is PlanNodeType.WORKER and node.required_skill not in available:
             raise PlanValidationError(
-                f"node {node.temporary_id} requests a worker skill absent from available capabilities"
+                f"node {node.temporary_id} requests a worker skill absent from available capabilities",
+                diagnostic_code="unavailable_skill",
             )
 
 
@@ -171,7 +192,9 @@ def _validate_node_dependencies(
     by_id: dict[str, SwarmPlanNodeProposal] = {}
     for node in nodes:
         if node.temporary_id in by_id or node.temporary_id in known_dependency_ids:
-            raise PlanValidationError(f"duplicate node id: {node.temporary_id}")
+            raise PlanValidationError(
+                f"duplicate node id: {node.temporary_id}", diagnostic_code="duplicate_node"
+            )
         by_id[node.temporary_id] = node
 
     current_ids = frozenset(by_id)
@@ -180,15 +203,25 @@ def _validate_node_dependencies(
     dependents: dict[str, list[str]] = {node_id: [] for node_id in current_ids}
     for node in nodes:
         if len(set(node.dependencies)) != len(node.dependencies):
-            raise PlanValidationError(f"node {node.temporary_id} repeats a dependency")
+            raise PlanValidationError(
+                f"node {node.temporary_id} repeats a dependency",
+                diagnostic_code="repeated_dependency",
+            )
         if len(set(node.optional_dependencies)) != len(node.optional_dependencies):
-            raise PlanValidationError(f"node {node.temporary_id} repeats an optional dependency")
+            raise PlanValidationError(
+                f"node {node.temporary_id} repeats an optional dependency",
+                diagnostic_code="repeated_dependency",
+            )
         for dependency in (*node.dependencies, *node.optional_dependencies):
             if dependency == node.temporary_id:
-                raise PlanValidationError(f"node {node.temporary_id} cannot depend on itself")
+                raise PlanValidationError(
+                    f"node {node.temporary_id} cannot depend on itself",
+                    diagnostic_code="self_dependency",
+                )
             if dependency not in all_known_ids:
                 raise PlanValidationError(
-                    f"node {node.temporary_id} has unknown dependency {dependency}"
+                    f"node {node.temporary_id} has unknown dependency {dependency}",
+                    diagnostic_code="unknown_dependency",
                 )
             if dependency in current_ids:
                 indegree[node.temporary_id] += 1
@@ -205,7 +238,9 @@ def _validate_node_dependencies(
             if indegree[dependent] == 0:
                 heapq.heappush(ready, dependent)
     if len(ordered) != len(nodes):
-        raise PlanValidationError("plan dependencies contain a cycle")
+        raise PlanValidationError(
+            "plan dependencies contain a cycle", diagnostic_code="cyclic_dependencies"
+        )
     return tuple(ordered)
 
 
@@ -321,9 +356,13 @@ def validate_swarm_plan(
 ) -> ValidatedSwarmPlan:
     proposal = _coerce_model(SwarmPlanProposal, raw)
     if len(proposal.nodes) > min(max_nodes, MAX_PLAN_NODES):
-        raise PlanValidationError(f"plan exceeds the configured {max_nodes}-node budget")
+        raise PlanValidationError(
+            f"plan exceeds the configured {max_nodes}-node budget", diagnostic_code="step_budget"
+        )
     if proposal.max_parallelism > min(max_parallelism, MAX_PLAN_PARALLELISM):
-        raise PlanValidationError("plan exceeds the configured parallelism budget")
+        raise PlanValidationError(
+            "plan exceeds the configured parallelism budget", diagnostic_code="parallelism_budget"
+        )
     order = _validate_node_graph(proposal.nodes, policy=policy, available_skills=available_skills)
     return ValidatedSwarmPlan(
         proposal=proposal,
