@@ -129,7 +129,15 @@ async def test_semantically_invalid_initial_plan_is_cooled_without_persisting_no
     record = await manager.graph.get_goal(str(goal["id"]))
     assert record is not None
     assert record["current_phase"] == "planner_invalid_response"
-    assert record["failure_reason"] == "The planner response did not pass server validation."
+    details = {
+        "objective": "Le plan ne correspond pas au but demandé.",
+        "dependency": "Le plan contient une dépendance inconnue.",
+        "skill": "Le plan demande une compétence absente des agents disponibles.",
+        "step_budget": "Le plan dépasse le nombre d'étapes autorisé.",
+    }
+    assert record["failure_reason"] == (
+        "The planner response did not pass server validation. " + details[invalid_part]
+    )
     assert record["model_call_count"] == 1
     assert await manager.graph.list_nodes(str(goal["id"])) == []
     async with aiosqlite.connect(manager.db_path) as db:

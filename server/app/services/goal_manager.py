@@ -51,6 +51,12 @@ from app.services.plan_validation import (
     validate_swarm_plan,
     validate_worker_capabilities,
 )
+from app.services.planner_diagnostics import (
+    DIAGNOSTICS,
+    known_diagnostic,
+    rejection_diagnostic,
+    rejection_reason,
+)
 from app.services.planner_provider import (
     SwarmPlannerProvider,
     SwarmPlannerProviderError,
@@ -158,6 +164,10 @@ class GoalManagerConflict(RuntimeError):
 
 class _PlannerProposalRejected(GoalManagerConflict):
     """A returned proposal failed validation before any graph mutation."""
+
+    def __init__(self, message: str, *, diagnostic_code: str | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic_code = known_diagnostic(diagnostic_code)
 
 
 class _ProjectMemoryContextChanged(GoalManagerConflict):
@@ -270,12 +280,17 @@ class GoalManager:
         """
 
         if sum(node.required_skill == PROJECT_SKILL for node in proposal.nodes) > 1:
-            raise _PlannerProposalRejected("a project plan requires one sequential project worker")
+            raise _PlannerProposalRejected(
+                "a project plan requires one sequential project worker",
+                diagnostic_code="project_plan_shape",
+            )
         if proposal.objective == goal["objective"]:
             return proposal
         if model_call_id is not None and proposal.objective == f"goal:{goal['id']}":
             return proposal.model_copy(update={"objective": str(goal["objective"])})
-        raise _PlannerProposalRejected("planner changed the authoritative goal objective")
+        raise _PlannerProposalRejected(
+            "planner changed the authoritative goal objective", diagnostic_code="objective_mismatch"
+        )
 
     @staticmethod
     def _runtime_expired(goal: Mapping[str, Any]) -> bool:
@@ -549,12 +564,13 @@ class GoalManager:
         )
         try:
             await self._append_replan_nodes(goal, proposal, source=source, model_call_id=call_id)
-        except _PlannerProposalRejected:
+        except _PlannerProposalRejected as exc:
             if call_id is not None:
                 await self._record_planner_failure(
                     goal_id,
                     call_id,
                     category="invalid_response",
+                    diagnostic_code=rejection_diagnostic(exc),
                     maintenance_guard=maintenance_guard,
                 )
             raise
@@ -964,12 +980,13 @@ class GoalManager:
                         memory_context_fingerprint=memory_fingerprint,
                         maintenance_guard=maintenance_guard,
                     )
-                except _PlannerProposalRejected:
+                except _PlannerProposalRejected as exc:
                     if call_id is not None:
                         await self._record_planner_failure(
                             goal_run_id,
                             call_id,
                             category="invalid_response",
+                            diagnostic_code=rejection_diagnostic(exc),
                             maintenance_guard=maintenance_guard,
                         )
                     raise
@@ -1263,6 +1280,9 @@ class GoalManager:
                 "purpose": "planner",
                 "cards": [card.as_model_dict() for card in fallback_cards],
             }
+        feedback = await self._planner_validation_feedback(goal)
+        if feedback is not None:
+            context_payload["planner_validation_feedback"] = feedback
         if self.project_applications is not None and self.project_applications.context is not None:
             durable = await self.project_applications.context.refresh(goal_id)
             context_payload["durable_project_requirements"] = (
@@ -1329,13 +1349,17 @@ class GoalManager:
                 else "model call was fenced by newer input"
             ) from exc
         except SwarmPlannerProviderError as exc:
+            diagnostic_code = (
+                rejection_diagnostic(exc) if exc.category == "invalid_response" else None
+            )
             await self._record_planner_failure(
                 str(goal["id"]),
                 call_id,
                 category=exc.category,
+                diagnostic_code=diagnostic_code,
                 maintenance_guard=maintenance_guard,
             )
-            reason = _PLANNER_FAILURE_DETAILS[exc.category][1]
+            reason = rejection_reason(_PLANNER_FAILURE_DETAILS[exc.category][1], diagnostic_code)
             if exc.category == "transport_unavailable":
                 raise GoalManagerConflict("planner unavailable; goal remains recoverable") from exc
             raise GoalManagerConflict(f"{reason} Goal remains recoverable.") from exc
@@ -1528,15 +1552,56 @@ class GoalManager:
         )
         return cursor.rowcount == 1
 
+    async def _planner_validation_feedback(self, goal: Mapping[str, Any]) -> dict[str, str] | None:
+        """Return a server-authored hint for the latest failure of this conversation.
+
+        Does not retry or modify budgets. Old-conversation, successful, unclassified
+        and transport failures cannot supply guidance for a later planning request.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            call = await (
+                await db.execute(
+                    """SELECT id,status,error_category FROM goal_model_calls
+                WHERE goal_run_id=? AND role='planner' AND conversation_revision=?
+                ORDER BY lease_generation DESC,created_at DESC LIMIT 1""",
+                    (goal["id"], int(goal.get("conversation_revision") or 0)),
+                )
+            ).fetchone()
+            if call is None or tuple(call[1:]) != ("failed", "invalid_response"):
+                return None
+            row = await (
+                await db.execute(
+                    """SELECT payload_json FROM audit_events WHERE trace_id=?
+                AND event_type='goal.plan.rejected'
+                AND json_extract(payload_json,'$.model_call_id')=? ORDER BY id DESC LIMIT 1""",
+                    (goal["id"], call[0]),
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        code = known_diagnostic(payload.get("validation_code"))
+        if code is None:
+            return None
+        return {"code": code, "instruction": DIAGNOSTICS[code][1]}
+
     async def _record_planner_failure(
         self,
         goal_run_id: str,
         call_id: str,
         *,
         category: str,
+        diagnostic_code: str | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> bool:
         phase, reason = _PLANNER_FAILURE_DETAILS[category]
+        code = known_diagnostic(diagnostic_code) if category == "invalid_response" else None
+        reason = rejection_reason(reason, code)
         now = self._now()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -1544,13 +1609,19 @@ class GoalManager:
                 await maintenance_guard.require_current_locked(db)
             call = await (
                 await db.execute(
-                    "SELECT 1 FROM goal_model_calls WHERE id=? AND goal_run_id=? AND role='planner'",
+                    """SELECT c.conversation_revision,g.root_task_id,g.conversation_revision,g.status
+                    FROM goal_model_calls c
+                    JOIN goal_runs g ON g.id=c.goal_run_id
+                    WHERE c.id=? AND c.goal_run_id=? AND c.role='planner'""",
                     (call_id, goal_run_id),
                 )
             ).fetchone()
             if call is None:
                 await db.rollback()
                 raise GoalManagerConflict("planner call does not belong to this goal")
+            if call[0] != call[2] or call[3] in self.graph.GOAL_TERMINAL:
+                await db.rollback()
+                return False
             changed = await self._finish_model_call_locked(
                 db,
                 call_id,
@@ -1564,6 +1635,22 @@ class GoalManager:
                     WHERE id=? AND status NOT IN
                         ('completed','failed','cancelled','budget_exhausted')""",
                     (phase, reason, now, goal_run_id),
+                )
+                await append_audit_event(
+                    db,
+                    "goal.plan.rejected",
+                    {
+                        "goal_run_id": goal_run_id,
+                        "model_call_id": call_id,
+                        "conversation_revision": call[0],
+                        "category": category,
+                        "validation_code": code,
+                    },
+                    actor_type="control-plane",
+                    actor_id="goal-manager",
+                    task_id=call[1],
+                    trace_id=goal_run_id,
+                    created_at=now,
                 )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
@@ -1674,7 +1761,9 @@ class GoalManager:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
         proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
         if len(proposal.nodes) > int(goal["max_steps"]):
-            raise _PlannerProposalRejected("plan exceeds the goal step budget")
+            raise _PlannerProposalRejected(
+                "plan exceeds the goal step budget", diagnostic_code="step_budget"
+            )
         try:
             validated = validate_swarm_plan(
                 proposal,
@@ -3679,7 +3768,10 @@ class GoalManager:
             except (PlanValidationError, GoalManagerConflict) as exc:
                 if call_id is not None:
                     await self._record_planner_failure(
-                        goal_run_id, call_id, category="invalid_response"
+                        goal_run_id,
+                        call_id,
+                        category="invalid_response",
+                        diagnostic_code=rejection_diagnostic(exc),
                     )
                 raise GoalManagerConflict(str(exc)) from exc
             if validated.fingerprint == goal.get("plan_fingerprint"):
@@ -3701,10 +3793,13 @@ class GoalManager:
                     source=source,
                     model_call_id=call_id,
                 )
-            except _PlannerProposalRejected:
+            except _PlannerProposalRejected as exc:
                 if call_id is not None:
                     await self._record_planner_failure(
-                        goal_run_id, call_id, category="invalid_response"
+                        goal_run_id,
+                        call_id,
+                        category="invalid_response",
+                        diagnostic_code=rejection_diagnostic(exc),
                     )
                 raise
             except BaseException:

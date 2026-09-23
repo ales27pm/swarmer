@@ -62,7 +62,9 @@ def decode_research_query_nodes(
     for node in nodes:
         if isinstance(node, dict) and "00_required_skill" in node:
             if "required_skill" in node:
-                raise PlanValidationError("worker capability wire fields are ambiguous")
+                raise PlanValidationError(
+                    "worker capability wire fields are ambiguous", diagnostic_code="invalid_fields"
+                )
             node = dict(node)
             node["required_skill"] = node.pop("00_required_skill")
         if not isinstance(node, dict) or "search_query" not in node:
@@ -73,7 +75,10 @@ def decode_research_query_nodes(
             or node.get("required_skill") != "research.query"
             or "objective" in node
         ):
-            raise PlanValidationError("research query wire fields are ambiguous or misplaced")
+            raise PlanValidationError(
+                "research query wire fields are ambiguous or misplaced",
+                diagnostic_code="invalid_fields",
+            )
         translated = dict(node)
         translated["objective"] = translated.pop("search_query")
         decoded.append(translated)
@@ -86,4 +91,6 @@ def encode_model_wire_response(value: Mapping[str, object]) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError) as exc:
-        raise PlanValidationError("model wire response contains an invalid JSON value") from exc
+        raise PlanValidationError(
+            "model wire response contains an invalid JSON value", diagnostic_code="invalid_json"
+        ) from exc

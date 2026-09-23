@@ -107,6 +107,9 @@ def worker_node_array_schema(
     # Put the capability first for both insertion-order and sorted decoders,
     # before branch-specific parameters can commit to an unrelated worker type.
     node_schema = deepcopy(node_schema)
+    # These payloads are derived by the server; only specialist branches below
+    # expose bounded model-authored operation arguments.
+    node_schema["properties"]["worker_arguments"] = {"type": "null"}
     for field in ("dependencies", "optional_dependencies"):
         node_schema["properties"][field]["description"] = (
             "Exact temporary_id values of other proposed nodes; never goal/card IDs. "
@@ -226,6 +229,8 @@ Never emit both names. Context cards retain their normal public field names.
 Return exactly one JSON object matching the supplied schema and no prose.
 Decompose only the bounded, redacted context supplied by the Ubuntu control plane.
 The goal card's objective and current user guidance define the requested outcome.
+planner_validation_feedback is a server-authored diagnostic from a prior rejected proposal;
+correct that contract defect while preserving the requested outcome and advertised capabilities.
 Support personal organization, web research, comparisons, writing and technical work
 using the available capabilities. Coding is one capability, not the default deliverable.
 Never turn a request for information, a comparison or personal advice into building an app.
