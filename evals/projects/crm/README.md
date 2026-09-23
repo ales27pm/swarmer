@@ -1,43 +1,55 @@
-# Offline CRM reference qualification
+# Offline CRM qualification
 
-This is a fixed benign acceptance case for the local project worker. It covers
-SQLite contacts, quotes, calendar records and email drafts. It does not send
-email, call external services, create a web UI, or qualify unrelated projects.
+This fixed reference case asks the real local model to build an SQLite CRM with
+customers, quotes, calendar records and email drafts. `contract.json` defines the
+public API. `workflow.json` divides the work into seven small modules/test/docs
+steps. This is an **operator-guided workflow**, not an autonomous planner score.
 
-`contract.json` defines the public API. `workflow.json` decomposes that contract
-into complete modules small enough for the existing response budget. Each step
-retains the full objective and previous files. The storage module receives real
-tests before dependent feature modules are added; the final suite exercises the
-public CRM API. A failed or truncated response is not an accepted module.
+Run on the Linux Docker/Ollama host, using the exact worker source intended for
+deployment and the existing immutable project runtime image:
 
-The workflow is an operator-guided reference case, not a claim that the deployed
-planner automatically derives these steps. It does not replace any production
-model, change runtime budgets, or resume a user project.
+```sh
+python3 scripts/run_crm_qualification.py \
+  --worker-root /path/to/reviewed/worker-release \
+  --work /path/to/new/private/qualification \
+  --model LOCAL_MODEL_ALIAS \
+  --image sha256:IMMUTABLE_RUNTIME_IMAGE_ID \
+  --max-iterations 16 \
+  --admission-db /path/to/mongars.db
+```
 
-`acceptance.py` contains twelve independently authored checks. The generated
-project's own tests and pytest configuration are excluded from this acceptance
-run. The checks exercise persistence after reopening, customer isolation,
-validation, exact text and the four requested feature groups. A passing generated
-test, a `complete` model response, or successful bytecode compilation alone does
-not qualify the project.
+The destination must be new. Each iteration records its input, cumulative result,
+model/transport metrics and actual isolated check receipts. A new production job,
+model call or embedding request interrupts qualification. Three consecutive
+iterations without a source change stop the run, including repeated reads. The
+driver does not resume user projects, write to the production database, change
+model settings or retry inside a worker iteration.
 
-Run on an unprivileged Linux Docker host with a previously qualified, immutable
-project-runtime image:
+When all planned files exist and their generated checks pass, the driver runs
+`acceptance.py` independently. Only root `crm.py` / `crm_*.py` implementation
+modules enter this container alongside the fixed tests; generated tests and
+pytest configuration are excluded. Generated source executes only in the
+restricted Docker runtime, never on the host.
+
+A pass requires compilation and all **12 acceptance tests** to pass. Coverage
+includes integer IDs, dictionary results, validation, exact Unicode/apostrophe
+text, customer/quote/event/draft persistence and reopening SQLite from a new
+Python process. A valid SQLite header alone is insufficient. Emails remain
+drafts and no network access is available.
+
+To recheck an immutable saved result separately:
 
 ```sh
 python3 scripts/qualify_crm_snapshot.py \
-  --snapshot /private/path/result.json \
-  --image sha256:THE_QUALIFIED_IMAGE_ID \
-  --output /private/path/new-acceptance-receipt.json
+  --worker-root /path/to/reviewed/worker-release \
+  --snapshot /path/to/qualification/result-N.json \
+  --image sha256:IMMUTABLE_RUNTIME_IMAGE_ID \
+  --output /path/to/new/acceptance-receipt.json
 ```
 
-`--worker-root` may select an explicitly reviewed immutable worker release when
-qualifying the deployed runtime instead of the checkout. The snapshot is the
-worker's cumulative JSON result containing `files`. Generated Python is executed
-only in the worker's restricted Docker runtime. The tool never imports it on the
-host and never contacts the production application API. A nonzero exit means
-qualification failed; preserve the receipt and investigate its check output.
-
-The runner reports the source snapshot digest, tested module digest, exact
-acceptance-source hash, image ID and actual check receipts. The output path must
-be new to prevent accidentally replacing prior evidence.
+Compare `summary.json`, the last result, acceptance receipts and source hashes.
+Model prose, a completed action or passing model-written tests alone are not a
+pass. Admission or handled runtime interruptions retain the last saved result
+and a non-passing summary.
+The handwritten positive/negative harness controls are calibration evidence;
+they are never counted as model-generated application results.

@@ -263,7 +263,11 @@ def test_model_transport_uses_one_local_schema_request_without_credentials(
     assert schema["properties"]["edits"]["maxItems"] == 1
     assert schema["properties"]["edits"]["items"]["properties"]["path"]["pattern"]
     if large_context:
-        assert "minItems" not in schema["properties"]["edits"]
+        assert any(
+            branch["properties"]["edits"].get("maxItems") == 0
+            and branch["properties"]["focus_paths"].get("minItems") == 1
+            for branch in body["format"]["oneOf"]
+        )
         assert "patches" in schema["properties"]
         assert next(iter(schema["properties"])) == "patches"
         assert schema["properties"]["focus_paths"]["items"]["enum"] == [
@@ -386,6 +390,109 @@ def test_final_request_trimming_keeps_error_context_as_a_fragment(
         and "HIDDEN_HEADER" not in content[item["start_character"] : item["end_character"]]
         for item in displayed
     )
+
+
+@pytest.mark.parametrize("focus", [[], ["crm.py"]])
+@pytest.mark.parametrize("oversized", [False, True])
+def test_repair_context_keeps_diagnostic_source_before_old_module_instructions(
+    monkeypatch: pytest.MonkeyPatch, focus: list[str], oversized: bool
+) -> None:
+    test_source = (
+        "# CRM persistence checks\nimport pytest\nfrom crm import CRM, tmp_path\n"
+        + "# Existing independent customer, quote, calendar and draft checks.\n"
+        * (850 if oversized else 28)
+    )
+    latest_user = (
+        "Repair the actual failing import in the test, preserving its assertions. "
+        "Keep all existing CRM features and remaining module requirements."
+    )
+    latest_feedback = "LATEST_RUNTIME_FEEDBACK: the previous operation did not fix collection."
+    diagnostic = (
+        "ImportError while importing test module '/workspace/project/tests/test_crm.py'.\n"
+        "/usr/local/lib/python3.12/importlib/__init__.py:90: in import_module\n"
+        "tests/test_crm.py:3: in <module>\n"
+        "    from crm import CRM, tmp_path\n"
+        "E ImportError: cannot import name 'tmp_path' from 'crm' (/workspace/project/crm.py)\n"
+        + "Collection failed; no application tests executed.\n"
+        * 14
+    )
+    history = [
+        {
+            "role": "user",
+            "content": f"OLD_STAGE_{index}: " + "Create the next complete CRM module. " * 24,
+        }
+        for index in range(8)
+    ]
+    data = {
+        **payload(),
+        "objective": "Offline CRM must preserve customers, quotes, events and email drafts. " * 18,
+        "files": [
+            {
+                "path": "crm.py",
+                "content": "from crm_store import Store\nclass CRM(Store):\n    pass\n",
+            },
+            {"path": "crm_people.py", "content": "# Contacts and quotes\n" * 55},
+            {
+                "path": "crm_store.py",
+                "content": "# Existing persistent SQLite implementation\n" * 37,
+            },
+            {"path": "crm_work.py", "content": "# Calendar and email draft implementation\n" * 24},
+            {"path": "tests/test_crm.py", "content": test_source},
+            {"path": "tests/test_store.py", "content": "# Existing storage tests\n" * 36},
+        ],
+        "plan": ["Preserve complete CRM API", "Repair genuine tests", "Document actual features"],
+        "checks": [node_check(["python", "-m", "pytest", "-q"], diagnostic, code=5)],
+        "conversation": [
+            *history,
+            {"role": "assistant", "content": latest_feedback},
+            {"role": "user", "content": latest_user},
+        ],
+        "focus_paths": focus,
+        "iteration": 12,
+    }
+    body = capture_project_request(
+        monkeypatch, data, step(action="continue", edits=[], focus_paths=["tests/test_crm.py"])
+    )
+    messages = body["messages"]
+    workspace = messages[-1]["content"]
+    assert sum(len(message["content"].encode()) for message in messages) <= worker.MAX_PROMPT_BYTES
+    assert latest_user in workspace and latest_feedback in json.dumps(messages)
+    assert data["objective"] in workspace
+    metadata = json.JSONDecoder().raw_decode(workspace.split("Current workspace data:\n", 1)[1])[0]
+    assert metadata["editable_spans"][0]["path"] == "tests/test_crm.py"
+    targets = [item for item in metadata["editable_spans"] if item["path"] == "tests/test_crm.py"]
+    assert any(item["start_line"] <= 3 <= item["end_line"] for item in targets)
+    assert 'SOURCE {"path":"tests/test_crm.py"' in workspace
+    assert any(
+        "PATCH_TARGET " + json.dumps({"span_id": item["span_id"]}, separators=(",", ":"))
+        in workspace
+        for item in targets
+    )
+    if oversized:
+        assert 'SOURCE {"path":"tests/test_crm.py","complete":false' in workspace
+    addresses = worker.addressed_patch_spans(worker.model_context(data), data, max_bytes=500)
+    first = next(iter(addresses.values()))
+    assert first["path"] == "tests/test_crm.py" and first["start_line"] <= 3 <= first["end_line"]
+
+
+def test_context_bounds_advisory_feedback_without_mutating_latest_user_or_payload() -> None:
+    latest_user = "Conserve exactement ma demande détaillée. " * 90
+    feedback = "BEGIN: actual previous operation\n" + "é" * 2_000 + "\nEND: repair required"
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "value = 1\n"}],
+        "conversation": [
+            {"role": "user", "content": latest_user},
+            {"role": "assistant", "content": feedback},
+        ],
+    }
+    original = copy.deepcopy(data)
+    context = worker.model_context(data)
+    assert context["conversation"][0]["content"] == latest_user
+    excerpt = context["conversation"][1]["content"]
+    assert len(excerpt.encode()) <= 1_000
+    assert excerpt.startswith("BEGIN:") and excerpt.endswith("END: repair required")
+    assert "feedback omitted" in excerpt and data == original
 
 
 @pytest.mark.parametrize("stage", ["connect", "read", "wrapped"])
@@ -595,7 +702,7 @@ def test_streaming_native_response_bounds_each_read_by_remaining_wall_time(
     assert "private" not in str(error.value)
 
 
-def test_readme_route_uses_its_reserved_model_wall_budget(
+def test_documentation_uses_the_normal_model_wall_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = {
@@ -637,36 +744,8 @@ def test_readme_route_uses_its_reserved_model_wall_budget(
     clock = iter((0.0, worker.MAX_MODEL_WALL_SECONDS + 30.0))
     monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
-    result = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(data)
-    assert worker.MAX_README_MODEL_WALL_SECONDS > worker.MAX_MODEL_WALL_SECONDS + 30
-    assert worker.model_wall_seconds(data, True) == worker.MAX_README_MODEL_WALL_SECONDS
-    assert result["edits"][0]["path"] == "README.md"
-
-
-@pytest.mark.parametrize("manifest", ["requirements.txt", "package.json"])
-def test_readme_route_keeps_full_check_reserve_when_dependencies_are_present(
-    manifest: str,
-) -> None:
-    data = {
-        **payload(),
-        "files": [
-            {"path": "app.py", "content": "VALUE = 1\n"},
-            {"path": manifest, "content": "{}\n" if manifest == "package.json" else ""},
-        ],
-        "plan": ["Document setup"],
-        "checks": [
-            {
-                "command": ["python", "-m", "pytest", "-q"],
-                "status": "passed",
-                "exit_code": 0,
-                "duration_ms": 2,
-                "output": "5 passed",
-            }
-        ],
-        "conversation": [{"role": "assistant", "content": "Progress"}],
-    }
-    assert worker.readme_is_only_remaining_gate(data) is True
-    assert worker.model_wall_seconds(data, True) == worker.MAX_MODEL_WALL_SECONDS
+    with pytest.raises(worker.ModelTimeoutError, match="timed out"):
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b").generate(data)
 
 
 def test_streaming_native_error_event_is_a_fixed_transport_failure(
@@ -1270,7 +1349,8 @@ def test_source_priority_keeps_app_and_user_requirements_over_old_progress_and_s
     generator.generate(data)
     messages = captured[0]["messages"]
     assert "app.py" in generator.last_visible_paths and source in messages[-1]["content"]
-    assert any(message["content"] == latest_user for message in messages)
+    assert latest_user in messages[-1]["content"]
+    assert sum(message["content"].count(latest_user) for message in messages) == 1
     assert "Latest progress" in json.dumps(messages) and "no tests ran" in messages[-1]["content"]
     assert "obsolete repeated" not in json.dumps(messages)
     assert "successful installation log" not in json.dumps(messages)
@@ -1459,6 +1539,35 @@ def test_real_empty_node_test_receipt_prioritizes_real_test_creation(
 
 
 @pytest.mark.parametrize("runtime", ["python", "node"])
+def test_missing_tests_retains_latest_users_narrow_module_scope(
+    monkeypatch: pytest.MonkeyPatch, runtime: str
+) -> None:
+    latest_user = "Test only the existing Store module in this iteration. Do not rewrite Store."
+    is_python = runtime == "python"
+    data = {
+        **payload(),
+        "files": [{"path": "store.py" if is_python else "store.js", "content": "# Store\n"}],
+        "conversation": [
+            {"role": "user", "content": "Create the entire CRM application."},
+            {"role": "assistant", "content": "The Store module is present."},
+            {"role": "user", "content": latest_user},
+        ],
+        "checks": [
+            node_check(
+                ["python", "-m", "pytest", "-q"] if is_python else ["node", "--test"],
+                "no tests ran" if is_python else NODE_EMPTY_TAP,
+                code=5,
+            )
+        ],
+    }
+    request = capture_project_request(monkeypatch, data)
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "collected NO TESTS" in task and latest_user in task
+    assert "requested module and scope" in task
+    assert sum(message["content"].count(latest_user) for message in request["messages"]) == 1
+
+
+@pytest.mark.parametrize("runtime", ["python", "node"])
 def test_missing_tests_cannot_select_an_empty_mutation(
     monkeypatch: pytest.MonkeyPatch, runtime: str
 ) -> None:
@@ -1600,6 +1709,259 @@ def test_source_fragment_ignores_foreign_basename_collisions(displayed: str) -> 
     assert worker.source_fragment(item, payload(), foreign)["start_character"] == 0
     actual = foreign + '\nFile "/workspace/project/app.py", line 200'
     assert worker.source_fragment(item, payload(), actual)["start_character"] == 199 * 5 - 700
+
+
+@pytest.mark.parametrize("prefix", ["", "./", "/workspace/project/"])
+@pytest.mark.parametrize("suffix", [":", ": in test_store", ": AssertionError", ""])
+def test_pytest_traceback_locations_select_exact_project_lines(prefix: str, suffix: str) -> None:
+    diagnostic = f"  {prefix}tests/test_store.py:18{suffix}\n"
+    assert worker.project_traceback_line("tests/test_store.py", diagnostic) == 18
+
+
+@pytest.mark.parametrize(
+    "displayed",
+    [
+        "other/tests/test_store.py:18:",
+        "/dependencies/tests/test_store.py:18:",
+        "/workspace/project/other/tests/test_store.py:18:",
+        "mytests/test_store.py:18:",
+        "tests/test_store.py.old:18:",
+        "tests/test_store.py:18oops",
+        "tests/test_store.py:0:",
+        "FAILED tests/test_store.py:18:",
+    ],
+)
+def test_pytest_traceback_locations_reject_foreign_or_ambiguous_paths(displayed: str) -> None:
+    assert worker.project_traceback_line("tests/test_store.py", displayed) is None
+
+
+def test_pytest_repair_keeps_test_lifecycle_target_in_small_address_budget() -> None:
+    test_source = (
+        "import pytest\nfrom crm_store import Store\n\n"
+        "def test_insert_customer(tmp_path):\n"
+        "    store = Store(tmp_path / 'crm.sqlite')\n"
+        "    customer_id = store._insert('INSERT INTO customers(name) VALUES (?)', ('Émilie',))\n"
+        "    store.close()\n"
+        "    store = Store(tmp_path / 'crm.sqlite')\n"
+        "    assert store._rows('SELECT name FROM customers')[0]['name'] == 'Émilie'\n"
+        "    store.close()\n"
+        "    with pytest.raises(ValueError):\n"
+        "        store._customer(999)\n"
+    )
+    store_source = (
+        "class Store:\n"
+        "    def _create_tables(self):\n"
+        "        cursor = self.connection.cursor()\n"
+        "        cursor.execute('CREATE TABLE customers(id INTEGER PRIMARY KEY, name TEXT)')\n"
+        "    def _customer(self, customer_id):\n"
+        "        return self._rows('SELECT * FROM customers WHERE id=?', (customer_id,))\n"
+        "    def _rows(self, sql, params=()):\n"
+        "        cursor = self.connection.cursor()\n"
+        "        return cursor.execute(sql, params).fetchall()\n"
+    )
+    diagnostics = (
+        "tests/test_store.py:12: \n"
+        "crm_store.py:6: in _customer\n"
+        "E sqlite3.ProgrammingError: Cannot operate on a closed database.\n"
+        "crm_store.py:8: ProgrammingError\n"
+    )
+    files = [
+        {"path": "tests/test_store.py", "content": test_source},
+        {"path": "crm_store.py", "content": store_source},
+    ]
+    data = {**payload(), "files": files, "checks": [{"output": diagnostics}]}
+    context = {"selected_complete_files": files, "selected_file_fragments": []}
+    addresses = worker.addressed_patch_spans(context, data, max_bytes=500)
+    first = next(iter(addresses.values()))
+    assert first["path"] == "tests/test_store.py"
+    assert first["old"] == test_source[test_source.index("def test_insert_customer") :]
+    assert "store.close()" in first["old"] and "pytest.raises(ValueError)" in first["old"]
+    assert all("CREATE TABLE" not in address["old"] for address in addresses.values())
+
+
+@pytest.mark.parametrize("mutation", ["repair", "read", "unchanged_edit", "empty", "new_module"])
+def test_repairs_and_no_op_steps_preserve_accepted_milestones(mutation: str) -> None:
+    files = [{"path": "app.py", "content": "VALUE = 1\n"}]
+    data = {
+        **payload(),
+        "files": files,
+        "plan": [
+            "Implement customers and quotes",
+            "Add calendar and email drafts",
+            "Test and document",
+        ],
+    }
+    edits = []
+    focus = []
+    if mutation == "repair":
+        data["checks"] = [node_check(["python", "-m", "pytest", "-q"], "AssertionError", code=1)]
+        edits = [{"path": "app.py", "content": "VALUE = 2\n"}]
+    elif mutation == "read":
+        focus = ["app.py"]
+    elif mutation == "unchanged_edit":
+        edits = files
+    elif mutation == "new_module":
+        edits = [{"path": "customers.py", "content": "def customers():\n    return []\n"}]
+    response = step(action="continue", plan=[], edits=edits, focus_paths=focus)
+    result = worker.run_iteration(data, Generator(response), Runner(), lambda: None)
+    assert result["plan"] == data["plan"]
+
+
+def test_repair_task_preserves_user_scope_and_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = "Repair only tests/test_store.py; preserve Store and all persistence assertions."
+    data = {
+        **payload(),
+        "files": [
+            {"path": "tests/test_store.py", "content": "def test_store():\n    assert False\n"}
+        ],
+        "plan": ["Implement the remaining CRM modules", "Test and document"],
+        "conversation": [{"role": "user", "content": request}],
+        "checks": [node_check(["python", "-m", "pytest", "-q"], "AssertionError", code=1)],
+    }
+    body = capture_project_request(monkeypatch, data)
+    task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
+    assert request in task
+    assert "test lifecycle" in task and "do not weaken" in task
+    assert "Include README.md" not in task
+    for branch in body["format"]["oneOf"]:
+        assert branch["properties"]["plan"] == {"const": data["plan"]}
+
+
+@pytest.mark.parametrize("change", ["edit", "patch", "new_file"])
+def test_invalid_python_candidate_preserves_snapshot_without_execution(change: str) -> None:
+    original = "def customers():\n    return []\n"
+    data = {
+        **payload(),
+        "files": [{"path": "crm.py", "content": original}],
+        "plan": ["Implement customers", "Implement calendar"],
+        "checks": [node_check(["python", "-m", "pytest", "-q"], "AssertionError", code=1)],
+    }
+    path = "crm_calendar.py" if change == "new_file" else "crm.py"
+    response = step(action="continue", edits=[{"path": path, "content": "def broken(:\n"}])
+    if change == "patch":
+        response = step(
+            action="continue",
+            edits=[],
+            patches=[
+                {"path": path, "old": "    return []\n", "new": "        return [\n"},
+            ],
+        )
+    generator, runner = Generator(response), Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert runner.calls == 0 and generator.calls == 1
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+    assert result["plan"] == data["plan"] and result["action"] == "continue"
+    assert path in result["message"] and "SyntaxError" in result["message"]
+    assert "proposed" in result["message"] and "No changes" in result["message"]
+
+
+def test_syntax_preflight_does_not_execute_source_or_reject_unchanged_broken_files() -> None:
+    files = [{"path": "old.py", "content": "def previously_broken(:\n"}]
+    data = {**payload(), "files": files}
+    response = step(
+        action="continue",
+        edits=[
+            {"path": "new.py", "content": "raise RuntimeError('must not execute on the host')\n"},
+        ],
+    )
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 1
+    assert {item["path"]: item["content"] for item in result["files"]} == {
+        item["path"]: item["content"] for item in files + response["edits"]
+    }
+
+
+def test_parser_complexity_rejection_preserves_valid_snapshot_without_execution() -> None:
+    data = {
+        **payload(),
+        "files": [{"path": "crm.py", "content": "VALUE = 1\n"}],
+        "plan": ["Implement customers", "Implement calendar"],
+        "checks": [node_check(["python", "-m", "pytest", "-q"], "AssertionError", code=1)],
+    }
+    # Valid bounded contract text can still exceed CPython's AST recursion limit.
+    deep_expression = "VALUE = " + "1+" * 15000 + "1\n"
+    assert len(deep_expression.encode()) < 64_000
+    response = step(action="continue", edits=[{"path": "crm.py", "content": deep_expression}])
+    generator, runner = Generator(response), Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert generator.calls == 1 and runner.calls == 0
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+    assert result["plan"] == data["plan"] and result["action"] == "continue"
+    assert result["message"] == (
+        "The proposed Python source exceeds the parser complexity limit. "
+        "No changes or checks were accepted. Return one smaller complete module "
+        "or simplify the proposed patch."
+    )
+
+
+@pytest.mark.parametrize("kind", ["empty", "identical"])
+def test_non_effective_mutation_preserves_snapshot_and_receipts_without_checks(kind: str) -> None:
+    files = [{"path": "crm.py", "content": "VALUE = 1\n"}]
+    data = {**payload(), "files": files, "plan": ["Implement remaining modules"]}
+    response = step(
+        action="continue",
+        edits=files if kind == "identical" else [],
+        message="I will implement the next module.",
+    )
+    generator, runner = Generator(response), Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert generator.calls == 1 and runner.calls == 0
+    assert result["files"] == files and result["checks"] == data["checks"]
+    assert result["plan"] == data["plan"]
+    assert "no effective project operation" in result["message"]
+    assert "I will" not in result["message"]
+
+
+def test_explicit_checks_only_request_still_executes_the_existing_snapshot() -> None:
+    files = [{"path": "crm.py", "content": "VALUE = 1\n"}]
+    data = {**payload(), "files": files, "plan": ["Test existing source"]}
+    response = step(
+        action="continue", edits=[], requested_checks=[["python", "-m", "pytest", "-q"]]
+    )
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 1 and runner.files == files
+    assert result["checks"][0]["status"] == "passed"
+
+
+def test_mutation_schema_requires_an_operation_but_preserves_read_and_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = {**payload(), "files": [{"path": "crm.py", "content": "VALUE = 1\n"}]}
+    body = capture_project_request(monkeypatch, data)
+    validator = Draft202012Validator(body["format"])
+    response = step(action="continue", edits=[], patches=[], focus_paths=[])
+    assert not validator.is_valid(response)
+    assert validator.is_valid(
+        {**response, "edits": [{"path": "people.py", "content": "VALUE=2\n"}]}
+    )
+    assert validator.is_valid({**response, "deletions": ["crm.py"]})
+    assert validator.is_valid({**response, "requested_checks": [["python", "-m", "pytest", "-q"]]})
+    assert validator.is_valid({**response, "focus_paths": ["crm.py"]})
+    assert validator.is_valid({**response, "action": "clarify", "message": "Which interface?"})
+    patch_branch = next(
+        branch
+        for branch in body["format"]["oneOf"]
+        if branch["properties"]["patches"].get("minItems") == 1
+    )
+    patch_choice = patch_branch["properties"]["patches"]["items"]["oneOf"][0]["properties"]
+    patch = {
+        "path": patch_choice["path"]["enum"][0],
+        "span_id": patch_choice["span_id"]["enum"][0],
+        "new": "VALUE = 2\n",
+    }
+    assert validator.is_valid({**response, "patches": [patch]})
+    assert validator.is_valid(
+        {
+            **response,
+            "patches": [patch],
+            "edits": [{"path": "people.py", "content": "VALUE = 3\n"}],
+        }
+    )
+    assert "anyOf" not in json.dumps(body["format"])
+    with pytest.raises(worker.ModelStepError, match="no effective project operation"):
+        capture_project_request(monkeypatch, data, response)
 
 
 @pytest.mark.parametrize(
@@ -2063,7 +2425,7 @@ def test_readiness_diagnostic_names_missing_readme_even_when_tests_pass() -> Non
     assert "failed check" not in result["message"]
 
 
-def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
+def test_passing_submodule_tests_do_not_force_documentation_or_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = {
@@ -2072,7 +2434,7 @@ def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
             {"path": "app.py", "content": "VALUE = 1\n"},
             {"path": "tests/test_app.py", "content": "def test_value(): assert True\n"},
         ],
-        "plan": ["Keep the application", "Document setup"],
+        "plan": ["Implement customers", "Implement calendar", "Document setup"],
         "checks": [
             {
                 "command": ["python", "-m", "pytest", "-q"],
@@ -2088,8 +2450,8 @@ def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
         ],
     }
     response = step(
-        action="complete",
-        edits=[{"path": "README.md", "content": "# App\n\nRun `pytest`.\n"}],
+        action="continue",
+        edits=[{"path": "customers.py", "content": "def customers():\n    return []\n"}],
         patches=[],
         requested_checks=[],
         run_instructions="python -m pytest -q",
@@ -2097,23 +2459,16 @@ def test_missing_readme_routes_next_model_call_to_one_bounded_readme(
     )
     body = capture_project_request(monkeypatch, data, response)
     schema = body["format"]["oneOf"][0]
-    assert len(body["format"]["oneOf"]) == 1
     assert Draft202012Validator.check_schema(body["format"]) is None
-    assert next(iter(schema["properties"])) == "edits"
-    assert schema["properties"]["action"]["enum"] == ["complete"]
-    assert schema["properties"]["plan"] == {"const": data["plan"]}
-    assert schema["properties"]["runtime"]["enum"] == ["python"]
-    assert schema["properties"]["edits"]["minItems"] == 1
+    assert Draft202012Validator(body["format"]).is_valid(response)
+    assert "continue" in schema["properties"]["action"]["enum"]
     assert schema["properties"]["edits"]["maxItems"] == 1
-    assert schema["properties"]["edits"]["items"]["properties"]["path"] == {"const": "README.md"}
-    assert schema["properties"]["edits"]["items"]["properties"]["content"]["maxLength"] == 1_800
-    assert body["options"]["num_predict"] == worker.MAX_README_OUTPUT_TOKENS == 700
-    for field in ("patches", "deletions", "requested_checks", "focus_paths"):
-        assert schema["properties"][field]["maxItems"] == 0
+    assert body["options"]["num_predict"] == worker.MAX_OUTPUT_TOKENS == 2000
     task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
-    assert "Create exactly README.md" in task
-    assert "Do not edit application or test files" in task
-    assert "use action complete" in task
+    assert "Create exactly README.md" not in task
+    result = worker.run_iteration(data, Generator(response), Runner(), lambda: None)
+    assert result["action"] == "continue"
+    assert any(file["path"] == "customers.py" for file in result["files"])
 
 
 def test_readme_only_completion_runs_checks_on_the_new_revision() -> None:
@@ -2158,7 +2513,7 @@ def test_readme_only_completion_runs_checks_on_the_new_revision() -> None:
     assert {item["path"] for item in result["files"]} == {"app.py", "README.md"}
 
 
-def test_invalid_readme_only_metadata_is_rejected_without_running_checks() -> None:
+def test_no_op_cannot_promote_passing_submodule_checks_to_completion() -> None:
     checks = [
         {
             "command": ["python", "-m", "pytest", "-q"],
@@ -2170,43 +2525,25 @@ def test_invalid_readme_only_metadata_is_rejected_without_running_checks() -> No
     ]
     data = {
         **payload(),
-        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
-        "plan": ["Keep the application", "Document setup"],
+        "files": [
+            {"path": "app.py", "content": "VALUE = 1\n"},
+            {"path": "README.md", "content": "Storage module implemented; CRM features pending."},
+        ],
+        "plan": ["Implement customers", "Implement calendar", "Document setup"],
         "checks": checks,
         "conversation": [{"role": "assistant", "content": "Progress"}],
     }
     response = step(
         action="complete",
-        edits=[{"path": "README.md", "content": "# App\n\nRun `pytest`.\n"}],
-        plan=["Changed plan"],
+        edits=[],
+        plan=[],
         run_instructions="python -m pytest -q",
     )
     runner = Runner()
     result = worker.run_iteration(data, Generator(response), runner, lambda: None)
-    assert runner.calls == 0
     assert result["action"] == "continue"
-    assert result["files"] == data["files"] and result["checks"] == checks
-    assert "No edits were accepted" in result["message"]
-
-
-@pytest.mark.parametrize(
-    "plan,checks",
-    [
-        ([], [{"command": ["python", "-m", "pytest", "-q"], "status": "passed"}]),
-        (["Document"], [{"command": ["python", "-m", "compileall"], "status": "passed"}]),
-    ],
-)
-def test_missing_readme_is_not_the_only_gate_without_plan_and_test_receipt(
-    plan: list[str], checks: list[dict[str, Any]]
-) -> None:
-    data = {
-        **payload(),
-        "files": [{"path": "app.py", "content": "VALUE = 1\n"}],
-        "plan": plan,
-        "checks": checks,
-        "conversation": [{"role": "assistant", "content": "Progress"}],
-    }
-    assert worker.readme_is_only_remaining_gate(data) is False
+    assert snapshot_sha(result["files"]) == snapshot_sha(data["files"])
+    assert result["plan"] == data["plan"]
 
 
 def test_new_user_request_takes_priority_over_missing_readme(
@@ -2307,7 +2644,7 @@ def test_timeout_repair_uses_smaller_contract_and_preserves_worker_owned_plan(
     body = capture_project_request(monkeypatch, data, compact_step())
     assert data == original
     assert body["options"]["num_predict"] == 512
-    assert worker.model_wall_seconds(data, False) == 240
+    assert worker.MAX_MODEL_WALL_SECONDS == 240
     assert sum(len(m["content"].encode()) for m in body["messages"]) <= 10_000
     assert data["conversation"][0] in body["messages"]
     assert "OMIT_MEMORY" not in json.dumps(body["messages"])
@@ -2456,6 +2793,37 @@ def test_compact_context_retains_valid_large_unicode_user_reply(
     size = sum(len(m["content"].encode()) for m in body["messages"])
     assert worker.MAX_RECOVERY_PROMPT_BYTES < size <= worker.MAX_PROMPT_BYTES
     assert data["conversation"][0] in body["messages"]
+    assert body["options"]["num_predict"] == 512
+
+
+@pytest.mark.parametrize("creation", ["python_tests", "node_tests", "node_manifest"])
+def test_compact_creation_keeps_large_latest_user_once(
+    monkeypatch: pytest.MonkeyPatch, creation: str
+) -> None:
+    data = compact_recovery_payload()
+    if creation == "python_tests":
+        data["checks"] = [node_check(["python", "-m", "pytest", "-q"], "no tests ran", code=5)]
+    elif creation == "node_tests":
+        data["files"] = [{"path": "app.js", "content": "export const value = 1;\n"}]
+        data["checks"] = [node_check(["node", "--test"], NODE_EMPTY_TAP, code=5)]
+    else:
+        data = {
+            **missing_node_manifest_payload(),
+            "conversation": data["conversation"],
+        }
+    latest_user = "界" * 3_894
+    data["conversation"][0]["content"] = latest_user
+    response = compact_step(
+        runtime="python" if creation == "python_tests" else "node",
+        edits=[],
+        focus_paths=[data["files"][0]["path"]],
+    )
+    body = capture_project_request(monkeypatch, data, response)
+    assert len(latest_user.encode()) == 11_682
+    assert sum(message["content"].count(latest_user) for message in body["messages"]) == 1
+    assert latest_user in body["messages"][-1]["content"]
+    size = sum(len(message["content"].encode()) for message in body["messages"])
+    assert worker.MAX_RECOVERY_PROMPT_BYTES < size <= worker.MAX_PROMPT_BYTES
     assert body["options"]["num_predict"] == 512
 
 

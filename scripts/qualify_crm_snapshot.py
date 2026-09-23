@@ -16,13 +16,17 @@ ROOT = Path(__file__).resolve().parents[1]
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", required=True, type=Path)
-    parser.add_argument("--image", required=True, help="Immutable local Docker image SHA256 ID")
+    parser.add_argument(
+        "--image", required=True, help="Immutable local Docker image SHA256 ID"
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--worker-root", type=Path, default=ROOT)
     args = parser.parse_args()
     # Only operator-selected trusted runtime source is imported on the host.
     # The model's snapshot is never imported or executed outside the container.
-    sys.path.insert(0, str(args.worker_root.resolve(strict=True) / "workers/project-worker"))
+    sys.path.insert(
+        0, str(args.worker_root.resolve(strict=True) / "workers/project-worker")
+    )
     from project_contract import files_value, snapshot_sha
     from runtime import DockerRunner
 
@@ -35,7 +39,11 @@ def main() -> int:
     # This reference contract permits only root CRM modules and the standard
     # library. Exclude model-written test/configuration/plugin files so they
     # cannot replace the acceptance suite or change its collection settings.
-    selected = [file for file in files if re.fullmatch(r"crm(?:_[A-Za-z0-9_]+)?\.py", file["path"])]
+    selected = [
+        file
+        for file in files
+        if re.fullmatch(contract["allowed_module_pattern"], file["path"])
+    ]
     selected.append({"path": "tests/test_crm_acceptance.py", "content": source})
     receipt = DockerRunner(args.image).run(selected, "python", [], lambda: None)
     passed = (
@@ -44,7 +52,8 @@ def main() -> int:
         and receipt["test_failures"] == 0
         and bool(receipt["checks"])
         and all(
-            check["status"] == "passed" and check["exit_code"] == 0 for check in receipt["checks"]
+            check["status"] == "passed" and check["exit_code"] == 0
+            for check in receipt["checks"]
         )
     )
     report = {

@@ -1,7 +1,17 @@
 """Operator-owned acceptance tests for the fixed, offline CRM reference case."""
 
+import json
+import sqlite3
+import subprocess
+import sys
+
 import pytest
 from crm import CRM
+
+
+def assert_dictionary_rows(rows):
+    assert isinstance(rows, list)
+    assert all(isinstance(row, dict) for row in rows)
 
 
 def test_empty_database(tmp_path):
@@ -19,9 +29,32 @@ def test_customer_survives_reopening(tmp_path):
     customer = crm.add_customer("Émilie O'Connor", "emilie@example.invalid")
     assert type(customer) is int
     crm.close()
+    assert (tmp_path / "crm.sqlite").read_bytes().startswith(b"SQLite format 3\x00")
+    with sqlite3.connect(path) as database:
+        assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    # A new interpreter cannot recover data from a per-process fake store.
+    reopened = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; from crm import CRM; c=CRM(sys.argv[1]); "
+                "print(json.dumps(c.list_customers())); c.close()"
+            ),
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert json.loads(reopened.stdout) == [
+        {"id": customer, "name": "Émilie O'Connor", "email": "emilie@example.invalid"}
+    ]
     crm = CRM(path)
     try:
         rows = crm.list_customers()
+        assert_dictionary_rows(rows)
         assert len(rows) == 1
         assert rows[0]["id"] == customer
         assert rows[0]["name"] == "Émilie O'Connor"
@@ -52,6 +85,7 @@ def test_quotes_are_persistent_and_scoped_to_customer(tmp_path):
     crm = CRM(path)
     try:
         rows = crm.list_quotes(first)
+        assert_dictionary_rows(rows)
         assert len(rows) == 1
         assert rows[0]["id"] == quote
         assert rows[0]["customer_id"] == first
@@ -95,6 +129,7 @@ def test_event_survives_reopening(tmp_path):
     crm = CRM(path)
     try:
         rows = crm.list_events()
+        assert_dictionary_rows(rows)
         assert len(rows) == 1
         assert rows[0]["id"] == event
         assert rows[0]["title"] == "Réunion d'équipe"
@@ -114,6 +149,7 @@ def test_drafts_are_persistent_and_scoped_to_customer(tmp_path):
     crm = CRM(path)
     try:
         rows = crm.list_email_drafts(first)
+        assert_dictionary_rows(rows)
         assert len(rows) == 1
         assert rows[0]["id"] == draft
         assert rows[0]["customer_id"] == first

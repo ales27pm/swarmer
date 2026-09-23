@@ -80,12 +80,9 @@ top_p 0.8, top_k 20 and repetition penalty 1.05, following the
 Ollama responses use its native NDJSON stream. The project-only socket timeout
 defaults to 240 seconds and remains configurable between 30 and 240 seconds. The
 worker checks its lease between chunks and also enforces a 240-second model wall
-limit for code-changing batches, preserving the established validation budget
-inside the 600-second operation limit. The deterministic final-README route uses a
-700-token, 1,800-character response bound. Only a dependency-free Python project
-may stream for up to 420 seconds, leaving 150 seconds for its two isolated checks;
-projects with dependency manifests or mixed runtimes retain the 240-second model
-wall and larger validation reserve. Model selection is a candidate configuration;
+limit for every batch, including documentation, preserving the validation budget
+inside the 600-second operation limit. Ordinary iterations keep the 2,000-token
+response bound. Model selection is a candidate configuration;
 passing unit checks does not establish project quality. Release acceptance requires
 actual independent application tests.
 
@@ -122,18 +119,35 @@ visible as a fragment when the final prompt budget cannot hold a complete file.
 Existing projects retain recent user decisions and the latest assistant progress,
 compacting earlier assistant repetition and successful command logs first. The
 optional address catalog shrinks before complete source is demoted to fragments.
-Candidates are shared across files in rounds, prioritizing focused and relevant
-source. A focused read rotates the candidate region even when the full file fits.
+Under pressure, older conversation turns yield before diagnostic or focused
+source, both during initial selection and final prompt assembly. The latest user
+instruction remains intact; a large latest assistant message is bounded. Exact
+traceback locations take priority over filenames merely mentioned in an error
+or a previous incidental focus. Candidates are shared across files in rounds.
+Exact Python and pytest traceback locations identify the enclosing
+function before unrelated lines, so test lifecycle repairs retain their setup,
+cleanup and assertions even when the address catalog is small. A focused read
+rotates the candidate region even when the full file fits.
 Repeated focus remains
 subject to the goal budget. Invalid model edits are rejected without altering the
 snapshot; a safe diagnostic guides the next job, preserving previous real checks.
+Changed Python files are parsed without executing them before accepting a batch;
+syntax errors and parser recursion limits preserve the original snapshot and receipts.
+Repairs, reads and empty model plans preserve the accepted milestone plan.
+Repair instructions distinguish
+implementation defects from faulty test lifecycle, imports or fixtures, retain
+the latest user scope and prohibit weakening assertions to make a test pass.
 A model timeout also returns an unchanged snapshot with a fixed diagnostic asking
 for a smaller complete batch. The next attempt is a new, separately charged job;
 there is no retry inside the timed-out job and no fabricated check receipt. A second
 consecutive timeout pauses the project instead of automatically charging a third
-call. When existing source and real checks already pass, no newer user request is
-pending, and only README.md is missing, the next request is constrained to one
-concise README edit and a smaller 700-token output budget. The new revision still
+call. Passing tests for a partial module never force a documentation-only step or
+project completion; remaining modules stay editable. README remains a readiness
+requirement, but the worker cannot infer full feature coverage from passing tests.
+A mutation must contain an edit, patch, deletion or explicit check request in
+disjoint schema branches. Empty operations and identical replacement files are
+rejected without rerunning Docker; focused reads and explicit check-only requests
+remain supported. A no-op response cannot mark the project complete. Each changed revision still
 runs the isolated build and tests; prior receipts are never relabelled as evidence
 for a different project digest.
 Connection failures, rejected HTTP configuration and service unavailability are
