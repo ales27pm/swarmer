@@ -89,8 +89,8 @@ Ask one useful clarification if the requested application has material ambiguity
 such as web versus desktop/CLI or essential workflow. A vague 'create an app'
 must not silently become a tiny command-line demo. Once the user answers, build
 the requested application and make routine technical choices yourself. Do not
-ask the user to confirm facts they have already specified. A concrete reply is
-authorization to implement; the next step must contain real file edits unless a
+ask the user to confirm facts they have already specified. For non-native projects,
+a concrete reply authorizes implementation; the next step must contain real file edits unless a
 specific missing fact makes implementation impossible. A continue step must
 make progress through file edits or a focused read, not restate a plan.
 For clarify: ask the concrete question in message; edits, patches, deletions, and
@@ -175,9 +175,15 @@ Use the existing manifest and accepted plan to implement the next missing milest
 Do not recreate a file whose content is already present and unchanged. Preserve
 existing scaffolding unless a concrete change is necessary; implement missing
 application source, native tests or documentation in the next small batch.
-Use complete only when these files are ready for separate native validation by the
-Swift worker. That requests approval of this exact revision; it is not completion
-or a passed build/test. Historical Python/npm receipts do not direct native repairs.
+Historical diagnostics may already be resolved in the current SOURCE. Compare the
+reported failure with the current code before changing it; do not reapply a repair
+that is already present or make unrelated changes just to emit another edit.
+Choose one operation family per batch: edits OR patches OR deletions, never combine them.
+Use complete with all operation arrays empty (edits, patches, deletions,
+requested_checks and focus_paths) when the requested files and repairs are ready
+for separate native validation by the Swift worker. No new edit is required to
+request validation. That requests approval of this exact revision; it is not
+completion or a passed build/test. Historical Python/npm receipts do not direct native repairs.
 """
 
 GUIDANCE_INSTRUCTION = """project_guidance contains complete AGENTS.md files from the accepted revision.
@@ -936,14 +942,17 @@ def constrained_step_schema(
             disjoint.append(branch)
             continue
         preceding: list[str] = []
-        for field in ("edits", "patches", "deletions", "requested_checks"):
+        operation_fields = ("edits", "patches", "deletions", "requested_checks")
+        for field in operation_fields:
             if properties[field].get("maxItems") != 0 and not any(
                 properties[previous].get("minItems", 0) > 0 for previous in preceding
             ):
                 mode = copy.deepcopy(branch)
-                for previous in preceding:
-                    mode["properties"][previous].pop("minItems", None)
-                    mode["properties"][previous]["maxItems"] = 0
+                excluded = operation_fields if native_project(payload) else preceding
+                for other in excluded:
+                    if other != field:
+                        mode["properties"][other].pop("minItems", None)
+                        mode["properties"][other]["maxItems"] = 0
                 mode["properties"][field]["minItems"] = max(1, properties[field].get("minItems", 0))
                 disjoint.append(mode)
             preceding.append(field)
@@ -1309,7 +1318,7 @@ class ProjectGenerator:
             r"\b(swift|ios|xcode|swiftpm)\b", payload["objective"], re.IGNORECASE
         ):
             instruction += "\n" + NATIVE_AUTHORING_INSTRUCTION
-        if answered or needs_repair:
+        if (answered or needs_repair) and not native:
             instruction += "\n" + IMPLEMENTATION_INSTRUCTION
         if (answered and not payload["files"]) or needs_repair:
             schema["properties"]["action"]["enum"] = ["continue", "complete"]
@@ -1384,12 +1393,15 @@ class ProjectGenerator:
             current_task = (
                 "Continue the existing native project from the supplied source and file manifest. "
                 "Preserve the original objective and accepted plan; do not restart their first step. "
-                "Implement one next missing milestone with a small complete file or necessary repair. "
+                "If work remains, implement one next missing milestone or necessary repair. "
                 "Existing paths are not proof their implementation is finished, but do not recreate "
                 "unchanged scaffolding or churn its metadata. The latest user requirements and "
                 "actual source defects take precedence over an advisory missing-path hint. "
-                "Use continue while work remains; request separate native validation only after "
-                "the requested source, native tests and documentation are ready."
+                "Historical diagnostics may already be resolved in the current SOURCE; "
+                "do not repeat an already applied repair. Use continue while work remains. "
+                "When the requested source, native tests, documentation and repairs are ready, "
+                "use complete with all operation arrays empty to request separate native validation. "
+                "Do not invent another change or claim compilation/tests have run."
             )
             next_file = next_native_plan_file(payload)
             if next_file is not None:

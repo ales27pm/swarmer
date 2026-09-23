@@ -160,8 +160,10 @@ def test_payload_marker_rejects_unrecognized_states(marker: object) -> None:
         )
 
 
+@pytest.mark.parametrize("answered", [False, True])
 def test_native_ready_without_another_edit_is_accepted_by_real_generator_schema(
     monkeypatch: pytest.MonkeyPatch,
+    answered: bool,
 ) -> None:
     current = {
         **payload(),
@@ -177,6 +179,11 @@ def test_native_ready_without_another_edit_is_accepted_by_real_generator_schema(
             }
         ],
     }
+    if answered:
+        current["conversation"] = [
+            {"role": "user", "content": "Fix the call labels, then request native validation."},
+            {"role": "assistant", "content": "The previous revision had incorrect call labels."},
+        ]
     response = step(edits=[], patches=[], focus_paths=[])
     requests = []
 
@@ -206,6 +213,9 @@ def test_native_ready_without_another_edit_is_accepted_by_real_generator_schema(
     prompt = str(requests[0]["messages"])
     assert "Swift/iOS source is authored" in prompt
     assert "create package.json in this iteration" not in prompt
+    assert worker.IMPLEMENTATION_INSTRUCTION not in requests[0]["messages"][0]["content"]
+    assert "Historical diagnostics may already be resolved in the current SOURCE" in prompt
+    assert "all operation arrays empty" in prompt
 
 
 def test_native_unread_existing_source_cannot_be_replaced() -> None:
@@ -292,3 +302,67 @@ def test_missing_plan_file_ignores_urls_code_unsafe_and_present_paths(plan: list
     assert (
         worker.next_native_plan_file({**payload(), "files": SWIFT_FILES[:1], "plan": plan}) is None
     )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("edits", "patches"),
+        ("edits", "deletions"),
+        ("patches", "deletions"),
+        ("edits", "requested_checks"),
+        ("patches", "requested_checks"),
+        ("deletions", "requested_checks"),
+    ],
+)
+def test_native_schema_disjoins_mutation_families(first: str, second: str) -> None:
+    current = {**payload(), "files": copy.deepcopy(SWIFT_FILES), "native_validation": "authoring"}
+    context = worker.model_context(current)
+    addresses = worker.addressed_patch_spans(context, current)
+    identifier, address = next(iter(addresses.items()))
+    file = next(item for item in current["files"] if item["path"] == address["path"])
+    operations = {
+        "edits": [{"path": file["path"], "content": file["content"] + "\n// update\n"}],
+        "patches": [
+            {
+                "path": address["path"],
+                "span_id": identifier,
+                "new": address["old"] + "\n// update\n",
+            }
+        ],
+        "deletions": [file["path"]],
+        "requested_checks": [["python", "-m", "pytest", "-q"]],
+    }
+    schema = worker.constrained_step_schema(
+        copy.deepcopy(worker.STEP_SCHEMA), context, current, addresses
+    )
+    validator = Draft202012Validator(schema)
+    response = step(action="continue", edits=[], patches=[], focus_paths=[])
+    for field in (first, second):
+        single = {**response, field: operations[field]}
+        assert validator.is_valid(single), f"single {field} must remain possible"
+    assert not validator.is_valid(
+        {**response, first: operations[first], second: operations[second]}
+    )
+    ready = {**response, "action": "complete"}
+    assert validator.is_valid(ready)
+
+
+def test_python_schema_keeps_mixed_operations_on_distinct_paths() -> None:
+    current = {**payload(), "files": [{"path": "app.py", "content": "VALUE = 1\n"}]}
+    context = worker.model_context(current)
+    addresses = worker.addressed_patch_spans(context, current)
+    identifier, address = next(iter(addresses.items()))
+    response = step(
+        action="continue",
+        edits=[{"path": "README.md", "content": "Run the Python example.\n"}],
+        patches=[{"path": "app.py", "span_id": identifier, "new": "VALUE = 2\n"}],
+        focus_paths=[],
+    )
+    assert address["path"] == "app.py"
+    schema = worker.constrained_step_schema(
+        copy.deepcopy(worker.STEP_SCHEMA), context, current, addresses
+    )
+    Draft202012Validator(schema).validate(response)
+    parsed = parse_step(worker.resolve_model_patches(response, addresses))
+    assert parsed["edits"] and parsed["patches"]
