@@ -214,6 +214,35 @@ scratch directory must be operator-owned and mounted at the same absolute path
 visible to the Docker daemon; a namespace-private `/tmp` is not a Docker bind
 source on the host.
 
+### Root and nested AGENTS.md guidance
+
+The project worker resolves `AGENTS.md` from the accepted file snapshot. For
+`src/data/store.py`, guidance applies in order from `AGENTS.md`,
+`src/AGENTS.md`, then `src/data/AGENTS.md`. Nearest-directory guidance refines
+ancestor guidance; sibling folders do not apply. Explicit user instructions and
+runtime constraints take precedence. Guidance is versioned project content,
+not execution permission or proof that a check succeeded.
+
+The prompt pins complete applicable guidance with its path, scope, content hash
+and base revision. Required instructions that exceed the context budget produce
+an explicit failure rather than silent truncation. Other source files are read
+selectively through `focus_paths`; the transport still carries the complete
+bounded snapshot. This is selective prompt loading, not network range retrieval.
+
+Before a create, edit, patch or deletion, all applicable guidance from the old
+revision must have appeared in the final prompt. Otherwise the worker preserves
+the snapshot and returns a focused read for the missing instructions. The next
+iteration remains metered. Worker-owned `guidance_reads` receipts are validated
+again on the server and exposed in the project preview. A stale or fabricated
+source hash cannot authorize accepting a changed snapshot.
+
+Agents can create and maintain Markdown files, including `AGENTS.md`, through
+normal revision-bound edits. An instruction edit governs later iterations; it
+does not change the rules for the current mutation. Model-authored observations
+must remain distinguishable from user requirements and verified check evidence.
+No host filesystem is searched for project instructions, and existing user
+projects are not modified merely by enabling this feature.
+
 ## Upgrade and recovery
 
 Schema 22 adds project revisions, conversation linkage/messages, reply fencing,

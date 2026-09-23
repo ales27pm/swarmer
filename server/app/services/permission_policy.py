@@ -10,6 +10,7 @@ from typing import Any, Literal
 import yaml
 
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.swift_contracts import SWIFT_SKILLS
 
 
 class PermissionPolicyError(RuntimeError):
@@ -151,6 +152,17 @@ class PermissionPolicy:
                 "code.build_project": WorkerPermissionRule(
                     id="deny-unconfigured-project-worker",
                     description="Isolated project coding has not been configured.",
+                    decision="deny",
+                    risk="low",
+                    auto_redistribute=False,
+                ),
+            }
+        for skill in SWIFT_SKILLS - set(effective_worker_rules):
+            effective_worker_rules = {
+                **effective_worker_rules,
+                skill: WorkerPermissionRule(
+                    id=f"deny-unconfigured-{skill.replace('.', '-')}",
+                    description="The approved Mac compiler route has not been enabled.",
                     decision="deny",
                     risk="low",
                     auto_redistribute=False,

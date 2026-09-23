@@ -25,6 +25,7 @@ from app.services.project_contracts import (
     ProjectWriteArguments,
     project_digest,
 )
+from app.services.project_guidance import validate_guidance_reads
 from app.services.project_memory import ProjectMemoryService
 from app.services.project_progress import project_progress_message
 from app.services.project_validation import (
@@ -190,6 +191,7 @@ class GoalProjectService:
             )
         payload = ProjectPayload.model_validate(
             {
+                "guidance_version": 1,
                 "objective": safe_context_text(str(node["objective"]), max_chars=4_000),
                 "conversation": [
                     {
@@ -279,6 +281,10 @@ class GoalProjectService:
                 result.base_sha256,
             ) != expected_base:
                 raise GoalProjectConflict("project changed while its iteration was running")
+            try:
+                validate_guidance_reads(payload, result)
+            except ValueError as exc:
+                raise GoalProjectConflict(str(exc)) from exc
             # The private job retains the original report. Public progress is
             # derived from the accepted snapshot rather than model assertions.
             result = result.model_copy(
@@ -393,6 +399,7 @@ class GoalProjectService:
             "sha256": latest["sha256"],
             "state": state,
             "message": NATIVE_VALIDATION_DIAGNOSTIC if unsupported_native else result.message,
+            "guidance_reads": [item.model_dump() for item in result.guidance_reads],
             "plan": result.plan,
             "files": [file.model_dump() for file in result.files],
             "checks": [check.model_dump() for check in result.checks],

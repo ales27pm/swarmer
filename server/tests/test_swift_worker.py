@@ -28,6 +28,25 @@ def payload(package, **kwargs):
     return {"source_sha256": worker.source_digest(package), **kwargs}
 
 
+def approved_workspace(package, **kwargs):
+    """Only these handwritten test fixtures are approved by this test harness."""
+    return worker.SwiftWorkspace(
+        package, approved_source_sha256=worker.source_digest(package), **kwargs
+    )
+
+
+def test_remote_request_cannot_approve_its_own_changed_source(package):
+    workspace = approved_workspace(package, runner=lambda *args: pytest.fail("must not compile"))
+    (package / "new.swift").write_text('print("changed after operator review")')
+    with pytest.raises(worker.SwiftWorkerError, match="approved source"):
+        workspace.execute("build", payload(package))
+
+
+def test_missing_operator_pin_never_compiles(package):
+    with pytest.raises((TypeError, worker.SwiftWorkerError)):
+        worker.SwiftWorkspace(package, runner=lambda *args: pytest.fail("must not compile"))
+
+
 def fake_runner(argv, cwd, log, timeout, ensure_active):
     ensure_active()
     log.write_text("success")
@@ -39,7 +58,7 @@ def fake_runner(argv, cwd, log, timeout, ensure_active):
 
 
 def test_test_requires_executed_case(package):
-    workspace = worker.SwiftWorkspace(package, runner=fake_runner)
+    workspace = approved_workspace(package, runner=fake_runner)
     receipt = workspace.execute("test", payload(package))
     assert receipt["status"] == "passed"
     assert receipt["tests_executed"] == 1
@@ -56,7 +75,7 @@ def test_zero_tests_never_passes(package):
         return result
 
     assert (
-        worker.SwiftWorkspace(package, runner=run).execute("test", payload(package))["status"]
+        approved_workspace(package, runner=run).execute("test", payload(package))["status"]
         == "failed"
     )
 
@@ -69,7 +88,7 @@ def test_skipped_only_never_passes(package):
         )
         return result
 
-    receipt = worker.SwiftWorkspace(package, runner=run).execute("test", payload(package))
+    receipt = approved_workspace(package, runner=run).execute("test", payload(package))
     assert receipt["status"] == "failed"
     assert receipt["tests_executed"] == 0
 
@@ -97,7 +116,7 @@ def test_wrong_revision_does_not_execute(package):
         pytest.fail("must not run stale source")
 
     with pytest.raises(worker.SwiftWorkerError, match="revision"):
-        worker.SwiftWorkspace(package, runner=never).execute("build", {"source_sha256": "wrong"})
+        approved_workspace(package, runner=never).execute("build", {"source_sha256": "wrong"})
 
 
 def test_changed_source_does_not_pass(package):
@@ -105,7 +124,7 @@ def test_changed_source_does_not_pass(package):
         (cwd / "Package.swift").write_text("changed")
         return 0
 
-    receipt = worker.SwiftWorkspace(package, runner=run).execute("build", payload(package))
+    receipt = approved_workspace(package, runner=run).execute("build", payload(package))
     assert receipt["status"] == "failed"
     assert not receipt["source_unchanged"]
 
@@ -133,7 +152,7 @@ def test_xcode_uses_operator_destination_and_result_summary(package):
             log.write_text("build succeeded")
         return 0
 
-    workspace = worker.SwiftWorkspace(
+    workspace = approved_workspace(
         package, runner=run, destinations={"sim": "platform=iOS Simulator,id=12345678-ABCD"}
     )
     result = workspace.execute(
@@ -160,7 +179,7 @@ def test_xcode_invalid_arguments_never_execute(package, field, value):
     def never(*args):
         pytest.fail("invalid argv executed")
 
-    workspace = worker.SwiftWorkspace(
+    workspace = approved_workspace(
         package, runner=never, destinations={"sim": "platform=iOS Simulator,id=12345678-ABCD"}
     )
     values = payload(
@@ -214,7 +233,7 @@ def test_process_cancelled_and_no_credentials(tmp_path):
     reason="requires local Xcode Swift compiler",
 )
 def test_real_swift_package_build_and_test(package):
-    workspace = worker.SwiftWorkspace(package, timeout=180)
+    workspace = approved_workspace(package, timeout=180)
     result = workspace.execute("test", payload(package))
     assert result["status"] == "passed", (
         result,

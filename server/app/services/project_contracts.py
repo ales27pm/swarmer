@@ -114,7 +114,20 @@ def project_digest(files: list[ProjectFile] | list[dict[str, Any]]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+class ProjectGuidanceRead(StrictModel):
+    path: str = Field(min_length=1, max_length=240)
+    sha256: Digest
+
+    @model_validator(mode="after")
+    def validate_guidance(self) -> ProjectGuidanceRead:
+        validate_project_path(self.path)
+        if self.path.split("/")[-1].casefold() != "agents.md":
+            raise ValueError("guidance receipt must name AGENTS.md")
+        return self
+
+
 class ProjectResult(StrictModel):
+    guidance_reads: list[ProjectGuidanceRead] = Field(default_factory=list, max_length=80)
     schema_version: Literal["1.0"]
     action: Literal["clarify", "continue", "complete"]
     message: Text = Field(min_length=1)
@@ -172,6 +185,7 @@ class ProjectMemoryContext(StrictModel):
 
 
 class ProjectPayload(StrictModel):
+    guidance_version: int | None = Field(default=None, strict=True, ge=1, le=1)
     objective: Text = Field(min_length=1)
     conversation: list[dict[str, str]] = Field(max_length=40)
     files: list[ProjectFile] = Field(max_length=MAX_PROJECT_FILES)
@@ -210,6 +224,7 @@ class ProjectPayload(StrictModel):
 
 
 class ProjectPreview(StrictModel):
+    guidance_reads: list[ProjectGuidanceRead] = Field(default_factory=list, max_length=80)
     project_id: Identifier
     revision_id: Identifier
     revision: int = Field(ge=1)

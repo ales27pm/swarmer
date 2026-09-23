@@ -53,13 +53,25 @@ async def enroll_text_worker(
     )
 
 
+async def enroll_swift_worker(
+    *, db_path: Path, permissions_path: Path, credential_file: Path, model: str = "apple-swift"
+) -> str:
+    return await _enroll_worker(
+        db_path=db_path,
+        permissions_path=permissions_path,
+        credential_file=credential_file,
+        model=model,
+        kind="swift",
+    )
+
+
 async def _enroll_worker(
     *,
     db_path: Path,
     permissions_path: Path,
     credential_file: Path,
     model: str,
-    kind: Literal["python", "project", "text"],
+    kind: Literal["python", "project", "text", "swift"],
 ) -> str:
     """Enroll under the local Unix operator identity and write the secret once.
 
@@ -69,11 +81,24 @@ async def _enroll_worker(
     if not db_path.is_file():
         raise ValueError("an existing initialized control-plane database is required")
     declarations = {
-        "python": ("ubuntu-python-proposal-worker", "0.13.0", "code.generate_python", 524_288, 120),
-        "project": ("ubuntu-project-builder", "0.14.0", "code.build_project", 4_000_000, 600),
-        "text": ("ubuntu-text-draft-worker", "0.14.3", "writing.draft", 160_000, 120),
+        "python": (
+            "ubuntu-python-proposal-worker",
+            "0.13.0",
+            ["code.generate_python"],
+            524_288,
+            120,
+        ),
+        "project": ("ubuntu-project-builder", "0.14.0", ["code.build_project"], 4_000_000, 600),
+        "text": ("ubuntu-text-draft-worker", "0.14.3", ["writing.draft"], 160_000, 120),
+        "swift": (
+            "imac-swift-worker",
+            "0.15.0",
+            ["code.swift.build", "code.swift.test"],
+            16_384,
+            120,
+        ),
     }
-    name, version, skill, result_bytes, operation_seconds = declarations[kind]
+    name, version, skills, result_bytes, operation_seconds = declarations[kind]
     policy = PermissionPolicy.from_yaml(permissions_path)
     credential_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent = credential_file.parent.stat()
@@ -90,7 +115,7 @@ async def _enroll_worker(
                 version=version,
                 endpoint=AnyHttpUrl("http://127.0.0.1"),
                 model_id=model,
-                skills=[skill],
+                skills=skills,
                 max_concurrency=1,
                 capacity={
                     "max_result_bytes": result_bytes,
@@ -118,7 +143,7 @@ def main() -> None:
     parser.add_argument("--permissions", required=True, type=Path)
     parser.add_argument("--credential-file", required=True, type=Path)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--kind", choices=("python", "project", "text"), default="python")
+    parser.add_argument("--kind", choices=("python", "project", "text", "swift"), default="python")
     args = parser.parse_args()
     agent_id = asyncio.run(
         _enroll_worker(

@@ -88,6 +88,7 @@ from app.services.swarm_contracts import (
     SwarmPlanNodeProposal,
     SwarmPlanProposal,
 )
+from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
 from app.services.writing_contracts import WRITING_SKILL
 from app.services.writing_drafts import read_research_sources, read_writing_draft, writing_payload
 
@@ -2260,10 +2261,25 @@ class GoalManager:
                         goal_run_id, maintenance_guard=maintenance_guard
                     )
                 return await self.get_goal(goal_run_id)
+            if node["required_skill"] in SWIFT_SKILLS:
+                recorded_job = await self.agent_dispatcher.get_job(str(job["id"]))
+                if (
+                    recorded_job is None
+                    or recorded_job["status"]
+                    not in {"completed", "failed", "cancelled", "quarantined"}
+                    or recorded_job["task_id"] != node["task_id"]
+                    or recorded_job["required_skill"] != node["required_skill"]
+                ):
+                    return await self.get_goal(goal_run_id)
+                job = recorded_job
             valid_evidence = validate_worker_evidence(
                 node.get("required_skill"),
                 job.get("result"),
             )
+            if node["required_skill"] in SWIFT_SKILLS:
+                valid_evidence = valid_evidence and valid_swift_receipt(
+                    str(node["required_skill"]), job.get("result"), job.get("payload")
+                )
             if (
                 node["required_skill"] == CODE_PROPOSAL_SKILL
                 and job["status"] == "completed"

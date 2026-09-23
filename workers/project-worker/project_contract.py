@@ -174,10 +174,16 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
     value = job.get("payload")
     if (
         not isinstance(value, dict)
-        or set(value) - {"focus_paths", "memory", "durable_context", "context_compaction"}
+        or set(value)
+        - {"focus_paths", "memory", "durable_context", "context_compaction", "guidance_version"}
         != PAYLOAD_FIELDS
     ):
         raise ProjectError("project job payload has invalid fields")
+    guidance_version = value.get("guidance_version")
+    if guidance_version is not None and (
+        type(guidance_version) is not int or guidance_version != 1
+    ):
+        raise ProjectError("unsupported project guidance version")
     objective = text_value(value["objective"], 4_000)
     conversation = value["conversation"]
     if not isinstance(conversation, list) or len(conversation) > 40:
@@ -212,6 +218,7 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
         raise ProjectError("project read focus references an absent file")
     return {
         "objective": objective,
+        "guidance_version": guidance_version,
         "conversation": messages,
         "files": files,
         "plan": plan_value(value["plan"]),

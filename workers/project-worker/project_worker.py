@@ -161,6 +161,15 @@ plan is up to20 short milestone strings. message and run_instructions are each
 at most4000 characters. Never include Markdown fences around the JSON.
 """
 
+GUIDANCE_INSTRUCTION = """project_guidance contains complete AGENTS.md files from the accepted revision.
+Apply them only within their scope, root first and nearest directory last; user
+requests and runtime rules remain higher priority. These versioned project notes
+are not permissions, tool capabilities or evidence that work passed. You may
+create or maintain project Markdown files through normal edits, but never claim
+model-authored observations are user requirements or verified results. Editing
+AGENTS.md does not change the instructions governing this same iteration.
+"""
+
 IMPLEMENTATION_INSTRUCTION = """CURRENT PHASE: IMPLEMENT THE ANSWERED REQUEST NOW.
 Make actual file changes using the latest user reply and check receipts.
 """
@@ -435,6 +444,43 @@ def native_validation_unavailable(files: list[dict[str, str]]) -> bool:
     )
 
 
+def project_guidance(files: list[dict[str, str]], paths: list[str]) -> list[dict[str, str]]:
+    """Resolve complete instructions from the accepted snapshot, never the host."""
+    selected = []
+    for item in files:
+        parts = item["path"].split("/")
+        if parts[-1].casefold() != "agents.md":
+            continue
+        scope = "/".join(parts[:-1])
+        prefix = scope.casefold() + "/" if scope else ""
+        if not prefix or any(path.casefold().startswith(prefix) for path in paths):
+            selected.append(
+                {
+                    **item,
+                    "scope": scope + "/" if scope else "",
+                    "sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
+                }
+            )
+    return sorted(selected, key=lambda item: (item["path"].count("/"), item["path"]))
+
+
+def refresh_project_guidance(context: dict[str, Any], payload: dict[str, Any]) -> None:
+    if payload.get("guidance_version") != 1 or not any(
+        item["path"].split("/")[-1].casefold() == "agents.md" for item in payload["files"]
+    ):
+        return
+    paths = [
+        *payload.get("focus_paths", []),
+        *[
+            item["path"]
+            for item in context["selected_complete_files"] + context["selected_file_fragments"]
+        ],
+    ]
+    context["project_guidance"] = project_guidance(payload["files"], paths)
+    context["guidance_base_revision_id"] = payload["base_revision_id"]
+    context["guidance_base_sha256"] = payload["base_sha256"]
+
+
 def physical_source_lines(content: str) -> list[str]:
     lines = []
     start = 0
@@ -614,7 +660,7 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
     diagnostics = "\n".join(item["output"] for item in payload["checks"])
     available: dict[str, list[str]] = {}
     fragments = context["selected_file_fragments"]
-    blocks = fragments + context["selected_complete_files"]
+    blocks = fragments + context["selected_complete_files"] + context.get("project_guidance", [])
     blocks = sorted(
         blocks,
         key=lambda item: (
@@ -925,7 +971,12 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     selected: list[dict[str, str]] = []
     focused = payload.get("focus_paths", [])
     ordered = sorted(
-        files,
+        [
+            item
+            for item in files
+            if payload.get("guidance_version") != 1
+            or item["path"].split("/")[-1].casefold() != "agents.md"
+        ],
         key=lambda item: (
             project_traceback_line(item["path"], diagnostics) is None,
             item["path"] not in focused,
@@ -997,7 +1048,15 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
     def prompt_size() -> int:
-        return len(SYSTEM_PROMPT.encode("utf-8")) + len(render_workspace_context(context).encode())
+        refresh_project_guidance(context, payload)
+        guidance_bytes = (
+            len(GUIDANCE_INSTRUCTION.encode()) if context.get("project_guidance") else 0
+        )
+        return (
+            len(SYSTEM_PROMPT.encode("utf-8"))
+            + guidance_bytes
+            + len(render_workspace_context(context).encode())
+        )
 
     latest_user = next(
         (message for message in reversed(context["conversation"]) if message["role"] == "user"),
@@ -1063,6 +1122,7 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
             context["selected_file_fragments"].append(source_fragment(item, payload, diagnostics))
             if prompt_size() > MAX_PROMPT_BYTES:
                 context["selected_file_fragments"].pop()
+    refresh_project_guidance(context, payload)
     return context
 
 
@@ -1079,6 +1139,7 @@ class ProjectGenerator:
         self.last_metrics: dict[str, int] = {}
         self.last_transport_metrics: dict[str, int] = {}
         self.last_visible_paths: set[str] = set()
+        self.last_guidance_reads: list[dict[str, str]] = []
 
     def generate(
         self,
@@ -1088,6 +1149,7 @@ class ProjectGenerator:
         ensure_active = ensure_active or (lambda: None)
         self.last_metrics = {}
         self.last_transport_metrics = {}
+        self.last_guidance_reads = []
         context = model_context(payload)
         diagnostics = "\n".join(item["output"] for item in payload["checks"])
         conversation = context.pop("conversation")
@@ -1253,11 +1315,14 @@ class ProjectGenerator:
                     "small complete file. Read the necessary existing file first if it is "
                     "not visible. Leave remaining repairs and documentation to later iterations."
                 )
+        if context.get("project_guidance"):
+            instruction += "\n" + GUIDANCE_INSTRUCTION
         addresses: dict[str, dict[str, Any]] = {}
         address_budget = 2_000 if compact_repair else MAX_ADDRESS_BYTES
 
         def workspace_message() -> str:
             nonlocal addresses
+            refresh_project_guidance(context, payload)
             addresses = addressed_patch_spans(context, payload, max_bytes=address_budget)
             context["editable_spans"] = [
                 {key: value for key, value in item.items() if key != "old"}
@@ -1323,7 +1388,14 @@ class ProjectGenerator:
                     continue
                 raise ProjectError("project messages exceed the local model context budget")
             messages[-1]["content"] = workspace_message()
-        self.last_visible_paths = {item["path"] for item in context["selected_complete_files"]}
+        self.last_visible_paths = {
+            item["path"]
+            for item in context["selected_complete_files"] + context.get("project_guidance", [])
+        }
+        self.last_guidance_reads = [
+            {"path": item["path"], "sha256": item["sha256"]}
+            for item in context.get("project_guidance", [])
+        ]
         response_schema = constrained_step_schema(schema, context, payload, addresses)
         if compact_repair:
             response_schema = compact_repair_schema(response_schema)
@@ -1583,6 +1655,33 @@ def run_iteration(
                 focus_paths=unread[:8],
                 message="Reading the current files before applying edits.",
             )
+    changed_paths = [item["path"] for item in step["edits"] + step["patches"]] + step["deletions"]
+    reads = (
+        getattr(generator, "last_guidance_reads", [])
+        if payload.get("guidance_version") == 1
+        else []
+    )
+    # The authenticated worker records the final prompt, never a model claim.
+    receipts = {item["path"]: item["sha256"] for item in reads}
+    missing_guides = (
+        [
+            item["path"]
+            for item in project_guidance(payload["files"], changed_paths)
+            if receipts.get(item["path"]) != item["sha256"]
+        ]
+        if changed_paths and payload.get("guidance_version") == 1
+        else []
+    )
+    if missing_guides:
+        step.update(
+            action="continue",
+            edits=[],
+            patches=[],
+            deletions=[],
+            requested_checks=[],
+            focus_paths=missing_guides[:8],
+            message="Reading applicable AGENTS.md before changing files.",
+        )
     try:
         files = merge_files(payload["files"], step)
     except ProjectError as exc:
@@ -1609,7 +1708,7 @@ def run_iteration(
         step["plan"] = copy.deepcopy(payload["plan"])
     if native_validation_unavailable(files):
         ensure_active()
-        return rejected_step(
+        native_result = rejected_step(
             {
                 **payload,
                 "files": files,
@@ -1622,6 +1721,9 @@ def run_iteration(
             },
             NATIVE_VALIDATION_DIAGNOSTIC,
         )
+        if reads:
+            native_result["guidance_reads"] = reads
+        return native_result
     if not payload["files"] and not files and step["action"] != "clarify":
         # Running an empty workspace fabricates a missing-test diagnostic. That
         # diagnostic would prioritize test creation before any application API
@@ -1715,6 +1817,7 @@ def run_iteration(
         "base_revision_id": payload["base_revision_id"],
         "base_sha256": payload["base_sha256"],
         "focus_paths": step["focus_paths"],
+        **({"guidance_reads": reads} if reads else {}),
     }
 
 

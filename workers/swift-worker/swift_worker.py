@@ -8,6 +8,7 @@ and only approved source. Fixed argv is not a sandbox. No shell or arbitrary fla
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import importlib.util
 import json
@@ -15,6 +16,7 @@ import os
 import re
 import selectors
 import signal
+import stat
 import subprocess  # nosec B404 - fixed compiler argv in an operator-approved workspace
 import time
 import uuid
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import Any, cast
 
 MAX_LOG_BYTES = 1_000_000
+MAX_REMOTE_SECONDS = 120
 SKILLS = {"code.swift.build": "build", "code.swift.test": "test"}
 _EXCLUDED = frozenset({".git", ".build", ".swarmer-swift-runs"})
 
@@ -183,13 +186,19 @@ class SwiftWorkspace:
         self,
         root: Path,
         *,
+        approved_source_sha256: str,
         destinations: dict[str, str] | None = None,
         runner: Callable[..., int] = run_command,
-        timeout: float = 900,
+        timeout: float = MAX_REMOTE_SECONDS,
     ) -> None:
         self.root = root.resolve(strict=True)
         if not self.root.is_dir() or not 0 < timeout <= 1800:
             raise SwiftWorkerError("invalid approved workspace or timeout")
+        if not re.fullmatch(r"[a-f0-9]{64}", approved_source_sha256):
+            raise SwiftWorkerError("an independently approved source digest is required")
+        self.approved_source_sha256 = approved_source_sha256
+        if destinations is not None and not isinstance(destinations, dict):
+            raise SwiftWorkerError("operator destinations must be an object")
         self.destinations = destinations or {}
         for key, value in self.destinations.items():
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key) or not re.fullmatch(
@@ -214,9 +223,15 @@ class SwiftWorkspace:
         ensure_active()
         initial = source_digest(self.root)
         expected = payload.get("source_sha256")
-        if expected != initial:
+        if initial != self.approved_source_sha256 or expected != self.approved_source_sha256:
             raise SwiftWorkerError("source_sha256 does not match the approved source revision")
         kind = payload.get("kind", "swiftpm")
+        canonical_payload = {**payload, "kind": kind}
+        allowed = {"kind", "source_sha256"}
+        if kind == "xcode":
+            allowed |= {"project", "scheme", "destination"}
+        if payload.keys() - allowed:
+            raise SwiftWorkerError("unsupported Swift operation fields")
         artifact_root = self.root / ".swarmer-swift-runs"
         if artifact_root.is_symlink():
             raise SwiftWorkerError("artifact root cannot be a symlink")
@@ -284,8 +299,7 @@ class SwiftWorkspace:
                 str(result_bundle),
                 operation,
             ]
-            if "iOS Simulator" in destination:
-                argv.append("CODE_SIGNING_ALLOWED=NO")
+            argv += ["CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO"]
         else:
             raise SwiftWorkerError("kind must be swiftpm or xcode")
         started = time.monotonic()
@@ -325,9 +339,11 @@ class SwiftWorkspace:
                 report_error = str(exc)
         final = source_digest(self.root)
         ensure_active()
+        duration_ms = round((time.monotonic() - started) * 1000)
         accepted = (
             exit_code == 0
             and final == initial
+            and duration_ms <= self.timeout * 1000
             and (operation == "build" or (executed > 0 and failures == 0 and report_error is None))
         )
         receipt = {
@@ -336,11 +352,14 @@ class SwiftWorkspace:
             "status": "passed" if accepted else "failed",
             "exit_code": exit_code,
             "source_sha256": initial,
+            "request_sha256": hashlib.sha256(
+                json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
             "source_unchanged": final == initial,
             "tests_executed": executed,
             "test_evidence_format": "swiftpm_xunit" if kind == "swiftpm" else "xcresult_summary",
             "test_failures": failures,
-            "duration_ms": round((time.monotonic() - started) * 1000),
+            "duration_ms": duration_ms,
             "artifact_directory": str(run_dir.relative_to(self.root)),
             "report_error": report_error,
         }
@@ -348,6 +367,7 @@ class SwiftWorkspace:
         return receipt
 
 
+@functools.lru_cache(maxsize=1)
 def _protocol() -> Any:
     path = Path(__file__).resolve().parents[1] / "file-worker/file_worker.py"
     spec = importlib.util.spec_from_file_location("swift_protocol", path)
@@ -358,9 +378,18 @@ def _protocol() -> Any:
     return module
 
 
-def run_once(base_url: str, agent_id: str, credential: str, workspace: SwiftWorkspace) -> bool:
+def run_once(
+    base_url: str,
+    agent_id: str,
+    credential: str,
+    workspace: SwiftWorkspace,
+    *,
+    request_fn: Any | None = None,
+) -> bool:
     protocol = _protocol()
-    client = protocol.ControlPlaneClient(base_url, agent_id, credential)
+    if workspace.timeout > MAX_REMOTE_SECONDS:
+        raise SwiftWorkerError("remote Swift operation exceeds the advertised time limit")
+    client = protocol.ControlPlaneClient(base_url, agent_id, credential, request_fn=request_fn)
     client.heartbeat_agent("online")
     job = client.claim()
     if job is None:
@@ -402,11 +431,54 @@ def run_once(base_url: str, agent_id: str, credential: str, workspace: SwiftWork
             pass
 
 
+def load_credentials(path: Path, workspace: Path) -> tuple[str, str]:
+    """Read enrollment output privately; never pass it to compiler subprocesses."""
+    if path.resolve().is_relative_to(workspace.resolve()):
+        raise SwiftWorkerError("worker credentials must be outside the approved workspace")
+    parent = path.parent.stat()
+    if path.parent.is_symlink() or parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+        raise SwiftWorkerError("credential directory must be private and operator-owned")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & 0o077
+            or not 1 <= metadata.st_size <= 4096
+        ):
+            raise SwiftWorkerError("credential file must be small, private and operator-owned")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            raise SwiftWorkerError("credential file exceeds its size limit")
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise SwiftWorkerError("invalid worker registration file") from exc
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"agent_id", "credential"}
+            or not isinstance(value["agent_id"], str)
+            or not re.fullmatch(r"agt_[A-Za-z0-9_-]{1,124}", value["agent_id"])
+            or not isinstance(value["credential"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value["credential"])
+        ):
+            raise SwiftWorkerError("invalid worker registration fields")
+        return value["agent_id"], value["credential"]
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
-    parser.add_argument("--agent-id", required=True)
+    parser.add_argument("--credential-file", required=True, type=Path)
     parser.add_argument("--workspace", required=True, type=Path)
+    parser.add_argument("--approved-source-sha256", required=True)
+    parser.add_argument("--timeout", type=float, default=MAX_REMOTE_SECONDS)
     parser.add_argument(
         "--destinations",
         type=Path,
@@ -414,15 +486,29 @@ def main() -> None:
     )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    token = os.environ.get("SWARMER_WORKER_TOKEN", "")
-    if not token:
-        parser.error("SWARMER_WORKER_TOKEN required")
-    workspace = SwiftWorkspace(
-        args.workspace,
-        destinations=json.loads(args.destinations.read_text()) if args.destinations else {},
-    )
+    try:
+        if not 0 < args.timeout <= MAX_REMOTE_SECONDS:
+            raise SwiftWorkerError("remote Swift timeout must be between 0 and 120 seconds")
+        agent_id, token = load_credentials(args.credential_file, args.workspace)
+        workspace = SwiftWorkspace(
+            args.workspace,
+            approved_source_sha256=args.approved_source_sha256,
+            destinations=json.loads(args.destinations.read_text()) if args.destinations else {},
+            timeout=args.timeout,
+        )
+        _protocol().validate_control_plane_origin(args.base_url)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     while True:
-        run_once(args.base_url, args.agent_id, token, workspace)
+        try:
+            run_once(args.base_url, agent_id, token, workspace)
+        except (_protocol().ControlPlaneUnavailable, _protocol().WorkerProtocolError):
+            if args.once:
+                raise SystemExit(
+                    "Swift worker could not confirm the control-plane operation"
+                ) from None
+            # Retry transport only; a lost job lease never reruns the compilation.
+            time.sleep(8)
         if args.once:
             return
         time.sleep(2)
