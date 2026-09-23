@@ -47,14 +47,22 @@ _JOB_LOCK = threading.Lock()
 MAX_MODEL_RESPONSE_BYTES = 2_000_000
 MAX_PROMPT_BYTES = 22_000
 MAX_OUTPUT_TOKENS = 2_000
-MAX_README_OUTPUT_TOKENS = 700
 MAX_MODEL_WALL_SECONDS = 240
-MAX_README_MODEL_WALL_SECONDS = 420
 MAX_SPAN_BYTES = 12_000
 MAX_ADDRESS_BYTES = 8_000
 MAX_RECOVERY_PROMPT_BYTES = 10_000
 MAX_RECOVERY_OUTPUT_TOKENS = 512
 MAX_RECOVERY_EDIT_CHARACTERS = 800
+NO_EFFECTIVE_OPERATION_DIAGNOSTIC = (
+    "The model returned no effective project operation. No changes or checks were accepted. "
+    "Return an effective file edit, patch or deletion, a focused read of an existing file, "
+    "or an explicit check request."
+)
+PYTHON_COMPLEXITY_DIAGNOSTIC = (
+    "The proposed Python source exceeds the parser complexity limit. "
+    "No changes or checks were accepted. Return one smaller complete module "
+    "or simplify the proposed patch."
+)
 
 SYSTEM_PROMPT = """You are a project developer working in one bounded iteration.
 Return exactly one JSON object with action, message, plan, edits, patches, deletions,
@@ -293,9 +301,11 @@ def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
     branches = []
     for original in schema["oneOf"]:
         properties = original["properties"]
-        modes = (
-            ["focus_paths"] if properties["focus_paths"].get("minItems") else ["edits", "patches"]
-        )
+        modes = [
+            field
+            for field in ("edits", "patches", "focus_paths")
+            if properties[field].get("minItems")
+        ]
         for mode in modes:
             if properties[mode].get("maxItems") == 0:
                 continue
@@ -385,24 +395,6 @@ def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
         "base_sha256": payload["base_sha256"],
         "focus_paths": [],
     }
-
-
-def valid_readme_completion(
-    payload: dict[str, Any], step: dict[str, Any]
-) -> bool:
-    return (
-        readme_is_only_remaining_gate(payload)
-        and step["action"] == "complete"
-        and [item["path"] for item in step["edits"]] == ["README.md"]
-        and bool(step["edits"][0]["content"].strip())
-        and not step["patches"]
-        and not step["deletions"]
-        and not step["requested_checks"]
-        and not step["focus_paths"]
-        and step["plan"] == payload["plan"]
-        and step["runtime"] == runtime_for_files(payload["files"])
-        and bool(step["run_instructions"].strip())
-    )
 
 
 def physical_source_lines(content: str) -> list[str]:
@@ -498,6 +490,16 @@ def project_traceback_line(path: str, diagnostics: str) -> int | None:
         + r"""["']?, line ([0-9]+)""",
         diagnostics,
     )
+    if match is None:
+        # Pytest's short traceback uses path:line: instead of Python's
+        # File "path", line N. Match a whole location at the start of a line;
+        # dependency paths and matching basenames are not project evidence.
+        match = re.search(
+            r"(?m)^[ \t]*(?:/workspace/project/|\./)?"
+            + re.escape(path)
+            + r":([1-9][0-9]*)(?::(?:[ \t][^\r\n]*)?)?[ \t]*\r?$",
+            diagnostics,
+        )
     return int(match.group(1)) if match and int(match.group(1)) > 0 else None
 
 
@@ -529,12 +531,29 @@ def diagnostic_functions(item: dict[str, str], diagnostics: str) -> list[tuple[i
     ]
     names = Counter(node.name for node in functions)
     lines = physical_source_lines(item["content"])
+    target = project_traceback_line(item["path"], diagnostics)
+    enclosing = [
+        node
+        for node in functions
+        if target is not None
+        and node.end_lineno is not None
+        and node.lineno <= target <= node.end_lineno
+    ]
+    innermost = (
+        min(enclosing, key=lambda node: (node.end_lineno or node.lineno) - node.lineno)
+        if enclosing
+        else None
+    )
     matches = []
-    for node in functions:
+    for node in sorted(functions, key=lambda node: node is not innermost):
         if (
             node.end_lineno is None
             or names[node.name] != 1
-            or (f"'{node.name}'" not in diagnostics and f'"{node.name}"' not in diagnostics)
+            or (
+                node is not innermost
+                and f"'{node.name}'" not in diagnostics
+                and f'"{node.name}"' not in diagnostics
+            )
         ):
             continue
         # AST columns are UTF8 byte offsets. Full-line spans use character
@@ -593,7 +612,9 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
         if 0 <= target_index < len(lines):
             unique = unique_diagnostic_span(lines, target_index, original[path])
             if unique is not None:
-                proposed.insert(0, unique)
+                # Retain the enclosing function before a lone failing line.
+                # A lifecycle repair may need both setup/close and assertions.
+                proposed.append(unique)
         for index in order:
             for count in (1, 2, 3):
                 proposed.append("".join(lines[index : index + count]))
@@ -645,44 +666,6 @@ def node_collected_no_tests(check: dict[str, Any]) -> bool:
     return all(
         re.findall(rf"(?m)^# {field} ([0-9]+)\r?$", output) == ["0"]
         for field in ("tests", "pass", "fail", "cancelled", "skipped", "todo")
-    )
-
-
-def readme_is_only_remaining_gate(payload: dict[str, Any]) -> bool:
-    test_commands = {
-        ("python", "-m", "pytest", "-q"),
-        ("python", "-m", "pytest"),
-        ("pytest", "-q"),
-        ("pytest",),
-        ("node", "--test"),
-    }
-    return (
-        bool(payload["files"])
-        and bool(payload["plan"])
-        and bool(payload["checks"])
-        and all(check["status"] == "passed" for check in payload["checks"])
-        and any(tuple(check["command"]) in test_commands for check in payload["checks"])
-        and (
-            not payload["conversation"]
-            or payload["conversation"][-1]["role"] != "user"
-        )
-        and not any(
-            item["path"].casefold() == "readme.md" for item in payload["files"]
-        )
-    )
-
-
-def model_wall_seconds(payload: dict[str, Any], needs_readme: bool) -> int:
-    paths = {item["path"].casefold() for item in payload["files"]}
-    dependency_free_python = (
-        runtime_for_files(payload["files"]) == "python"
-        and "requirements.txt" not in paths
-        and "package.json" not in paths
-    )
-    return (
-        MAX_README_MODEL_WALL_SECONDS
-        if needs_readme and dependency_free_python
-        else MAX_MODEL_WALL_SECONDS
     )
 
 
@@ -754,7 +737,25 @@ def constrained_step_schema(
             clarify["properties"][field].pop("minItems", None)
             clarify["properties"][field]["maxItems"] = 0
         branches.append(clarify)
-    return {"oneOf": branches}
+    disjoint = []
+    for branch in branches:
+        properties = branch["properties"]
+        if properties["focus_paths"].get("minItems") or properties["action"]["enum"] == ["clarify"]:
+            disjoint.append(branch)
+            continue
+        preceding: list[str] = []
+        for field in ("edits", "patches", "deletions", "requested_checks"):
+            if properties[field].get("maxItems") != 0 and not any(
+                properties[previous].get("minItems", 0) > 0 for previous in preceding
+            ):
+                mode = copy.deepcopy(branch)
+                for previous in preceding:
+                    mode["properties"][previous].pop("minItems", None)
+                    mode["properties"][previous]["maxItems"] = 0
+                mode["properties"][field]["minItems"] = max(1, properties[field].get("minItems", 0))
+                disjoint.append(mode)
+            preceding.append(field)
+    return {"oneOf": disjoint}
 
 
 def addressed_patch_spans(
@@ -1024,7 +1025,6 @@ class ProjectGenerator:
             check["status"] != "failed" or node_collected_no_tests(check)
             for check in payload["checks"]
         )
-        needs_readme = readme_is_only_remaining_gate(payload)
         schema = copy.deepcopy(STEP_SCHEMA)
         existing_paths = [item["path"] for item in payload["files"]]
         if existing_paths:
@@ -1038,13 +1038,15 @@ class ProjectGenerator:
         instruction = SYSTEM_PROMPT
         if answered or needs_repair:
             instruction += "\n" + IMPLEMENTATION_INSTRUCTION
-        if (answered and not payload["files"]) or needs_repair or needs_readme:
+        if (answered and not payload["files"]) or needs_repair:
             schema["properties"]["action"]["enum"] = ["continue", "complete"]
             if not payload["files"]:
                 schema["properties"]["edits"]["minItems"] = 1
             if needs_repair:
                 schema["properties"]["deletions"]["maxItems"] = 0
-            needs_creation = needs_tests or needs_node_manifest or needs_node_tests or needs_readme
+                if payload["plan"]:
+                    schema["properties"]["plan"] = {"const": payload["plan"]}
+            needs_creation = needs_tests or needs_node_manifest or needs_node_tests
             if needs_tests or needs_node_tests:
                 schema["properties"]["edits"]["minItems"] = 1
             first_field = "patches" if payload["files"] and not needs_creation else "edits"
@@ -1052,23 +1054,6 @@ class ProjectGenerator:
                 first_field: schema["properties"][first_field],
                 **schema["properties"],
             }
-        if needs_readme and not needs_repair:
-            schema["properties"]["action"]["enum"] = ["complete"]
-            schema["properties"]["plan"] = {"const": payload["plan"]}
-            schema["properties"]["runtime"]["enum"] = [
-                runtime_for_files(payload["files"])
-            ]
-            schema["properties"]["edits"]["minItems"] = 1
-            schema["properties"]["edits"]["maxItems"] = 1
-            schema["properties"]["edits"]["items"]["properties"]["path"] = {
-                "const": "README.md"
-            }
-            schema["properties"]["edits"]["items"]["properties"]["content"] = {
-                "type": "string",
-                "maxLength": 1_800,
-            }
-            for field in ("patches", "deletions", "requested_checks", "focus_paths"):
-                schema["properties"][field]["maxItems"] = 0
         if needs_node_manifest:
             current_task = (
                 "The actual npm build failed and the root package.json is missing. "
@@ -1106,20 +1091,22 @@ class ProjectGenerator:
                 if check["status"] == "failed"
             )[-4_000:]
             current_task = (
-                "Repair the existing project now. Read the actual failing checks below and change "
-                "the source or dependency manifest that causes each failure. Preserve working "
-                "features. Return effective changes, not identical files or a future plan. "
-                "Prefer exact text patches for small repairs; preserve the rest of each file. "
-                "Include README.md if it is missing.\n\nACTUAL FAILURES:\n" + failures
+                "Repair the existing project now within the latest user's requested scope. "
+                "Read the actual failing checks below and distinguish an implementation defect "
+                "from an incorrect test lifecycle, fixture or import. Repair the responsible "
+                "source, test or dependency manifest; do not weaken assertions or alter working "
+                "application behavior to accommodate a faulty test. Preserve the accepted "
+                "milestone plan and remaining features. Return effective changes, not identical "
+                "files or a future plan. Prefer a short addressed patch when its target contains "
+                "the required change; otherwise replace one fully visible small file. Leave "
+                "documentation for a later iteration.\n\nLATEST USER REQUEST:\n"
+                + last_user
+                + "\n\nACTUAL FAILURES:\n"
+                + failures
             )
-        elif needs_readme:
-            current_task = (
-                "Create exactly README.md in this iteration as one concise complete edit. "
-                "Document the current application's requirements, setup, run and test commands "
-                "from the actual files and passing check receipts. Keep it below 1800 characters. "
-                "Do not edit application or test files, request checks, patch, delete, or focus "
-                "another file. Preserve the existing milestone plan and use action complete."
-            )
+            # The latest request is included verbatim in this active user task.
+            # Avoid duplicating it in history and consuming the source budget.
+            conversation = [item for item in conversation if item is not latest_user_message]
         elif answered:
             current_task = "Implement this latest user request now:\n" + last_user
             if not payload["files"]:
@@ -1231,13 +1218,7 @@ class ProjectGenerator:
                 "temperature": 0,
                 "num_ctx": 32_768,
                 "num_predict": (
-                    MAX_RECOVERY_OUTPUT_TOKENS
-                    if compact_repair
-                    else (
-                        MAX_README_OUTPUT_TOKENS
-                        if needs_readme and not needs_repair
-                        else MAX_OUTPUT_TOKENS
-                    )
+                    MAX_RECOVERY_OUTPUT_TOKENS if compact_repair else MAX_OUTPUT_TOKENS
                 ),
             },
         }
@@ -1273,7 +1254,7 @@ class ProjectGenerator:
         }
         attempt_started = time.perf_counter()
         timed_out = False
-        deadline = time.monotonic() + model_wall_seconds(payload, needs_readme)
+        deadline = time.monotonic() + MAX_MODEL_WALL_SECONDS
         try:
             ensure_active()
             with opener.open(request, timeout=self.timeout_seconds) as response:  # nosec B310
@@ -1416,6 +1397,21 @@ class ProjectGenerator:
                     "Return one small complete file or use short patches for repairs. "
                     "Continue remaining work in later charged iterations."
                 )
+            if (
+                payload["files"]
+                and step["action"] != "clarify"
+                and not any(
+                    step[field]
+                    for field in (
+                        "edits",
+                        "patches",
+                        "deletions",
+                        "focus_paths",
+                        "requested_checks",
+                    )
+                )
+            ):
+                raise ModelStepError(NO_EFFECTIVE_OPERATION_DIAGNOSTIC)
             return step
         except ModelStepError:
             raise
@@ -1483,6 +1479,14 @@ def run_iteration(
             "The model requested a file absent from the current project manifest. "
             "No changes were accepted. Use only existing manifest paths in focus_paths.",
         )
+    if payload["plan"] and (
+        not step["plan"]
+        or any(check["status"] == "failed" for check in payload["checks"])
+        or snapshot_sha(files) == snapshot_sha(payload["files"])
+    ):
+        # Repairs and reads do not replan the project. Empty model metadata must
+        # not erase outstanding functionality, even when source changes succeed.
+        step["plan"] = copy.deepcopy(payload["plan"])
     if not payload["files"] and not files and step["action"] != "clarify":
         # Running an empty workspace fabricates a missing-test diagnostic. That
         # diagnostic would prioritize test creation before any application API
@@ -1492,13 +1496,31 @@ def run_iteration(
             "The model returned no application files. No changes or checks were accepted. "
             "Create one small complete source module in the next iteration.",
         )
-    if readme_is_only_remaining_gate(payload) and not valid_readme_completion(payload, step):
-        return rejected_step(
-            payload,
-            "The documentation-only completion did not preserve the accepted project metadata. "
-            "No edits were accepted. Return exactly one complete README.md with the existing "
-            "plan, runtime, passing check receipts and concise run instructions.",
-        )
+    unchanged = snapshot_sha(files) == snapshot_sha(payload["files"])
+    if (
+        unchanged
+        and step["action"] != "clarify"
+        and not step["focus_paths"]
+        and not step["requested_checks"]
+    ):
+        return rejected_step(payload, NO_EFFECTIVE_OPERATION_DIAGNOSTIC)
+    previous_content = {item["path"]: item["content"] for item in payload["files"]}
+    for item in files:
+        if item["path"].endswith(".py") and previous_content.get(item["path"]) != item["content"]:
+            try:
+                # Parse only; never import or execute generated source on the host.
+                ast.parse(item["content"], filename=item["path"])
+            except SyntaxError as exc:
+                return rejected_step(
+                    payload,
+                    f"The proposed Python file {item['path']} has a SyntaxError at line "
+                    f"{exc.lineno or 1}. No changes or checks were accepted. Preserve the "
+                    "current snapshot and correct the proposed edit or patch before retrying.",
+                )
+            except RecursionError:
+                return rejected_step(payload, PYTHON_COMPLEXITY_DIAGNOSTIC)
+    if unchanged and step["action"] == "complete":
+        step["action"] = "continue"
     checks: list[dict[str, Any]] = []
     if step["focus_paths"]:
         checks = payload["checks"]
