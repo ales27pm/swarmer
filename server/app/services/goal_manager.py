@@ -61,7 +61,8 @@ from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryServ
 from app.services.project_progress import has_project_progress
 from app.services.project_validation import (
     NATIVE_VALIDATION_DIAGNOSTIC,
-    native_validation_unavailable,
+    native_authoring,
+    native_project,
     pause_native_validation_locked,
 )
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
@@ -657,10 +658,13 @@ class GoalManager:
             job_input = await (
                 await db.execute("SELECT payload_json FROM agent_jobs WHERE id=?", (job["id"],))
             ).fetchone()
-            unsupported_native = not stale and native_validation_unavailable(
-                [*result["files"], *json.loads(str(job_input[0]))["files"]]
-                if job_input
-                else result["files"]
+            unsupported_native = (
+                not stale
+                and not native_authoring(result)
+                and (
+                    native_project(result)
+                    or (job_input is not None and native_project(json.loads(str(job_input[0]))))
+                )
             )
             action = "continue" if stale or unsupported_native else str(result["action"])
             message = (
@@ -3104,8 +3108,8 @@ class GoalManager:
                         (goal_run_id,),
                     )
                 ).fetchone()
-                unsupported_native = latest_project is not None and native_validation_unavailable(
-                    ProjectResult.model_validate_json(str(latest_project[0])).files
+                unsupported_native = latest_project is not None and native_project(
+                    ProjectResult.model_validate_json(str(latest_project[0]))
                 )
                 completed_evidence = any(
                     node["node_type"] == "worker" and node["status"] == "completed"

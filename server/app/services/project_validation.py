@@ -8,14 +8,14 @@ from typing import Any
 import aiosqlite
 
 from app.services.goal_conversation import GoalConversationService
-from app.services.project_contracts import ProjectFile
+from app.services.project_contracts import ProjectFile, ProjectPayload, ProjectResult
 
 NATIVE_VALIDATION_DIAGNOSTIC = (
     "Validation Swift/iOS non prise en charge par ce parcours. "
     "Les contrôles Python/npm ne valident pas les fichiers Swift/iOS. "
     "Les fichiers et les résultats de vérification sont conservés. "
-    "Le projet est en pause technique ; un validateur natif doit être relié "
-    "à ce parcours avant de pouvoir le terminer."
+    "Le projet attend une validation native distincte, après approbation de la révision exacte. "
+    "Cette pause ne constitue pas une validation ni une fin de projet."
 )
 
 
@@ -32,6 +32,21 @@ def native_validation_unavailable(files: Iterable[ProjectFile | Mapping[str, Any
             part.endswith((".xcodeproj", ".xcworkspace")) for part in path.split("/")
         ):
             return True
+    return False
+
+
+def native_project(value: ProjectPayload | ProjectResult | Mapping[str, Any]) -> bool:
+    """Preserve native coverage even after removal of the final Swift path."""
+    if isinstance(value, Mapping):
+        return value.get("native_validation") in {
+            "authoring",
+            "required",
+        } or native_validation_unavailable(value.get("files", []))
+    return value.native_validation is not None or native_validation_unavailable(value.files)
+
+
+def native_authoring(_value: ProjectResult | Mapping[str, Any]) -> bool:
+    """Compatibility recovery decodes new history but keeps native authoring paused."""
     return False
 
 
