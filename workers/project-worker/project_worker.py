@@ -573,8 +573,8 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
     blocks = sorted(
         blocks,
         key=lambda item: (
-            item["path"] not in payload.get("focus_paths", []),
             project_traceback_line(item["path"], diagnostics) is None,
+            item["path"] not in payload.get("focus_paths", []),
             not diagnostic_functions(
                 {"path": item["path"], "content": original[item["path"]]}, diagnostics
             ),
@@ -873,8 +873,8 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     ordered = sorted(
         files,
         key=lambda item: (
-            item["path"] not in focused,
             project_traceback_line(item["path"], diagnostics) is None,
+            item["path"] not in focused,
             item["path"] not in diagnostics and item["path"] not in diagnostic_paths,
             item["path"] not in {"README.md", "requirements.txt", "package.json"},
             len(item["content"].encode("utf-8")),
@@ -899,6 +899,16 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     conversation = []
     characters = 0
     for message in reversed(history):
+        # Assistant narration is advisory; retain a bounded beginning/end of
+        # the latest feedback without displacing the user's exact instruction.
+        if message["role"] == "assistant" and len(message["content"].encode()) > 1_000:
+            encoded = message["content"].encode()
+            message = {
+                **message,
+                "content": encoded[:450].decode("utf-8", errors="ignore")
+                + "\n[Intermediate assistant feedback omitted]\n"
+                + encoded[-450:].decode("utf-8", errors="ignore"),
+            }
         if characters + len(message["content"]) > 8_000:
             break
         conversation.append(message)
@@ -934,17 +944,29 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         (message for message in reversed(context["conversation"]) if message["role"] == "user"),
         None,
     )
-    # Qwen uses byte-fallback BPE: UTF-8 bytes conservatively bound input tokens.
-    # 22000 input bytes +2000 output tokens +1024 framing reserve is below32768.
-    while prompt_size() > MAX_PROMPT_BYTES:
-        removable = next(
+    latest_feedback = next(
+        (
+            message
+            for message in reversed(context["conversation"])
+            if message["role"] == "assistant"
+        ),
+        None,
+    )
+
+    def oldest_history_index() -> int | None:
+        return next(
             (
                 index
                 for index, message in enumerate(context["conversation"])
-                if message is not latest_user
+                if message is not latest_user and message is not latest_feedback
             ),
             None,
         )
+
+    # Qwen uses byte-fallback BPE: UTF-8 bytes conservatively bound input tokens.
+    # 22000 input bytes +2000 output tokens +1024 framing reserve is below32768.
+    while prompt_size() > MAX_PROMPT_BYTES:
+        removable = oldest_history_index()
         if removable is None:
             break
         context["conversation"].pop(removable)
@@ -960,14 +982,23 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         raise ProjectError("project metadata exceeds the local model context budget")
     for item in ordered:
         selected.append(item)
-        if prompt_size() <= MAX_PROMPT_BYTES:
-            continue
-        selected.pop()
-        if (
+        important = (
             item["path"] in focused
             or item["path"] in diagnostics
             or item["path"] in diagnostic_paths
-        ):
+        )
+        # Leave room for current source before retaining older module requests.
+        # Otherwise the final request can trim history but never recover a file
+        # that was already omitted here.
+        while important and prompt_size() > MAX_PROMPT_BYTES:
+            removable = oldest_history_index()
+            if removable is None:
+                break
+            context["conversation"].pop(removable)
+        if prompt_size() <= MAX_PROMPT_BYTES:
+            continue
+        selected.pop()
+        if important:
             # An oversized file is explicitly a fragment, never mislabeled as
             # complete. Repeating focus rotates through bounded text segments.
             context["selected_file_fragments"].append(source_fragment(item, payload, diagnostics))
@@ -1003,6 +1034,10 @@ class ProjectGenerator:
         conversation = context.pop("conversation")
         latest_user_message = next(
             (message for message in reversed(conversation) if message["role"] == "user"), None
+        )
+        latest_feedback_message = next(
+            (message for message in reversed(conversation) if message["role"] == "assistant"),
+            None,
         )
         last_user = next(
             (item["content"] for item in reversed(conversation) if item["role"] == "user"), ""
@@ -1120,6 +1155,13 @@ class ProjectGenerator:
                 "Respond to the original request in its language:\n" + payload["objective"]
             )
 
+        if last_user and (needs_tests or needs_node_tests or needs_node_manifest):
+            current_task += (
+                "\n\nKeep this iteration within the latest user's requested module and scope; "
+                "leave later milestones for later iterations.\nLATEST USER REQUEST:\n" + last_user
+            )
+            conversation = [item for item in conversation if item is not latest_user_message]
+
         compact_repair = (
             needs_repair and bool(payload["files"]) and repair_follows_model_timeout(payload)
         )
@@ -1171,8 +1213,19 @@ class ProjectGenerator:
             {"role": "user", "content": workspace_message()},
         ]
         while sum(len(message["content"].encode("utf-8")) for message in messages) > prompt_budget:
+            removable = next(
+                (
+                    index
+                    for index in range(1, len(messages) - 1)
+                    if messages[index] is not latest_user_message
+                    and messages[index] is not latest_feedback_message
+                ),
+                None,
+            )
             if address_budget > 500:
                 address_budget = max(500, address_budget - 1_000)
+            elif removable is not None:
+                messages.pop(removable)
             elif context["selected_complete_files"]:
                 removed = context["selected_complete_files"].pop()
                 if (
@@ -1183,26 +1236,23 @@ class ProjectGenerator:
                     context["selected_file_fragments"].append(
                         source_fragment(removed, payload, diagnostics)
                     )
+                    context["selected_file_fragments"].sort(
+                        key=lambda item: (
+                            project_traceback_line(item["path"], diagnostics) is None,
+                            item["path"] not in payload.get("focus_paths", []),
+                            item["path"] not in diagnostics,
+                        )
+                    )
             elif context["selected_file_fragments"]:
                 context["selected_file_fragments"].pop()
             else:
-                removable = next(
-                    (
-                        index
-                        for index in range(1, len(messages) - 1)
-                        if messages[index] is not latest_user_message
-                    ),
-                    None,
-                )
-                if removable is None:
-                    if compact_repair and prompt_budget < MAX_PROMPT_BYTES:
-                        # The compact target is best effort. Never discard a
-                        # valid latest user reply or reject it only because of
-                        # the smaller recovery target; retain the hard bound.
-                        prompt_budget = MAX_PROMPT_BYTES
-                        continue
-                    raise ProjectError("project messages exceed the local model context budget")
-                messages.pop(removable)
+                if compact_repair and prompt_budget < MAX_PROMPT_BYTES:
+                    # The compact target is best effort. Never discard a
+                    # valid latest user reply or reject it only because of
+                    # the smaller recovery target; retain the hard bound.
+                    prompt_budget = MAX_PROMPT_BYTES
+                    continue
+                raise ProjectError("project messages exceed the local model context budget")
             messages[-1]["content"] = workspace_message()
         self.last_visible_paths = {item["path"] for item in context["selected_complete_files"]}
         response_schema = constrained_step_schema(schema, context, payload, addresses)

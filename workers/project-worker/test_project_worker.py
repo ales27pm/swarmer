@@ -394,6 +394,109 @@ def test_final_request_trimming_keeps_error_context_as_a_fragment(
     )
 
 
+@pytest.mark.parametrize("focus", [[], ["crm.py"]])
+@pytest.mark.parametrize("oversized", [False, True])
+def test_repair_context_keeps_diagnostic_source_before_old_module_instructions(
+    monkeypatch: pytest.MonkeyPatch, focus: list[str], oversized: bool
+) -> None:
+    test_source = (
+        "# CRM persistence checks\nimport pytest\nfrom crm import CRM, tmp_path\n"
+        + "# Existing independent customer, quote, calendar and draft checks.\n"
+        * (850 if oversized else 28)
+    )
+    latest_user = (
+        "Repair the actual failing import in the test, preserving its assertions. "
+        "Keep all existing CRM features and remaining module requirements."
+    )
+    latest_feedback = "LATEST_RUNTIME_FEEDBACK: the previous operation did not fix collection."
+    diagnostic = (
+        "ImportError while importing test module '/workspace/project/tests/test_crm.py'.\n"
+        "/usr/local/lib/python3.12/importlib/__init__.py:90: in import_module\n"
+        "tests/test_crm.py:3: in <module>\n"
+        "    from crm import CRM, tmp_path\n"
+        "E ImportError: cannot import name 'tmp_path' from 'crm' (/workspace/project/crm.py)\n"
+        + "Collection failed; no application tests executed.\n"
+        * 14
+    )
+    history = [
+        {
+            "role": "user",
+            "content": f"OLD_STAGE_{index}: " + "Create the next complete CRM module. " * 24,
+        }
+        for index in range(8)
+    ]
+    data = {
+        **payload(),
+        "objective": "Offline CRM must preserve customers, quotes, events and email drafts. " * 18,
+        "files": [
+            {
+                "path": "crm.py",
+                "content": "from crm_store import Store\nclass CRM(Store):\n    pass\n",
+            },
+            {"path": "crm_people.py", "content": "# Contacts and quotes\n" * 55},
+            {
+                "path": "crm_store.py",
+                "content": "# Existing persistent SQLite implementation\n" * 37,
+            },
+            {"path": "crm_work.py", "content": "# Calendar and email draft implementation\n" * 24},
+            {"path": "tests/test_crm.py", "content": test_source},
+            {"path": "tests/test_store.py", "content": "# Existing storage tests\n" * 36},
+        ],
+        "plan": ["Preserve complete CRM API", "Repair genuine tests", "Document actual features"],
+        "checks": [node_check(["python", "-m", "pytest", "-q"], diagnostic, code=5)],
+        "conversation": [
+            *history,
+            {"role": "assistant", "content": latest_feedback},
+            {"role": "user", "content": latest_user},
+        ],
+        "focus_paths": focus,
+        "iteration": 12,
+    }
+    body = capture_project_request(
+        monkeypatch, data, step(action="continue", edits=[], focus_paths=["tests/test_crm.py"])
+    )
+    messages = body["messages"]
+    workspace = messages[-1]["content"]
+    assert sum(len(message["content"].encode()) for message in messages) <= worker.MAX_PROMPT_BYTES
+    assert latest_user in workspace and latest_feedback in json.dumps(messages)
+    assert data["objective"] in workspace
+    metadata = json.JSONDecoder().raw_decode(workspace.split("Current workspace data:\n", 1)[1])[0]
+    assert metadata["editable_spans"][0]["path"] == "tests/test_crm.py"
+    targets = [item for item in metadata["editable_spans"] if item["path"] == "tests/test_crm.py"]
+    assert any(item["start_line"] <= 3 <= item["end_line"] for item in targets)
+    assert 'SOURCE {"path":"tests/test_crm.py"' in workspace
+    assert any(
+        "PATCH_TARGET " + json.dumps({"span_id": item["span_id"]}, separators=(",", ":"))
+        in workspace
+        for item in targets
+    )
+    if oversized:
+        assert 'SOURCE {"path":"tests/test_crm.py","complete":false' in workspace
+    addresses = worker.addressed_patch_spans(worker.model_context(data), data, max_bytes=500)
+    first = next(iter(addresses.values()))
+    assert first["path"] == "tests/test_crm.py" and first["start_line"] <= 3 <= first["end_line"]
+
+
+def test_context_bounds_advisory_feedback_without_mutating_latest_user_or_payload() -> None:
+    latest_user = "Conserve exactement ma demande détaillée. " * 90
+    feedback = "BEGIN: actual previous operation\n" + "é" * 2_000 + "\nEND: repair required"
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "value = 1\n"}],
+        "conversation": [
+            {"role": "user", "content": latest_user},
+            {"role": "assistant", "content": feedback},
+        ],
+    }
+    original = copy.deepcopy(data)
+    context = worker.model_context(data)
+    assert context["conversation"][0]["content"] == latest_user
+    excerpt = context["conversation"][1]["content"]
+    assert len(excerpt.encode()) <= 1_000
+    assert excerpt.startswith("BEGIN:") and excerpt.endswith("END: repair required")
+    assert "feedback omitted" in excerpt and data == original
+
+
 @pytest.mark.parametrize("stage", ["connect", "read", "wrapped"])
 def test_model_timeout_preserves_snapshot_and_receipts_without_execution_or_retry(
     monkeypatch: pytest.MonkeyPatch, stage: str
@@ -1265,7 +1368,8 @@ def test_source_priority_keeps_app_and_user_requirements_over_old_progress_and_s
     generator.generate(data)
     messages = captured[0]["messages"]
     assert "app.py" in generator.last_visible_paths and source in messages[-1]["content"]
-    assert any(message["content"] == latest_user for message in messages)
+    assert latest_user in messages[-1]["content"]
+    assert sum(message["content"].count(latest_user) for message in messages) == 1
     assert "Latest progress" in json.dumps(messages) and "no tests ran" in messages[-1]["content"]
     assert "obsolete repeated" not in json.dumps(messages)
     assert "successful installation log" not in json.dumps(messages)
@@ -1451,6 +1555,35 @@ def test_real_empty_node_test_receipt_prioritizes_real_test_creation(
     assert "real API" in task and "do not invent" in task
     assert source in request["messages"][-1]["content"]
     assert next(iter(request["format"]["oneOf"][0]["properties"])) == "edits"
+
+
+@pytest.mark.parametrize("runtime", ["python", "node"])
+def test_missing_tests_retains_latest_users_narrow_module_scope(
+    monkeypatch: pytest.MonkeyPatch, runtime: str
+) -> None:
+    latest_user = "Test only the existing Store module in this iteration. Do not rewrite Store."
+    is_python = runtime == "python"
+    data = {
+        **payload(),
+        "files": [{"path": "store.py" if is_python else "store.js", "content": "# Store\n"}],
+        "conversation": [
+            {"role": "user", "content": "Create the entire CRM application."},
+            {"role": "assistant", "content": "The Store module is present."},
+            {"role": "user", "content": latest_user},
+        ],
+        "checks": [
+            node_check(
+                ["python", "-m", "pytest", "-q"] if is_python else ["node", "--test"],
+                "no tests ran" if is_python else NODE_EMPTY_TAP,
+                code=5,
+            )
+        ],
+    }
+    request = capture_project_request(monkeypatch, data)
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "collected NO TESTS" in task and latest_user in task
+    assert "requested module and scope" in task
+    assert sum(message["content"].count(latest_user) for message in request["messages"]) == 1
 
 
 @pytest.mark.parametrize("runtime", ["python", "node"])
