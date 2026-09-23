@@ -420,8 +420,37 @@ describe("GoalDetailScreen", () => {
     expect(mockStartGoal).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the safe planner diagnostic visible on initial load, refresh and reopening", async () => {
+    const firstReason = "Le plan référence une dépendance inconnue. Aucune étape n’a été lancée.";
+    const refreshedReason = "Une étape de synthèse ne référence aucun résultat à résumer. Aucune étape n’a été lancée.";
+    const invalidPlan = (failureReason: string): GoalDetail => ({
+      ...waitingForWorkers,
+      goal: { ...waitingForWorkers.goal, current_phase: "planner_invalid_response", failure_reason: failureReason },
+    });
+    mockGetGoal.mockResolvedValueOnce(invalidPlan(firstReason)).mockResolvedValue(invalidPlan(refreshedReason));
+    const user = userEvent.setup();
+    const view = await render(<GoalDetailScreen />);
+
+    expect(await screen.findByText(`Échec : ${firstReason}`)).toBeOnTheScreen();
+    expect(screen.getByText("Phase : Plan proposé invalide")).toBeOnTheScreen();
+    expect(screen.getByText("La réponse du planificateur ne permet pas de créer un plan valide. Réessayez la planification.")).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Réessayer la planification" })).toBeOnTheScreen();
+
+    await user.press(screen.getByRole("button", { name: "Actualiser les preuves" }));
+    expect(await screen.findByText(`Échec : ${refreshedReason}`)).toBeOnTheScreen();
+    expect(screen.queryByText(`Échec : ${firstReason}`)).not.toBeOnTheScreen();
+    expect(screen.getByText("Phase : Plan proposé invalide")).toBeOnTheScreen();
+    expect(mockGetGoal).toHaveBeenCalledTimes(2);
+
+    await view.unmount();
+    await render(<GoalDetailScreen />);
+    expect(await screen.findByText(`Échec : ${refreshedReason}`)).toBeOnTheScreen();
+    expect(screen.getByText("Phase : Plan proposé invalide")).toBeOnTheScreen();
+    expect(mockGetGoal).toHaveBeenCalledTimes(3);
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ["planner_invalid_response", "Plan proposé invalide"],
     ["planner_request_rejected", "Demande de planification refusée"],
     ["planner_invalid_context", "Contexte de planification invalide"],
     ["planner_unavailable", "Planificateur indisponible"],

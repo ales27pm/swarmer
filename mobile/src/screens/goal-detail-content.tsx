@@ -631,7 +631,7 @@ function GoalOverview({ controller, navigation }: {
             Évaluation : {goal.evaluator_summary}
           </Text>
         ) : null}
-        {goal.failure_reason && !phaseNotice ? (
+        {goal.failure_reason && (!phaseNotice || goal.current_phase === "planner_invalid_response") ? (
           <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>Échec : {goal.failure_reason}</Text>
         ) : null}
         <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
