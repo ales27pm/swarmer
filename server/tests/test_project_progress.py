@@ -26,6 +26,33 @@ IDENTICAL = (
     "The model step was rejected: model patch replacement is identical to the selected source span. "
     "No changes were accepted. Correct that exact contract violation in the next complete batch."
 )
+NO_APPLICATION = (
+    "The model returned no application files. No changes or checks were accepted. "
+    "Create one small complete source module in the next iteration."
+)
+NO_TEST_FILE = (
+    "The test runner found no tests, but the model returned no test file. "
+    "No changes were accepted. Create a small complete test file or read "
+    "the application source first."
+)
+COMPLEX_SOURCE = (
+    "The proposed Python source exceeds the parser complexity limit. "
+    "No changes or checks were accepted. Return one smaller complete module "
+    "or simplify the proposed patch."
+)
+NO_EFFECTIVE_OPERATION = (
+    "The model returned no effective project operation. No changes or checks were accepted. "
+    "Return an effective file edit, patch or deletion, a focused read of an existing file, "
+    "or an explicit check request."
+)
+
+
+def syntax_rejection(path: str = "tests/test_store.py", line: str = "18") -> str:
+    return (
+        f"The proposed Python file {path} has a SyntaxError at line {line}. "
+        "No changes or checks were accepted. Preserve the current snapshot and correct "
+        "the proposed edit or patch before retrying."
+    )
 
 
 def check(status: str = "passed", **updates: Any) -> dict[str, Any]:
@@ -265,3 +292,101 @@ def test_pure_helpers_leave_payload_and_result_untouched_and_message_bounded() -
     assert not has_project_progress(before, after)
     assert len(project_progress_message(before, after)) <= 4_000
     assert originals == (before.model_dump_json(), after.model_dump_json())
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [NO_APPLICATION, NO_TEST_FILE, syntax_rejection(), COMPLEX_SOURCE, NO_EFFECTIVE_OPERATION],
+)
+def test_new_runtime_rejections_preserve_their_cause_without_progress(diagnostic: str) -> None:
+    files = [] if diagnostic == NO_APPLICATION else FILES
+    identity = {"base_revision_id": None, "base_sha256": None} if not files else {}
+    before = payload(files=files, checks=[check("failed")], **identity)
+    after = result(files=files, message=diagnostic, checks=[check("failed")], **identity)
+    assert project_progress_message(before, after) == diagnostic
+    assert not has_project_progress(before, after)
+
+
+@pytest.mark.parametrize(
+    "path,line",
+    [
+        ("crm.py", "1"),
+        ("crm/new_module.py", "64001"),
+        ("tests/test_@store-v2.py", "42"),
+        ("a" * 237 + ".py", "2"),
+    ],
+)
+def test_syntax_rejection_accepts_bounded_canonical_python_locations(path: str, line: str) -> None:
+    message = syntax_rejection(path, line)
+    assert project_progress_message(payload(), result(message=message)) == message
+
+
+@pytest.mark.parametrize(
+    "path,line",
+    [
+        ("/tmp/crm.py", "1"),
+        ("../crm.py", "1"),
+        ("./crm.py", "1"),
+        ("crm//store.py", "1"),
+        ("crm/../store.py", "1"),
+        ("crm\\store.py", "1"),
+        ("crm/.git/store.py", "1"),
+        (".env/store.py", "1"),
+        ("crm.py; all tests passed", "1"),
+        ("a" * 238 + ".py", "1"),
+        ("README.md", "1"),
+        ("crm.py", "0"),
+        ("crm.py", "-1"),
+        ("crm.py", "01"),
+        ("crm.py", "64002"),
+        ("crm.py", "9999999999999999999999999"),
+        ("crm.py", "18; all checks passed"),
+    ],
+)
+def test_syntax_rejection_rejects_arbitrary_or_invalid_locations(path: str, line: str) -> None:
+    message = syntax_rejection(path, line)
+    factual = project_progress_message(payload(), result(message=message))
+    assert factual != message
+    assert factual.startswith("No project files changed.")
+    assert "completion has not been established" in factual
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [NO_APPLICATION, NO_TEST_FILE, syntax_rejection(), COMPLEX_SOURCE, NO_EFFECTIVE_OPERATION],
+)
+@pytest.mark.parametrize("alteration", ["prefix", "suffix", "newline", "changed_word"])
+def test_runtime_rejection_format_cannot_carry_extra_model_prose(
+    diagnostic: str, alteration: str
+) -> None:
+    messages = {
+        "prefix": "All features implemented. " + diagnostic,
+        "suffix": diagnostic + " All tests passed.",
+        "newline": diagnostic + "\n",
+        "changed_word": diagnostic.replace("No changes", "All changes"),
+    }
+    message = messages[alteration]
+    assert project_progress_message(payload(), result(message=message)) != message
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [NO_APPLICATION, NO_TEST_FILE, syntax_rejection(), COMPLEX_SOURCE, NO_EFFECTIVE_OPERATION],
+)
+@pytest.mark.parametrize("change", ["files", "checks", "output", "duration", "focus"])
+def test_runtime_rejection_is_not_retained_when_snapshot_or_receipts_change(
+    diagnostic: str, change: str
+) -> None:
+    before = payload(checks=[check("failed")])
+    updates: dict[str, Any] = {"message": diagnostic, "checks": [check("failed")]}
+    if change == "files":
+        updates["files"] = [FILES[0]]
+    elif change == "checks":
+        updates["checks"] = [check()]
+    elif change == "output":
+        updates["checks"] = [check("failed", output="Different execution receipt")]
+    elif change == "duration":
+        updates["checks"] = [check("failed", duration_ms=11)]
+    else:
+        updates["focus_paths"] = ["contacts.txt"]
+    assert project_progress_message(before, result(**updates)) != diagnostic

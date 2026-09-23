@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from app.services.project_contracts import ProjectCheck, ProjectPayload, ProjectResult
+import re
+
+from app.services.project_contracts import (
+    MAX_FILE_BYTES,
+    ProjectCheck,
+    ProjectPayload,
+    ProjectResult,
+    validate_project_path,
+)
 
 # Schema 1.0 workers use these exact runtime-owned diagnostics in conversation
 # history, including for timeout recovery. Preserve only this closed vocabulary
@@ -42,6 +50,25 @@ _WORKER_DIAGNOSTICS = frozenset(
         (
             "The model requested a file absent from the current project manifest. "
             "No changes were accepted. Use only existing manifest paths in focus_paths."
+        ),
+        (
+            "The model returned no application files. No changes or checks were accepted. "
+            "Create one small complete source module in the next iteration."
+        ),
+        (
+            "The test runner found no tests, but the model returned no test file. "
+            "No changes were accepted. Create a small complete test file or read "
+            "the application source first."
+        ),
+        (
+            "The proposed Python source exceeds the parser complexity limit. "
+            "No changes or checks were accepted. Return one smaller complete module "
+            "or simplify the proposed patch."
+        ),
+        (
+            "The model returned no effective project operation. No changes or checks were accepted. "
+            "Return an effective file edit, patch or deletion, a focused read of an existing file, "
+            "or an explicit check request."
         ),
         (
             "The documentation-only completion did not preserve the accepted project metadata. "
@@ -109,10 +136,26 @@ _REJECTION_WRAPPERS = (
         ),
     ),
 )
+_PYTHON_SYNTAX_REJECTION = re.compile(
+    r"The proposed Python file (?P<path>[A-Za-z0-9_.@/-]{1,240}) "
+    r"has a SyntaxError at line (?P<line>[1-9][0-9]{0,4})\. "
+    r"No changes or checks were accepted\. Preserve the current snapshot and correct "
+    r"the proposed edit or patch before retrying\."
+)
 
 
 def _is_worker_diagnostic(message: str) -> bool:
     if message in _WORKER_DIAGNOSTICS:
+        return True
+    syntax = _PYTHON_SYNTAX_REJECTION.fullmatch(message)
+    if syntax is not None:
+        path = syntax.group("path")
+        if not path.endswith(".py") or int(syntax.group("line")) > MAX_FILE_BYTES + 1:
+            return False
+        try:
+            validate_project_path(path)
+        except ValueError:
+            return False
         return True
     return any(
         message == prefix + reason + suffix
@@ -151,7 +194,9 @@ def project_progress_message(payload: ProjectPayload, result: ProjectResult) -> 
     checks = _check_signatures(result.checks)
     if same_files and not result.focus_paths:
         worker_diagnostic = _is_worker_diagnostic(result.message)
-        if previous_checks == checks and worker_diagnostic:
+        # Rejections preserve the actual old receipts, not merely their outcome
+        # signatures. A different execution log or timing is not that rejection.
+        if payload.checks == result.checks and worker_diagnostic:
             return result.message
     if same_files and result.focus_paths:
         return (
