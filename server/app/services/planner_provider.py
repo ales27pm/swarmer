@@ -121,6 +121,8 @@ def worker_node_array_schema(
     # Unknown availability and no-writer capability-gap plans stay compatible.
     if available_skills is not None and "writing.draft" in skills:
         synthesis["properties"]["dependencies"]["minItems"] = 1
+    synthesis["properties"]["worker_arguments"] = {"type": "null"}
+    node_schema["properties"]["worker_arguments"] = {"type": "null"}
     general_nodes = [synthesis]
     if "research.query" in skills:
         research = deepcopy(node_schema)
@@ -133,7 +135,17 @@ def worker_node_array_schema(
             "search_query" if field == "objective" else field for field in research["required"]
         ]
         general_nodes.append(research)
-    if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"}:
+    from app.services.swift_contracts import SWIFT_SKILLS, swift_argument_schema
+
+    for skill in sorted(skills & SWIFT_SKILLS):
+        swift = deepcopy(node_schema)
+        swift["properties"]["node_type"] = {"type": "string", "const": "worker"}
+        swift["properties"]["00_required_skill"] = {"type": "string", "const": skill}
+        swift["properties"]["worker_arguments"] = swift_argument_schema()
+        if "worker_arguments" not in swift["required"]:
+            swift["required"].append("worker_arguments")
+        general_nodes.append(swift)
+    if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"} - SWIFT_SKILLS:
         worker = deepcopy(node_schema)
         worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
         worker["properties"]["00_required_skill"] = {
@@ -195,6 +207,10 @@ class UbuntuSwarmPlannerProvider:
 For every proposed node, choose 00_required_skill FIRST from the advertised skills,
 or null for synthesis. This is the model-wire name of the public required_skill field.
 Choose the capability matching the user's requested outcome before writing its parameters.
+For code.swift.build/test, worker_arguments must contain the bounded arguments from
+supplied operator source information. Never guess a source hash, project, scheme or
+destination. A supplied hash is identity only, never authorization to execute source.
+Use null worker_arguments for other skills with server-derived payloads.
 Never emit both names. Context cards retain their normal public field names.
 Return exactly one JSON object matching the supplied schema and no prose.
 Decompose only the bounded, redacted context supplied by the Ubuntu control plane.

@@ -22,6 +22,7 @@ CODE_REVIEW_SKILLS = frozenset(
 CODE_GENERATION_SKILLS = frozenset({"code.generate_python"})
 PROJECT_BUILD_SKILLS = frozenset({"code.build_project"})
 WRITING_SKILLS = frozenset({"writing.draft"})
+SWIFT_SKILLS = frozenset({"code.swift.build", "code.swift.test"})
 SUPPORTED_AGENT_SKILLS = (
     WORKSPACE_SKILLS
     | RESEARCH_SKILLS
@@ -29,6 +30,7 @@ SUPPORTED_AGENT_SKILLS = (
     | CODE_GENERATION_SKILLS
     | PROJECT_BUILD_SKILLS
     | WRITING_SKILLS
+    | SWIFT_SKILLS
 )
 
 _NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
@@ -57,6 +59,7 @@ _FAMILY_METADATA: Mapping[str, frozenset[str]] = MappingProxyType(
         "code": _BASE_METADATA | {"max_operation_seconds"},
         "project": _BASE_METADATA | {"max_operation_seconds"},
         "writing": _BASE_METADATA | {"max_operation_seconds"},
+        "swift": _BASE_METADATA | {"max_operation_seconds"},
     }
 )
 
@@ -106,6 +109,8 @@ def _skill_families(skills: tuple[str, ...]) -> frozenset[str]:
         families.add("project")
     if set(skills) & WRITING_SKILLS:
         families.add("writing")
+    if set(skills) & SWIFT_SKILLS:
+        families.add("swift")
     return frozenset(families)
 
 

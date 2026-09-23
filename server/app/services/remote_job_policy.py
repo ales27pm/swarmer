@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.models import CAPABILITY_ARGUMENT_MODELS
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
+from app.services.swift_contracts import SWIFT_SKILLS, validate_swift_payload
 from app.services.writing_contracts import WRITING_SKILL, WritingPayload
 
 MAX_QUERY_CHARACTERS = 2_000
@@ -196,6 +197,11 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         raise RemoteJobPolicyError("remote job requires an unsupported or privileged skill")
     if not isinstance(payload, dict):
         raise RemoteJobPolicyError("remote job payload must be an object")
+    if required_skill in SWIFT_SKILLS:
+        try:
+            return validate_swift_payload(payload)
+        except ValueError as exc:
+            raise RemoteJobPolicyError("Swift operation arguments invalid") from exc
     if required_skill in {"workspace.list_dir", "workspace.read_text"}:
         return _workspace_payload(required_skill, payload)
     if required_skill == "research.query":

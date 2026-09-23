@@ -66,6 +66,8 @@ def test_agent_skill_allowlist_is_exact() -> None:
             "code.generate_python",
             "code.build_project",
             "writing.draft",
+            "code.swift.build",
+            "code.swift.test",
         }
     )
 

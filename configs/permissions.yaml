@@ -98,6 +98,18 @@ capability_rules:
 # executable allowlist for dispatch. Only the two original workspace reads are
 # safe for automatic lease redistribution.
 worker_skill_rules:
+  code.swift.build:
+    id: allow-code-swift-build
+    description: Build only the independently pinned operator-approved Mac checkout.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  code.swift.test:
+    id: allow-code-swift-test
+    description: Test only the independently pinned operator-approved Mac checkout.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   writing.draft:
     id: allow-worker-text-draft
     description: A local model worker may produce a bounded textual draft without writing files or executing actions.

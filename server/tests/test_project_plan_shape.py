@@ -140,10 +140,22 @@ def test_planner_generation_schema_expresses_exclusive_project_shape() -> None:
     before = SwarmPlanProposal.model_json_schema()
     schema = UbuntuSwarmPlannerProvider._response_format()["json_schema"]["schema"]
     validator = Draft202012Validator(schema)
-    assert validator.is_valid(_plan([_node("project", "code.build_project")]))
-    assert validator.is_valid(valid_plan())
+
+    def wire(plan: dict[str, Any]) -> dict[str, Any]:
+        result = deepcopy(plan)
+        for node in result["nodes"]:
+            skill = node.pop("required_skill")
+            node["00_required_skill"] = skill
+            if skill == "research.query":
+                node["search_query"] = node.pop("objective")
+            elif skill in {"code.swift.build", "code.swift.test"}:
+                node["worker_arguments"] = {"kind": "swiftpm", "source_sha256": "a" * 64}
+        return result
+
+    assert validator.is_valid(wire(_plan([_node("project", "code.build_project")])))
+    assert validator.is_valid(wire(valid_plan()))
     for skill in sorted(SUPPORTED_AGENT_SKILLS - {"code.build_project"}):
-        assert validator.is_valid(_plan([_node("worker", skill), _node("summary", None)]))
+        assert validator.is_valid(wire(_plan([_node("worker", skill), _node("summary", None)])))
     for case in (
         "mixed_synthesis",
         "mixed_legacy",
@@ -151,11 +163,11 @@ def test_planner_generation_schema_expresses_exclusive_project_shape() -> None:
         "dependencies",
         "optional_dependencies",
     ):
-        assert not validator.is_valid(_plan(_invalid_nodes(case))), case
+        assert not validator.is_valid(wire(_plan(_invalid_nodes(case)))), case
     for field in ("dependencies", "optional_dependencies"):
         node = _node("project", "code.build_project")
         node[field] = ["existing"]
-        assert not validator.is_valid(_plan([node]))
+        assert not validator.is_valid(wire(_plan([node])))
     assert SwarmPlanProposal.model_json_schema() == before
 
 

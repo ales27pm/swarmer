@@ -88,6 +88,7 @@ from app.services.swarm_contracts import (
     SwarmPlanNodeProposal,
     SwarmPlanProposal,
 )
+from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt, validate_swift_payload
 from app.services.writing_contracts import WRITING_SKILL
 from app.services.writing_drafts import read_research_sources, read_writing_draft, writing_payload
 
@@ -1700,6 +1701,7 @@ class GoalManager:
                 optional_dependencies = sorted(by_temp[item] for item in node.optional_dependencies)
                 dependencies = sorted(set(hard_dependencies + optional_dependencies))
                 metadata = {
+                    "worker_arguments": node.worker_arguments,
                     "schema_version": proposal.schema_version,
                     "temporary_id": node.temporary_id,
                     "preferred_agent_constraints": (
@@ -1921,6 +1923,16 @@ class GoalManager:
     @staticmethod
     def _payload_for_node(node: Mapping[str, Any]) -> dict[str, Any]:
         skill = str(node["required_skill"])
+        if skill in SWIFT_SKILLS:
+            metadata = node.get("planner_metadata")
+            if metadata is None:
+                metadata = json.loads(str(node.get("planner_metadata_json") or "{}"))
+            try:
+                return validate_swift_payload(
+                    metadata.get("worker_arguments") if isinstance(metadata, dict) else None
+                )
+            except ValueError as exc:
+                raise GoalManagerConflict("Swift arguments rejected before dispatch") from exc
         objective = str(node["objective"])
         if skill == "workspace.list_dir":
             payload: dict[str, Any] = {"path": "."}
@@ -2231,10 +2243,25 @@ class GoalManager:
                         goal_run_id, maintenance_guard=maintenance_guard
                     )
                 return await self.get_goal(goal_run_id)
+            if node["required_skill"] in SWIFT_SKILLS:
+                recorded_job = await self.agent_dispatcher.get_job(str(job["id"]))
+                if (
+                    recorded_job is None
+                    or recorded_job["status"]
+                    not in {"completed", "failed", "cancelled", "quarantined"}
+                    or recorded_job["task_id"] != node["task_id"]
+                    or recorded_job["required_skill"] != node["required_skill"]
+                ):
+                    return await self.get_goal(goal_run_id)
+                job = recorded_job
             valid_evidence = validate_worker_evidence(
                 node.get("required_skill"),
                 job.get("result"),
             )
+            if node["required_skill"] in SWIFT_SKILLS:
+                valid_evidence = valid_evidence and valid_swift_receipt(
+                    str(node["required_skill"]), job.get("result"), job.get("payload")
+                )
             if (
                 node["required_skill"] == CODE_PROPOSAL_SKILL
                 and job["status"] == "completed"
@@ -3232,7 +3259,11 @@ class GoalManager:
                     json.dumps(dependencies, separators=(",", ":")),
                     proposal.expected_output,
                     json.dumps(
-                        {"source": "evaluator", "temporary_id": proposal.temporary_id},
+                        {
+                            "source": "evaluator",
+                            "temporary_id": proposal.temporary_id,
+                            "worker_arguments": proposal.worker_arguments,
+                        },
                         separators=(",", ":"),
                     ),
                     now,
@@ -3727,7 +3758,11 @@ class GoalManager:
                         json.dumps(dependencies, separators=(",", ":")),
                         node.expected_output,
                         json.dumps(
-                            {"source": "replan", "temporary_id": node.temporary_id},
+                            {
+                                "source": "replan",
+                                "temporary_id": node.temporary_id,
+                                "worker_arguments": node.worker_arguments,
+                            },
                             separators=(",", ":"),
                         ),
                         now,

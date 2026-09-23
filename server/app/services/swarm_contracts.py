@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -377,8 +377,16 @@ class SwarmPlanNodeProposal(BaseModel):
     priority: int = Field(strict=True, ge=0, le=100)
     preferred_agent_constraints: PreferredAgentConstraints | None = None
 
+    worker_arguments: dict[str, Any] | None = None
+
     @model_validator(mode="after")
     def validate_role_shape(self) -> SwarmPlanNodeProposal:
+        from app.services.swift_contracts import SWIFT_SKILLS, validate_swift_payload
+
+        if self.required_skill in SWIFT_SKILLS:
+            self.worker_arguments = validate_swift_payload(self.worker_arguments)
+        elif self.worker_arguments is not None:
+            raise ValueError("only Swift worker nodes accept operation arguments")
         if set(self.dependencies) & set(self.optional_dependencies):
             raise ValueError("a dependency cannot be both hard and optional")
         if self.node_type is PlanNodeType.WORKER and self.required_skill is None:
