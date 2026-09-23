@@ -165,7 +165,7 @@ paths. Both passed mypy and Ruff. The deployment helper passed76 tests with one
 inapplicable addition-only case skipped.
 
 The API cutover completed successfully and independent verification at
-2026-09-23T04:18:21Z confirmed all37 protected fingerprints, six fresh worker
+2026-09-23T04:18:21Z confirmed all 37 protected fingerprints, six fresh worker
 heartbeats, unchanged credentials/settings/policy, and no active work interrupted.
 The exact reviewed baseline was
 `e5c669f0f98e867c9e31b232074a35eed8f2816325d68b584f1065f3435d6386`.
@@ -181,7 +181,7 @@ adapter. All55 helper tests then passed.
 Worker activation was supervised successfully. Independent verification at
 2026-09-23T04:24:47Z confirmed both changed runtime files, all eight mounted source
 files, a fresh authenticated heartbeat, unchanged model/container/configuration,
-all37 protected history fingerprints, and no other process restart. Its baseline
+all 37 protected history fingerprints, and no other process restart. Its baseline
 was `71c36e4ee11165a2757767dd64e9e3b0557d38ed52662458dba2915edd1b6a55`.
 
 A second production probe confirmed authoring continues past the first Swift
@@ -204,7 +204,7 @@ manifest; there is no fixture-specific code. Its regression failed first, then
 Main `cf95b08` was pushed to both remotes. The worker-only backport `bf73fd3`
 passed381 tests (5 optional skips); its deployment helper passed53 tests. At
 2026-09-23T04:33:32Z independent production verification confirmed its exact
-source, all eight mounted files, fresh heartbeat, and all37 protected histories.
+source, all eight mounted files, fresh heartbeat, and all 37 protected history fingerprints.
 API0748, model, container, settings, credentials and other processes are unchanged.
 The activation baseline was
 `31c9dcf8a03c9ce38c8b36397caa29437953fb7d5aceca71271425bf960ddf26`.
@@ -223,8 +223,48 @@ absent canonical file mentioned in the accepted plan. This is advisory, never
 proof of completion or an execution grant. URLs, code fragments, unsafe paths,
 Windows paths and existing files are excluded from those hints. There are no
 qualification-specific names or deterministic generated project files.391 worker
-tests passed (5 optional skips), with Ruff and diff checks clean. A captured-input
-real-model probe is required before deploying this candidate.
+tests passed (5 optional skips), with Ruff and diff checks clean.
+
+The captured-input probe subsequently passed against the actual 30B model. In
+one call (51.99 seconds, 258 generated tokens) it added the missing Swift source
+file with a real `add` implementation and retained the existing manifest. The
+worker correctly reported continued native authoring; no compiler or project
+execution occurred in this isolated probe. Its receipt SHA256 is
+`acb4dd6102fb5670283f46d87b676b0299ca784d140b1481e41644739ecb45dc`.
+
+Main correction `b0bccfd` was pushed to both remotes. Its narrow worker backport
+`69497914ede90220a5ed33b9378d89f2ae664ddd` passed387 tests (5 optional skips);
+the deployment helper passed53 tests. Supervised activation succeeded, followed
+by independent verification at2026-09-23T04:48:59Z: all eight mounted sources,
+a fresh authenticated heartbeat, all 37 protected history fingerprints, and unchanged API,
+model, container, configuration and unrelated processes. The reviewed baseline
+was `f8353aea5bb979cd4e7991011c4c80915b4c487941c5a590d45c59b8f3bc1a3a`.
+
+Public continuation of the retained third fixture preserved its5-step,
+10-call,600-second limits and its original files. Three actual generation jobs
+then added the Swift source, two XCTest cases and README in separate accepted
+revisions. No source from the isolated probe was injected. The final four-file
+snapshot was reviewed at SHA256
+`8e2925a056213a8cfabaf4afb3788fcfe7203350d43c949187931e719ab4476a`.
+
+This qualification exposed a dispatch race: synchronization can recover and
+attach the just-queued job before dispatch's own attachment update. The latter
+treated the zero-row update as cancellation even when the exact same job was
+already correctly attached. The fourth generation job was cancelled before
+claim. Its reservation, four worker embeddings, three executed generation calls,
+and the subsequent evaluator plus embedding consumed the10-call limit.
+The goal reached `budget_exhausted`; a later native validation request correctly
+created no job because terminal goals cannot grant execution. All four source
+files remain retained. This run proves generation progress, not compilation.
+
+The dispatch race was reproduced using two actual manager instances against
+one database. With the original predicate, both queued and already-claimed jobs
+were incorrectly cancelled after recovery attached them. The correction makes
+attachment idempotent under the database write lock, requiring matching goal,
+node, task and job identities and active states. Replacements and terminal
+parents/nodes still fence the original child. All 98 selected recovery, manager,
+project, native-validation, maintenance and lease tests passed, including the
+five new race cases. Ruff, formatting, mypy and diff checks passed.
 
 ## TestFlight
 
