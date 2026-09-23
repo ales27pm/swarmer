@@ -1,0 +1,55 @@
+#!/bin/bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
+# Load shared environment setup
+source "$(dirname "$0")/env.sh"
+
+# Backup the database before proceeding.
+#
+# Pre-flight disk check: VACUUM INTO transiently doubles the DB on
+# disk. Skip the backup (don't fail startup) when we can't safely
+# fit a second copy + 512 MiB headroom OR when we can't determine
+# the situation (stat / df failure). Falling back to 0 on a stat
+# failure would shrink REQUIRED_BYTES to just the headroom, letting
+# a multi-GB DB pass the check and recreate the disk-full crash
+# loops this pre-flight exists to prevent. The db-backup-prune
+# runsv service trims older backups within ~30s, so the next start
+# cycle will succeed.
+if [[ "${ENVIRONMENT}" == "production" ]] && [[ -f "${DATABASE_FILE}" ]]; then
+  DB_SIZE_BYTES=$(stat -c%s "${DATABASE_FILE}" 2>/dev/null || echo "")
+  FREE_BYTES=$(df --output=avail -B1 "$(dirname "${DATABASE_FILE}")" 2>/dev/null | tail -n1 | tr -d ' ' || echo "")
+
+  if [[ -z "${DB_SIZE_BYTES}" || -z "${FREE_BYTES}" ]]; then
+    echo "scripts/start: skipping VACUUM INTO backup — could not determine disk usage (db_size=${DB_SIZE_BYTES:-unknown}, free=${FREE_BYTES:-unknown})"
+  else
+    REQUIRED_BYTES=$((DB_SIZE_BYTES + 512 * 1024 * 1024))
+    if (( FREE_BYTES < REQUIRED_BYTES )); then
+      echo "scripts/start: skipping VACUUM INTO backup — insufficient disk"
+      echo "  free=${FREE_BYTES} bytes, required=${REQUIRED_BYTES} bytes"
+    else
+      DATABASE_BACKUP_FILE="${DATABASE_FILE}-$(date +%s)"
+      echo "VACUUM INTO '${DATABASE_BACKUP_FILE}'" | sqlite3 "${DATABASE_FILE}"
+    fi
+  fi
+fi
+
+# Install dependencies
+echo "Installing dependencies..."
+bun install
+
+# Sync the database schema (Prisma). scripts/prisma-setup.sh chooses
+# db push vs. migrate deploy based on environment and whether the
+# project uses Prisma Migrate. ENG-1188.
+source "$(dirname "$0")/prisma-setup.sh"
+
+# Start server based on environment
+# Use bun directly (not "bun run") so signals propagate correctly
+if [[ "${ENVIRONMENT}" == "production" ]]; then
+  echo "Starting server in production mode..."
+  exec bun src/index.ts
+else
+  echo "Starting server in dev mode with hot reload..."
+  exec bun --hot src/index.ts
+fi
