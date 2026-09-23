@@ -7,12 +7,12 @@ import re
 from typing import Any
 
 from app.services.project_contracts import validate_project_path
+from app.services.swift_contracts import SWIFT_SKILLS, swift_argument_schema, validate_swift_payload
 
 SQLITE_SKILLS = frozenset(
     f"database.sqlite.{op}" for op in ("inspect", "query", "create", "backup", "migrate")
 )
 PERSONAL_SKILLS = frozenset({"crm.command", "documents.extract"})
-SWIFT_SKILLS = frozenset({"code.swift.build", "code.swift.test"})
 SPECIALIST_SKILLS = SQLITE_SKILLS | PERSONAL_SKILLS | SWIFT_SKILLS
 
 
@@ -54,25 +54,7 @@ def specialist_argument_schema(skill: str) -> dict[str, Any]:
             required += ["migration_id", "statements"]
         return obj(fields, required)
     if skill in SWIFT_SKILLS:
-        common = {"source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
-        return {
-            "anyOf": [
-                obj(
-                    {**common, "kind": {"const": "swiftpm", "type": "string"}},
-                    ["kind", "source_sha256"],
-                ),
-                obj(
-                    {
-                        **common,
-                        "kind": {"const": "xcode", "type": "string"},
-                        "project": path,
-                        "scheme": text,
-                        "destination": text,
-                    },
-                    ["kind", "source_sha256", "project", "scheme", "destination"],
-                ),
-            ]
-        }
+        return swift_argument_schema()
     if skill == "documents.extract":
         return obj(
             {
@@ -153,23 +135,7 @@ def validate_specialist_payload(skill: str, payload: dict[str, Any]) -> dict[str
                 if not isinstance(statement.get("sql"), str) or not statement["sql"].strip():
                     raise ValueError("SQL required")
     elif skill in SWIFT_SKILLS:
-        kind = payload.get("kind")
-        required = {"kind", "source_sha256"}
-        if kind == "xcode":
-            required |= {"project", "scheme", "destination"}
-        if kind not in {"swiftpm", "xcode"} or set(payload) != required:
-            raise ValueError("Swift operation fields invalid")
-        if not isinstance(payload["source_sha256"], str) or not re.fullmatch(
-            r"[a-f0-9]{64}", payload["source_sha256"]
-        ):
-            raise ValueError("Swift source digest required")
-        if kind == "xcode":
-            validate_project_path(payload["project"])
-            for name in ("scheme", "destination"):
-                if not isinstance(payload[name], str) or not re.fullmatch(
-                    r"[A-Za-z0-9_. -]{1,100}", payload[name]
-                ):
-                    raise ValueError("invalid Swift target")
+        return validate_swift_payload(payload)
     elif skill == "documents.extract":
         if "path" not in payload or payload.keys() - {"path", "max_characters", "max_pages"}:
             raise ValueError("document path required")
