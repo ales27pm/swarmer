@@ -130,7 +130,7 @@ def test_native_validation_uses_file_paths_not_documentation_mentions(
     "native_path",
     ["Sources/Hello.swift", "Package.swift", "Hello.xcodeproj/project.pbxproj"],
 )
-def test_existing_native_source_stops_before_model_and_preserves_previous_evidence(
+def test_existing_native_source_allows_reading_and_preserves_previous_evidence(
     native_path: str,
 ) -> None:
     files = [
@@ -147,12 +147,16 @@ def test_existing_native_source_stops_before_model_and_preserves_previous_eviden
         "base_sha256": snapshot_sha(files),
     }
     before = copy.deepcopy(data)
-    generator, runner = Generator(step()), Runner()
+    generator, runner = (
+        Generator(step(action="continue", edits=[], focus_paths=[native_path], plan=[])),
+        Runner(),
+    )
     result = worker.run_iteration(data, generator, runner, lambda: None)
-    assert generator.calls == runner.calls == 0
+    assert generator.calls == 1 and runner.calls == 0
     assert result["action"] == "continue"
-    assert result["message"] == worker.NATIVE_VALIDATION_DIAGNOSTIC
-    for field in ("files", "checks", "plan", "base_revision_id", "base_sha256"):
+    assert result["native_validation"] == "authoring"
+    assert snapshot_sha(result["files"]) == snapshot_sha(before["files"])
+    for field in ("checks", "plan", "base_revision_id", "base_sha256"):
         assert result[field] == before[field]
     assert data == before
 
