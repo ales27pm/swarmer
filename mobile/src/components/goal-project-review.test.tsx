@@ -16,7 +16,7 @@ const openTask = jest.fn();
 const props = { goalId: "goal_1", disabled: false, onOpenTask: openTask };
 beforeEach(() => {
   jest.clearAllMocks();
-  load.mockResolvedValue({ project: projectFixture, prepareApproval });
+  load.mockResolvedValue({ project: projectFixture, prepareApproval, prepareSwiftValidation: jest.fn<import("@/lib/api/project").ProjectReview["prepareSwiftValidation"]>() });
   prepareApproval.mockResolvedValue({ task_id: "task_write", tool_call_id: "call_write", approval_id: "approval_write" });
 });
 async function inspectProject() {
@@ -32,7 +32,7 @@ async function acknowledge(user: ReturnType<typeof userEvent.setup>) {
 }
 describe("GoalProjectReview", () => {
   it("labels a runtime pause without making an incomplete revision approvable", async () => {
-    load.mockResolvedValue({ project: { ...projectFixture, state: "needs_user", message: PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC }, prepareApproval });
+    load.mockResolvedValue({ project: { ...projectFixture, state: "needs_user", message: PROJECT_MODEL_TIMEOUT_PAUSE_DIAGNOSTIC }, prepareApproval, prepareSwiftValidation: jest.fn<import("@/lib/api/project").ProjectReview["prepareSwiftValidation"]>() });
     await inspectProject();
     expect(await screen.findByText(`Pause technique du modèle · révision ${projectFixture.revision}`)).toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Préparer l’autorisation du projet" })).not.toBeOnTheScreen();
@@ -65,7 +65,7 @@ describe("GoalProjectReview", () => {
     expect(screen.getByRole("button", { name: "Préparer l’autorisation du projet" })).toBeDisabled();
   });
   it("shows failed checks and their logs without offering completed-project apply", async () => {
-    load.mockResolvedValue({ project: { ...projectFixture, state: "building", checks: [{ ...projectFixture.checks[0], status: "failed", exit_code: 1, output: "FAIL: persistence test" }] }, prepareApproval });
+    load.mockResolvedValue({ project: { ...projectFixture, state: "building", checks: [{ ...projectFixture.checks[0], status: "failed", exit_code: 1, output: "FAIL: persistence test" }] }, prepareApproval, prepareSwiftValidation: jest.fn<import("@/lib/api/project").ProjectReview["prepareSwiftValidation"]>() });
     const user = await inspectProject();
     expect(await screen.findByText("Échoué · python -m unittest")).toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Préparer l’autorisation du projet" })).not.toBeOnTheScreen();
@@ -79,7 +79,7 @@ describe("GoalProjectReview", () => {
     await acknowledge(user);
     await user.press(screen.getByRole("button", { name: "Préparer l’autorisation du projet" }));
     expect(await screen.findByText(/La demande peut avoir été créée/)).toBeOnTheScreen();
-    load.mockResolvedValue({ project: { ...projectFixture, state: "waiting_permission", task_id: "task_existing" }, prepareApproval });
+    load.mockResolvedValue({ project: { ...projectFixture, state: "waiting_permission", task_id: "task_existing" }, prepareApproval, prepareSwiftValidation: jest.fn<import("@/lib/api/project").ProjectReview["prepareSwiftValidation"]>() });
     await user.press(screen.getByRole("button", { name: "Actualiser la révision du projet" }));
     await user.press(screen.getByRole("button", { name: "Voir l’autorisation et les preuves du projet" }));
     expect(openTask).toHaveBeenCalledWith("task_existing");

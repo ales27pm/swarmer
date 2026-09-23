@@ -142,6 +142,11 @@ from app.services.swarm_contracts import (
     PlannerSource,
     PlanNode,
 )
+from app.services.swift_project_validation import (
+    SwiftProjectConflict,
+    SwiftProjectValidationRequest,
+    SwiftProjectValidationService,
+)
 from app.services.task_execution import read_task_goal_execution
 from app.services.vector_index import FaissVectorIndex, VectorIndexError
 from app.services.websocket_notifications import WebSocketNotificationService
@@ -654,6 +659,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.orchestrator_service = orchestrator_service
     app.state.planner_provider = planner_provider
     app.state.message_board = message_board
+    swift_project_validation = SwiftProjectValidationService(settings.db_path, agent_dispatcher)
+    app.state.swift_project_validation = swift_project_validation
     app.state.agent_dispatcher = agent_dispatcher
     app.state.activity_catalog = activity_catalog
     app.state.agent_lease_reaper = agent_lease_reaper
@@ -1191,7 +1198,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         except ExecutionError as exc:
             raise HTTPException(
-                status_code=400, detail="tool proposal failed executor validation"
+                status_code=400,
+                detail="tool proposal failed executor validation",
+                headers={"X-MonGARS-Validation-Code": exc.diagnostic},
             ) from exc
 
         await state_service.append_audit(
@@ -1260,12 +1269,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
             except ExecutionError as exc:
                 await state_service.append_audit(
                     "orchestrator.rejected",
-                    {"reason": "executor validation failed"},
+                    {"reason": "executor validation failed", "diagnostic": exc.diagnostic},
                     task_id=task_id,
                     trace_id=task_id,
                 )
                 raise HTTPException(
-                    status_code=400, detail="tool proposal failed executor validation"
+                    status_code=400,
+                    detail="tool proposal failed executor validation",
+                    headers={"X-MonGARS-Validation-Code": exc.diagnostic},
                 ) from exc
 
         await state_service.append_audit(
@@ -1540,6 +1551,58 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="project not found")
         response.headers["Cache-Control"] = "no-store"
         return project
+
+    @app.post("/goals/{goal_id}/project/swift-validation", status_code=201)
+    async def request_swift_validation(
+        goal_id: str,
+        request: SwiftProjectValidationRequest,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            return await swift_project_validation.request(goal_id, request, str(principal["id"]))
+        except (SwiftProjectConflict, AgentDispatchConflict, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/goals/{goal_id}/project/swift-validation")
+    async def get_swift_validation(
+        goal_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        del principal
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await swift_project_validation.get(goal_id)
+        except SwiftProjectConflict as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/goals/{goal_id}/project/swift-validation/{validation_id}/cancel")
+    async def cancel_swift_validation(
+        goal_id: str,
+        validation_id: str,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> dict[str, Any]:
+        try:
+            return await swift_project_validation.cancel(
+                goal_id, validation_id, str(principal["id"])
+            )
+        except SwiftProjectConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/agents/{agent_id}/jobs/{job_id}/project-source")
+    async def get_swift_project_source(
+        agent_id: str,
+        job_id: str,
+        request: AgentJobHeartbeat,
+        response: Response,
+        principal: Annotated[dict[str, Any], Depends(require_agent)],
+    ) -> dict[str, Any]:
+        del principal
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await swift_project_validation.source(agent_id, job_id, request)
+        except SwiftProjectConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/goals/{goal_id}/project/apply", response_model=ProjectApplication)
     async def apply_goal_project(

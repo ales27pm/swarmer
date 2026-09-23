@@ -23,7 +23,19 @@ export type ProjectPreview = {
   runtime: "python" | "node" | "python_node";
   task_id: string | null;
 };
-export type ProjectReview = { project: ProjectPreview; prepareApproval: () => Promise<CodeProposalApplication> };
+export type SwiftTarget = { kind: "swiftpm" } | { kind: "xcode"; project: string; scheme: string; destination: string };
+export type SwiftValidationOptions = { agentId: string; operation: "build" | "test"; target: SwiftTarget };
+export type SwiftValidation = {
+  validation_id: string; job_id: string | null; status: "queued" | "assigned" | "claimed" | "running" | "quarantined" | "passed" | "failed" | "cancelled" | "stale";
+  revision_id: string; sha256: string; source_sha256: string; conversation_revision: number;
+  operation: "build" | "test"; agent_id: string; target: SwiftTarget;
+  receipt: { tests_executed: number; test_failures: number; duration_ms: number; source_sha256: string } | null;
+};
+export type SwiftValidationAttempt = { idempotencyKey: string; send: () => Promise<SwiftValidation> };
+export type ProjectReview = {
+  project: ProjectPreview; prepareApproval: () => Promise<CodeProposalApplication>;
+  prepareSwiftValidation: (options: SwiftValidationOptions) => SwiftValidationAttempt;
+};
 export type GoalMessage = {
   id: string;
   goal_run_id: string;
@@ -77,6 +89,47 @@ function choice<T extends string>(value: unknown, choices: readonly T[]): T {
 function integer(value: unknown, minimum: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) return invalid();
   return value;
+}
+
+export function hasSwiftSources(project: Pick<ProjectPreview, "files">): boolean {
+  return project.files.some(({ path }) => /\.swift$/i.test(path) || path.split("/").some((part) => /\.(xcodeproj|xcworkspace)$/i.test(part)));
+}
+
+export function parseSwiftTarget(value: unknown): SwiftTarget {
+  const item = record(value);
+  if (item.kind === "swiftpm" && Object.keys(item).length === 1) return { kind: "swiftpm" };
+  if (item.kind !== "xcode" || Object.keys(item).sort().join() !== "destination,kind,project,scheme") return invalid();
+  const project = text(item.project, 240), scheme = text(item.scheme, 100), destination = text(item.destination, 64);
+  if (!/^[A-Za-z0-9_ .-]+\.(?:xcodeproj|xcworkspace)$/.test(project)
+      || !/^[A-Za-z0-9_][A-Za-z0-9_ .-]{0,99}$/.test(scheme) || !/^[A-Za-z0-9_-]{1,64}$/.test(destination)) return invalid();
+  return { kind: "xcode", project, scheme, destination };
+}
+
+export function parseSwiftValidation(value: unknown): SwiftValidation {
+  const item = record(value);
+  const digest = (value: unknown): string => {
+    if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) return invalid();
+    return value;
+  };
+  const result: SwiftValidation = {
+    validation_id: projectIdentifier(item.validation_id), job_id: item.job_id === null ? null : projectIdentifier(item.job_id),
+    revision_id: projectIdentifier(item.revision_id), sha256: digest(item.sha256), source_sha256: digest(item.source_sha256),
+    conversation_revision: integer(item.conversation_revision, 0), agent_id: projectIdentifier(item.agent_id),
+    status: choice(item.status, ["queued", "assigned", "claimed", "running", "quarantined", "passed", "failed", "cancelled", "stale"]),
+    operation: choice(item.operation, ["build", "test"]), target: parseSwiftTarget(item.target), receipt: null,
+  };
+  if (result.status === "passed") {
+    const receipt = record(item.receipt), ref = record(receipt.project_revision);
+    const tests = integer(receipt.tests_executed, 0), failures = integer(receipt.test_failures, 0), duration = integer(receipt.duration_ms, 0);
+    if (receipt.status !== "passed" || receipt.exit_code !== 0 || receipt.source_unchanged !== true || receipt.report_error !== null
+        || receipt.operation !== result.operation || receipt.kind !== result.target.kind || digest(receipt.source_sha256) !== result.source_sha256
+        || ref.validation_id !== result.validation_id || ref.revision_id !== result.revision_id || ref.sha256 !== result.sha256
+        || failures !== 0 || duration > 120_000 || tests > 120_000 || (result.operation === "test" ? tests === 0 : tests !== 0)) return invalid();
+    projectIdentifier(ref.project_id); digest(receipt.request_sha256);
+    if (receipt.test_evidence_format !== (result.target.kind === "swiftpm" ? "swiftpm_xunit" : "xcresult_summary")) return invalid();
+    result.receipt = { tests_executed: tests, test_failures: failures, duration_ms: duration, source_sha256: result.source_sha256 };
+  } else if (item.receipt !== null) return invalid();
+  return result;
 }
 function filePath(value: unknown): string {
   const path = text(value, 240);

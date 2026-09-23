@@ -28,6 +28,7 @@ struct StoredLocalModel: Codable, Equatable, Sendable {
   let runtimeRelativePath: String
   let tokenizerRelativePath: String?
   var remoteOrigin: StoredRemoteModelOrigin? = nil
+  var purpose: LocalModelPurpose? = nil
 }
 
 struct ResolvedLocalModel: Sendable {

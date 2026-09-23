@@ -57,3 +57,6 @@ export const getGoalResult: typeof adapter.getGoalResult = (id, shouldAccept) =>
 export const getGoalWritingDraft: typeof adapter.getGoalWritingDraft = (goalId, nodeId, workerJobId, shouldAccept) => invokeApplicationCommand("goals.writing-draft", { goalId, nodeId, workerJobId }, { shouldAccept });
 export const listMessages: typeof adapter.listMessages = (conversationId, shouldAccept) => invokeApplicationCommand("chat.messages", { conversationId }, { shouldAccept });
 export const bootstrapSync: typeof adapter.bootstrapSync = (shouldAccept) => invokeApplicationCommand("sync.refresh", {}, { shouldAccept });
+
+export const getSwiftProjectValidation: typeof adapter.getSwiftProjectValidation = (id) => call("project.swift.status", { id });
+export const cancelSwiftProjectValidation: typeof adapter.cancelSwiftProjectValidation = (id, validationId) => call("project.swift.cancel", { id, validationId, confirm: true });

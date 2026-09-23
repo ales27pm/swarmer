@@ -141,6 +141,21 @@ actor LocalModelStore {
     return ResolvedLocalModel(stored: stored, runtimeURL: runtimeURL, tokenizerURL: tokenizerURL)
   }
 
+  func purpose(for record: StoredLocalModel) throws -> LocalModelPurpose {
+    guard record.runtime == .mlx else { return .generation }
+    if record.purpose != nil || record.remoteOrigin?.repositoryId == EmbeddingValidation.repository {
+      return record.effectivePurpose
+    }
+    // Legacy local imports have no immutable repository identity. Classify their
+    // existing config without rewriting the private index or Documents manifest.
+    let root = try record.remoteOrigin.map {
+      try durableModelRoot(repositoryId: $0.repositoryId, revision: $0.revision)
+    } ?? modelsURL.appendingPathComponent(record.modelId, isDirectory: true)
+    try rejectSymbolicLinks(in: root)
+    let directory = try confinedURL(relativePath: record.runtimeRelativePath, root: root)
+    return LocalModelPurpose.mlx(configuration: try readJSONObject(directory.appendingPathComponent("config.json")))
+  }
+
   func importModel(
     runtime: LocalRuntime,
     uri: String,
@@ -210,7 +225,10 @@ actor LocalModelStore {
         sizeBytes: plan.totalBytes,
         importedAt: Date(),
         runtimeRelativePath: resolved.runtimeURL.path(relativeTo: stagingURL),
-        tokenizerRelativePath: resolved.tokenizerURL?.path(relativeTo: stagingURL)
+        tokenizerRelativePath: resolved.tokenizerURL?.path(relativeTo: stagingURL),
+        purpose: runtime == .mlx
+          ? LocalModelPurpose.mlx(configuration: try readJSONObject(resolved.runtimeURL.appendingPathComponent("config.json")))
+          : .generation
       )
 
       try Task.checkCancellation()
@@ -329,7 +347,8 @@ actor LocalModelStore {
       displayName: "\(repositoryId.split(separator: "/").last!) · Modèles",
       source: "Documents/Models · \(repositoryId)@\(revision)",
       sizeBytes: totalBytes, importedAt: Date(), runtimeRelativePath: "payload", tokenizerRelativePath: "payload",
-      remoteOrigin: StoredRemoteModelOrigin(repositoryId: repositoryId, revision: revision, files: artifacts)
+      remoteOrigin: StoredRemoteModelOrigin(repositoryId: repositoryId, revision: revision, files: artifacts),
+      purpose: LocalModelPurpose.mlx(configuration: try readJSONObject(payload.appendingPathComponent("config.json")))
     )
     try validateMetadata([record])
     let encoder = JSONEncoder()

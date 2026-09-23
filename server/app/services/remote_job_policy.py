@@ -12,9 +12,9 @@ from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
 from app.services.specialist_contracts import (
     PERSONAL_SKILLS,
     SQLITE_SKILLS,
-    SWIFT_SKILLS,
     validate_specialist_payload,
 )
+from app.services.swift_contracts import SWIFT_SKILLS
 from app.services.writing_contracts import WRITING_SKILL, WritingPayload
 
 MAX_QUERY_CHARACTERS = 2_000

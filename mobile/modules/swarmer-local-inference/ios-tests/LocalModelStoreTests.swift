@@ -86,6 +86,9 @@ private struct LocalModelStoreTests {
       ("GGUF import and metadata resolution", testGGUFImportAndResolution),
       ("Core ML filtering and required sidecars", testCoreMLFilteringAndSidecars),
       ("MLX direct artifact filtering", testMLXFiltering),
+      ("pinned E5 uses a validated BERT encoder and cannot generate language", testE5Profile),
+      ("legacy durable E5 keeps its identity and files while gaining embedding purpose", testLegacyE5Purpose),
+      ("legacy imported encoder purpose is derived from its existing configuration", testLegacyImportedEncoderPurpose),
       ("cached MLX becomes independent durable files and keeps pinned provenance", testDurableMLXCachePromotion),
       ("durable MLX preserves multi-chunk hashes and detects final-byte corruption", testDurableMLXMultiChunkIntegrity),
       ("durable MLX copy and verification retain less than 64 MiB per phase", testDurableMLXMemoryBudget),
@@ -474,6 +477,102 @@ private struct LocalModelStoreTests {
 
   private static let repositoryId = "example/Dolphin-3B-4bit"
   private static let revision = String(repeating: "c", count: 40)
+
+  private static func e5Configuration() throws -> [String: Any] {
+    // Semantic copy of the pinned upstream config, not a guessed architecture:
+    // intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3/config.json
+    let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .appendingPathComponent("fixtures/e5-small-config.json")
+    return try required(try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any], "invalid E5 fixture")
+  }
+
+  private static func testE5Profile() async throws {
+    let config = try e5Configuration()
+    try EmbeddingValidation.validateE5Configuration(config)
+    try expect(LocalModelPurpose.mlx(configuration: config) == .embeddings, "E5 is exposed as a generator")
+    do {
+      try LocalModelPurpose.requireGeneration(configuration: config)
+      throw TestFailure("BERT entered the generation runtime")
+    } catch LocalInferenceError.unsupportedModel(_) {}
+    try LocalModelPurpose.requireGeneration(configuration: ["model_type": "llama"])
+    let invalid: [(String, Any)] = [
+      ("model_type", "xlm-roberta"), ("model_type", "llama"),
+      ("architectures", ["BertForMaskedLM"]), ("hidden_size", 768),
+      ("intermediate_size", 3072), ("num_hidden_layers", 6),
+      ("num_attention_heads", 6), ("max_position_embeddings", 514),
+      ("type_vocab_size", 1), ("vocab_size", 30522), ("tokenizer_class", "BertTokenizer"),
+    ]
+    for (key, value) in invalid {
+      var changed = config
+      changed[key] = value
+      do {
+        try EmbeddingValidation.validateE5Configuration(changed)
+        throw TestFailure("E5 accepted incompatible field \(key)")
+      } catch EmbeddingValidation.ValidationError.configuration {}
+    }
+  }
+
+  private static func removePurpose(at url: URL, array: Bool) throws -> Data {
+    let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+    let legacy: Any
+    if array {
+      legacy = (object as! [[String: Any]]).map { row -> [String: Any] in
+        var changed = row; changed.removeValue(forKey: "purpose"); return changed
+      }
+    } else {
+      var changed = object as! [String: Any]
+      changed.removeValue(forKey: "purpose")
+      legacy = changed
+    }
+    let bytes = try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys])
+    try bytes.write(to: url)
+    return bytes
+  }
+
+  private static func testLegacyE5Purpose() async throws {
+    let workspace = try TestWorkspace(name: "e5-legacy")
+    defer { workspace.remove() }
+    let cached = try makeCachedMLX(in: workspace)
+    try JSONSerialization.data(withJSONObject: e5Configuration()).write(to: cached.cache.appendingPathComponent("blobs/config.json"))
+    let store = durableStore(workspace)
+    let saved = try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache,
+      repositoryId: EmbeddingValidation.repository, revision: revision)
+    try expect(saved.stored.purpose == .embeddings, "new E5 metadata lost its purpose")
+    let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+    let manifest = saved.runtimeURL.deletingLastPathComponent().appendingPathComponent("swarmer-model.json")
+    let indexBefore = try removePurpose(at: index, array: true)
+    let manifestBefore = try removePurpose(at: manifest, array: false)
+    try FileManager.default.removeItem(at: cached.cache)
+    let reopened = durableStore(workspace)
+    let records = try await reopened.list()
+    try expect(records[0].purpose == nil && records[0].effectivePurpose == .embeddings, "legacy immutable origin was not classified")
+    let purpose = try await reopened.purpose(for: records[0])
+    try expect(purpose == .embeddings, "legacy E5 could enter generation choices")
+    let resolved = try required(try await reopened.resolveRemoteMLX(repositoryId: EmbeddingValidation.repository, revision: revision), "legacy E5 no longer resolves offline")
+    try expect(resolved.stored.modelId == saved.stored.modelId && resolved.runtimeURL == saved.runtimeURL, "migration changed model identity or location")
+    try expect(try Data(contentsOf: index) == indexBefore && Data(contentsOf: manifest) == manifestBefore, "classification rewrote signed provenance")
+    try expect(try Data(contentsOf: resolved.runtimeURL.appendingPathComponent("model.safetensors")) == Data("abc".utf8), "weights changed")
+  }
+
+  private static func testLegacyImportedEncoderPurpose() async throws {
+    let workspace = try TestWorkspace(name: "encoder-legacy")
+    defer { workspace.remove() }
+    let source = workspace.source.appendingPathComponent("encoder")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: e5Configuration()).write(to: source.appendingPathComponent("config.json"))
+    try write("{}", to: source.appendingPathComponent("tokenizer.json"))
+    try write("abc", to: source.appendingPathComponent("model.safetensors"))
+    let store = durableStore(workspace)
+    let imported = try await store.importModel(runtime: .mlx, uri: source.absoluteString, displayName: nil)
+    try expect(imported.purpose == .embeddings, "new local encoder purpose missing")
+    let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+    let before = try removePurpose(at: index, array: true)
+    let reopened = durableStore(workspace)
+    let legacy = try await reopened.list()[0]
+    let purpose = try await reopened.purpose(for: legacy)
+    try expect(purpose == .embeddings, "legacy imported encoder not recognized")
+    try expect(try Data(contentsOf: index) == before, "legacy import classification rewrote the registry")
+  }
 
   private static func makeCachedMLX(in workspace: TestWorkspace) throws -> (cache: URL, snapshot: URL) {
     let cache = workspace.source.appendingPathComponent("models--example--Dolphin-3B-4bit")

@@ -135,6 +135,9 @@ actor MLXRuntime {
   }
 
   private func loadContainer(directory: URL) async throws {
+    let config = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any]
+    guard let config else { throw LocalInferenceError.unsupportedModel("The MLX config must be a JSON object") }
+    try LocalModelPurpose.requireGeneration(configuration: config)
     let device = await BackgroundGenerationController.shared.preferredExecutionDevice()
     if device == .cpu {
       _ = Self.cpuCompilationDisabled

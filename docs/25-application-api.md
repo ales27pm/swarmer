@@ -8,7 +8,7 @@ la base SQLite du téléphone reste une réplique, jamais une autorisation.
 
 ## Découvrir les commandes
 
-Le catalogue comprend actuellement 67 commandes et est produit par le registre exécutable, avec version, schéma
+Le catalogue est produit par le registre exécutable, avec version, schéma
 d’entrée, provenance, effet, conditions de disponibilité et interaction iOS.
 Les commandes actuelles couvrent la connexion, la synchronisation, les buts et
 tâches, les conversations, les approbations, la mémoire, les agents, les modèles,
@@ -17,6 +17,14 @@ d’un handler ne prouve pas la disponibilité de son serveur, modèle ou permis
 ses prérequis restent vérifiés au moment de l’appel.
 Le catalogue des activités métier est une autre ressource : une compétence
 « à intégrer » n’est pas une commande exécutable.
+
+La validation native des projets passe par `project.swift.prepare`,
+`project.swift.submit`, `project.swift.status` et `project.swift.cancel`.
+La préparation conserve une référence à la révision relue ; la soumission exige
+une confirmation explicite et conserve la même clé lors d’une réponse réseau
+incertaine. Le worker, le type de compilation et la cible Xcode sont choisis
+avant cette confirmation. Le reçu porte sur cette révision seulement : il ne
+déclare pas le projet terminé et ne prouve pas une exécution sur iPhone.
 
 Les façades `server.ts`, `local-inference.ts` et `local-settings.ts` conservent
 les signatures utilisées par les écrans. Les adaptateurs sous-jacents restent

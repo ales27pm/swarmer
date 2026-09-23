@@ -5,6 +5,10 @@ import {
   newGoalMessageId,
   parseGoalConversation,
   parseProjectPreview,
+  hasSwiftSources,
+  parseSwiftTarget,
+  parseSwiftValidation,
+  type SwiftValidation,
   projectIdentifier,
   validateGoalReply,
   type GoalConversationSession,
@@ -174,6 +178,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly diagnostic?: "unknown_tool" | "invalid_arguments" | "policy_denied",
   ) {
     super(message);
     this.name = "ApiError";
@@ -615,9 +620,17 @@ async function responseError(response: Response): Promise<ApiError> {
   } catch {
     detail = await response.text().catch(() => "");
   }
+  const code = response.headers?.get("X-MonGARS-Validation-Code");
+  const diagnostic = code === "unknown_tool" || code === "invalid_arguments" || code === "policy_denied" ? code : undefined;
+  const messages = {
+    unknown_tool: "L’outil demandé n’est pas enregistré sur le serveur. Aucune action n’a été exécutée.",
+    invalid_arguments: "Les arguments ne correspondent pas au contrat de l’outil. Aucune action n’a été exécutée.",
+    policy_denied: "La politique du serveur refuse cet outil. Aucune action n’a été exécutée.",
+  };
   return new ApiError(
     response.status,
-    detail || `Le control plane a répondu HTTP ${response.status}.`,
+    diagnostic ? messages[diagnostic] : detail || `Le control plane a répondu HTTP ${response.status}.`,
+    diagnostic,
   );
 }
 
@@ -1115,12 +1128,42 @@ export async function reviewGoalProject(goalId: string): Promise<ProjectReview> 
   const value = await requestAt<unknown>(connection.baseUrl, path, undefined, connection.token);
   await assertRequestConnectionCurrent(connection);
   const project = parseProjectPreview(value);
-  const body = JSON.stringify({ revision_id: project.revision_id, sha256: project.sha256 });
-  const mayApply = project.state === "ready" && project.task_id === null && project.files.length > 0
+  const revisionId = project.revision_id, sha256 = project.sha256;
+  const nativeSources = hasSwiftSources(project);
+  const body = JSON.stringify({ revision_id: revisionId, sha256 });
+  const mayApply = !nativeSources && project.state === "ready" && project.task_id === null && project.files.length > 0
     && project.checks.some((check) => check.status === "passed") && !project.checks.some((check) => check.status === "failed");
   let attempted = false;
   return {
     project,
+    prepareSwiftValidation: (options) => {
+      if (!nativeSources) throw new Error("Cette révision ne contient aucun fichier Swift.");
+      const agentId = projectIdentifier(options.agentId);
+      if (options.operation !== "build" && options.operation !== "test") throw new Error("Opération Swift invalide.");
+      const target = parseSwiftTarget(options.target);
+      const operation = options.operation;
+      const idempotencyKey = newGoalMessageId();
+      const body = JSON.stringify({ revision_id: revisionId, sha256, agent_id: agentId,
+        operation, target, execution_consent: true, idempotency_key: idempotencyKey });
+      let result: SwiftValidation | null = null;
+      let pending: Promise<SwiftValidation> | null = null;
+      const send = async (): Promise<SwiftValidation> => {
+        await assertRequestConnectionCurrent(connection);
+        const raw = await requestAt<unknown>(connection.baseUrl, `${path}/swift-validation`, { method: "POST", body }, connection.token);
+        await assertMutationConnectionCurrent(connection);
+        const value = parseSwiftValidation(raw);
+        if (value.revision_id !== revisionId || value.sha256 !== sha256 || value.agent_id !== agentId
+            || value.operation !== operation || JSON.stringify(value.target) !== JSON.stringify(target)) throw new Error("Le reçu ne correspond pas à la validation demandée.");
+        result = value;
+        return value;
+      };
+      return { idempotencyKey, send: async () => {
+        await assertRequestConnectionCurrent(connection);
+        if (result) return result;
+        pending ??= send().finally(() => { pending = null; });
+        return pending;
+      } };
+    },
     prepareApproval: async () => {
       if (attempted || !mayApply) throw new Error("Actualisez le projet et ses vérifications avant de préparer une autorisation.");
       attempted = true;
@@ -1130,6 +1173,17 @@ export async function reviewGoalProject(goalId: string): Promise<ProjectReview> 
       return parseCodeProposalApplication(result);
     },
   };
+}
+
+export async function getSwiftProjectValidation(goalId: string): Promise<SwiftValidation | null> {
+  try { return parseSwiftValidation(await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/project/swift-validation`)); }
+  catch (cause) { if (cause instanceof ApiError && cause.status === 404) return null; throw cause; }
+}
+
+export async function cancelSwiftProjectValidation(goalId: string, validationId: string): Promise<SwiftValidation> {
+  const value = parseSwiftValidation(await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/project/swift-validation/${resourceId(validationId)}/cancel`, { method: "POST" }));
+  if (value.validation_id !== validationId) throw new Error("Le reçu d’annulation ne correspond pas à la demande.");
+  return value;
 }
 
 export function getGoalResult(

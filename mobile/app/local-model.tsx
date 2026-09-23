@@ -354,7 +354,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   useAccessibilityAnnouncement(notice);
 
   const runtimeModels = useMemo(
-    () => models.filter((model) => model.runtime === runtime),
+    () => models.filter((model) => model.runtime === runtime && model.purpose !== "embeddings"),
     [models, runtime],
   );
   const selectedImportedModel = runtimeModels.find((model) => model.modelId === modelId.trim());
@@ -467,7 +467,10 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
           ? saved.runtime : firstSupported;
         if (nextRuntime) {
           setRuntime(nextRuntime);
-          const restore = saved?.runtime === nextRuntime;
+          const savedEmbedding = saved?.modelId === "intfloat/multilingual-e5-small" || nextModels.some(
+            (model) => model.modelId === saved?.modelId && model.purpose === "embeddings",
+          );
+          const restore = saved?.runtime === nextRuntime && !savedEmbedding;
           const preset = LOCAL_MODEL_PRESETS[nextRuntime];
           setModelId(restore ? saved.modelId : nextRuntime === "mlx" ? preset.repoId : "");
           setRevision(restore ? saved.revision : nextRuntime === "mlx" ? preset.revision : "");

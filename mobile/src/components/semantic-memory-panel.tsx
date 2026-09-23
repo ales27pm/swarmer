@@ -25,7 +25,15 @@ export function SemanticMemoryPanel() {
       <ErrorBanner message={error} />
       <Text style={{ color: COLORS.muted }}>La mémoire partagée et les embeddings de l’iPhone ont des états distincts.</Text>
       <ActionButton label="Vérifier la mémoire serveur" disabled={busy} onPress={() => void run(async () => {
-        setServer(await invokeApplicationCommand("memory.status", {}));
+        setServer(null);
+        try {
+          setServer(await invokeApplicationCommand("memory.status", {}));
+        } catch (cause) {
+          if (cause instanceof Error && "status" in cause && (cause.status === 404 || cause.status === 405)) {
+            throw new Error("Cette version du serveur ne fournit pas encore l’état de la mémoire. Une mise à jour du serveur est nécessaire ; son état reste inconnu.");
+          }
+          throw cause;
+        }
       })} testID="memory-status-refresh" />
       {server ? <Text selectable style={{ color: COLORS.text }}>
         {server.embedding_configured ? `Modèle configuré : ${String(server.embedding_model)}. Réponse du modèle à vérifier par une recherche.` : "Recherche lexicale : aucun fournisseur d’embeddings configuré."}

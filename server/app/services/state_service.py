@@ -48,7 +48,7 @@ from app.services.permission_policy import PermissionPolicy, PermissionPolicyErr
 from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -846,7 +846,9 @@ class StateConflict(RuntimeError):
     pass
 
 
-SCHEMA += COMPACTION_SCHEMA
+from app.services.swift_project_validation import SWIFT_PROJECT_SCHEMA
+
+SCHEMA += COMPACTION_SCHEMA + SWIFT_PROJECT_SCHEMA
 
 
 class StateService:

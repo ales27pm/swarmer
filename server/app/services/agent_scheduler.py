@@ -220,6 +220,13 @@ class SchedulerService:
         if row is None:
             return None
         candidates = await self._eligible_locked(db, str(row[0]), now=now)
+        native = await (
+            await db.execute(
+                "SELECT agent_id FROM swift_project_validations WHERE job_id=?", (job_id,)
+            )
+        ).fetchone()
+        if native is not None:
+            candidates = [agent for agent in candidates if agent["id"] == native[0]]
         if not candidates:
             return None
         previous_agent_id = str(row[1]) if row[1] is not None else None

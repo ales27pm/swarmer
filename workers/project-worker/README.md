@@ -126,10 +126,15 @@ traceback locations take priority over filenames merely mentioned in an error
 or a previous incidental focus. Candidates are shared across files in rounds.
 Exact Python and pytest traceback locations identify the enclosing
 function before unrelated lines, so test lifecycle repairs retain their setup,
-cleanup and assertions even when the address catalog is small. A focused read
-rotates the candidate region even when the full file fits.
-Repeated focus remains
-subject to the goal budget. Invalid model edits are rejected without altering the
+cleanup and assertions even when the address catalog is small. An inherited
+focus rotates the candidate region; subsequent reads may name only omitted or
+partially shown files. The final prompt's exact source and complete AGENTS.md
+contents determine this boundary, including a fragment that contains its entire
+small file. Both the model grammar and response validation reject redundant
+reads without a retry, changes, checks or false progress. The next charged job
+receives the rejection diagnostic and must use the supplied source. Reads of
+omitted files, further partial fragments and unloaded scoped guidance remain
+available within the goal budget. Invalid model edits are rejected without altering the
 snapshot; a safe diagnostic guides the next job, preserving previous real checks.
 Changed Python files are parsed without executing them before accepting a batch;
 syntax errors and parser recursion limits preserve the original snapshot and receipts.

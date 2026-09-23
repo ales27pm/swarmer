@@ -25,7 +25,7 @@ jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
   listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(),
   listAudit: jest.fn(), getGoalWritingDraft: jest.fn(),
-  createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
+  getSwiftProjectValidation: jest.fn(), cancelSwiftProjectValidation: jest.fn(), createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
 }));
 jest.mock("@/lib/local-inference", () => ({
   ...jest.requireActual<typeof import("@/lib/local-inference")>("@/lib/local-inference"),
@@ -63,7 +63,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: null, active: false, operationId: null, outputBytes: 0, state: "idle" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(76);
+    expect(applicationApi.catalog().commands).toHaveLength(80);
     expect(applicationApi.catalog().commands.find((command) => command.name === "models.status")).toMatchObject({ effect: "read", output: { dataType: "LocalInferenceStatus", validation: "existing_parser" } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(native.loadLocalModel).not.toHaveBeenCalled();
@@ -75,7 +75,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: "cpu", active: true, operationId: "cpu-operation", outputBytes: 42, state: "active" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(76);
+    expect(applicationApi.catalog().commands).toHaveLength(80);
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
   });
 
@@ -166,7 +166,7 @@ describe("application API contract", () => {
 
   it("binds project review handles to a fresh explicit confirmation and invalidates them on re-pair", async () => {
     const prepareApproval = jest.fn<server.ProjectReview["prepareApproval"]>().mockResolvedValue({ task_id: "task_1", approval_id: "approval_1", status: "waiting_permission" } as never);
-    jest.mocked(server.reviewGoalProject).mockResolvedValue({ project: projectFixture, prepareApproval });
+    jest.mocked(server.reviewGoalProject).mockResolvedValue({ project: projectFixture, prepareApproval, prepareSwiftValidation: jest.fn<server.ProjectReview["prepareSwiftValidation"]>() });
     const result = await applicationApi.execute("project.review", { id: "goal_1" });
     const { handle } = result.data as { handle: string };
     expect(JSON.stringify(result)).not.toContain("prepareApproval");
@@ -476,5 +476,30 @@ describe("application API contract", () => {
     jest.mocked(server.createGoal).mockRejectedValue(new server.ApiError(500, "private error"));
     await expect(applicationApi.execute("goals.create", input)).rejects.toMatchObject({ code: "outcome_unknown" });
     expect(server.createGoal).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Swift revision API commands", () => {
+  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); });
+  it("binds preparation to the review and requires explicit submit consent", async () => {
+    const send = jest.fn<import("@/lib/api/project").SwiftValidationAttempt["send"]>().mockResolvedValue(null as never);
+    const prepare = jest.fn<server.ProjectReview["prepareSwiftValidation"]>().mockReturnValue({ idempotencyKey: "request_1", send });
+    jest.mocked(server.reviewGoalProject).mockResolvedValue({ project: projectFixture, prepareApproval: jest.fn<server.ProjectReview["prepareApproval"]>(), prepareSwiftValidation: prepare });
+    const inspected = await applicationApi.execute("project.review", { id: "goal_1" });
+    const prepared = await applicationApi.execute("project.swift.prepare", { handle: (inspected.data as { handle: string }).handle,
+      options: { agentId: "agent_mac", operation: "test", target: { kind: "swiftpm" } } });
+    const handle = (prepared.data as { handle: string }).handle;
+    expect(send).not.toHaveBeenCalled();
+    await expect(applicationApi.execute("project.swift.submit", { handle, confirm: false })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await applicationApi.execute("project.swift.submit", { handle, confirm: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    notifyConnectionChanged();
+    await expect(applicationApi.execute("project.swift.submit", { handle, confirm: true })).rejects.toMatchObject({ code: "session_expired" });
+  });
+  it("requires confirmation to cancel one selected validation", async () => {
+    jest.mocked(server.cancelSwiftProjectValidation).mockResolvedValue(null as never);
+    await expect(applicationApi.execute("project.swift.cancel", { id: "goal_1", validationId: "swift_1", confirm: false })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await applicationApi.execute("project.swift.cancel", { id: "goal_1", validationId: "swift_1", confirm: true });
+    expect(server.cancelSwiftProjectValidation).toHaveBeenCalledWith("goal_1", "swift_1");
   });
 });

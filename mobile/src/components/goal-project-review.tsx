@@ -6,6 +6,8 @@ import { ApiError, reviewGoalProject, type ProjectReview } from "@/lib/applicati
 import type { ProjectCheck, ProjectPreview } from "@/lib/api/project";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { projectPausePresentation } from "@/lib/project-pause";
+import { hasSwiftSources } from "@/lib/api/project";
+import { ProjectSwiftValidation } from "@/components/project-swift-validation";
 
 const STATES: Record<ProjectPreview["state"], string> = {
   building: "Construction en cours", needs_user: "Votre réponse est attendue", ready: "Révision prête à relire",
@@ -36,6 +38,9 @@ export function GoalProjectReview({ goalId, disabled, onOpenTask }: { goalId: st
   const busyRef = useRef(false);
   const epoch = useRef(0);
   useEffect(() => {
+    epoch.current += 1;
+    busyRef.current = false;
+    setBusy(null); setReview(null); setSelected(null); setReviewed(false); setLocked(false); setError(null);
     const unsubscribe = subscribeConnectionChanges(() => {
       epoch.current += 1;
       busyRef.current = false;
@@ -43,7 +48,7 @@ export function GoalProjectReview({ goalId, disabled, onOpenTask }: { goalId: st
       setError("Le jumelage a changé. Rechargez la révision depuis cette connexion.");
     });
     return () => { epoch.current += 1; unsubscribe(); };
-  }, []);
+  }, [goalId]);
 
   const load = async () => {
     if (disabled || busyRef.current) return;
@@ -75,7 +80,7 @@ export function GoalProjectReview({ goalId, disabled, onOpenTask }: { goalId: st
   const project = review?.project;
   const file = project?.files.find((file) => file.path === selected);
   const failed = project?.checks.some((check) => check.status === "failed");
-  const canApply = project?.state === "ready" && !project.task_id && project.files.length > 0 && !failed && project.checks.some((check) => check.status === "passed");
+  const canApply = project && !hasSwiftSources(project) && project.state === "ready" && !project.task_id && project.files.length > 0 && !failed && project.checks.some((check) => check.status === "passed");
   const unavailable = disabled || Boolean(busy);
   return (
     <>
@@ -104,6 +109,7 @@ export function GoalProjectReview({ goalId, disabled, onOpenTask }: { goalId: st
             {project.checks.map((check, index) => <CheckReceipt key={`${project.revision_id}:${index}`} check={check} />)}
             {!project.checks.length ? <Text style={{ color: COLORS.warning }}>Aucune vérification exécutée n’est disponible.</Text> : null}
             {failed ? <Text style={{ color: COLORS.warning }}>Des vérifications ont échoué. Cette révision ne peut pas être présentée comme terminée.</Text> : null}
+            {review && hasSwiftSources(project) ? <ProjectSwiftValidation key={`${goalId}:${project.revision_id}:${project.sha256}`} goalId={goalId} review={review} disabled={unavailable} /> : null}
             <Text style={{ color: COLORS.muted }}>Instructions de lancement</Text>
             <Text selectable style={{ color: COLORS.text }}>{project.run_instructions || "Pas encore disponibles."}</Text>
             <Text style={{ color: COLORS.subtle }}>Les commandes et instructions ci-dessus ne sont pas lancées par cette interface. Une écriture approuvée conserve cette révision ; elle ne déploie pas l’application.</Text>

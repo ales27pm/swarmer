@@ -39,4 +39,18 @@ describe("semantic memory settings", () => {
     expect(await screen.findByText("Génération déjà chargée")).toBeOnTheScreen();
     expect(screen.getByTestId("embedding-generate")).toBeDisabled();
   });
+
+  it("clears stale server state and explains an older backend without disabling local embeddings", async () => {
+    const user = userEvent.setup();
+    invoke.mockResolvedValueOnce({ embedding_configured: true, embedding_model: "server-e5", context_enabled: true } as never);
+    await render(<SemanticMemoryPanel />);
+    await user.press(screen.getByTestId("memory-status-refresh"));
+    expect(await screen.findByText(/server-e5/)).toBeOnTheScreen();
+    invoke.mockRejectedValueOnce(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    await user.press(screen.getByTestId("memory-status-refresh"));
+    expect(await screen.findByText(/son état reste inconnu/)).toBeOnTheScreen();
+    expect(screen.queryByText(/server-e5/)).toBeNull();
+    expect(screen.queryByText(/aucun fournisseur d’embeddings configuré/)).toBeNull();
+    expect(screen.getByTestId("embedding-load")).toBeEnabled();
+  });
 });

@@ -1,4 +1,5 @@
 import * as server from "@/lib/api/client";
+import type { SwiftValidationAttempt, SwiftValidationOptions } from "@/lib/api/project";
 import Constants from "expo-constants";
 import { AppState, Platform } from "react-native";
 import type { GoalCreateInput, GoalFeedbackInput, TaskMode, TaskStatus } from "@/lib/api/types";
@@ -309,6 +310,23 @@ register<{ id: string }>("project.review", idInput, ({ id }) => server.reviewGoa
 } });
 register<{ handle: string; confirm: true }>("project.prepareApproval", confirmedHandle,
   ({ handle }) => applicationSessions.get<server.ProjectReview>(handle, "project-review").prepareApproval(), mutation);
+
+register<{ handle: string; options: SwiftValidationOptions }>("project.swift.prepare", object({
+  handle: identifier, options: object({ agentId: identifier, operation: choice("build", "test"), target: object({
+    kind: choice("swiftpm", "xcode"), project: text(240), scheme: text(100), destination: text(64),
+  }, ["kind"]) }),
+}), ({ handle, options }) => applicationSessions.get<server.ProjectReview>(handle, "project-review").prepareSwiftValidation(options), {
+  ...device, publicResult: (value) => {
+    const attempt = value as SwiftValidationAttempt;
+    return { handle: applicationSessions.put("swift-validation", attempt), idempotencyKey: attempt.idempotencyKey };
+  },
+});
+register<{ handle: string; confirm: true }>("project.swift.submit", confirmedHandle,
+  ({ handle }) => applicationSessions.get<SwiftValidationAttempt>(handle, "swift-validation").send(), mutation);
+register<{ id: string }>("project.swift.status", idInput, ({ id }) => server.getSwiftProjectValidation(id));
+register<{ id: string; validationId: string; confirm: true }>("project.swift.cancel", object({
+  id: identifier, validationId: identifier, confirm: { type: "boolean", enum: [true] },
+}), ({ id, validationId }) => server.cancelSwiftProjectValidation(id, validationId), mutation);
 
 type PlanReview = {
   goalId: string; session: GoalPlanSession; snapshot: GoalPlanSnapshot;

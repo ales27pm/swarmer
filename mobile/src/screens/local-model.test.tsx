@@ -164,6 +164,22 @@ describe("LocalModelScreen", () => {
     expect(downloadLocalGgufModel).not.toHaveBeenCalled();
   });
 
+  it("keeps embeddings out of generation choices and clears a saved embedding selection", async () => {
+    mockListModels.mockResolvedValue([{
+      modelId: "durable_e5", runtime: "mlx", displayName: "E5 local", purpose: "embeddings",
+      source: "Documents/Models · intfloat/multilingual-e5-small@" + "a".repeat(40),
+      sizeBytes: 400_000_000, importedAt: "2026-09-22T00:00:00Z",
+    }]);
+    jest.mocked(readLocalModelSettings).mockResolvedValue({
+      runtime: "mlx", modelId: "durable_e5", revision: "", maxTokens: 128, temperature: 0.2,
+    });
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    expect(screen.queryByRole("button", { name: "Choisir E5 local" })).toBeNull();
+    expect(screen.getByLabelText("Dépôt Hugging Face")).toHaveDisplayValue(LOCAL_MODEL_PRESETS.mlx.repoId);
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
   it("does not cancel or unload an API generation when an unused screen unmounts", async () => {
     let finish!: (value: Awaited<ReturnType<typeof generateLocalProposal>>) => void;
     mockGenerate.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));

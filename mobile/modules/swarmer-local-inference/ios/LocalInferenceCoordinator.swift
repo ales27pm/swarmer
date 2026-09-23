@@ -163,7 +163,11 @@ actor LocalInferenceCoordinator {
   }
 
   func listModels() async throws -> [LocalModelRecord] {
-    try await store.list().map(LocalModelRecord.init(stored:))
+    var models: [LocalModelRecord] = []
+    for stored in try await store.list() {
+      models.append(LocalModelRecord(stored: stored, purpose: try await store.purpose(for: stored)))
+    }
+    return models
   }
 
   func loadModel(options: LoadModelOptions) async throws -> StatusRecord {
@@ -474,6 +478,9 @@ actor LocalInferenceCoordinator {
         guard resolved.stored.runtime == runtime else {
           throw LocalInferenceError.runtimeMismatch
         }
+        guard try await store.purpose(for: resolved.stored) == .generation else {
+          throw LocalInferenceError.unsupportedModel("This model provides embeddings. Use the semantic-memory embeddings controls.")
+        }
         switch runtime {
         case .coreML:
           guard let tokenizerURL = resolved.tokenizerURL else {
@@ -497,6 +504,9 @@ actor LocalInferenceCoordinator {
       } else {
         guard runtime == .mlx, Self.isHuggingFaceModelId(modelId) else {
           throw LocalInferenceError.modelNotFound(modelId)
+        }
+        guard modelId != EmbeddingValidation.repository else {
+          throw LocalInferenceError.unsupportedModel("E5 provides embeddings, not language generation. Use the semantic-memory embeddings controls.")
         }
         let immutableRevision = try LocalInferenceValidation.immutableRevision(revision)
         resolvedRevision = immutableRevision

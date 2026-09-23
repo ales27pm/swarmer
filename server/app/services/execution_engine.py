@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Literal, TypeVar
 from uuid import uuid4
 
 import aiosqlite
@@ -34,9 +34,19 @@ from app.services.process_sandbox import ProcessSandbox, ProcessSandboxError
 from app.services.project_contracts import ProjectWriteArguments
 from app.services.project_publication import publish_project
 
+ExecutionDiagnostic = Literal["unknown_tool", "invalid_arguments", "policy_denied"]
+
 
 class ExecutionError(RuntimeError):
-    pass
+    """An internal reason plus a fixed public code that never contains model input."""
+
+    def __init__(
+        self, message: str, *, diagnostic: ExecutionDiagnostic = "invalid_arguments"
+    ) -> None:
+        if diagnostic not in {"unknown_tool", "invalid_arguments", "policy_denied"}:
+            raise ValueError("unsupported executor diagnostic")
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 class ExecutionConflict(ExecutionError):
@@ -122,7 +132,9 @@ class ExecutionEngine:
 
     def _assert_not_protected(self, relative: Path) -> None:
         if self.policy.is_protected(relative):
-            raise ExecutionError("protected path is not available to tools")
+            raise ExecutionError(
+                "protected path is not available to tools", diagnostic="policy_denied"
+            )
 
     def _assert_inode_not_protected(self, target: os.stat_result) -> None:
         """Reject a hard-link alias of any protected regular file.
@@ -326,7 +338,7 @@ class ExecutionEngine:
 
     def validate_tool(self, tool_name: str) -> None:
         if tool_name not in self.SUPPORTED_TOOLS:
-            raise ExecutionError(f"unknown tool: {tool_name}")
+            raise ExecutionError(f"unknown tool: {tool_name}", diagnostic="unknown_tool")
 
     def requires_approval(self, tool_name: str) -> bool:
         self.validate_tool(tool_name)
@@ -401,7 +413,9 @@ class ExecutionEngine:
         self.validate_arguments(tool_name, arguments)
         policy_rule = self.policy.evaluate_tool(tool_name)
         if policy_rule.decision == "deny":
-            raise ExecutionError(f"tool denied by policy rule {policy_rule.id}")
+            raise ExecutionError(
+                f"tool denied by policy rule {policy_rule.id}", diagnostic="policy_denied"
+            )
         created = datetime.now(UTC)
         now = created.isoformat()
         needs_approval = policy_rule.decision == "ask"

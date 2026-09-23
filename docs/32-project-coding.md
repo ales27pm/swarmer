@@ -243,12 +243,53 @@ must remain distinguishable from user requirements and verified check evidence.
 No host filesystem is searched for project instructions, and existing user
 projects are not modified merely by enabling this feature.
 
+### On-demand reads and native source transfer
+
+After final prompt compaction, files whose complete content is already visible
+are removed from the model's read-operation schema. Omitted files and partial
+fragments remain readable. The worker also rejects a redundant read locally if
+the model disregards that schema. A rejection changes no source or check receipt
+and consumes no hidden retry. Existing progress limits still apply; this does
+not guarantee completion of an arbitrary project.
+
+Native compilation has a separate, device-authenticated transfer API:
+
+| Route | Purpose |
+| --- | --- |
+| `POST /goals/{id}/project/swift-validation` | Approve the exact latest revision, digest, worker, operation and target; enqueue once |
+| `GET /goals/{id}/project/swift-validation` | Read revision-bound status and validated successful receipt |
+| `POST /goals/{id}/project/swift-validation/{validation_id}/cancel` | Revoke execution and cancel its task/job; preserve project files |
+| `POST /agents/{agent_id}/jobs/{job_id}/project-source` | Fetch the approved source with the current authenticated job lease |
+
+The request requires `execution_consent: true` (a JSON boolean) and an
+idempotency key. Approval is valid for 15 minutes, one job and one worker; a
+conversation change, newer source revision, cancellation or expired lease
+prevents execution/results from using that approval. It is not a grant to run
+future revisions or to save generated files in the user's workspace.
+
+The iMac worker must explicitly enable `--project-staging-root` with a private
+0700 directory outside its credential directory. It retrieves the snapshot,
+checks both canonical project and filesystem hashes, stages all bounded text
+files in a fresh directory, and executes the selected SwiftPM/Xcode command.
+Source approval is rechecked before each command, during execution and before
+returning a receipt. Reserved runtime directories, symlinks and path collisions
+are rejected. The existing fixed-workspace mode cannot execute these jobs.
+
+Compilation executes code under the opted-in Mac account; staging is not a
+sandbox. The UI therefore asks for review and approval of this exact revision.
+The unsigned compiler lane has a 120-second budget and requires dependencies
+already available to the configured toolchain. See the Swift worker README for
+destination configuration and evidence limitations. A native test receipt stays
+separate from Python/npm project checks and never automatically completes a goal.
+
 ## Upgrade and recovery
 
 Schema 22 adds project revisions, conversation linkage/messages, reply fencing,
 and active-runtime pause accounting. Schema 23 adds private project memory and
 idempotent retrieval receipts. Schema 24 adds `goal_memory_queries` for shared
 planner/evaluator retrieval receipts and preserves existing pairing records.
+Schema 25 adds durable context/compaction storage. Schema 26 adds the native
+validation grants without changing stored project snapshots or pairing records.
 The schema-23 server cannot reopen schema 24: after accepting this migration,
 recover forward with a compatible server; do not perform a code-only rollback.
 Back up the stopped database, environment,

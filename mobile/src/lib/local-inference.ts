@@ -22,6 +22,8 @@ export type LocalModel = {
   source: string;
   sizeBytes: number;
   importedAt: string;
+  /** Older native records omit this; those are normalized to generation by the adapter. */
+  purpose?: "generation" | "embeddings";
 };
 
 export type LocalInferenceStatus = {
@@ -449,7 +451,9 @@ function parseLocalModel(value: unknown): LocalModel {
       "runtime",
       "sizeBytes",
       "source",
+      ...(Object.hasOwn(value, "purpose") ? ["purpose"] : []),
     ]) ||
+    (Object.hasOwn(value, "purpose") && value.purpose !== "generation" && value.purpose !== "embeddings") ||
     !isNonBlankString(value.modelId) ||
     !isRuntime(value.runtime) ||
     !isNonBlankString(value.displayName) ||
@@ -467,6 +471,7 @@ function parseLocalModel(value: unknown): LocalModel {
     source: value.source,
     sizeBytes: Number(value.sizeBytes),
     importedAt: value.importedAt,
+    purpose: value.purpose === "embeddings" ? "embeddings" : "generation",
   };
 }
 

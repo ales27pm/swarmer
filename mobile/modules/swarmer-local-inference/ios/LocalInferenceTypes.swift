@@ -37,6 +37,7 @@ struct StoredLocalModel: Codable, Equatable, Sendable {
   let tokenizerRelativePath: String?
   // Optional for indexes written before durable Hub models were introduced.
   var remoteOrigin: StoredRemoteModelOrigin? = nil
+  var purpose: LocalModelPurpose? = nil
 }
 
 struct ResolvedLocalModel: Sendable {
@@ -104,10 +105,11 @@ struct LocalModelRecord: Record, Sendable {
   @Field var source: String = ""
   @Field var sizeBytes: Int64 = 0
   @Field var importedAt: String = ""
+  @Field var purpose: String = "generation"
 
   init() {}
 
-  init(stored: StoredLocalModel) {
+  init(stored: StoredLocalModel, purpose: LocalModelPurpose? = nil) {
     self.init()
     modelId = stored.modelId
     runtime = stored.runtime.rawValue
@@ -115,6 +117,7 @@ struct LocalModelRecord: Record, Sendable {
     source = stored.source
     sizeBytes = stored.sizeBytes
     importedAt = ISO8601DateFormatter().string(from: stored.importedAt)
+    self.purpose = (purpose ?? stored.effectivePurpose).rawValue
   }
 }
 

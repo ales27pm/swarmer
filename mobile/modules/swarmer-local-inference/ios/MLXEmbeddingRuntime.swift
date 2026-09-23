@@ -18,7 +18,7 @@ private struct PreparedEmbeddingTokenizer: MLXLMCommon.TokenizerLoader {
 }
 
 actor MLXEmbeddingRuntime {
-  static let repository = "intfloat/multilingual-e5-small"
+  static let repository = EmbeddingValidation.repository
   static let pipeline = "e5-prefixes-mean-l2-specialtokens-v1"
   private var container: EmbedderModelContainer?
   private var operation: Task<EmbedderModelContainer, Error>?
@@ -67,9 +67,7 @@ actor MLXEmbeddingRuntime {
       Memory.cacheLimit = 20 * 1024 * 1024
       let directory = resolved.runtimeURL
       let config = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any]
-      guard config?["model_type"] as? String == "xlm-roberta", config?["hidden_size"] as? Int == 384 else {
-        throw LocalInferenceError.unsupportedModel("This revision does not match the E5-small architecture")
-      }
+      try EmbeddingValidation.validateE5Configuration(config ?? [:])
       // Prepare tokenizer before evaluating weights, matching the generation runtime's bounded load path.
       let tokenizer = try await #huggingFaceTokenizerLoader().load(from: directory)
       let loader = PreparedEmbeddingTokenizer(directory: directory, tokenizer: tokenizer)

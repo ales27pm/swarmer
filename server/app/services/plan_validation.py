@@ -100,6 +100,7 @@ def parse_swarm_plan_json(
     proposal = _coerce_model(SwarmPlanProposal, _parse_json_object(text))
     _validate_project_plan_shape(proposal.nodes)
     validate_worker_capabilities(proposal.nodes, available_skills=available_skills)
+    _validate_node_dependencies(proposal.nodes)
     return proposal
 
 
@@ -155,24 +156,23 @@ def validate_worker_capabilities(
             )
 
 
-def _validate_node_graph(
+def _validate_node_dependencies(
     nodes: Sequence[SwarmPlanNodeProposal],
     *,
-    policy: PermissionPolicy,
     known_dependency_ids: frozenset[str] = frozenset(),
-    available_skills: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
+    """Validate references without guessing edges or changing model-proposed IDs.
+
+    Initial plans may reference only this proposal's temporary IDs. Evaluator
+    extensions can additionally reference explicitly supplied existing node IDs.
+    """
     if len(nodes) > MAX_PLAN_NODES:
         raise PlanValidationError(f"plans cannot contain more than {MAX_PLAN_NODES} nodes")
-    _validate_project_plan_shape(nodes)
-    validate_worker_capabilities(nodes, available_skills=available_skills)
-
     by_id: dict[str, SwarmPlanNodeProposal] = {}
     for node in nodes:
         if node.temporary_id in by_id or node.temporary_id in known_dependency_ids:
             raise PlanValidationError(f"duplicate node id: {node.temporary_id}")
         by_id[node.temporary_id] = node
-        _validate_worker_policy(node, policy)
 
     current_ids = frozenset(by_id)
     all_known_ids = current_ids | known_dependency_ids
@@ -207,6 +207,23 @@ def _validate_node_graph(
     if len(ordered) != len(nodes):
         raise PlanValidationError("plan dependencies contain a cycle")
     return tuple(ordered)
+
+
+def _validate_node_graph(
+    nodes: Sequence[SwarmPlanNodeProposal],
+    *,
+    policy: PermissionPolicy,
+    known_dependency_ids: frozenset[str] = frozenset(),
+    available_skills: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    if len(nodes) > MAX_PLAN_NODES:
+        raise PlanValidationError(f"plans cannot contain more than {MAX_PLAN_NODES} nodes")
+    _validate_project_plan_shape(nodes)
+    validate_worker_capabilities(nodes, available_skills=available_skills)
+    order = _validate_node_dependencies(nodes, known_dependency_ids=known_dependency_ids)
+    for node in nodes:
+        _validate_worker_policy(node, policy)
+    return order
 
 
 def _semantic_node_signatures(
