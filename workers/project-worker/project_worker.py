@@ -58,6 +58,11 @@ NO_EFFECTIVE_OPERATION_DIAGNOSTIC = (
     "Return an effective file edit, patch or deletion, a focused read of an existing file, "
     "or an explicit check request."
 )
+REDUNDANT_READ_DIAGNOSTIC = (
+    "The model requested files already fully visible in the current prompt. "
+    "No changes or checks were accepted. Use the supplied source to make an effective "
+    "edit or patch, request checks explicitly, or read an omitted or partial file."
+)
 PYTHON_COMPLEXITY_DIAGNOSTIC = (
     "The proposed Python source exceeds the parser complexity limit. "
     "No changes or checks were accepted. Return one smaller complete module "
@@ -119,10 +124,10 @@ Choose the smallest useful line range and preserve indentation in new. Partial
 boundary spans are labelled: replacing one preserves text outside that exact span.
 Do not rewrite unrelated behavior.
 deletions is an array of existing paths to remove. Unmentioned files are preserved.
-To read omitted files before editing, return continue with focus_paths containing
-up to8 existing paths, and edits/patches/deletions/requested_checks empty. Their contents
-will be prioritized in the next charged iteration. Otherwise focus_paths is[].
-focus_paths is only for reading an existing file, never for a planned new file.
+Read omitted or partial files with continue, up to8 existing focus_paths, and
+edits/patches/deletions/requested_checks empty. Next charged iteration prioritizes
+that source. Never reread complete SOURCE or project_guidance files. Otherwise
+focus_paths is[]. It may name only existing files, never planned new ones.
 When returning any edits or patches, set focus_paths to[]. Use manifest-relative
 paths such as app.py, never absolute paths copied from runtime tracebacks.
 Never replace an omitted existing file or partially shown file. Focus again to
@@ -190,6 +195,7 @@ decorators or surrounding SOURCE lines outside that target, and make an actual
 change. Replacement is at most 800 characters; no placeholder or truncated code.
 Unmentioned files and the existing milestone plan are preserved automatically.
 focus_paths is only for reading one existing manifest path, never a new file.
+Never reread a file already shown completely in SOURCE or project_guidance.
 Use action continue while work remains; complete only when ready for independent
 checks. Checks run automatically; never claim they passed before their receipts.
 Keep message to one short sentence in the user's language; run_instructions brief.
@@ -760,6 +766,22 @@ def node_collected_no_tests(check: dict[str, Any]) -> bool:
     )
 
 
+def fully_visible_paths(context: dict[str, Any], payload: dict[str, Any]) -> set[str]:
+    originals = {item["path"]: item["content"] for item in payload["files"]}
+    # A nominal fragment can contain the entire small file after budget trimming.
+    # Compare exact source, not labels, a previous iteration's focus, or model prose.
+    blocks = (
+        context["selected_complete_files"]
+        + context["selected_file_fragments"]
+        + context.get("project_guidance", [])
+    )
+    return {
+        item["path"]
+        for item in blocks
+        if item["path"] in originals and item["content"] == originals[item["path"]]
+    }
+
+
 def constrained_step_schema(
     schema: dict[str, Any],
     context: dict[str, Any],
@@ -809,14 +831,17 @@ def constrained_step_schema(
         python = copy.deepcopy(mutation)
         python["properties"]["runtime"]["enum"] = ["python"]
         branches = [node, python]
+    visible = fully_visible_paths(context, payload)
+    readable = [item["path"] for item in payload["files"] if item["path"] not in visible]
     if (
-        payload["files"]
+        readable
         and "continue" in allowed_actions
         and schema["properties"]["focus_paths"].get("maxItems") != 0
     ):
         read = copy.deepcopy(schema)
         read["properties"]["action"]["enum"] = ["continue"]
         read["properties"]["focus_paths"]["minItems"] = 1
+        read["properties"]["focus_paths"]["items"] = {"type": "string", "enum": readable}
         for field in ("edits", "patches", "deletions", "requested_checks"):
             read["properties"][field].pop("minItems", None)
             read["properties"][field]["maxItems"] = 0
@@ -1386,10 +1411,7 @@ class ProjectGenerator:
                     continue
                 raise ProjectError("project messages exceed the local model context budget")
             messages[-1]["content"] = workspace_message()
-        self.last_visible_paths = {
-            item["path"]
-            for item in context["selected_complete_files"] + context.get("project_guidance", [])
-        }
+        self.last_visible_paths = fully_visible_paths(context, payload)
         self.last_guidance_reads = [
             {"path": item["path"], "sha256": item["sha256"]}
             for item in context.get("project_guidance", [])
@@ -1559,6 +1581,10 @@ class ProjectGenerator:
             if compact_repair:
                 value = expand_compact_repair(value, payload)
             step = parse_step(resolve_model_patches(value, addresses))
+            if any(path in self.last_visible_paths for path in step["focus_paths"]):
+                # Native model grammars are advisory: enforce the final-prompt
+                # source boundary locally too, without another model call.
+                raise ModelStepError(REDUNDANT_READ_DIAGNOSTIC)
             if (needs_tests or needs_node_tests) and not step["edits"] and not step["focus_paths"]:
                 raise ModelStepError(
                     "The test runner found no tests, but the model returned no test file. "

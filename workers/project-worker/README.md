@@ -123,9 +123,14 @@ Existing projects retain recent user decisions and the latest assistant progress
 compacting earlier assistant repetition and successful command logs first. The
 optional address catalog shrinks before complete source is demoted to fragments.
 Candidates are shared across files in rounds, prioritizing focused and relevant
-source. A focused read rotates the candidate region even when the full file fits.
-Repeated focus remains
-subject to the goal budget. Invalid model edits are rejected without altering the
+source. An inherited focus rotates the candidate region; subsequent reads may
+name only omitted or partially shown files. The final prompt's exact source and
+complete AGENTS.md contents determine this boundary, including a fragment that
+contains its entire small file. Both the model grammar and response validation
+reject redundant reads without a retry, changes, checks or false progress. The
+next charged job receives the rejection diagnostic and must use the supplied
+source. Reads of omitted files, further partial fragments and unloaded scoped
+guidance remain available within the goal budget. Invalid model edits are rejected without altering the
 snapshot; a safe diagnostic guides the next job, preserving previous real checks.
 A model timeout also returns an unchanged snapshot with a fixed diagnostic asking
 for a smaller complete batch. The next attempt is a new, separately charged job;

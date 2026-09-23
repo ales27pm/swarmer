@@ -571,7 +571,9 @@ def test_repair_context_keeps_diagnostic_source_before_old_module_instructions(
         "iteration": 12,
     }
     body = capture_project_request(
-        monkeypatch, data, step(action="continue", edits=[], focus_paths=["tests/test_crm.py"])
+        monkeypatch,
+        data,
+        step(action="continue", edits=[], requested_checks=[["python", "-m", "pytest", "-q"]]),
     )
     messages = body["messages"]
     workspace = messages[-1]["content"]
@@ -1223,7 +1225,11 @@ def test_one_full_edit_patch_and_deletion_preserve_other_files_in_maximum_snapsh
 
 
 def test_wire_grammar_separates_mutation_read_and_clarification() -> None:
-    data = {**payload(), "files": [{"path": "app.py", "content": "value = 1\n"}]}
+    data = {
+        **payload(),
+        "files": [{"path": "app.py", "content": "value = 1\n" + "# source context\n" * 3_000}],
+        "focus_paths": ["app.py"],
+    }
     context = worker.model_context(data)
     identifier = next(iter(worker.addressed_patch_spans(context, data)))
     schema = worker.constrained_step_schema(copy.deepcopy(worker.STEP_SCHEMA), context, data)
@@ -1574,7 +1580,9 @@ def missing_node_manifest_payload() -> dict[str, Any]:
 def test_missing_node_manifest_prioritizes_creation_and_preserves_runtime_choice_and_reads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = capture_project_request(monkeypatch, missing_node_manifest_payload())
+    data = missing_node_manifest_payload()
+    data["files"].append({"path": "app.js", "content": "// source context\n" * 3_000})
+    request = capture_project_request(monkeypatch, data)
     task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
     assert "root package.json is missing" in task
     assert "before adding tests" in task
@@ -1603,10 +1611,10 @@ def test_missing_node_manifest_prioritizes_creation_and_preserves_runtime_choice
     read = {
         **step(action="continue", runtime="node", edits=[], requested_checks=[]),
         "patches": [],
-        "focus_paths": ["README.md"],
+        "focus_paths": ["app.js"],
     }
     assert validator.is_valid(read)
-    capture_project_request(monkeypatch, missing_node_manifest_payload(), read)
+    capture_project_request(monkeypatch, data, read)
     assert all(next(iter(branch["properties"])) == "edits" for branch in request["format"]["oneOf"])
 
 
@@ -1711,7 +1719,13 @@ def test_missing_tests_cannot_select_an_empty_mutation(
     path = "app.py" if runtime == "python" else "app.js"
     data = {
         **payload(),
-        "files": [{"path": path, "content": "value = 1"}],
+        "files": [
+            {
+                "path": path,
+                "content": "value = 1\n"
+                + ("# context\n" if runtime == "python" else "// context\n") * 3_000,
+            }
+        ],
         "checks": [
             node_check(["python", "-m", "pytest", "-q"], "no tests ran in 0.00s")
             if runtime == "python"
@@ -2065,7 +2079,13 @@ def test_explicit_checks_only_request_still_executes_the_existing_snapshot() -> 
 def test_mutation_schema_requires_an_operation_but_preserves_read_and_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    data = {**payload(), "files": [{"path": "crm.py", "content": "VALUE = 1\n"}]}
+    data = {
+        **payload(),
+        "files": [
+            {"path": "crm.py", "content": "VALUE = 1\n"},
+            {"path": "unread.py", "content": "# source context\n" * 3_000},
+        ],
+    }
     body = capture_project_request(monkeypatch, data)
     validator = Draft202012Validator(body["format"])
     response = step(action="continue", edits=[], patches=[], focus_paths=[])
@@ -2075,7 +2095,8 @@ def test_mutation_schema_requires_an_operation_but_preserves_read_and_clarificat
     )
     assert validator.is_valid({**response, "deletions": ["crm.py"]})
     assert validator.is_valid({**response, "requested_checks": [["python", "-m", "pytest", "-q"]]})
-    assert validator.is_valid({**response, "focus_paths": ["crm.py"]})
+    assert validator.is_valid({**response, "focus_paths": ["unread.py"]})
+    assert not validator.is_valid({**response, "focus_paths": ["crm.py"]})
     assert validator.is_valid({**response, "action": "clarify", "message": "Which interface?"})
     patch_branch = next(
         branch
@@ -2802,6 +2823,7 @@ def test_compact_recovery_keeps_missing_node_manifest_priority_and_python_escape
         **missing_node_manifest_payload(),
         "conversation": compact_recovery_payload()["conversation"],
     }
+    data["files"].append({"path": "app.js", "content": "// source context\n" * 3_000})
     manifest = compact_step(
         runtime="node",
         edits=[
@@ -2813,7 +2835,8 @@ def test_compact_recovery_keeps_missing_node_manifest_priority_and_python_escape
     assert validator.is_valid(manifest)
     assert not validator.is_valid(compact_step(runtime="node"))
     assert validator.is_valid(compact_step(runtime="python"))
-    assert validator.is_valid(compact_step(runtime="node", edits=[], focus_paths=["README.md"]))
+    assert validator.is_valid(compact_step(runtime="node", edits=[], focus_paths=["app.js"]))
+    assert not validator.is_valid(compact_step(runtime="node", edits=[], focus_paths=["README.md"]))
     task = body["messages"][-1]["content"]
     assert "root package.json is missing" in task and "static HTML/JS" in task
     assert body["options"]["num_predict"] == 512
@@ -2822,7 +2845,9 @@ def test_compact_recovery_keeps_missing_node_manifest_priority_and_python_escape
 def test_compact_recovery_schema_permits_one_addressed_patch_or_read_but_no_combination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    body = capture_project_request(monkeypatch, compact_recovery_payload(), compact_step())
+    data = compact_recovery_payload()
+    data["files"].append({"path": "other.py", "content": "# source context\n" * 3_000})
+    body = capture_project_request(monkeypatch, data, compact_step())
     branch = next(b for b in body["format"]["oneOf"] if b["properties"]["patches"]["maxItems"] == 1)
     address = branch["properties"]["patches"]["items"]["oneOf"][0]["properties"]["span_id"]["enum"][
         0
@@ -2830,7 +2855,8 @@ def test_compact_recovery_schema_permits_one_addressed_patch_or_read_but_no_comb
     patch = {"path": "app.py", "span_id": address, "new": "VALUE = 2\n"}
     validator = Draft202012Validator(body["format"])
     assert validator.is_valid(compact_step(edits=[], patches=[patch]))
-    assert validator.is_valid(compact_step(edits=[], focus_paths=["app.py"]))
+    assert validator.is_valid(compact_step(edits=[], focus_paths=["other.py"]))
+    assert not validator.is_valid(compact_step(edits=[], focus_paths=["app.py"]))
     assert not validator.is_valid(compact_step(patches=[patch]))
     assert not validator.is_valid(compact_step(edits=[], patches=[patch, patch]))
     assert not validator.is_valid(compact_step(edits=[], focus_paths=["app.py", "app.py"]))
