@@ -266,6 +266,73 @@ parents/nodes still fence the original child. All 98 selected recovery, manager,
 project, native-validation, maintenance and lease tests passed, including the
 five new race cases. Ruff, formatting, mypy and diff checks passed.
 
+Main `86aa6bc` was pushed to both remotes. Its narrow API backport `c519dfe`
+passed 74 focused tests, Ruff and mypy; the rollout helpers passed 72 tests with
+one inapplicable empty-additions case skipped. Only `goal_manager.py` changed in
+the deployed runtime. Recovery release `13abfa7` retains all 71 runtime files
+byte-for-byte from API0748; schema26 and all 58 database tables are unchanged.
+The supervised cutover and independent verification passed at
+2026-09-23T05:13:22Z, confirming all 37 protected history fingerprints, six fresh
+worker heartbeats, and unchanged worker bindings, credentials and models.
+Service restarts were part of the API cutover; no active work was interrupted.
+Its reviewed baseline was
+`dfdcdfcbd5d70cda379fd4de5bc3da8ff2fc82c835dbdced4c136e2e1d0c5792`.
+
+## Production compiler and model repair qualification
+
+After the dispatch correction, a public continuation of the preserved benign
+fixture produced a separate native-validation request in one generation step.
+The reviewed four-file source remained exactly
+`8e2925a056213a8cfabaf4afb3788fcfe7203350d43c949187931e719ab4476a`.
+The authenticated grant created `swiftval_e1fa96d250044342a3ebd0eaebcc5487`;
+the enrolled iMac automatically retrieved the source and ran real `swift test`.
+The command finished after 36.217 seconds with exit1 and zero executed tests.
+Compilation identified an actual generated-code error: the two unqualified
+`add` calls in the XCTest subclass resolved to XCTest's instance method instead
+of the library's global function. The compiler explicitly recommended the
+`QualificationAddition.` module qualifier. Source hashes remained unchanged.
+
+This failed run is retained as negative evidence, not a passing receipt. The
+validation API returned `failed` with no success receipt; the raw worker result,
+command log and compiler diagnostics are preserved privately. At
+2026-09-23T05:17:51Z only this qualification goal was cancelled, its revision was
+retained, and its temporary identity was revoked with a subsequent401 response.
+
+A further public continuation received the exact compiler diagnostics, without
+any manually supplied replacement source. Its limits remained five generation
+steps, ten model reservations and600 seconds. The model first added a corrected
+class alongside the old class, then removed the duplicate in its next accepted
+edit. The resulting four-file snapshot was reviewed at SHA256
+`cb29a5e483de312b6d83bc8d163743d151304c2f93970a5cd00fdfa066c7ef4c`.
+Only the two call-site qualifiers and a final newline differ from the previous
+snapshot; both assertions remain unchanged. The next two conflicting patch/file
+operations were rejected. The fifth and last generation then reinserted a
+duplicate test class. No validation was granted for that changed snapshot. The
+run reached its original budget with five generation calls, zero focused reads,
+three accepted edits and two rejected steps. All five input/result pairs and
+revisions remain retained. Cleanup at2026-09-23T05:24:44Z confirmed no active job
+and revoked only this fixture's temporary device; the old token returned401.
+
+Offline reconstruction of the third and fourth requests found a contradictory
+instruction: the native prompt permits a ready-for-validation response without
+edits, but a later generic answered-request instruction still requires actual
+file changes. Both source files were fully visible and the fourth request retained
+the previous conflict diagnostic. The response schema also allowed a file edit
+and patch on the same path, subsequently rejected by the local contract. These
+observations distinguish a concrete prompt/schema defect from successful project
+completion; the failed qualification is not counted as a pass.
+
+The native path now omits the unconditional implementation instruction and
+explicitly compares historical diagnostics against current source before
+requesting another edit. A ready response can request separate native validation
+with no operations. Native response modes permit one family of operations per
+batch, eliminating edit/patch/deletion combinations before inference output is
+accepted. Python's mixed operations on distinct files remain supported. Eight
+focused regressions failed before this correction; the full worker selection
+then passed399 tests with five existing optional skips. Ruff and diff checks
+passed. The frozen worker source SHA256 is
+`2a708ca1a7899c2213959418b23e43981715b1d4f873f23c3de85268a0e7fd17`.
+
 ## TestFlight
 
 Build `20260922233500`, version0.1.0, was archived from exact main source
