@@ -1168,7 +1168,15 @@ class ProjectGenerator:
         prompt_budget = MAX_RECOVERY_PROMPT_BYTES if compact_repair else MAX_PROMPT_BYTES
         if compact_repair:
             instruction = REPAIR_RECOVERY_INSTRUCTION
-            conversation = [latest_user_message] if latest_user_message is not None else []
+            # Creation instructions already contain the exact latest request.
+            # Ordinary compact repairs replace that task below and need its
+            # separate user message; never charge for the same request twice.
+            conversation = (
+                [latest_user_message]
+                if latest_user_message is not None
+                and not (needs_tests or needs_node_manifest or needs_node_tests)
+                else []
+            )
             context.pop("plan", None)  # Preserved exactly by the worker after this small repair.
             context["historical_memory_hints"] = None
             for item in context["file_manifest"]:

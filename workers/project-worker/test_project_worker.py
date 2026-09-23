@@ -2817,6 +2817,37 @@ def test_compact_context_retains_valid_large_unicode_user_reply(
     assert body["options"]["num_predict"] == 512
 
 
+@pytest.mark.parametrize("creation", ["python_tests", "node_tests", "node_manifest"])
+def test_compact_creation_keeps_large_latest_user_once(
+    monkeypatch: pytest.MonkeyPatch, creation: str
+) -> None:
+    data = compact_recovery_payload()
+    if creation == "python_tests":
+        data["checks"] = [node_check(["python", "-m", "pytest", "-q"], "no tests ran", code=5)]
+    elif creation == "node_tests":
+        data["files"] = [{"path": "app.js", "content": "export const value = 1;\n"}]
+        data["checks"] = [node_check(["node", "--test"], NODE_EMPTY_TAP, code=5)]
+    else:
+        data = {
+            **missing_node_manifest_payload(),
+            "conversation": data["conversation"],
+        }
+    latest_user = "界" * 3_894
+    data["conversation"][0]["content"] = latest_user
+    response = compact_step(
+        runtime="python" if creation == "python_tests" else "node",
+        edits=[],
+        focus_paths=[data["files"][0]["path"]],
+    )
+    body = capture_project_request(monkeypatch, data, response)
+    assert len(latest_user.encode()) == 11_682
+    assert sum(message["content"].count(latest_user) for message in body["messages"]) == 1
+    assert latest_user in body["messages"][-1]["content"]
+    size = sum(len(message["content"].encode()) for message in body["messages"])
+    assert worker.MAX_RECOVERY_PROMPT_BYTES < size <= worker.MAX_PROMPT_BYTES
+    assert body["options"]["num_predict"] == 512
+
+
 @pytest.mark.parametrize("kind", ["no_timeout", "ordinary_assistant", "checks_passed"])
 def test_compact_recovery_does_not_change_other_generation_phases(
     monkeypatch: pytest.MonkeyPatch,
