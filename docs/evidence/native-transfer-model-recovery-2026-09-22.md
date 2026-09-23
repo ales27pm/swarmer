@@ -201,6 +201,31 @@ continuation guidance points to the next missing milestone in the current
 manifest; there is no fixture-specific code. Its regression failed first, then
 385 worker tests passed (5 optional skips), followed by258 focused tests and Ruff.
 
+Main `cf95b08` was pushed to both remotes. The worker-only backport `bf73fd3`
+passed381 tests (5 optional skips); its deployment helper passed53 tests. At
+2026-09-23T04:33:32Z independent production verification confirmed its exact
+source, all eight mounted files, fresh heartbeat, and all37 protected histories.
+API0748, model, container, settings, credentials and other processes are unchanged.
+The activation baseline was
+`31c9dcf8a03c9ce38c8b36397caa29437953fb7d5aceca71271425bf960ddf26`.
+
+The next probe used5 generation steps plus5 embedding reservations (10 total),
+bounded to600 seconds. It confirmed the identical-edit diagnostic in real worker
+results, but still produced only a manifest: other iterations changed metadata
+instead of adding source/tests. All five revisions and input payloads were
+retained; no native validation was requested. At2026-09-23T04:39:38Z its temporary
+identity was revoked, the old token returned401, and no active job remained.
+
+A further continuation-context correction replaces reissuing the original
+creation request with a task that starts from the accepted workspace. It retains
+the original objective and latest user requirements, and may suggest the first
+absent canonical file mentioned in the accepted plan. This is advisory, never
+proof of completion or an execution grant. URLs, code fragments, unsafe paths,
+Windows paths and existing files are excluded from those hints. There are no
+qualification-specific names or deterministic generated project files.391 worker
+tests passed (5 optional skips), with Ruff and diff checks clean. A captured-input
+real-model probe is required before deploying this candidate.
+
 ## TestFlight
 
 Build `20260922233500`, version0.1.0, was archived from exact main source

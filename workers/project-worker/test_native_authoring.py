@@ -221,3 +221,74 @@ def test_native_unread_existing_source_cannot_be_replaced() -> None:
     assert snapshot_sha(result["files"]) == snapshot_sha(current["files"])
     assert result["focus_paths"] == [SWIFT_FILES[1]["path"]]
     assert result["native_validation"] == "authoring"
+
+
+def test_native_continuation_prompt_advances_missing_plan_file_and_preserves_latest_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    latest = "Preserve addition and add overflow handling before validation."
+    current = {
+        **payload(),
+        "objective": "Create a Swift library with arithmetic and real tests.",
+        "files": copy.deepcopy(SWIFT_FILES[:1]),
+        "plan": [
+            "Create Package.swift",
+            "Implement Sources/Addition/Addition.swift",
+            "Write Tests/AdditionTests/AdditionTests.swift",
+        ],
+        "conversation": [
+            {"role": "assistant", "content": "Package draft recorded."},
+            {"role": "user", "content": latest},
+        ],
+    }
+    requests = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            requests.append(json.loads(request.data))
+            return Response(
+                json.dumps(
+                    {
+                        "message": {
+                            "content": json.dumps(step(action="continue", edits=[SWIFT_FILES[1]]))
+                        },
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    result = worker.run_iteration(
+        current,
+        worker.ProjectGenerator("http://127.0.0.1:11434/v1", "example"),
+        Runner(),
+        lambda: None,
+    )
+    task = requests[0]["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:\n", 1)[1]
+    assert "Continue the existing native project" in task
+    assert '"Sources/Addition/Addition.swift"' in task
+    assert "advisory" in task and "latest user" in task
+    assert latest in task
+    assert "Implement this latest user request now:" not in task
+    assert current["objective"] in requests[0]["messages"][-1]["content"]
+    assert SWIFT_FILES[1] in result["files"] and result["native_validation"] == "authoring"
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        ["See https://example.org/Sources/Next.swift"],
+        [r"Create C:\Windows\Next.swift", r"Create Sources\Next.swift"],
+        ["Create /tmp/Next.swift", "Create ../Next.swift", "Create .git/Next.swift"],
+        ["Use value.swift()", "let value.swift = 1;", "```Next.swift```"],
+        ["Create PACKAGE.SWIFT"],
+    ],
+)
+def test_missing_plan_file_ignores_urls_code_unsafe_and_present_paths(plan: list[str]) -> None:
+    assert (
+        worker.next_native_plan_file({**payload(), "files": SWIFT_FILES[:1], "plan": plan}) is None
+    )
