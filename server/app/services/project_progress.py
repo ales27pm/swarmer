@@ -11,6 +11,10 @@ from app.services.project_contracts import (
     ProjectResult,
     validate_project_path,
 )
+from app.services.project_validation import (
+    NATIVE_VALIDATION_DIAGNOSTIC,
+    native_validation_unavailable,
+)
 
 # Schema 1.0 workers use these exact runtime-owned diagnostics in conversation
 # history, including for timeout recovery. Preserve only this closed vocabulary
@@ -174,6 +178,8 @@ def has_project_progress(payload: ProjectPayload, result: ProjectResult) -> bool
         file.path: file.content for file in result.files
     }:
         return True
+    if native_validation_unavailable(result.files):
+        return False
     previous = _check_signatures(payload.checks)
     return any(
         signature[1:] == ("passed", 0) and signature not in previous
@@ -183,6 +189,8 @@ def has_project_progress(payload: ProjectPayload, result: ProjectResult) -> bool
 
 def project_progress_message(payload: ProjectPayload, result: ProjectResult) -> str:
     """Return evidence-owned status, retaining genuine questions and fixed errors."""
+    if native_validation_unavailable([*payload.files, *result.files]):
+        return NATIVE_VALIDATION_DIAGNOSTIC
     # The public schema permits a question alongside a snapshot. Do not turn
     # that accepted question into a progress statement marked as a question.
     if result.action == "clarify" and not _is_worker_diagnostic(result.message):

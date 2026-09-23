@@ -25,6 +25,11 @@ from app.services.project_contracts import (
 )
 from app.services.project_memory import ProjectMemoryService
 from app.services.project_progress import project_progress_message
+from app.services.project_validation import (
+    NATIVE_VALIDATION_DIAGNOSTIC,
+    native_validation_unavailable,
+    pause_native_validation_locked,
+)
 from app.services.state_service import StateService
 
 TERMINAL = frozenset({"completed", "failed", "cancelled", "budget_exhausted"})
@@ -259,7 +264,13 @@ class GoalProjectService:
             # The private job retains the original report. Public progress is
             # derived from the accepted snapshot rather than model assertions.
             result = result.model_copy(
-                update={"message": project_progress_message(payload, result)}
+                update={
+                    "message": project_progress_message(payload, result),
+                    "action": "continue"
+                    if result.action == "complete"
+                    and native_validation_unavailable([*payload.files, *result.files])
+                    else result.action,
+                }
             )
             now, revision_id = self._now(), f"revision_{uuid4().hex}"
             digest = project_digest(result.files)
@@ -352,13 +363,18 @@ class GoalProjectService:
                 state = "needs_user"
             elif goal[1] == "project_ready" and result.action == "complete":
                 state = "ready"
+        unsupported_native = native_validation_unavailable(result.files)
+        # Read-only projection: preserve historical snapshots and write receipts.
+        # An applied state proves files were saved, never that Swift was validated.
+        if unsupported_native and state in {"ready", "waiting_permission", "building"}:
+            state = "needs_user"
         return {
             "project_id": latest["project_id"],
             "revision_id": latest["id"],
             "revision": latest["revision"],
             "sha256": latest["sha256"],
             "state": state,
-            "message": result.message,
+            "message": NATIVE_VALIDATION_DIAGNOSTIC if unsupported_native else result.message,
             "plan": result.plan,
             "files": [file.model_dump() for file in result.files],
             "checks": [check.model_dump() for check in result.checks],
@@ -390,6 +406,8 @@ class GoalProjectService:
             if row is None or not hmac.compare_digest(str(row["sha256"]), sha256):
                 raise GoalProjectConflict("reviewed project revision does not match")
             result = ProjectResult.model_validate_json(str(row["snapshot_json"]))
+            if native_validation_unavailable(result.files):
+                raise GoalProjectConflict(NATIVE_VALIDATION_DIAGNOSTIC)
             args = ProjectWriteArguments(
                 project_id=row["project_id"],
                 revision_id=revision_id,
@@ -507,6 +525,7 @@ class GoalProjectService:
     ) -> set[str]:
         await ApprovalGateway(self.db_path).expire_pending()
         changed: set[str] = set()
+        native_paused: set[str] = set()
         now = self._now()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -549,12 +568,15 @@ class GoalProjectService:
                     )
                 except (ValueError, TypeError):
                     succeeded = False
+                unsupported_native = succeeded and native_validation_unavailable(snapshot.files)
                 await db.execute(
                     """UPDATE plan_nodes SET status=?,result_summary=?,error_summary=?,
                     updated_at=?,completed_at=? WHERE id=? AND status='waiting_permission'""",
                     (
                         "completed" if succeeded else "failed",
-                        f"Project revision saved to {arguments.path}; isolated build and test checks passed. Not deployed."
+                        f"Project revision saved to {arguments.path}. {NATIVE_VALIDATION_DIAGNOSTIC}"
+                        if unsupported_native
+                        else f"Project revision saved to {arguments.path}; isolated build and test checks passed. Not deployed."
                         if succeeded
                         else None,
                         None if succeeded else "Reviewed project publication did not complete.",
@@ -565,6 +587,8 @@ class GoalProjectService:
                 )
                 goal_id = str(row["goal_run_id"])
                 changed.add(goal_id)
+                if unsupported_native:
+                    native_paused.add(goal_id)
                 await append_audit_event(
                     db,
                     "goal.project.applied" if succeeded else "goal.project.failed",
@@ -581,6 +605,9 @@ class GoalProjectService:
                     created_at=now,
                 )
             for goal_id in changed:
+                if goal_id in native_paused:
+                    await pause_native_validation_locked(db, goal_id, now=now)
+                    continue
                 waiting = await (
                     await db.execute(
                         "SELECT 1 FROM plan_nodes WHERE goal_run_id=? AND status='waiting_permission' LIMIT 1",

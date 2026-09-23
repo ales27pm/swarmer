@@ -59,6 +59,11 @@ from app.services.planner_provider import (
 from app.services.project_contracts import ProjectMemoryContext, ProjectPayload, ProjectResult
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.project_progress import has_project_progress
+from app.services.project_validation import (
+    NATIVE_VALIDATION_DIAGNOSTIC,
+    native_validation_unavailable,
+    pause_native_validation_locked,
+)
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.result_aggregator import (
     ResultAggregator,
@@ -646,7 +651,17 @@ class GoalManager:
             stale = int(current_node["conversation_revision"]) != int(
                 current["conversation_revision"]
             )
-            action = "continue" if stale else str(result["action"])
+            # Use the authenticated persisted input as well as the output: a
+            # model cannot evade the lane's coverage limit by deleting Swift.
+            job_input = await (
+                await db.execute("SELECT payload_json FROM agent_jobs WHERE id=?", (job["id"],))
+            ).fetchone()
+            unsupported_native = not stale and native_validation_unavailable(
+                [*result["files"], *json.loads(str(job_input[0]))["files"]]
+                if job_input
+                else result["files"]
+            )
+            action = "continue" if stale or unsupported_native else str(result["action"])
             message = (
                 "The previous iteration was retained. Continuing with your latest instructions."
                 if stale
@@ -656,16 +671,18 @@ class GoalManager:
                 await self._project_stalled_locked(
                     db, goal_id, int(current["conversation_revision"])
                 )
-                if not stale and action == "continue"
+                if not stale and not unsupported_native and action == "continue"
                 else None
             )
             stalled = stall_reason is not None
-            if stalled:
+            if unsupported_native:
+                message = NATIVE_VALIDATION_DIAGNOSTIC
+            elif stalled:
                 message = str(stall_reason) + "\n\n" + message[:3_000]
             await GoalConversationService.assistant_locked(
                 db, goal_id, message, question=action == "clarify", now=now
             )
-            waiting = stalled or action in {"clarify", "complete"}
+            waiting = unsupported_native or stalled or action in {"clarify", "complete"}
             await db.execute(
                 """UPDATE plan_nodes SET status=?,result_summary=?,updated_at=?,completed_at=? WHERE id=?""",
                 (
@@ -684,11 +701,13 @@ class GoalManager:
                 (
                     "waiting_permission" if waiting else "running",
                     "needs_user"
-                    if action == "clarify" or stalled
+                    if action == "clarify" or stalled or unsupported_native
                     else "project_ready"
                     if action == "complete"
                     else "project_continue",
-                    stall_reason
+                    NATIVE_VALIDATION_DIAGNOSTIC
+                    if unsupported_native
+                    else stall_reason
                     if stalled
                     else "Project needs your clarification."
                     if action == "clarify"
@@ -706,7 +725,7 @@ class GoalManager:
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             await db.commit()
-        if action == "continue" and not stalled:
+        if action == "continue" and not stalled and not unsupported_native:
             await self._resume_pending_conversation(goal_id, maintenance_guard=maintenance_guard)
             await self._advance_ready(
                 goal_id, explicit_user_action=False, maintenance_guard=maintenance_guard
@@ -3051,6 +3070,16 @@ class GoalManager:
                 terminal_status = "failed"
                 terminal_reason = "evaluator repeated an equivalent decision without state change"
             elif decision.status is EvaluationStatus.DONE:
+                latest_project = await (
+                    await db.execute(
+                        """SELECT snapshot_json FROM project_revisions WHERE goal_run_id=?
+                        ORDER BY revision DESC LIMIT 1""",
+                        (goal_run_id,),
+                    )
+                ).fetchone()
+                unsupported_native = latest_project is not None and native_validation_unavailable(
+                    ProjectResult.model_validate_json(str(latest_project[0])).files
+                )
                 completed_evidence = any(
                     node["node_type"] == "worker" and node["status"] == "completed"
                     for node in current_nodes
@@ -3060,7 +3089,9 @@ class GoalManager:
                     and node["status"] in {"failed", "blocked", "cancelled"}
                     for node in current_nodes
                 )
-                if (
+                if unsupported_native:
+                    await pause_native_validation_locked(db, goal_run_id, now=now)
+                elif (
                     not completed_evidence
                     or failed_required_evidence
                     or decision.missing_requirements
