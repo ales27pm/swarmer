@@ -385,6 +385,42 @@ passed with five existing optional skips; Ruff, formatting and diff checks
 passed. Frozen main worker SHA256:
 `8da3f2a37807b6dbb65fae95018e3912268a2ed3c4b4bda4013eb997abfab774`.
 
+Main `263c113` was pushed to both remotes; narrow worker backport `e336bba`
+passed404 tests with five optional skips. One real replay of the captured assisted
+request against the30B model took61.67 seconds. It changed only the requested
+XCTest file, removed the duplicate class, preserved the two assertions and the
+other three files, and returned `complete` to request native validation. The
+runtime correctly recorded `native_validation: required`, not a passed build.
+The resulting snapshot matches the independently reviewed
+`cb29a5e483de312b6d83bc8d163743d151304c2f93970a5cd00fdfa066c7ef4c`.
+Model result SHA256:
+`21d3ee5b267be962f7db599d8f34b665345c9a2447398d12fd5dd9c32f521528`.
+
+That exact model output was then staged privately on the iMac and reviewed before
+execution. The deployed `SwiftWorkspace` executor compiled it and executed two
+real XCTest cases: **exit0, two tests, zero failures, source unchanged**, in30.723
+seconds. The xUnit report names both addition cases; its SHA256 is
+`3c12915b1a33033e5c420b04d6c23e2132f97e4aab78b6072372cd318807d3da`.
+The source digest is
+`01a23592c3516177f8c8d95f777b925efcd9e2dc68f39c9d6d2144c12c29610e`;
+the genuine executor receipt SHA256 is
+`891422697da52184ff25ca302a4332639803446bc80bd0f0aec8ece0539f35cb`.
+
+This passing repair/compilation is an isolated, explicitly assisted qualification.
+Its output was not inserted into a production project and no API job receipt was
+fabricated. Production transfer was exercised separately by the earlier genuine
+compiler failures. These results establish this targeted repair and the transport
+mechanism, not unattended completion of arbitrary generated projects.
+
+The exact focus backport was activated under the same supervised recovery
+protocol. Independent verification at2026-09-23T05:52:40Z confirmed release
+`e336bbada0e51070f5f9986438b265369048950d-25d444a2b2e9`, all eight mounted
+sources, a fresh authenticated heartbeat, all37 protected history fingerprints,
+unchanged APIc519/model/configuration/unrelated processes, and no active work
+interrupted. Reviewed baseline SHA256:
+`8e9be539bae12ed3429c5d26a3c697e26862e529cdadb2744978ce44de32372a`.
+No database restoration, additional goal or additional model call occurred.
+
 ## TestFlight
 
 Build `20260922233500`, version0.1.0, was archived from exact main source
