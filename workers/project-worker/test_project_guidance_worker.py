@@ -10,6 +10,7 @@ from test_project_worker import Generator, Runner, payload, step
 
 def project():
     value = payload()
+    value["guidance_version"] = 1
     value["files"] = [
         {"path": "AGENTS.md", "content": "Preserve customer data."},
         {"path": "src/AGENTS.md", "content": "Use typed functions."},
@@ -162,3 +163,49 @@ def test_case_insensitive_name_and_directory_scope_boundary():
     files = [{"path": "src/agents.MD", "content": "Scoped."}]
     assert worker.project_guidance(files, ["src_extra/app.py"]) == []
     assert worker.project_guidance(files, ["src/new/app.py"])[0]["content"] == "Scoped."
+
+
+def test_legacy_payload_omits_new_result_fields_during_worker_first_rollout():
+    data = project()
+    data.pop("guidance_version")
+    assert "project_guidance" not in worker.model_context(data)
+    generator = Generator(step(edits=[{"path": "src/data/store.py", "content": "value = 2\n"}]))
+    result = worker.run_iteration(data, generator, Runner(), lambda: None)
+    assert "guidance_reads" not in result
+    assert not result["focus_paths"]
+
+
+@pytest.mark.parametrize("version", [True, 0, 2, "1"])
+def test_unknown_guidance_protocol_rejected(version):
+    from project_contract import parse_payload
+
+    data = project()
+    data["guidance_version"] = version
+    with pytest.raises(ProjectError, match="guidance version"):
+        parse_payload({"required_skill": "code.build_project", "payload": data})
+
+
+def test_guidance_exposes_addressed_patch_targets():
+    data = project()
+    data["focus_paths"] = ["src/AGENTS.md"]
+    context = worker.model_context(data)
+    spans = worker.addressed_patch_spans(context, data)
+    address = next(value for value in spans.values() if value["path"] == "src/AGENTS.md")
+    raw = {
+        "patches": [
+            {
+                "path": "src/AGENTS.md",
+                "span_id": address["span_id"],
+                "new": "Use typed functions. Document migrations.",
+            }
+        ]
+    }
+    resolved = worker.resolve_model_patches(raw, spans)["patches"]
+    generator = Generator(step(edits=[], patches=resolved))
+    generator.last_guidance_reads = [
+        {"path": g["path"], "sha256": g["sha256"]} for g in context["project_guidance"]
+    ]
+    result = worker.run_iteration(data, generator, Runner(), lambda: None)
+    assert next(f["content"] for f in result["files"] if f["path"] == "src/AGENTS.md").endswith(
+        "migrations."
+    )

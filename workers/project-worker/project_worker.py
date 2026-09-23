@@ -231,7 +231,10 @@ STEP_SCHEMA: dict[str, Any] = {
             },
         },
         "deletions": {"type": "array", "maxItems": 3, "items": PATH_SCHEMA},
-        "requested_checks": {"type": "array", "items": {"type": "array", "items": STRING}},
+        "requested_checks": {
+            "type": "array",
+            "items": {"type": "array", "items": STRING},
+        },
         "run_instructions": STRING,
         "runtime": {"type": "string", "enum": ["python", "node", "python_node"]},
         "focus_paths": {"type": "array", "maxItems": 8, "items": PATH_SCHEMA},
@@ -311,7 +314,15 @@ def repair_follows_model_timeout(payload: dict[str, Any]) -> bool:
 
 def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Keep one small mutation or one read; unchanged metadata is worker-owned."""
-    fields = ("action", "message", "edits", "patches", "run_instructions", "runtime", "focus_paths")
+    fields = (
+        "action",
+        "message",
+        "edits",
+        "patches",
+        "run_instructions",
+        "runtime",
+        "focus_paths",
+    )
     branches = []
     for original in schema["oneOf"]:
         properties = original["properties"]
@@ -330,7 +341,10 @@ def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 branch["properties"][field]["minItems"] = 1 if field == mode else 0
                 branch["properties"][field]["maxItems"] = 1 if field == mode else 0
             branch["properties"]["message"] = {"type": "string", "maxLength": 160}
-            branch["properties"]["run_instructions"] = {"type": "string", "maxLength": 240}
+            branch["properties"]["run_instructions"] = {
+                "type": "string",
+                "maxLength": 240,
+            }
             branch["properties"]["edits"]["items"]["properties"]["content"] = {
                 "type": "string",
                 "maxLength": MAX_RECOVERY_EDIT_CHARACTERS,
@@ -346,7 +360,15 @@ def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def expand_compact_repair(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    fields = {"action", "message", "edits", "patches", "run_instructions", "runtime", "focus_paths"}
+    fields = {
+        "action",
+        "message",
+        "edits",
+        "patches",
+        "run_instructions",
+        "runtime",
+        "focus_paths",
+    }
     if not isinstance(value, dict) or set(value) != fields:
         raise ProjectError("compact repair fields are invalid")
     collections = [value[field] for field in ("edits", "patches", "focus_paths")]
@@ -443,7 +465,9 @@ def project_guidance(files: list[dict[str, str]], paths: list[str]) -> list[dict
 
 
 def refresh_project_guidance(context: dict[str, Any], payload: dict[str, Any]) -> None:
-    if not any(item["path"].split("/")[-1].casefold() == "agents.md" for item in payload["files"]):
+    if payload.get("guidance_version") != 1 or not any(
+        item["path"].split("/")[-1].casefold() == "agents.md" for item in payload["files"]
+    ):
         return
     paths = [
         *payload.get("focus_paths", []),
@@ -494,7 +518,11 @@ def render_workspace_context(context: dict[str, Any]) -> str:
         key: value
         for key, value in context.items()
         if key
-        not in {"selected_complete_files", "selected_file_fragments", "editable_span_previews"}
+        not in {
+            "selected_complete_files",
+            "selected_file_fragments",
+            "editable_span_previews",
+        }
     }
     rendered = [json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))]
     previews = context.get("editable_span_previews", [])
@@ -619,7 +647,10 @@ def diagnostic_functions(item: dict[str, str], diagnostics: str) -> list[tuple[i
         # AST columns are UTF8 byte offsets. Full-line spans use character
         # offsets instead and deliberately leave decorators outside the edit.
         matches.append(
-            (sum(map(len, lines[: node.lineno - 1])), sum(map(len, lines[: node.end_lineno])))
+            (
+                sum(map(len, lines[: node.lineno - 1])),
+                sum(map(len, lines[: node.end_lineno])),
+            )
         )
     return matches
 
@@ -629,7 +660,7 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
     diagnostics = "\n".join(item["output"] for item in payload["checks"])
     available: dict[str, list[str]] = {}
     fragments = context["selected_file_fragments"]
-    blocks = fragments + context["selected_complete_files"]
+    blocks = fragments + context["selected_complete_files"] + context.get("project_guidance", [])
     blocks = sorted(
         blocks,
         key=lambda item: (
@@ -793,7 +824,13 @@ def constrained_step_schema(
     if "clarify" in allowed_actions:
         clarify = copy.deepcopy(schema)
         clarify["properties"]["action"]["enum"] = ["clarify"]
-        for field in ("edits", "patches", "deletions", "requested_checks", "focus_paths"):
+        for field in (
+            "edits",
+            "patches",
+            "deletions",
+            "requested_checks",
+            "focus_paths",
+        ):
             clarify["properties"][field].pop("minItems", None)
             clarify["properties"][field]["maxItems"] = 0
         branches.append(clarify)
@@ -819,7 +856,10 @@ def constrained_step_schema(
 
 
 def addressed_patch_spans(
-    context: dict[str, Any], payload: dict[str, Any], *, max_bytes: int = MAX_ADDRESS_BYTES
+    context: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    max_bytes: int = MAX_ADDRESS_BYTES,
 ) -> dict[str, dict[str, Any]]:
     originals = {item["path"]: item["content"] for item in payload["files"]}
     base = snapshot_sha(payload["files"])
@@ -931,7 +971,12 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     selected: list[dict[str, str]] = []
     focused = payload.get("focus_paths", [])
     ordered = sorted(
-        [item for item in files if item["path"].split("/")[-1].casefold() != "agents.md"],
+        [
+            item
+            for item in files
+            if payload.get("guidance_version") != 1
+            or item["path"].split("/")[-1].casefold() != "agents.md"
+        ],
         key=lambda item: (
             project_traceback_line(item["path"], diagnostics) is None,
             item["path"] not in focused,
@@ -979,7 +1024,10 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         "plan": [item[:200] for item in payload["plan"]],
         "iteration": payload["iteration"],
         "checks": [
-            {**item, "output": "" if item["status"] == "passed" else item["output"][-1_000:]}
+            {
+                **item,
+                "output": "" if item["status"] == "passed" else item["output"][-1_000:],
+            }
             for item in payload["checks"]
         ],
         "file_manifest": [
@@ -1104,14 +1152,16 @@ class ProjectGenerator:
         diagnostics = "\n".join(item["output"] for item in payload["checks"])
         conversation = context.pop("conversation")
         latest_user_message = next(
-            (message for message in reversed(conversation) if message["role"] == "user"), None
+            (message for message in reversed(conversation) if message["role"] == "user"),
+            None,
         )
         latest_feedback_message = next(
             (message for message in reversed(conversation) if message["role"] == "assistant"),
             None,
         )
         last_user = next(
-            (item["content"] for item in reversed(conversation) if item["role"] == "user"), ""
+            (item["content"] for item in reversed(conversation) if item["role"] == "user"),
+            "",
         )
         answered = any(item["role"] == "assistant" for item in payload["conversation"]) and bool(
             last_user
@@ -1410,9 +1460,7 @@ class ProjectGenerator:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC)
-                    set_stream_read_timeout(
-                        response, min(self.timeout_seconds, remaining)
-                    )
+                    set_stream_read_timeout(response, min(self.timeout_seconds, remaining))
                     line = response.readline(MAX_MODEL_RESPONSE_BYTES - total_bytes + 1)
                     if not line:
                         break
@@ -1482,7 +1530,8 @@ class ProjectGenerator:
             )
             if timed_out:
                 LOGGER.warning(
-                    "project model timeout metrics: %s", json.dumps(self.last_transport_metrics)
+                    "project model timeout metrics: %s",
+                    json.dumps(self.last_transport_metrics),
                 )
         try:
             self.last_metrics = {
@@ -1605,7 +1654,11 @@ def run_iteration(
                 message="Reading the current files before applying edits.",
             )
     changed_paths = [item["path"] for item in step["edits"] + step["patches"]] + step["deletions"]
-    reads = getattr(generator, "last_guidance_reads", [])
+    reads = (
+        getattr(generator, "last_guidance_reads", [])
+        if payload.get("guidance_version") == 1
+        else []
+    )
     # The authenticated worker records the final prompt, never a model claim.
     receipts = {item["path"]: item["sha256"] for item in reads}
     missing_guides = (
@@ -1614,7 +1667,7 @@ def run_iteration(
             for item in project_guidance(payload["files"], changed_paths)
             if receipts.get(item["path"]) != item["sha256"]
         ]
-        if changed_paths
+        if changed_paths and payload.get("guidance_version") == 1
         else []
     )
     if missing_guides:
@@ -1809,7 +1862,10 @@ def run_once(
             LOGGER.warning("project model transport failed: %s", exc.category)
             result_body = {"status": "failed", "error": "project_model_" + exc.category}
         except (ProjectError, OSError, TypeError, UnicodeError, ValueError):
-            result_body = {"status": "failed", "error": "Project iteration failed validation"}
+            result_body = {
+                "status": "failed",
+                "error": "Project iteration failed validation",
+            }
         heartbeat.ensure_active()
         client.submit_result(job_id, lease, result_body)
         return True
