@@ -63,6 +63,11 @@ PYTHON_COMPLEXITY_DIAGNOSTIC = (
     "No changes or checks were accepted. Return one smaller complete module "
     "or simplify the proposed patch."
 )
+NATIVE_VALIDATION_DIAGNOSTIC = (
+    "Swift/iOS validation is unavailable in this project runtime. "
+    "Python/npm checks do not validate native source. Project files are preserved; "
+    "a connected native validation tool is required before completion."
+)
 
 SYSTEM_PROMPT = """You are a project developer working in one bounded iteration.
 Return exactly one JSON object with action, message, plan, edits, patches, deletions,
@@ -395,6 +400,17 @@ def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
         "base_sha256": payload["base_sha256"],
         "focus_paths": [],
     }
+
+
+def native_validation_unavailable(files: list[dict[str, str]]) -> bool:
+    return any(
+        item["path"].casefold().endswith(".swift")
+        or any(
+            part.endswith((".xcodeproj", ".xcworkspace"))
+            for part in item["path"].casefold().split("/")
+        )
+        for item in files
+    )
 
 
 def physical_source_lines(content: str) -> list[str]:
@@ -1494,6 +1510,8 @@ def run_iteration(
     ensure_active: Callable[[], None],
 ) -> dict[str, Any]:
     ensure_active()
+    if native_validation_unavailable(payload["files"]):
+        return rejected_step(payload, NATIVE_VALIDATION_DIAGNOSTIC)
     try:
         step = parse_step(generator.generate(payload, ensure_active))
     except ModelTimeoutError as exc:
@@ -1545,6 +1563,21 @@ def run_iteration(
         # Repairs and reads do not replan the project. Empty model metadata must
         # not erase outstanding functionality, even when source changes succeed.
         step["plan"] = copy.deepcopy(payload["plan"])
+    if native_validation_unavailable(files):
+        ensure_active()
+        return rejected_step(
+            {
+                **payload,
+                "files": files,
+                "plan": step["plan"],
+                "checks": (
+                    payload["checks"]
+                    if snapshot_sha(files) == snapshot_sha(payload["files"])
+                    else []
+                ),
+            },
+            NATIVE_VALIDATION_DIAGNOSTIC,
+        )
     if not payload["files"] and not files and step["action"] != "clarify":
         # Running an empty workspace fabricates a missing-test diagnostic. That
         # diagnostic would prioritize test creation before any application API

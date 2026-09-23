@@ -94,6 +94,124 @@ def test_clarification_charges_one_model_call_without_execution() -> None:
     assert result["action"] == "clarify" and result["checks"] == []
 
 
+@pytest.mark.parametrize(
+    "path,unavailable",
+    [
+        ("Sources/Hello.swift", True),
+        ("Package.swift", True),
+        ("Sources/HELLO.SWIFT", True),
+        ("Hello.xcodeproj/project.pbxproj", True),
+        ("Hello.XCWORKSPACE/contents.xcworkspacedata", True),
+        ("Nested/Hello.xcodeproj", True),
+        ("README.md", False),
+        ("examples/hello.swift.md", False),
+        ("hello.swift.py", False),
+        ("Hello.xcodeproj-backup/project.pbxproj", False),
+        ("Hello.xcworkspace.json", False),
+    ],
+)
+def test_native_validation_uses_file_paths_not_documentation_mentions(
+    path: str, unavailable: bool
+) -> None:
+    assert (
+        worker.native_validation_unavailable(
+            [
+                {
+                    "path": path,
+                    "content": "Documentation mentions Swift, Hello.swift and Hello.xcodeproj.",
+                }
+            ]
+        )
+        is unavailable
+    )
+
+
+@pytest.mark.parametrize(
+    "native_path",
+    ["Sources/Hello.swift", "Package.swift", "Hello.xcodeproj/project.pbxproj"],
+)
+def test_existing_native_source_stops_before_model_and_preserves_previous_evidence(
+    native_path: str,
+) -> None:
+    files = [
+        {"path": native_path, "content": 'print("Hello")\n'},
+        {"path": "app.py", "content": "VALUE = 1\n"},
+        {"path": "README.md", "content": "A mixed native and Python example"},
+    ]
+    data = {
+        **payload(),
+        "files": files,
+        "checks": Runner().run(files)["checks"],
+        "plan": ["Keep the example", "Validate with a native tool"],
+        "base_revision_id": "r_native",
+        "base_sha256": snapshot_sha(files),
+    }
+    before = copy.deepcopy(data)
+    generator, runner = Generator(step()), Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert generator.calls == runner.calls == 0
+    assert result["action"] == "continue"
+    assert result["message"] == worker.NATIVE_VALIDATION_DIAGNOSTIC
+    for field in ("files", "checks", "plan", "base_revision_id", "base_sha256"):
+        assert result[field] == before[field]
+    assert data == before
+
+
+@pytest.mark.parametrize("runtime", ["python", "node", "python_node"])
+@pytest.mark.parametrize("previous_python", [False, True])
+def test_first_native_source_is_preserved_without_reusing_checks_or_running_python_node(
+    runtime: str, previous_python: bool
+) -> None:
+    files = [{"path": "app.py", "content": "VALUE = 1\n"}] if previous_python else []
+    data = {
+        **payload(),
+        "files": files,
+        "checks": Runner().run(files)["checks"] if files else [],
+        "plan": ["Hello example", "Validate the Swift source"],
+    }
+    before = copy.deepcopy(data)
+    native = {"path": "Sources/Hello.swift", "content": 'print("Hello")\n'}
+    response = step(runtime=runtime, edits=[native], plan=data["plan"])
+    generator, runner = Generator(response), Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert generator.calls == 1 and runner.calls == 0
+    assert result["action"] == "continue"
+    assert result["message"] == worker.NATIVE_VALIDATION_DIAGNOSTIC
+    assert native in result["files"] and all(item in result["files"] for item in files)
+    assert result["checks"] == [] and result["plan"] == data["plan"]
+    assert data == before
+
+
+def test_documentation_about_swift_does_not_block_python_validation() -> None:
+    response = step()
+    response["edits"][0]["content"] = (
+        "Swift/iOS ideas: Hello.swift, Hello.xcodeproj; Python app below."
+    )
+    generator, runner = Generator(response), Runner()
+    result = worker.run_iteration(payload(), generator, runner, lambda: None)
+    assert generator.calls == runner.calls == 1
+    assert result["action"] == "complete" and result["checks"]
+
+
+@pytest.mark.parametrize("existing_native", [False, True])
+def test_native_validation_respects_cancelled_lease(existing_native: bool) -> None:
+    native = {"path": "Hello.swift", "content": 'print("Hello")\n'}
+    data = {**payload(), "files": [native] if existing_native else []}
+    generator, runner = Generator(step(edits=[native])), Runner()
+    calls = 0
+
+    def ensure_active() -> None:
+        nonlocal calls
+        calls += 1
+        if existing_native or calls >= 4:
+            raise worker.protocol.LeaseLost("cancelled")
+
+    with pytest.raises(worker.protocol.LeaseLost):
+        worker.run_iteration(data, generator, runner, ensure_active)
+    assert generator.calls == (0 if existing_native else 1)
+    assert runner.calls == 0
+
+
 @pytest.mark.parametrize("action", ["continue", "complete"])
 def test_empty_initial_response_preserves_checks_without_running_an_empty_project(
     action: str,
