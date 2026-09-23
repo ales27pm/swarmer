@@ -235,3 +235,49 @@ def test_unknown_or_missing_original_skills_in_old_epoch_still_fail_closed() -> 
             ).fetchone()
         with pytest.raises(WorkerSkillPolicyStateError):
             WorkerSkillPolicyStore._snapshot_from_row(row)
+
+
+def test_configured_swift_policy_survives_real_api_restart(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from app.settings import Settings
+
+    source = Path(__file__).resolve().parents[2] / "configs/permissions.yaml"
+    current = yaml.safe_load(source.read_text())
+    disabled = {**current, "worker_skill_rules": dict(current["worker_skill_rules"])}
+    for skill in ("code.swift.build", "code.swift.test"):
+        disabled["worker_skill_rules"].pop(skill)
+    configured = tmp_path / "operator-policy.yaml"
+    configured.write_text(yaml.safe_dump(disabled))
+    settings = Settings(
+        db_path=tmp_path / "policy-state.db",
+        workspace_root=tmp_path / "workspace",
+        permissions_path=configured,
+    )
+
+    def snapshot():
+        with sqlite3.connect(settings.db_path) as db:
+            epoch, rules, digest = db.execute(
+                "SELECT epoch,rules_json,rules_digest FROM worker_skill_policy_state"
+            ).fetchone()
+        return epoch, json.loads(rules), digest
+
+    with TestClient(create_app(settings)):
+        before = snapshot()
+        assert before[1]["code.swift.test"]["decision"] == "deny"
+    configured.write_text(yaml.safe_dump(current))
+    with TestClient(create_app(settings)):
+        activated = snapshot()
+        assert activated[0] == before[0] + 1
+        assert all(
+            activated[1][skill]["decision"] == "allow"
+            for skill in ("code.swift.build", "code.swift.test")
+        )
+        assert all(
+            rule == activated[1][skill]
+            for skill, rule in before[1].items()
+            if not skill.startswith("code.swift.")
+        )
+    with TestClient(create_app(settings)):
+        assert snapshot() == activated

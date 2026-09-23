@@ -8,8 +8,10 @@ Swift package manifests, plugins and Xcode build phases execute code. A fixed ar
 is **not** an OS sandbox: review the source and isolate the account before use.
 
 Enroll both skills with the local control-plane administration command after the
-operator explicitly enables their persisted permission policy. Adding code or
-editing the YAML does not enable a previously absent durable policy rule:
+operator explicitly enables them in the configured permission policy. The API
+reloads `MONGARS_PERMISSIONS_PATH` at startup and during maintenance. Keep the
+operator policy outside immutable releases; changing SQLite alone is temporary
+and is reversed by the next reload. Deploying code alone does not enable Swift:
 
 ```sh
 python3 -m app.worker_admin --kind swift --db /PRIVATE/CONTROL/STATE.db \
