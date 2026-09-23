@@ -154,6 +154,53 @@ passed 384 worker tests (5 optional skips), 196 server tests including a real
 benign Swift compilation, Ruff, mypy for all five changed services, and diff
 checks. This does not by itself qualify an autonomous model-generated project.
 
+Main correction `34e9fae` was pushed to both remotes. Its narrow API backport is
+`0748cccc9149de1990605b57c5ee79dd1b813ca6`; the compatibility recovery build is
+`887072f81d822f6896d1ddfa245c7fa3b86cbf73`. Recovery accepts the new stored marker
+while unconditionally pausing native authoring and omitting the marker from old
+worker payloads. Both builds leave schema26 and all58 existing tables unchanged.
+The API backport passed220 tests; the recovery build passed217 tests, including
+four regressions for reading/applying marked snapshots with and without Swift
+paths. Both passed mypy and Ruff. The deployment helper passed76 tests with one
+inapplicable addition-only case skipped.
+
+The API cutover completed successfully and independent verification at
+2026-09-23T04:18:21Z confirmed all37 protected fingerprints, six fresh worker
+heartbeats, unchanged credentials/settings/policy, and no active work interrupted.
+The exact reviewed baseline was
+`e5c669f0f98e867c9e31b232074a35eed8f2816325d68b584f1065f3435d6386`.
+
+The worker backport `145f79bd137226edcfbb13331a1f7cfc55a86fc0` passed380 tests
+(5 optional skips). Its first deployment preparation stopped before changing
+services because a reused historical guard required schema24. The new helper
+adapts only that gate to schema26 while retaining the exact full-schema hash
+algorithm; the historical guard is unchanged. Six additional regressions cover
+schema fingerprints, changed schemas, forbidden versions and the in-memory
+adapter. All55 helper tests then passed.
+
+Worker activation was supervised successfully. Independent verification at
+2026-09-23T04:24:47Z confirmed both changed runtime files, all eight mounted source
+files, a fresh authenticated heartbeat, unchanged model/container/configuration,
+all37 protected history fingerprints, and no other process restart. Its baseline
+was `71c36e4ee11165a2757767dd64e9e3b0557d38ed52662458dba2915edd1b6a55`.
+
+A second production probe confirmed authoring continues past the first Swift
+file, but did not finish the fixture. Its5 total calls comprised3 generation
+reservations and2 embedding reservations. Only `Package.swift` was produced;
+the second iteration rewrote identical content and the third changed manifest
+metadata. It exhausted its operator-selected budget, with three revisions
+retained. No native validation was requested for those incomplete sources.
+The temporary identity was revoked and zero active jobs were confirmed at
+2026-09-23T04:29:42Z.
+
+That probe exposed a second concrete bug: the native branch returned before the
+existing no-effective-operation check. An identical full-file replacement now
+receives that exact actionable diagnostic, preserving source/checks and bounded
+stall accounting. Empty-edit native validation requests remain valid. Generic
+continuation guidance points to the next missing milestone in the current
+manifest; there is no fixture-specific code. Its regression failed first, then
+385 worker tests passed (5 optional skips), followed by258 focused tests and Ruff.
+
 ## TestFlight
 
 Build `20260922233500`, version0.1.0, was archived from exact main source

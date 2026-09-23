@@ -99,6 +99,36 @@ def test_native_rejected_model_response_retains_snapshot_and_is_retryable() -> N
     assert result["message"] == worker.REDUNDANT_READ_DIAGNOSTIC
 
 
+def test_identical_native_replacement_reports_no_effective_operation() -> None:
+    current = {
+        **payload(),
+        "files": copy.deepcopy(SWIFT_FILES[:1]),
+        "plan": ["Create package, source, native tests and README"],
+        "checks": Runner().run(SWIFT_FILES[:1])["checks"],
+        "base_revision_id": "revision_existing",
+        "base_sha256": snapshot_sha(SWIFT_FILES[:1]),
+    }
+    before = copy.deepcopy(current)
+    runner = Runner()
+    result = worker.run_iteration(
+        current,
+        Generator(
+            step(
+                action="continue",
+                edits=copy.deepcopy(SWIFT_FILES[:1]),
+                message="Implemented the package",
+            )
+        ),
+        runner,
+        lambda: None,
+    )
+    assert result["message"] == worker.NO_EFFECTIVE_OPERATION_DIAGNOSTIC
+    assert result["native_validation"] == "authoring" and result["action"] == "continue"
+    assert runner.calls == 0 and current == before
+    for field in ("files", "checks", "plan", "base_revision_id", "base_sha256"):
+        assert result[field] == before[field]
+
+
 def test_native_marker_survives_empty_snapshot_into_next_iteration() -> None:
     current = {**payload(), "files": copy.deepcopy(SWIFT_FILES[:1])}
     runner = Runner()

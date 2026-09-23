@@ -170,6 +170,10 @@ NATIVE_AUTHORING_INSTRUCTION = """Swift/iOS source is authored across successive
 Use legacy runtime metadata python for a pure Swift project; no Python/npm checks
 execute or validate native source. Keep requested_checks empty while authoring.
 Create the package/project target, source, native tests and README using continue.
+Use the existing manifest and accepted plan to implement the next missing milestone.
+Do not recreate a file whose content is already present and unchanged. Preserve
+existing scaffolding unless a concrete change is necessary; implement missing
+application source, native tests or documentation in the next small batch.
 Use complete only when these files are ready for separate native validation by the
 Swift worker. That requests approval of this exact revision; it is not completion
 or a passed build/test. Historical Python/npm receipts do not direct native repairs.
@@ -1781,6 +1785,16 @@ def run_iteration(
         validation_required = step["action"] == "complete" or (
             unchanged and bool(step["requested_checks"])
         )
+        if (
+            unchanged
+            and not validation_required
+            and step["action"] != "clarify"
+            and not step["focus_paths"]
+        ):
+            # The native return precedes the generic runtime branch below;
+            # identical full-file replacements must get the same actionable
+            # rejection instead of retaining an unsupported model success claim.
+            return rejected_step(payload, NO_EFFECTIVE_OPERATION_DIAGNOSTIC)
         native_result = rejected_step(
             {
                 **payload,
