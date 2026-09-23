@@ -2111,10 +2111,29 @@ class GoalManager:
             await db.execute("BEGIN IMMEDIATE")
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
+            # Recovery may already have linked or claimed this same active job.
+            # Accept that identical binding while still fencing cancellation or replacement.
             cursor = await db.execute(
                 """UPDATE plan_nodes SET worker_job_id=?,updated_at=?
-                WHERE id=? AND task_id=? AND status='dispatched' AND worker_job_id IS NULL""",
-                (job["id"], self._now(), node["id"], child.id),
+                WHERE id=? AND goal_run_id=? AND task_id=?
+                  AND status IN ('dispatched','running')
+                  AND (worker_job_id IS NULL OR worker_job_id=?)
+                  AND EXISTS (SELECT 1 FROM goal_runs g WHERE g.id=plan_nodes.goal_run_id
+                              AND g.status IN ('running','waiting_permission'))
+                  AND EXISTS (SELECT 1 FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
+                              WHERE j.id=? AND j.task_id=?
+                                AND j.status IN ('queued','claimed','running')
+                                AND t.status IN ('queued','running'))""",
+                (
+                    job["id"],
+                    self._now(),
+                    node["id"],
+                    goal["id"],
+                    child.id,
+                    job["id"],
+                    job["id"],
+                    child.id,
+                ),
             )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
