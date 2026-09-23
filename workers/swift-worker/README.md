@@ -8,8 +8,10 @@ Swift package manifests, plugins and Xcode build phases execute code. A fixed ar
 is **not** an OS sandbox: review the source and isolate the account before use.
 
 Enroll both skills with the local control-plane administration command after the
-operator explicitly enables their persisted permission policy. Adding code or
-editing the YAML does not enable a previously absent durable policy rule:
+operator explicitly enables them in the configured permission policy. The API
+reloads `MONGARS_PERMISSIONS_PATH` at startup and during maintenance. Keep the
+operator policy outside immutable releases; changing SQLite alone is temporary
+and is reversed by the next reload. Deploying code alone does not enable Swift:
 
 ```sh
 python3 -m app.worker_admin --kind swift --db /PRIVATE/CONTROL/STATE.db \
@@ -85,10 +87,10 @@ tunnel. Redirects are rejected. An unavailable or lost lease aborts work and nev
 submits stale success. A service restart can reuse the same private registration.
 
 These two explicitly dispatched tools remain separate from `code.build_project`.
-Connecting this worker does not make generated project snapshots automatically
-approved, staged on the iMac, compiled or validated. The native-project guard must
-remain until a separate approved snapshot-to-workspace dispatch and receipt-binding
-contract is implemented and tested.
+Connecting a legacy workspace worker does not approve or validate generated project
+snapshots. The additional consent-bound snapshot mode below requires its matching
+server dispatch and receipt contract; it does not remove native project validation
+guards or treat ordinary generated checks as compiler evidence.
 
 SwiftPM test counts come from xUnit testcase entries (not summary claims or console
 messages); skipped tests do not count as execution. The Swift 6.2.4 runner requires
@@ -111,3 +113,48 @@ Xcode is present. The connection test uses real authenticated ASGI API endpoints
 and temporary databases, without a production registration. Xcode command construction and result decoding are tested with
 fixtures; an actual app build and device/simulator execution remain integration
 checks. No production worker registration or deployment is performed here.
+
+## Approved generated project snapshots
+
+A separate, explicit launch mode accepts source only from the authenticated
+`POST /agents/{agent_id}/jobs/{job_id}/project-source` endpoint. Create an
+operator-owned `0700` staging directory outside the credential directory, then
+replace `--workspace` and `--approved-source-sha256` with:
+
+```sh
+--project-staging-root /PRIVATE/SWIFT-PROJECT-STAGING
+```
+
+The two modes are mutually exclusive. Snapshot mode does not accept a startup
+source pin; the endpoint's current user consent and live job lease authorize one
+exact persisted project revision and compiler target. A job hash alone does not
+provide that authority. The server must support and validate this contract before
+snapshot mode can execute anything; deploying the worker alone does not enable it.
+
+The existing Swift payload gains `project_revision`, with exactly
+`validation_id`, `project_id`, `revision_id` and `sha256`. The final hash identifies
+the canonical project JSON; the existing `source_sha256` identifies the filesystem
+snapshot. The worker checks both, all target fields and the full response shape.
+Only the source endpoint allows an 8 MB JSON response (escaping allowance); its
+network timeout is five seconds. Standard claim, heartbeat and result limits do
+not change. Files remain capped at 80 entries, 64,000 UTF-8 bytes each and
+1,000,000 total bytes. Canonical relative paths, duplicate/case/path collisions,
+reserved metadata/build/artifact paths, symlinks and nonregular source are checked
+before compilation. Every operation gets a fresh private directory; existing
+snapshots are never reused or overwritten.
+
+The worker rechecks authenticated source authorization immediately before each
+compiler command, approximately every five seconds while it runs, and before
+returning evidence. Revocation, stale leases, changed revision/target/digests or an
+unavailable validation endpoint stop work without submitting stale success.
+Receipts include `project_revision`; `request_sha256` covers the full claimed
+payload. Compiler environment filtering and unsigned fixed commands remain the
+same. Swift manifests/plugins/build phases are still executable code, so the
+staging account must remain isolated: this opt-in is not an OS sandbox.
+
+Additional worker coverage:
+
+```sh
+cd server
+.venv/bin/pytest tests/test_swift_project_worker.py -q
+```

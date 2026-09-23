@@ -19,6 +19,7 @@ import signal
 import stat
 import subprocess  # nosec B404 - fixed compiler argv in an operator-approved workspace
 import time
+import urllib.request
 import uuid
 import xml.etree.ElementTree as ET  # nosec B405 - bounded UTF-8 without DTD or entities
 from collections.abc import Callable
@@ -378,11 +379,84 @@ def _protocol() -> Any:
     return module
 
 
+@functools.lru_cache(maxsize=1)
+def _project_snapshots() -> Any:
+    path = Path(__file__).with_name("project_snapshot.py")
+    spec = importlib.util.spec_from_file_location("swift_project_snapshots", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("project snapshot staging missing from release")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ProjectSnapshotWorkspace:
+    """Explicit operator opt-in to currently consented, lease-bound project snapshots."""
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        destinations: dict[str, str] | None = None,
+        runner: Callable[..., int] = run_command,
+        timeout: float = MAX_REMOTE_SECONDS,
+    ) -> None:
+        if not 0 < timeout <= MAX_REMOTE_SECONDS:
+            raise SwiftWorkerError("invalid remote project Swift timeout")
+        self.timeout = timeout
+        self.snapshots = _project_snapshots().SnapshotWorkspace(
+            root,
+            workspace_factory=SwiftWorkspace,
+            source_digest=source_digest,
+            runner=runner,
+            destinations=destinations,
+            timeout=timeout,
+        )
+
+    def execute_job(self, operation, payload, *, source_request, ensure_active):
+        return self.snapshots.execute_job(
+            operation, payload, source_request=source_request, ensure_active=ensure_active
+        )
+
+
+def _project_source_http_request(base_url, path, token, method, body):
+    protocol = _protocol()
+    origin = protocol.validate_control_plane_origin(base_url)
+    call = urllib.request.Request(
+        origin + path,
+        data=json.dumps(body, allow_nan=False, separators=(",", ":")).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method=method,
+    )
+    opener = urllib.request.build_opener(protocol._RejectRedirects())
+    with opener.open(call, timeout=5) as response:  # nosec B310 - pinned credential-free control-plane origin
+        return protocol._read_control_response(
+            response, _project_snapshots().MAX_SOURCE_RESPONSE_BYTES
+        )
+
+
+def _project_source_request(protocol, client, job_id, lease, request_fn):
+    """Only this consent-bound source endpoint permits a larger bounded JSON response."""
+    source_client = protocol.ControlPlaneClient(
+        client.base_url,
+        client.agent_id,
+        client.credential,
+        request_fn=request_fn if request_fn is not None else _project_source_http_request,
+    )
+    path = (
+        f"/agents/{client._segment(client.agent_id)}/jobs/{client._segment(job_id)}/project-source"
+    )
+    try:
+        return source_client._leased_call(path, "POST", lease.body())
+    except protocol.ControlPlaneUnavailable as exc:
+        raise protocol.LeaseUnavailable("project source consent could not be revalidated") from exc
+
+
 def run_once(
     base_url: str,
     agent_id: str,
     credential: str,
-    workspace: SwiftWorkspace,
+    workspace: SwiftWorkspace | ProjectSnapshotWorkspace,
     *,
     request_fn: Any | None = None,
 ) -> bool:
@@ -403,11 +477,21 @@ def run_once(
         client.heartbeat_agent("busy")
         heartbeat.start()
         try:
-            result = workspace.execute(
-                SKILLS.get(job.get("required_skill"), ""),
-                job.get("payload"),
-                ensure_active=heartbeat.ensure_active,
-            )
+            if isinstance(workspace, ProjectSnapshotWorkspace):
+                result = workspace.execute_job(
+                    SKILLS.get(job.get("required_skill"), ""),
+                    job.get("payload"),
+                    source_request=lambda: _project_source_request(
+                        protocol, client, job_id, lease, request_fn
+                    ),
+                    ensure_active=heartbeat.ensure_active,
+                )
+            else:
+                result = workspace.execute(
+                    SKILLS.get(job.get("required_skill"), ""),
+                    job.get("payload"),
+                    ensure_active=heartbeat.ensure_active,
+                )
             body = {
                 "status": "completed" if result["status"] == "passed" else "failed",
                 "result": result,
@@ -476,8 +560,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--credential-file", required=True, type=Path)
-    parser.add_argument("--workspace", required=True, type=Path)
-    parser.add_argument("--approved-source-sha256", required=True)
+    source_mode = parser.add_mutually_exclusive_group(required=True)
+    source_mode.add_argument("--workspace", type=Path)
+    source_mode.add_argument("--project-staging-root", type=Path)
+    parser.add_argument("--approved-source-sha256")
     parser.add_argument("--timeout", type=float, default=MAX_REMOTE_SECONDS)
     parser.add_argument(
         "--destinations",
@@ -489,13 +575,31 @@ def main() -> None:
     try:
         if not 0 < args.timeout <= MAX_REMOTE_SECONDS:
             raise SwiftWorkerError("remote Swift timeout must be between 0 and 120 seconds")
-        agent_id, token = load_credentials(args.credential_file, args.workspace)
-        workspace = SwiftWorkspace(
-            args.workspace,
-            approved_source_sha256=args.approved_source_sha256,
-            destinations=json.loads(args.destinations.read_text()) if args.destinations else {},
-            timeout=args.timeout,
-        )
+        if args.project_staging_root is not None:
+            if args.approved_source_sha256 is not None:
+                raise SwiftWorkerError("project staging cannot use a startup source pin")
+            staging = _project_snapshots().private_root(args.project_staging_root)
+            credential_parent = args.credential_file.parent.resolve(strict=True)
+            if staging.is_relative_to(credential_parent) or credential_parent.is_relative_to(
+                staging
+            ):
+                raise SwiftWorkerError("project staging must be outside the credential directory")
+            agent_id, token = load_credentials(args.credential_file, staging)
+            workspace = ProjectSnapshotWorkspace(
+                staging,
+                destinations=json.loads(args.destinations.read_text()) if args.destinations else {},
+                timeout=args.timeout,
+            )
+        else:
+            if not args.approved_source_sha256:
+                raise SwiftWorkerError("workspace mode requires an approved source digest")
+            agent_id, token = load_credentials(args.credential_file, args.workspace)
+            workspace = SwiftWorkspace(
+                args.workspace,
+                approved_source_sha256=args.approved_source_sha256,
+                destinations=json.loads(args.destinations.read_text()) if args.destinations else {},
+                timeout=args.timeout,
+            )
         _protocol().validate_control_plane_origin(args.base_url)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))

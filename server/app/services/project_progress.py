@@ -22,6 +22,7 @@ from app.services.project_validation import (
 # compatibility exception, never a source of progress or retry accounting.
 _WORKER_DIAGNOSTICS = frozenset(
     {
+        "The model requested files already fully visible in the current prompt. No changes or checks were accepted. Use the supplied source to make an effective edit or patch, request checks explicitly, or read an omitted or partial file.",
         (
             "The local model timed out before returning a complete response. No edits were accepted, "
             "and the previous files and check receipts are unchanged. In the next charged iteration, "

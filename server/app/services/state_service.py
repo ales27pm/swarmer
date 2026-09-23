@@ -47,7 +47,7 @@ from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 26
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -833,6 +833,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 class StateConflict(RuntimeError):
     pass
+
+
+from app.services.swift_project_validation import SWIFT_PROJECT_SCHEMA
+
+SCHEMA += SWIFT_PROJECT_SCHEMA
 
 
 class StateService:

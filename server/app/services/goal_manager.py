@@ -3522,8 +3522,10 @@ class GoalManager:
                     WHERE goal_run_id=? AND apply_task_id IS NOT NULL
                     UNION SELECT apply_task_id FROM project_revisions
                     WHERE goal_run_id=? AND apply_task_id IS NOT NULL
+                    UNION SELECT task_id FROM swift_project_validations
+                    WHERE goal_id=?
                     ORDER BY task_id""",
-                    (goal_run_id, goal_run_id, goal_run_id),
+                    (goal_run_id, goal_run_id, goal_run_id, goal_run_id),
                 )
             ).fetchall()
         cancelled = 0

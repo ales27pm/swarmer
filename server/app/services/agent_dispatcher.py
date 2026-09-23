@@ -25,7 +25,13 @@ from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
-from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
+from app.services.remote_job_policy import validate_remote_job
+from app.services.swift_contracts import valid_swift_receipt, validate_swift_project_payload
+from app.services.swift_project_validation import (
+    SwiftProjectConflict,
+    cancel_native_job_locked,
+    require_project_grant_locked,
+)
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 from app.services.writing_contracts import UnsupportedCitationError, validate_writing_result
 
@@ -123,10 +129,21 @@ class AgentDispatcher:
         payload: dict[str, Any],
         *,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
+        project_validation_id: str | None = None,
     ) -> dict[str, Any]:
         try:
-            payload = validate_remote_job(required_skill, payload)
-        except RemoteJobPolicyError as exc:
+            if project_validation_id is not None:
+                if required_skill not in {"code.swift.build", "code.swift.test"}:
+                    raise ValueError("native grant requires a Swift skill")
+                payload = validate_swift_project_payload(payload)
+                if (
+                    payload.get("project_revision", {}).get("validation_id")
+                    != project_validation_id
+                ):
+                    raise ValueError("native grant identity mismatch")
+            else:
+                payload = validate_remote_job(required_skill, payload)
+        except ValueError as exc:
             raise AgentDispatchConflict(str(exc)) from exc
         try:
             encoded_payload = json.dumps(
@@ -158,6 +175,22 @@ class AgentDispatcher:
             if policy_snapshot is not None and not policy_snapshot.is_allowed(required_skill):
                 await db.rollback()
                 raise AgentDispatchConflict("remote worker skill is denied by policy")
+            if project_validation_id is not None:
+                try:
+                    grant = await require_project_grant_locked(
+                        db, payload, task_id=task_id, skill=required_skill
+                    )
+                except SwiftProjectConflict as exc:
+                    raise AgentDispatchConflict(str(exc)) from exc
+                if grant is None:
+                    raise AgentDispatchConflict("native execution grant missing")
+                if grant["job_id"] is not None:
+                    existing = await (
+                        await db.execute("SELECT * FROM agent_jobs WHERE id=?", (grant["job_id"],))
+                    ).fetchone()
+                    if existing is None:
+                        raise AgentDispatchConflict("native execution job missing")
+                    return self._job_from_row(existing)
             task = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
             ).fetchone()
@@ -198,13 +231,19 @@ class AgentDispatcher:
                         encoded_payload,
                         "queued",
                         1
-                        if required_skill
+                        if project_validation_id is not None
+                        or required_skill
                         in {"code.generate_python", "code.build_project", "writing.draft"}
                         else self.max_attempts,
                         now,
                         now,
                     ),
                 )
+                if project_validation_id is not None:
+                    await db.execute(
+                        "UPDATE swift_project_validations SET job_id=? WHERE id=? AND job_id IS NULL",
+                        (job_id, project_validation_id),
+                    )
                 await TaskStateMachine.transition_locked(
                     db,
                     task_id=task_id,
@@ -467,6 +506,26 @@ class AgentDispatcher:
             row: aiosqlite.Row | None = None
             selection = None
             for candidate in rows:
+                candidate_payload = json.loads(str(candidate["payload_json"]))
+                if "project_revision" in candidate_payload:
+                    try:
+                        await require_project_grant_locked(
+                            db,
+                            candidate_payload,
+                            task_id=str(candidate["task_id"]),
+                            skill=str(candidate["required_skill"]),
+                            job_id=str(candidate["id"]),
+                        )
+                    except SwiftProjectConflict as exc:
+                        await cancel_native_job_locked(
+                            db,
+                            task_id=str(candidate["task_id"]),
+                            reason=str(exc),
+                            now=now,
+                            outbox=self.outbox,
+                        )
+                        quarantined += 1
+                        continue
                 candidate_selection = await self.scheduler.select_for_job_locked(
                     db, str(candidate["id"]), now=claimed_at
                 )
@@ -619,6 +678,21 @@ class AgentDispatcher:
                 raise AgentDispatchConflict(
                     "job lease is stale, expired, or owned by another agent"
                 )
+            try:
+                await require_project_grant_locked(
+                    db,
+                    json.loads(str(row["payload_json"])),
+                    task_id=str(row["task_id"]),
+                    skill=str(row["required_skill"]),
+                    job_id=job_id,
+                    agent_id=agent_id,
+                )
+            except SwiftProjectConflict as exc:
+                await cancel_native_job_locked(
+                    db, task_id=str(row["task_id"]), reason=str(exc), now=now, outbox=self.outbox
+                )
+                await db.commit()
+                raise AgentDispatchConflict(str(exc)) from exc
             task = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (row["task_id"],))
             ).fetchone()
@@ -771,6 +845,23 @@ class AgentDispatcher:
                 raise AgentDispatchConflict(
                     "job cannot finish while an iPhone capability request is pending"
                 )
+            native_payload = json.loads(str(row["payload_json"]))
+            if "project_revision" in native_payload:
+                try:
+                    await require_project_grant_locked(
+                        db,
+                        native_payload,
+                        task_id=str(row["task_id"]),
+                        skill=str(row["required_skill"]),
+                        job_id=job_id,
+                        agent_id=agent_id,
+                    )
+                except SwiftProjectConflict as exc:
+                    raise AgentDispatchConflict(str(exc)) from exc
+                if status == "completed" and not valid_swift_receipt(
+                    str(row["required_skill"]), result, native_payload
+                ):
+                    raise AgentDispatchConflict("invalid revision-bound Swift receipt")
             if status == "completed" and row["required_skill"] == "writing.draft":
                 try:
                     validate_writing_result(result, payload=json.loads(str(row["payload_json"])))

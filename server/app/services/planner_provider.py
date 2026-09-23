@@ -96,6 +96,7 @@ def worker_node_array_schema(
     node_schema: dict[str, Any],
     *,
     available_skills: Sequence[str] | None,
+    workers_first: bool = False,
 ) -> dict[str, Any]:
     """Constrain grammar decoding while keeping project loops exclusive.
 
@@ -106,6 +107,12 @@ def worker_node_array_schema(
     # Put the capability first for both insertion-order and sorted decoders,
     # before branch-specific parameters can commit to an unrelated worker type.
     node_schema = deepcopy(node_schema)
+    for field in ("dependencies", "optional_dependencies"):
+        node_schema["properties"][field]["description"] = (
+            "Exact temporary_id values of other proposed nodes; never goal/card IDs. "
+            "Evaluator extensions may also use explicitly supplied node_results.node_id values. "
+            "Independent nodes use []. Synthesis must name the nodes supplying its results."
+        )
     skill_schema = node_schema["properties"].pop("required_skill")
     node_schema["properties"] = {"00_required_skill": skill_schema, **node_schema["properties"]}
     node_schema["required"] = [
@@ -123,7 +130,7 @@ def worker_node_array_schema(
         synthesis["properties"]["dependencies"]["minItems"] = 1
     synthesis["properties"]["worker_arguments"] = {"type": "null"}
     node_schema["properties"]["worker_arguments"] = {"type": "null"}
-    general_nodes = [synthesis]
+    general_nodes: list[dict[str, Any]] = [] if workers_first else [synthesis]
     if "research.query" in skills:
         research = deepcopy(node_schema)
         properties = research["properties"]
@@ -153,6 +160,11 @@ def worker_node_array_schema(
             "enum": sorted(general_skills),
         }
         general_nodes.append(worker)
+    # Root deliverables come from executable workers. Putting a dependency-requiring
+    # synthesis first biases ordered grammar decoders toward an orphan join before
+    # any real input has been proposed. Preserve synthesis, after worker branches.
+    if workers_first:
+        general_nodes.append(synthesis)
     general_array = {
         **deepcopy(array_schema),
         "items": general_nodes[0] if len(general_nodes) == 1 else {"anyOf": general_nodes},
@@ -230,7 +242,8 @@ Choose routine implementation details yourself: environment setup, framework, li
 file layout, build and test steps. Clarify only missing product requirements that materially
 affect the result; never ask the user how to implement the requested work.
 Set the top-level objective to the exact card_id of the card whose kind is goal (goal:goal_<id>).
-This binds your proposal to its goal; do not reconstruct or rewrite the redacted objective.
+This binding belongs ONLY in the top-level objective. A goal/card ID is never a node ID,
+input result or dependency. Do not reconstruct or rewrite the redacted objective.
 Keep all text concise: titles and criteria at most 500 characters, objectives and summaries
 at most 4000 characters. The server enforces these limits independently of the generation schema.
 The structured skills arrays on agent_card cards are the complete worker capability allowlist.
@@ -239,8 +252,15 @@ Use only those structured skills. Prefer independent nodes when they can run saf
 in parallel. Never invent a skill. If no agent cards are present, propose only a synthesis node
 describing missing execution capabilities; do not pretend that the available runtime can create
 or modify software. A synthesis node requires required_skill=null and preferred_agent_constraints=null.
+Choose the worker deliverables first; then add a synthesis only if those declared workers
+produce results that need literal concatenation. Prefer listing input nodes before dependents.
 Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
 never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
+For example, with worker temporary_id="research" and writer temporary_id="answer",
+answer.dependencies=["research"], while research.dependencies=[]. Never insert the goal ID
+when there is no input node. Do not add a synthesis for a single already-complete deliverable.
+Before returning, check every hard and optional dependency against your nodes' temporary_id set;
+remove unnecessary placeholder nodes, not required work, and never invent an input reference.
 temporary_id is a short identifier local to this proposal (at most 64 characters); never copy or
 append the goal UUID, because the server assigns durable node IDs.
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
@@ -330,6 +350,7 @@ the requested answer format, language and other writing requirements.
             schema["properties"]["nodes"],
             schema["$defs"]["SwarmPlanNodeProposal"],
             available_skills=available_skills,
+            workers_first=True,
         )
         if goal_card_id is not None:
             schema["properties"]["objective"]["const"] = goal_card_id

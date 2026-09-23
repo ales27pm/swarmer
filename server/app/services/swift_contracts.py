@@ -75,6 +75,8 @@ def valid_swift_receipt(skill: str, receipt: object, payload: object | None = No
         "artifact_directory",
         "report_error",
     }
+    if isinstance(payload, dict) and "project_revision" in payload:
+        fields.add("project_revision")
     if skill not in SWIFT_SKILLS or not isinstance(receipt, dict) or set(receipt) != fields:
         return False
     operation = skill.rsplit(".", 1)[1]
@@ -109,10 +111,12 @@ def valid_swift_receipt(skill: str, receipt: object, payload: object | None = No
         return False
     if payload is not None:
         try:
-            expected = validate_swift_payload(payload)
+            expected = validate_swift_project_payload(payload)
         except ValueError:
             return False
         if receipt["source_sha256"] != expected["source_sha256"] or kind != expected["kind"]:
+            return False
+        if receipt.get("project_revision") != expected.get("project_revision"):
             return False
         request_digest = hashlib.sha256(
             json.dumps(expected, sort_keys=True, separators=(",", ":")).encode()
@@ -120,3 +124,28 @@ def valid_swift_receipt(skill: str, receipt: object, payload: object | None = No
         if receipt["request_sha256"] != request_digest:
             return False
     return True
+
+
+def validate_swift_project_payload(payload: object) -> dict[str, Any]:
+    """Reserved controller payload; never exposed in model argument schemas."""
+    if not isinstance(payload, dict):
+        raise ValueError("Swift operation arguments must be an object")  # noqa: TRY004
+    if "project_revision" not in payload:
+        return validate_swift_payload(payload)
+    reference = payload["project_revision"]
+    if not isinstance(reference, dict) or set(reference) != {
+        "validation_id",
+        "project_id",
+        "revision_id",
+        "sha256",
+    }:
+        raise ValueError("invalid Swift project reference")
+    for key in ("validation_id", "project_id", "revision_id"):
+        if not isinstance(reference[key], str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", reference[key]
+        ):
+            raise ValueError("invalid Swift project identifier")
+    if not isinstance(reference["sha256"], str) or not _DIGEST.fullmatch(reference["sha256"]):
+        raise ValueError("invalid Swift project digest")
+    target = validate_swift_payload({k: v for k, v in payload.items() if k != "project_revision"})
+    return {**target, "project_revision": dict(reference)}
