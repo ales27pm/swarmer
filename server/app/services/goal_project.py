@@ -28,7 +28,8 @@ from app.services.project_memory import ProjectMemoryService
 from app.services.project_progress import project_progress_message
 from app.services.project_validation import (
     NATIVE_VALIDATION_DIAGNOSTIC,
-    native_validation_unavailable,
+    native_authoring,
+    native_project,
     pause_native_validation_locked,
 )
 from app.services.state_service import StateService
@@ -188,6 +189,7 @@ class GoalProjectService:
         return ProjectPayload.model_validate(
             {
                 "guidance_version": 1,
+                "native_validation": snapshot.native_validation if snapshot else None,
                 "objective": safe_context_text(str(node["objective"]), max_chars=4_000),
                 "conversation": [
                     {
@@ -274,8 +276,11 @@ class GoalProjectService:
                     "message": project_progress_message(payload, result),
                     "action": "continue"
                     if result.action == "complete"
-                    and native_validation_unavailable([*payload.files, *result.files])
+                    and (native_project(payload) or native_project(result))
                     else result.action,
+                    "native_validation": ("authoring" if native_authoring(result) else "required")
+                    if native_project(payload) or native_project(result)
+                    else None,
                 }
             )
             now, revision_id = self._now(), f"revision_{uuid4().hex}"
@@ -369,7 +374,7 @@ class GoalProjectService:
                 state = "needs_user"
             elif goal[1] == "project_ready" and result.action == "complete":
                 state = "ready"
-        unsupported_native = native_validation_unavailable(result.files)
+        unsupported_native = native_project(result) and not native_authoring(result)
         # Read-only projection: preserve historical snapshots and write receipts.
         # An applied state proves files were saved, never that Swift was validated.
         if unsupported_native and state in {"ready", "waiting_permission", "building"}:
@@ -413,7 +418,7 @@ class GoalProjectService:
             if row is None or not hmac.compare_digest(str(row["sha256"]), sha256):
                 raise GoalProjectConflict("reviewed project revision does not match")
             result = ProjectResult.model_validate_json(str(row["snapshot_json"]))
-            if native_validation_unavailable(result.files):
+            if native_project(result):
                 raise GoalProjectConflict(NATIVE_VALIDATION_DIAGNOSTIC)
             args = ProjectWriteArguments(
                 project_id=row["project_id"],
@@ -575,7 +580,7 @@ class GoalProjectService:
                     )
                 except (ValueError, TypeError):
                     succeeded = False
-                unsupported_native = succeeded and native_validation_unavailable(snapshot.files)
+                unsupported_native = succeeded and native_project(snapshot)
                 await db.execute(
                     """UPDATE plan_nodes SET status=?,result_summary=?,error_summary=?,
                     updated_at=?,completed_at=? WHERE id=? AND status='waiting_permission'""",

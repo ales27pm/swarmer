@@ -13,7 +13,8 @@ from app.services.project_contracts import (
 )
 from app.services.project_validation import (
     NATIVE_VALIDATION_DIAGNOSTIC,
-    native_validation_unavailable,
+    native_authoring,
+    native_project,
 )
 
 # Schema 1.0 workers use these exact runtime-owned diagnostics in conversation
@@ -179,7 +180,7 @@ def has_project_progress(payload: ProjectPayload, result: ProjectResult) -> bool
         file.path: file.content for file in result.files
     }:
         return True
-    if native_validation_unavailable(result.files):
+    if native_project(payload) or native_project(result):
         return False
     previous = _check_signatures(payload.checks)
     return any(
@@ -190,7 +191,8 @@ def has_project_progress(payload: ProjectPayload, result: ProjectResult) -> bool
 
 def project_progress_message(payload: ProjectPayload, result: ProjectResult) -> str:
     """Return evidence-owned status, retaining genuine questions and fixed errors."""
-    if native_validation_unavailable([*payload.files, *result.files]):
+    native = native_project(payload) or native_project(result)
+    if native and not native_authoring(result):
         return NATIVE_VALIDATION_DIAGNOSTIC
     # The public schema permits a question alongside a snapshot. Do not turn
     # that accepted question into a progress statement marked as a question.
@@ -236,4 +238,8 @@ def project_progress_message(payload: ProjectPayload, result: ProjectResult) -> 
         if result.action == "complete"
         else "Project completion has not been established."
     )
+    if native:
+        # Native drafts may progress, but unrelated checks are never evidence
+        # of a native build. Any historical receipts remain stored unchanged.
+        return f"{change_message} Rédaction Swift/iOS en cours. Aucun contrôle natif exécuté par ce parcours ; une validation séparée de la révision sera nécessaire."
     return f"{change_message} {check_message} {readiness}"
