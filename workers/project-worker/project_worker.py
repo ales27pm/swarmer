@@ -71,7 +71,7 @@ PYTHON_COMPLEXITY_DIAGNOSTIC = (
 NATIVE_VALIDATION_DIAGNOSTIC = (
     "Swift/iOS validation is unavailable in this project runtime. "
     "Python/npm checks do not validate native source. Project files are preserved; "
-    "a connected native validation tool is required before completion."
+    "separate native validation with approval of this exact revision is required before completion."
 )
 
 SYSTEM_PROMPT = """You are a project developer working in one bounded iteration.
@@ -164,6 +164,15 @@ project; writing/testing in scratch does not mean deployed or started for users.
 At most80 files,64000 UTF8 bytes/file,1MB total; keep a small coherent project.
 plan is up to20 short milestone strings. message and run_instructions are each
 at most4000 characters. Never include Markdown fences around the JSON.
+"""
+
+NATIVE_AUTHORING_INSTRUCTION = """Swift/iOS source is authored across successive small batches.
+Use legacy runtime metadata python for a pure Swift project; no Python/npm checks
+execute or validate native source. Keep requested_checks empty while authoring.
+Create the package/project target, source, native tests and README using continue.
+Use complete only when these files are ready for separate native validation by the
+Swift worker. That requests approval of this exact revision; it is not completion
+or a passed build/test. Historical Python/npm receipts do not direct native repairs.
 """
 
 GUIDANCE_INSTRUCTION = """project_guidance contains complete AGENTS.md files from the accepted revision.
@@ -436,6 +445,7 @@ def rejected_step(payload: dict[str, Any], diagnostic: str) -> dict[str, Any]:
         "base_revision_id": payload["base_revision_id"],
         "base_sha256": payload["base_sha256"],
         "focus_paths": [],
+        **({"native_validation": "authoring"} if native_project(payload) else {}),
     }
 
 
@@ -448,6 +458,15 @@ def native_validation_unavailable(files: list[dict[str, str]]) -> bool:
         )
         for item in files
     )
+
+
+def native_project(payload: dict[str, Any]) -> bool:
+    # Retain the lane across deletions; removing the last Swift file cannot
+    # turn old Python receipts into evidence of native validation.
+    return payload.get("native_validation") in {
+        "authoring",
+        "required",
+    } or native_validation_unavailable(payload["files"])
 
 
 def project_guidance(files: list[dict[str, str]], paths: list[str]) -> list[dict[str, str]]:
@@ -817,7 +836,7 @@ def constrained_step_schema(
     else:
         mutation["properties"]["patches"]["maxItems"] = 0
     branches = [mutation]
-    if missing_node_manifest(payload):
+    if not native_project(payload) and missing_node_manifest(payload):
         node = copy.deepcopy(mutation)
         node["properties"]["runtime"]["enum"] = ["node", "python_node"]
         node["properties"]["edits"]["minItems"] = 1
@@ -841,7 +860,10 @@ def constrained_step_schema(
         read = copy.deepcopy(schema)
         read["properties"]["action"]["enum"] = ["continue"]
         read["properties"]["focus_paths"]["minItems"] = 1
-        read["properties"]["focus_paths"]["items"] = {"type": "string", "enum": readable}
+        read["properties"]["focus_paths"]["items"] = {
+            "type": "string",
+            "enum": readable,
+        }
         for field in ("edits", "patches", "deletions", "requested_checks"):
             read["properties"][field].pop("minItems", None)
             read["properties"][field]["maxItems"] = 0
@@ -877,6 +899,19 @@ def constrained_step_schema(
                 mode["properties"][field]["minItems"] = max(1, properties[field].get("minItems", 0))
                 disjoint.append(mode)
             preceding.append(field)
+    if native_project(payload) and "complete" in allowed_actions:
+        ready = copy.deepcopy(schema)
+        ready["properties"]["action"]["enum"] = ["complete"]
+        for field in (
+            "edits",
+            "patches",
+            "deletions",
+            "requested_checks",
+            "focus_paths",
+        ):
+            ready["properties"][field].pop("minItems", None)
+            ready["properties"][field]["maxItems"] = 0
+        disjoint.append(ready)
     return {"oneOf": disjoint}
 
 
@@ -1208,6 +1243,11 @@ class ProjectGenerator:
             check["status"] != "failed" or node_collected_no_tests(check)
             for check in payload["checks"]
         )
+        native = native_project(payload)
+        if native:
+            # These are historical non-native receipts, not instructions to
+            # replace a Swift project with Python/Node repair scaffolding.
+            needs_repair = needs_tests = needs_node_manifest = needs_node_tests = False
         schema = copy.deepcopy(STEP_SCHEMA)
         existing_paths = [item["path"] for item in payload["files"]]
         if existing_paths:
@@ -1219,6 +1259,10 @@ class ProjectGenerator:
             for field in ("patches", "deletions", "focus_paths"):
                 schema["properties"][field]["maxItems"] = 0
         instruction = SYSTEM_PROMPT
+        if native or re.search(
+            r"\b(swift|ios|xcode|swiftpm)\b", payload["objective"], re.IGNORECASE
+        ):
+            instruction += "\n" + NATIVE_AUTHORING_INSTRUCTION
         if answered or needs_repair:
             instruction += "\n" + IMPLEMENTATION_INSTRUCTION
         if (answered and not payload["files"]) or needs_repair:
@@ -1616,6 +1660,7 @@ class ProjectGenerator:
             if (
                 payload["files"]
                 and step["action"] != "clarify"
+                and not (native and step["action"] == "complete")
                 and not any(
                     step[field]
                     for field in (
@@ -1652,8 +1697,6 @@ def run_iteration(
     ensure_active: Callable[[], None],
 ) -> dict[str, Any]:
     ensure_active()
-    if native_validation_unavailable(payload["files"]):
-        return rejected_step(payload, NATIVE_VALIDATION_DIAGNOSTIC)
     try:
         step = parse_step(generator.generate(payload, ensure_active))
     except ModelTimeoutError as exc:
@@ -1732,20 +1775,27 @@ def run_iteration(
         # Repairs and reads do not replan the project. Empty model metadata must
         # not erase outstanding functionality, even when source changes succeed.
         step["plan"] = copy.deepcopy(payload["plan"])
-    if native_validation_unavailable(files):
+    if native_project(payload) or native_validation_unavailable(files):
         ensure_active()
+        unchanged = snapshot_sha(files) == snapshot_sha(payload["files"])
+        validation_required = step["action"] == "complete" or (
+            unchanged and bool(step["requested_checks"])
+        )
         native_result = rejected_step(
             {
                 **payload,
                 "files": files,
                 "plan": step["plan"],
-                "checks": (
-                    payload["checks"]
-                    if snapshot_sha(files) == snapshot_sha(payload["files"])
-                    else []
-                ),
+                "checks": (payload["checks"] if unchanged else []),
             },
-            NATIVE_VALIDATION_DIAGNOSTIC,
+            NATIVE_VALIDATION_DIAGNOSTIC if validation_required else step["message"],
+        )
+        native_result.update(
+            native_validation="required" if validation_required else "authoring",
+            action="continue" if validation_required else step["action"],
+            run_instructions=step["run_instructions"],
+            runtime=step["runtime"],
+            focus_paths=step["focus_paths"],
         )
         if reads:
             native_result["guidance_reads"] = reads

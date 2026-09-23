@@ -78,3 +78,93 @@ a source compilation diagnostic. Only reproducible DerivedData from the earlier
 September21 TestFlight build was removed; its archive, IPA, source and receipts
 remain. Subsequent build/deployment evidence is recorded separately after it
 finishes. No E5 inference on a physical iPhone is claimed by these tests.
+
+## Deployment evidence
+
+Main source commit `cabec3b4bbc8c175ed74154c7a358e59b2aa782f` was pushed to both
+configured remotes. The unsigned generic-iOS Debug build subsequently passed
+(`ios-build-retry.log`, `BUILD SUCCEEDED`). It includes MLXEmbedders and the new
+model-purpose routing; it is not a physical E5 inference test.
+
+The read-progress worker was narrowly backported onto the deployed worker as
+`57d8c1aeb4060e6e90e8166864fda813c351e8d6`. Its single runtime-file change preserves
+the deployed project contract, model, sandbox and all seven other runtime files.
+365 backport tests passed (5 optional skips). Production activation and independent
+verification completed at 2026-09-23T03:40:37Z with a fresh heartbeat, all mounted
+sources checked and all 35 protected history fingerprints unchanged.
+
+The first rollout attempt stopped before changing any binding because freezing
+an existing SQLite writer retained its lock. Recovery resumed the existing API
+and worker; no database was restored. A separately retained second attempt took
+the database write reservation before freezing the API. Its 47 helper tests
+include a regression proving that ordering. Source and service bindings were
+then verified independently. The existing rejected task was preserved through an
+exact row/audit fingerprint, without exempting running work or cancelling it.
+
+The API was narrowly backported as `c7d36e812c60e9969210a98530e3589dfb74575f`,
+with a schema26-compatible fallback `9f207cebecc960f840575add9089fcca3e812e03`.
+Remote staging proved source/wheel parity, unchanged dependency/settings/policy
+metadata, additive migration and a fallback that leaves all tables unchanged.
+The API lane passed 83 fault-injection and migration tests before execution.
+
+API cutover and independent verification completed at 2026-09-23T03:47:33Z.
+All six existing agents supplied fresh authenticated heartbeats; all 37 protected
+fingerprints, worker credentials/bindings and external policy epoch6 were
+preserved. The live migration added only `swift_project_validations`, without
+promoting main's unrelated context/compaction changes. GET `/memory/status`
+returned authentication-required401 rather than method-not-allowed405. At this
+stage this proves the authenticated route exists, not embedding inference or a
+successful authenticated status fetch.
+
+The iMac worker was switched to immutable source `cabec3b` and a private staging
+root while preserving its enrollment and SSH tunnel. The first activation receipt
+failed its immediate process-argument comparison after launchd bootstrap; it did
+not capture the transient arguments, so their cause is not asserted. Independent
+inspection at 2026-09-23T03:51:40Z confirmed the exact candidate argv/plist, source
+hashes, unchanged credentials/tunnel, no native job, and a post-activation
+heartbeat. No second restart was needed. The failed receipt remains retained
+beside `mac-swift/receipt-independent-current.json`.
+
+A subsequent production qualification used a newly paired, explicitly named test
+device and a new benign Swift goal. The actual project worker generated only
+`Package.swift`. The old native guard immediately paused authoring. After source
+inspection, the exact stored revision was transferred under its authenticated
+grant to the iMac and `swift test` ran for 8.428 seconds. It correctly failed with
+an empty target: exit1, zero tests, source unchanged. This verifies real transfer
+and rejection of incomplete source, not a successful Swift project. The fixture
+goal was cancelled, its revision retained, its temporary device revoked (the old
+bearer then returned401), and no active job remained.
+
+That same test device fetched `/memory/status` with HTTP200. The deployed server
+reported EmbeddingGemma configured but not probed; context, compaction and hybrid
+features were false. Local E5 and server embedding status remain distinct.
+
+## Incremental native authoring correction
+
+The production probe exposed an early native guard: the first accepted Swift
+file stopped later authoring iterations. The worker now preserves an explicit
+native authoring state across small edits and deletions. A complete proposal
+requests separate validation of the exact revision; it never records a passed
+native check. Python/npm checks are not run for native drafts. Existing stall,
+timeout, cancellation and source-consent limits remain enforced. Legacy results
+without the marker retain their fail-closed behavior.
+
+The regression failed before correction (7 worker and 2 server cases). Validation
+passed 384 worker tests (5 optional skips), 196 server tests including a real
+benign Swift compilation, Ruff, mypy for all five changed services, and diff
+checks. This does not by itself qualify an autonomous model-generated project.
+
+## TestFlight
+
+Build `20260922233500`, version0.1.0, was archived from exact main source
+`cabec3b4bbc8c175ed74154c7a358e59b2aa782f`. Archive, export, signature and source
+audits passed. The IPA is43,412,898 bytes with SHA256
+`778c48814104538aebd47ee7f56a167f3883a7d77871c28c51dfdfb5a4a2f89d`.
+Upload succeeded; App Store Connect confirmed `VALID` and `IN_BETA_TESTING`,
+membership in internal group `27pm`, and exact French release-note readback at
+2026-09-23T04:12:37Z. No external beta submission was made. The temporary signing
+keychain was cleaned up. The app dSYM is verified; three precompiled vendor
+dSYMs are absent and documented in the retained release receipt.
+
+The backend-only incremental-authoring correction does not require another
+mobile build. Physical-iPhone E5 inference remains unverified.

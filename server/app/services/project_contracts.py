@@ -6,7 +6,15 @@ import re
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    StringConstraints,
+    model_serializer,
+    model_validator,
+)
 
 PROJECT_SKILL = "code.build_project"
 MAX_PROJECT_BYTES = 1_000_000
@@ -126,7 +134,21 @@ class ProjectGuidanceRead(StrictModel):
         return self
 
 
-class ProjectResult(StrictModel):
+class NativeValidationState(StrictModel):
+    # Worker-owned workflow metadata, never proof of compilation or user consent.
+    native_validation: Literal["authoring", "required"] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_native_state(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.native_validation is None:
+            # Older workers forbid extra fields. Keep their non-native payload
+            # shape unchanged even after remote-job normalization serializes it.
+            data.pop("native_validation", None)
+        return data
+
+
+class ProjectResult(NativeValidationState):
     guidance_reads: list[ProjectGuidanceRead] = Field(default_factory=list, max_length=80)
     schema_version: Literal["1.0"]
     action: Literal["clarify", "continue", "complete"]
@@ -184,7 +206,7 @@ class ProjectMemoryContext(StrictModel):
     items: list[ProjectMemoryItem] = Field(max_length=4)
 
 
-class ProjectPayload(StrictModel):
+class ProjectPayload(NativeValidationState):
     guidance_version: int | None = Field(default=None, strict=True, ge=1, le=1)
     objective: Text = Field(min_length=1)
     conversation: list[dict[str, str]] = Field(max_length=40)
