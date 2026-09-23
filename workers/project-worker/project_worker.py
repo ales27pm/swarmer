@@ -30,6 +30,7 @@ from project_contract import (
     merge_files,
     parse_payload,
     parse_step,
+    path_value,
     snapshot_sha,
 )
 from runtime import DockerRunner
@@ -471,6 +472,49 @@ def native_project(payload: dict[str, Any]) -> bool:
         "authoring",
         "required",
     } or native_validation_unavailable(payload["files"])
+
+
+def next_native_plan_file(payload: dict[str, Any]) -> str | None:
+    """Suggest one absent planned artifact, never a completion or execution claim."""
+    present = {item["path"].casefold() for item in payload["files"]}
+    suffixes = {
+        "swift",
+        "metal",
+        "md",
+        "txt",
+        "plist",
+        "pbxproj",
+        "xcworkspacedata",
+        "xcconfig",
+        "entitlements",
+        "xctestplan",
+        "strings",
+        "json",
+        "h",
+        "m",
+        "mm",
+        "c",
+        "cpp",
+    }
+    for milestone in payload["plan"]:
+        # Conservative hints: code snippets and URLs are not project paths.
+        if "://" in milestone or any(
+            token in milestone for token in ("```", "{", "}", ";", "=", "\\")
+        ):
+            continue
+        for match in re.finditer(
+            r"(?<![\w./@-])([A-Za-z0-9_./@-]+\.[A-Za-z][A-Za-z0-9]*)(?![\w./@-]|\s*\()", milestone
+        ):
+            candidate = match.group(1)
+            if candidate.rsplit(".", 1)[-1].casefold() not in suffixes:
+                continue
+            try:
+                path_value(candidate)
+            except ProjectError:
+                continue
+            if candidate.casefold() not in present:
+                return candidate
+    return None
 
 
 def project_guidance(files: list[dict[str, str]], paths: list[str]) -> list[dict[str, str]]:
@@ -1336,6 +1380,27 @@ class ProjectGenerator:
             # The latest request is included verbatim in this active user task.
             # Avoid duplicating it in history and consuming the source budget.
             conversation = [item for item in conversation if item is not latest_user_message]
+        elif native:
+            current_task = (
+                "Continue the existing native project from the supplied source and file manifest. "
+                "Preserve the original objective and accepted plan; do not restart their first step. "
+                "Implement one next missing milestone with a small complete file or necessary repair. "
+                "Existing paths are not proof their implementation is finished, but do not recreate "
+                "unchanged scaffolding or churn its metadata. The latest user requirements and "
+                "actual source defects take precedence over an advisory missing-path hint. "
+                "Use continue while work remains; request separate native validation only after "
+                "the requested source, native tests and documentation are ready."
+            )
+            next_file = next_native_plan_file(payload)
+            if next_file is not None:
+                current_task += (
+                    "\nAn absent path mentioned in the accepted plan (advisory, not an instruction "
+                    "to override the latest user request): " + json.dumps(next_file) + ". "
+                    "If still required, implement this file rather than recreating a present one."
+                )
+            if last_user:
+                current_task += "\n\nLATEST USER REQUIREMENTS:\n" + last_user
+                conversation = [item for item in conversation if item is not latest_user_message]
         elif answered:
             current_task = "Implement this latest user request now:\n" + last_user
             if not payload["files"]:
