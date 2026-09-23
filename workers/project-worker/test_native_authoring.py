@@ -366,3 +366,124 @@ def test_python_schema_keeps_mixed_operations_on_distinct_paths() -> None:
     Draft202012Validator(schema).validate(response)
     parsed = parse_step(worker.resolve_model_patches(response, addresses))
     assert parsed["edits"] and parsed["patches"]
+
+
+def test_native_requested_file_retains_edit_targets_before_old_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = SWIFT_FILES[2]["path"]
+    latest = f"Repair only {target}. Preserve every other file, then request native validation."
+    feedback = "The previous edit was rejected; no source changes were accepted."
+    current = {
+        **payload(),
+        "files": copy.deepcopy(SWIFT_FILES),
+        "native_validation": "authoring",
+        "conversation": [
+            {
+                "role": "user",
+                "content": f"Earlier requirement {i}. " + "Keep the requested behavior. " * 65,
+            }
+            for i in range(3)
+        ]
+        + [{"role": "assistant", "content": feedback}, {"role": "user", "content": latest}],
+    }
+    requests = []
+    response = step(edits=[], patches=[], focus_paths=[])
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, request: Any, *, timeout: float) -> Response:
+            requests.append(json.loads(request.data))
+            return Response(
+                json.dumps(
+                    {
+                        "message": {"content": json.dumps(response)},
+                        "done": True,
+                        "done_reason": "stop",
+                    }
+                ).encode()
+            )
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    worker.ProjectGenerator("http://127.0.0.1:11434/v1", "example").generate(current)
+    messages = requests[0]["messages"]
+    workspace = messages[-1]["content"]
+    metadata = json.loads(workspace.split("\n", 2)[1])
+    spans = metadata["editable_spans"]
+    assert spans[0]["path"] == target
+    requested_file = next(item for item in current["files"] if item["path"] == target)
+    assert spans[0]["start_character"] == 0
+    assert spans[0]["end_character"] == len(requested_file["content"])
+    assert latest in workspace
+    assert any(message["content"] == feedback for message in messages)
+    assert sum(len(message["content"].encode()) for message in messages) <= worker.MAX_PROMPT_BYTES
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        "https://example.org/Tests/AdditionTests/AdditionTests.swift",
+        "/tmp/Tests/AdditionTests/AdditionTests.swift",
+        "Tests/AdditionTests/AdditionTests.swift.backup",
+        "PrefixTests/AdditionTests/AdditionTests.swift",
+    ],
+)
+def test_native_requested_path_requires_an_exact_manifest_reference(mention: str) -> None:
+    current = {
+        **payload(),
+        "files": copy.deepcopy(SWIFT_FILES),
+        "conversation": [{"role": "user", "content": mention}],
+    }
+    assert not worker.native_requested_paths(current)
+
+
+def test_native_requested_path_uses_only_the_latest_user_message() -> None:
+    current = {
+        **payload(),
+        "files": copy.deepcopy(SWIFT_FILES),
+        "conversation": [
+            {"role": "user", "content": "Repair Package.swift."},
+            {"role": "assistant", "content": "Edit README.md next."},
+            {"role": "user", "content": "Inspect `Tests/AdditionTests/AdditionTests.swift`."},
+        ],
+    }
+    assert worker.native_requested_paths(current) == {SWIFT_FILES[2]["path"]}
+    current["files"] = [{"path": "app.py", "content": "VALUE = 1\n"}]
+    current["conversation"] = [{"role": "user", "content": "Repair app.py."}]
+    assert not worker.native_requested_paths(current)
+
+
+@pytest.mark.parametrize("text", ["// café\n", "// " + "é" * 1_100 + "\n"])
+def test_native_whole_file_target_limit_counts_utf8_bytes(text: str) -> None:
+    file = {
+        "path": "Sources/Example.swift",
+        "content": "import Foundation\n" + text + "let value = 1\n",
+    }
+    current = {
+        **payload(),
+        "files": [file],
+        "conversation": [{"role": "user", "content": "Repair Sources/Example.swift."}],
+    }
+    context = {"selected_complete_files": [file], "selected_file_fragments": []}
+    first = next(iter(worker.addressed_patch_spans(context, current).values()))
+    assert (first["old"] == file["content"]) == (len(file["content"].encode()) <= 2_000)
+
+
+def test_native_requested_fragment_does_not_offer_unseen_whole_file() -> None:
+    file = {
+        "path": "Sources/Example.swift",
+        "content": "import Foundation\n" + "let value = 1\n" * 200,
+    }
+    current = {
+        **payload(),
+        "files": [file],
+        "conversation": [{"role": "user", "content": "Repair Sources/Example.swift."}],
+    }
+    fragment = worker.source_fragment(file, current, "")
+    context = {"selected_complete_files": [], "selected_file_fragments": [fragment]}
+    addresses = worker.addressed_patch_spans(context, current)
+    assert addresses
+    assert all(address["old"] in fragment["content"] for address in addresses.values())
+    assert all(address["old"] != file["content"] for address in addresses.values())

@@ -480,6 +480,24 @@ def native_project(payload: dict[str, Any]) -> bool:
     } or native_validation_unavailable(payload["files"])
 
 
+def native_requested_paths(payload: dict[str, Any]) -> set[str]:
+    """Prioritize exact manifest paths in the latest user request, not permissions."""
+    if not native_project(payload):
+        return set()
+    latest = next(
+        (item["content"] for item in reversed(payload["conversation"]) if item["role"] == "user"),
+        "",
+    )
+    return {
+        item["path"]
+        for item in payload["files"]
+        if re.search(
+            r"(?<![\w./\\-])" + re.escape(item["path"]) + r"(?![\w/\\-]|\.[\w])",
+            latest,
+        )
+    }
+
+
 def next_native_plan_file(payload: dict[str, Any]) -> str | None:
     """Suggest one absent planned artifact, never a completion or execution claim."""
     present = {item["path"].casefold() for item in payload["files"]}
@@ -736,6 +754,7 @@ def diagnostic_functions(item: dict[str, str], diagnostics: str) -> list[tuple[i
 
 def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dict[str, list[str]]:
     original = {item["path"]: item["content"] for item in payload["files"]}
+    requested = native_requested_paths(payload)
     diagnostics = "\n".join(item["output"] for item in payload["checks"])
     available: dict[str, list[str]] = {}
     fragments = context["selected_file_fragments"]
@@ -743,6 +762,7 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
     blocks = sorted(
         blocks,
         key=lambda item: (
+            item["path"] not in requested,
             project_traceback_line(item["path"], diagnostics) is None,
             item["path"] not in payload.get("focus_paths", []),
             not diagnostic_functions(
@@ -779,6 +799,10 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
                 {"path": path, "content": original[path]}, diagnostics
             )
         ]
+        if path in requested and shown == original[path] and len(shown.encode()) <= 2_000:
+            # A small requested file is fully visible: offer its actual full extent
+            # before header-only spans that could accidentally duplicate its body.
+            proposed.insert(0, shown)
         if 0 <= target_index < len(lines):
             unique = unique_diagnostic_span(lines, target_index, original[path])
             if unique is not None:
@@ -1087,6 +1111,7 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     diagnostic_paths = {item["path"] for item in files if diagnostic_functions(item, diagnostics)}
     selected: list[dict[str, str]] = []
     focused = payload.get("focus_paths", [])
+    requested = native_requested_paths(payload)
     ordered = sorted(
         [
             item
@@ -1095,6 +1120,7 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
             or item["path"].split("/")[-1].casefold() != "agents.md"
         ],
         key=lambda item: (
+            item["path"] not in requested,
             project_traceback_line(item["path"], diagnostics) is None,
             item["path"] not in focused,
             item["path"] not in diagnostics and item["path"] not in diagnostic_paths,
@@ -1218,7 +1244,8 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     for item in ordered:
         selected.append(item)
         important = (
-            item["path"] in focused
+            item["path"] in requested
+            or item["path"] in focused
             or item["path"] in diagnostics
             or item["path"] in diagnostic_paths
         )
@@ -1301,6 +1328,7 @@ class ProjectGenerator:
             for check in payload["checks"]
         )
         native = native_project(payload)
+        requested_paths = native_requested_paths(payload)
         if native:
             # These are historical non-native receipts, not instructions to
             # replace a Swift project with Python/Node repair scaffolding.
@@ -1513,7 +1541,8 @@ class ProjectGenerator:
             elif context["selected_complete_files"]:
                 removed = context["selected_complete_files"].pop()
                 if (
-                    removed["path"] in payload.get("focus_paths", [])
+                    removed["path"] in requested_paths
+                    or removed["path"] in payload.get("focus_paths", [])
                     or removed["path"] in diagnostics
                     or diagnostic_functions(removed, diagnostics)
                 ):
@@ -1522,6 +1551,7 @@ class ProjectGenerator:
                     )
                     context["selected_file_fragments"].sort(
                         key=lambda item: (
+                            item["path"] not in requested_paths,
                             project_traceback_line(item["path"], diagnostics) is None,
                             item["path"] not in payload.get("focus_paths", []),
                             item["path"] not in diagnostics,

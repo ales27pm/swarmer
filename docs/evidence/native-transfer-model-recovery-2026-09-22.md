@@ -333,6 +333,58 @@ then passed399 tests with five existing optional skips. Ruff and diff checks
 passed. The frozen worker source SHA256 is
 `2a708ca1a7899c2213959418b23e43981715b1d4f873f23c3de85268a0e7fd17`.
 
+Main `a32c2de` was pushed to both remotes. Narrow worker backport `e58fcf8`
+passed395 tests with five existing optional skips. An isolated replay used the
+captured third input, including the already-corrected source, against the actual
+30B model. Its one call took53.30 seconds and produced an identical file edit;
+the worker rejected it without source changes or code execution. This is a
+negative readiness-selection result despite the corrected instruction and
+operation schema. No success or autonomous completion is inferred. Receipt
+SHA256: `9210b47dd482ed16f61633ee5c9e688d05dfe72fa78507f1174ff0f6fbbbe4b5`.
+
+The worker-only backport was deployed under the existing supervised recovery
+protocol. Independent verification at2026-09-23T05:36:47Z confirmed all eight
+mounted source files, a fresh authenticated heartbeat, unchanged APIc519/model/
+configuration/identity, all37 protected history fingerprints and no active work
+interrupted. Reviewed baseline:
+`ad55ac8cb922274b0b257685c98ab0f949a61cfb9a20200f1d311c2f7ec4fa5b`.
+The previous6949791 release remains available for recovery. This deployment fixes
+the demonstrated instruction/schema contradictions; it does not turn the negative
+readiness probe into an autonomous success.
+
+An explicitly assisted continuation asked the model to remove only the duplicated
+XCTest class and request native validation. It instead changed README and then
+Package.swift, leaving the duplicated test unchanged. Neither revision was
+approved for execution. The operator cancelled only that qualification through
+the public API at2026-09-23T05:42:14Z. Its two revisions, input payloads and
+cancelled third job were preserved; no partial third result was persisted.
+Cleanup confirmed zero active jobs and revoked the temporary device with401.
+
+Reconstruction using the exact deployed worker bytes (`b7666db...`) exposed a
+second concrete defect: the four source files were fully visible, but the edit
+target table contained only README line1 and Package.swift line1. The explicitly
+requested test file had no patch target. Prompt fitting reduced the target-table
+budget to500 bytes before removing stale conversation messages, and target
+ranking ignored file paths in the latest native user request when check receipts
+were empty. Thus the model saw the intended source without a patch target for it;
+full-file replacement remained available. This finding rules out attributing the
+assisted run solely to model behavior.
+
+Native source selection now prioritizes exact existing manifest paths mentioned
+in the latest user request. For a requested file fully visible and at most2000
+UTF-8 bytes, its complete range is offered before header-only patch targets.
+This affects context priority only: scope, path validation, source identity,
+permissions and execution consent are unchanged. Existing history retention is
+unchanged. The captured request now contains a complete target for the requested
+test file (lines1–23) within21550 bytes of the22000-byte prompt budget. All four
+files, the latest user request and latest feedback remain visible. The latest
+user text moves from conversation history into the active task as before.
+
+The source-target regression failed before correction. Afterward408 worker tests
+passed with five existing optional skips; Ruff, formatting and diff checks
+passed. Frozen main worker SHA256:
+`8da3f2a37807b6dbb65fae95018e3912268a2ed3c4b4bda4013eb997abfab774`.
+
 ## TestFlight
 
 Build `20260922233500`, version0.1.0, was archived from exact main source
