@@ -47,9 +47,50 @@ outcomes, bounded model identifiers, forged model metadata, citation validation,
 lease loss, cancellation, duplicate events, forged event mappings, durable source
 relationships and a newer user reply arriving before result handling.
 
+The complete text-worker directory subsequently passed 173 tests, after updating
+two inherited citation-transport fixture expectations to the private model schema.
+The narrow API backport passed 178 tests. These runs overlap the integrated suite;
+their counts must not be added together.
+
+## Actual model request
+
+On September 24 at 05:11 UTC, one bounded request used the installed writer
+`swarmer-planner-qwen2.5-coder-abliterated:7b-32k-a416f57` to draft a French family
+agenda. It explicitly returned `delivered` in 50.99 seconds. The worker removed
+the private outcome field and the server validator accepted the unchanged public
+four-field success contract. No production job or database row was created.
+The private SSH forward was closed, and the tested source hash remained unchanged.
+
+This verifies an actual successful model response under the new contract, not
+exhaustive task quality or the behavior of every model. Declined-result handling
+is covered by deterministic regression tests, not by soliciting a harmful output.
+The private receipt SHA-256 is
+`f8260abdb9068423acb2ddbeca280521ef14fd14c437af666e46d2877d23e0ac`.
+
 ## Release scope
 
 Only `agent_dispatcher.py`, `goal_manager.py`, `writing_contracts.py` and the text
 worker runtime are release targets. No database migration, model replacement,
 project restart or TestFlight rebuild is part of this correction. Production
-activation and any real-model evidence are recorded separately after verification.
+activation used isolated backports over the deployed sources, not the full main
+branch. At 05:21 UTC the API changed to
+`0a4c9e0151dc1282ce19fec2761d0035b22fc1e3-e8976a26d44d`; at 05:23 UTC the text
+worker changed to `37fa1a062829a71064e41e8752740c8364d94781-94359ef397c3`.
+
+Both supervised cutovers and their independent verifiers passed. All 37 protected
+history fingerprints were unchanged, including 14 projects and 321 revisions.
+The API health check returned `ok`, all six agent identities had fresh heartbeats,
+and no work was active at admission or post-verification. Model aliases,
+credentials, policies, schema 26 and worker identities were unchanged by this
+source-only release. A separate root SSH check confirmed the API release and all
+three changed source hashes. The existing TestFlight build needs no reinstall for
+this server correction.
+
+The first inactive staging attempt rejected an invalid wheel transport basename;
+its directory was retained and staging retried with the correct filename and
+identical bytes. This did not activate or stop a service. No rollback was needed.
+
+Independent receipt SHA-256 values:
+
+- API: `15794bdcd2510676e747fb3e4088baad43b3e1792c8a0f1708cb79a975c50547`
+- Text worker: `dec9b844f41d91d15d9660b8842479ef563b9aea71de2d3b17f8b2022008b389`
