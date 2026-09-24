@@ -166,14 +166,14 @@ describe("ChatScreen", () => {
     });
   });
 
-  it("identifies the control-plane planner and offers a capability-matched root listing", async () => {
+  it("identifies the server connection and offers a personal-assistant starting point", async () => {
     await render(<ChatScreen />);
 
-    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
-    expect(screen.getByText("Liste les fichiers à la racine du projet.")).toBeOnTheScreen();
+    expect(await screen.findByText("Serveur connecté")).toBeOnTheScreen();
+    expect(screen.getByText("Aide-moi à organiser ma semaine.")).toBeOnTheScreen();
     expect(
       screen.getByText(
-        "Décris une intention. Le modèle du control plane propose; l’exécuteur prouve; les actions sensibles attendent ton accord.",
+        "Une idée, une recherche, un projet. Discute ou confie une tâche à ton équipe.",
       ),
     ).toBeOnTheScreen();
     expect(
@@ -197,7 +197,7 @@ describe("ChatScreen", () => {
       </LiveSyncContextProvider>,
     );
 
-    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(await screen.findByText("Serveur connecté")).toBeOnTheScreen();
     expect(screen.getByText("Temps réel connecté")).toBeOnTheScreen();
   });
 
@@ -213,7 +213,7 @@ describe("ChatScreen", () => {
         <ChatScreen />
       </LiveSyncContextProvider>,
     );
-    await screen.findByText("Control plane authentifié");
+    await screen.findByText("Serveur connecté");
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
     await waitFor(() => expect(mockListMessages).toHaveBeenCalledTimes(2));
@@ -236,14 +236,14 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
-    expect(screen.getByText("Control plane injoignable ou non jumelé")).toBeOnTheScreen();
+    expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     expect(screen.getByRole("button", { name: "Envoyer" })).toBeDisabled();
 
     mockBootstrap.mockResolvedValue(bootstrap);
     await refocusChat();
 
-    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(await screen.findByText("Serveur connecté")).toBeOnTheScreen();
     expect(screen.getByRole("button", { name: "Envoyer" })).toBeEnabled();
     expect(mockBootstrap).toHaveBeenCalledTimes(2);
   });
@@ -255,18 +255,18 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
-    expect(screen.getByText("Control plane injoignable ou non jumelé")).toBeOnTheScreen();
+    expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
 
     await refocusChat();
-    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(await screen.findByText("Serveur connecté")).toBeOnTheScreen();
 
     await act(async () => {
       firstRefresh.reject(new Error("Ancienne requête en échec"));
       await Promise.resolve();
     });
 
-    expect(screen.getByText("Control plane authentifié")).toBeOnTheScreen();
-    expect(screen.queryByText("Control plane injoignable ou non jumelé")).not.toBeOnTheScreen();
+    expect(screen.getByText("Serveur connecté")).toBeOnTheScreen();
+    expect(screen.queryByText("Connexion au serveur à vérifier")).not.toBeOnTheScreen();
   });
 
   it("refreshes authentication when iOS becomes active while Chat stays focused", async () => {
@@ -274,14 +274,14 @@ describe("ChatScreen", () => {
     const rendered = await render(<ChatScreen />);
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
-    expect(screen.getByText("Control plane injoignable ou non jumelé")).toBeOnTheScreen();
+    expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
 
     mockBootstrap.mockResolvedValue(bootstrap);
     await act(async () => {
       mockAppStateListener?.("active");
     });
 
-    expect(await screen.findByText("Control plane authentifié")).toBeOnTheScreen();
+    expect(await screen.findByText("Serveur connecté")).toBeOnTheScreen();
     await rendered.unmount();
     expect(mockRemoveAppStateListener).toHaveBeenCalledTimes(1);
   });
@@ -291,7 +291,7 @@ describe("ChatScreen", () => {
     const user = userEvent.setup();
     await render(<ChatScreen />);
 
-    await screen.findByText("Control plane authentifié");
+    await screen.findByText("Serveur connecté");
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
 
@@ -302,7 +302,7 @@ describe("ChatScreen", () => {
   it("labels a no-tool model response as a proposal rather than completion", async () => {
     const user = userEvent.setup();
     await render(<ChatScreen />);
-    await screen.findByText("Control plane authentifié");
+    await screen.findByText("Serveur connecté");
 
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
@@ -318,7 +318,7 @@ describe("ChatScreen", () => {
     mockPlanTask.mockResolvedValue(completedToolCallWith({ entries: [] }));
     const user = userEvent.setup();
     await render(<ChatScreen />);
-    await screen.findByText("Control plane authentifié");
+    await screen.findByText("Serveur connecté");
 
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
@@ -335,7 +335,7 @@ describe("ChatScreen", () => {
     mockPlanTask.mockResolvedValue(completedToolCallWith(result));
     const user = userEvent.setup();
     await render(<ChatScreen />);
-    await screen.findByText("Control plane authentifié");
+    await screen.findByText("Serveur connecté");
 
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
@@ -374,7 +374,7 @@ describe("ChatScreen", () => {
     mockPlanTask.mockRejectedValueOnce(new Error("Planification indisponible"));
     const user = userEvent.setup();
     await render(<ChatScreen />);
-    await screen.findByText("Control plane authentifié");
+    await screen.findByText("Serveur connecté");
 
     await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));

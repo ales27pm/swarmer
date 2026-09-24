@@ -73,18 +73,21 @@ export function ScreenShell({
   children,
   onRefresh,
   refreshing = false,
+  showTitle = true,
   testID,
 }: PropsWithChildren<{
   title: string;
+  showTitle?: boolean;
   subtitle?: string;
   onRefresh?: () => void;
   refreshing?: boolean;
   testID?: string;
 }>) {
+  const [expandedTitle, setExpandedTitle] = useState(false);
   const scrollView = useRef<ScrollView>(null);
   const activeGroup = useRef<View | null>(null);
   const activeInput = useRef<TextInput | null>(null);
-  const keyboardFrame = useRef(Keyboard.metrics());
+  const keyboardFrame = useRef(Keyboard.metrics?.());
   const keyboardHiding = useRef(false);
   const offset = useRef(0);
   const frame = useRef<number | null>(null);
@@ -180,7 +183,7 @@ export function ScreenShell({
         testID={testID}
         contentInsetAdjustmentBehavior="automatic"
         automaticallyAdjustKeyboardInsets
-        contentContainerStyle={{ gap: 16, padding: 16, paddingBottom: 40 }}
+        contentContainerStyle={{ gap: 20, padding: 20, paddingBottom: 40, width: "100%", maxWidth: 760, alignSelf: "center" }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         onContentSizeChange={reveal}
@@ -198,9 +201,10 @@ export function ScreenShell({
         }
       >
         <View style={{ gap: 6 }}>
-          <Text accessibilityRole="header" selectable style={{ color: COLORS.text, fontSize: 28, fontWeight: "800" }}>
+          {showTitle ? <Text accessibilityRole="header" selectable numberOfLines={title.length > 150 && !expandedTitle ? 3 : undefined} style={{ color: COLORS.text, fontSize: 26, lineHeight: 32, fontWeight: "800" }}>
             {title}
-          </Text>
+          </Text> : null}
+          {showTitle && title.length > 150 ? <ActionButton label={expandedTitle ? "Réduire l’objectif" : "Lire l’objectif complet"} onPress={() => setExpandedTitle(!expandedTitle)} /> : null}
           {subtitle ? (
             <Text selectable style={{ color: COLORS.muted, fontSize: 14, lineHeight: 20 }}>
               {subtitle}

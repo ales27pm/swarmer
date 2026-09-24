@@ -10,6 +10,7 @@ export type {
   Task, TaskDetail, TaskMode, TaskStatus, ToolCall, ToolProposalInput,
 } from "@/lib/api/types";
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
+export type { ActivityPage, ActivityItem, ActivityScopeType } from "@/lib/api/activity";
 export type { GoalWritingDraft } from "@/lib/api/writing-draft";
 export type { GoalConversationSession, GoalReplyAttempt, ProjectReview, ProjectPreview } from "@/lib/api/project";
 export type { ApprovalDecisionReceipt, PairingResult } from "@/lib/api/client";
@@ -60,3 +61,7 @@ export const bootstrapSync: typeof adapter.bootstrapSync = (shouldAccept) => inv
 
 export const getSwiftProjectValidation: typeof adapter.getSwiftProjectValidation = (id) => call("project.swift.status", { id });
 export const cancelSwiftProjectValidation: typeof adapter.cancelSwiftProjectValidation = (id, validationId) => call("project.swift.cancel", { id, validationId, confirm: true });
+
+export const getActivity: typeof adapter.getActivity = (scope, id, cursor, shouldAccept) => invokeApplicationCommand(
+  scope === "task" ? "tasks.activity" : "goals.activity", { id, ...(cursor === undefined ? {} : { cursor }) }, { shouldAccept },
+);

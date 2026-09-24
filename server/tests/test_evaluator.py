@@ -494,6 +494,7 @@ def test_evaluator_wire_schema_enforces_status_question_and_node_constraints(sta
     decision = {
         **continue_decision(),
         "status": status,
+        "missing_requirements": [] if status == "done" else ["Inspect the implementation."],
         "suggested_new_nodes": [],
         "user_question": "Quel fichier de contacts faut-il importer ?"
         if status == "needs_user"

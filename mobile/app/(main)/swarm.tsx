@@ -211,7 +211,7 @@ function GoalCard({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Ouvrir le but ${goal.objective}`}
+      accessibilityLabel={`Ouvrir le projet ${goal.objective}`}
       onPress={onOpen}
       style={({ pressed }) => ({ opacity: pressed ? 0.75 : 1 })}
       testID={`goal-row-${goal.id}`}
@@ -225,10 +225,10 @@ function GoalCard({
           {goal.objective}
         </Text>
         <Text style={{ color: COLORS.muted }}>
-          Phase {goal.current_phase} · {completed}/{nodes.length} étapes terminées
+          {completed}/{nodes.length} étapes terminées
         </Text>
         <Text style={{ color: blocked ? COLORS.warning : COLORS.subtle, fontSize: 12 }}>
-          {runningAgents.size} agent{runningAgents.size === 1 ? "" : "s"} actif{runningAgents.size === 1 ? "" : "s"} · {blocked} bloquée{blocked === 1 ? "" : "s"}
+          {runningAgents.size} agent{runningAgents.size === 1 ? "" : "s"} mobilisé{runningAgents.size === 1 ? "" : "s"} · {blocked} bloquée{blocked === 1 ? "" : "s"}
         </Text>
         {goal.evaluator_summary ? (
           <Text numberOfLines={2} style={{ color: COLORS.muted, lineHeight: 19 }}>
@@ -285,8 +285,8 @@ function OfflineNotice({ source }: { source: SwarmSource }) {
   if (source !== "cache") return null;
   return (
     <Text accessibilityLiveRegion="polite" style={{ color: COLORS.warning, lineHeight: 19 }}>
-      Les données peuvent être périmées. Aucune création, annulation, relance ou permission n’est
-      autorisée depuis cette copie.
+      Les données peuvent être périmées. Les actions reprendront après
+      la reconnexion au serveur.
     </Text>
   );
 }
@@ -303,8 +303,8 @@ function GoalEmptyState({
   if (goalCount || refreshing || error) return null;
   return (
     <EmptyState
-      title="Aucun but"
-      subtitle="Crée un but vérifiable. Son démarrage restera une action séparée."
+      title="Aucun projet"
+      subtitle="Ajoute un projet pour organiser le travail de ton équipe."
     />
   );
 }
@@ -312,6 +312,7 @@ function GoalEmptyState({
 export default function SwarmScreen() {
   const { data, error, refresh, refreshing, setError, source } = useSwarmData();
   const creation = useGoalCreation(source, refreshing, setError);
+  const [creationOpen, setCreationOpen] = useState(false);
 
   const agentNames = useMemo(
     () => new Map(data.agents.map((agent) => [agent.id, agent.name])),
@@ -326,8 +327,9 @@ export default function SwarmScreen() {
 
   return (
     <ScreenShell
-      title="Swarm"
-      subtitle="Définis un but, puis suis la planification et les preuves du control plane Ubuntu."
+      showTitle={false}
+      title="Équipe"
+      subtitle="Tes agents, leurs compétences et les projets qu’ils accompagnent."
       onRefresh={() => void refresh()}
       refreshing={refreshing}
       testID="swarm-screen"
@@ -335,93 +337,110 @@ export default function SwarmScreen() {
       <ErrorBanner message={error} />
       <OfflineNotice source={source} />
 
-      <SectionTitle title="Nouveau but" />
-      <Card>
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
-          Créer un but ne lance rien automatiquement. Le control plane reste autoritaire.
-        </Text>
-        <TextInput
-          accessibilityLabel="Objectif du but"
-          editable={source === "authoritative" && !creation.creating && !refreshing}
-          multiline
-          onChangeText={creation.setObjective}
-          placeholder="Quel résultat vérifiable veux-tu obtenir?"
-          placeholderTextColor={COLORS.subtle}
-          style={{
-            backgroundColor: COLORS.background,
-            borderColor: COLORS.border,
-            borderRadius: 12,
-            borderWidth: 1,
-            color: COLORS.text,
-            minHeight: 96,
-            padding: 12,
-            textAlignVertical: "top",
-          }}
-          testID="goal-objective-input"
-          value={creation.objective}
-        />
-        <View accessibilityLabel="Profil d’autonomie" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {PROFILES.map((item) => {
-            const selected = creation.profile === item.key;
-            return (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ disabled: source !== "authoritative" || refreshing, selected }}
-                disabled={source !== "authoritative" || creation.creating || refreshing}
-                key={item.key}
-                onPress={() => creation.setProfile(item.key)}
-                style={{
-                  backgroundColor: selected ? `${COLORS.accent}1f` : COLORS.panelRaised,
-                  borderColor: selected ? COLORS.accent : COLORS.border,
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  minHeight: 44,
-                  justifyContent: "center",
-                  paddingHorizontal: 14,
-                }}
-              >
-                <Text style={{ color: selected ? COLORS.accent : COLORS.muted, fontWeight: "700" }}>
-                  {item.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        <ActionButton
-          busy={creation.creating}
-          disabled={source !== "authoritative" || refreshing || !creation.objective.trim()}
-          label="Créer le but"
-          onPress={() => void creation.submit()}
-          testID="create-goal-button"
-          variant="accent"
-        />
-      </Card>
-
-      <SectionTitle title="Swarm actif" />
+      <SectionTitle title="Ton équipe" />
       <Card>
         <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "700" }}>
-          {activeAgentIds.size} agent{activeAgentIds.size === 1 ? "" : "s"} en travail
+          {source === null
+            ? "Équipe non vérifiée"
+            : `${activeAgentIds.size} agent${activeAgentIds.size === 1 ? "" : "s"} mobilisé${activeAgentIds.size === 1 ? "" : "s"}${source === "cache" ? " · copie précédente" : ""}`}
         </Text>
         <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
-          {activeAgentIds.size
-            ? [...activeAgentIds].map((id) => agentNames.get(id) ?? id).join(", ")
-            : "Aucun agent n’exécute actuellement un nœud."}
+          {source === null
+            ? "Connecte le serveur pour vérifier l’activité."
+            : activeAgentIds.size
+              ? [...activeAgentIds].map((id) => agentNames.get(id) ?? id).join(", ")
+              : source === "cache"
+                ? "Aucun agent mobilisé dans cette copie précédente."
+                : "Aucun agent mobilisé sur ces projets."}
         </Text>
         <ActionButton
-          label="Explorer le catalogue d’agents"
+          label="Catalogue des compétences"
           onPress={() => creation.router.push("/catalog")}
         />
         <ActionButton
-          label="Voir le registre des agents"
+          label="Tous les agents"
           onPress={() => creation.router.push("/agents")}
         />
         <ActionButton
-          label="Voir les accords"
+          label="Voir les autorisations"
           onPress={() => creation.router.push("/approvals")}
         />
       </Card>
 
-      <SectionTitle title="Buts" />
+      <SectionTitle title="Tes projets" />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: creationOpen }}
+        onPress={() => setCreationOpen((expanded) => !expanded)}
+        style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 4 }}
+        testID="new-project-disclosure"
+      >
+        <Text style={{ color: COLORS.accent, fontSize: 16, fontWeight: "700" }}>
+          {creationOpen ? "Fermer le formulaire" : "Nouveau projet"}
+        </Text>
+      </Pressable>
+      {creationOpen ? (
+        <Card>
+          <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
+            Décris le résultat souhaité. Le démarrage se fait ensuite, depuis le projet.
+          </Text>
+          <TextInput
+            accessibilityLabel="Objectif du projet"
+            editable={source === "authoritative" && !creation.creating && !refreshing}
+            multiline
+            onChangeText={creation.setObjective}
+            placeholder="Qu’aimerais-tu accomplir?"
+            placeholderTextColor={COLORS.subtle}
+            style={{
+              backgroundColor: COLORS.background,
+              borderColor: COLORS.border,
+              borderRadius: 12,
+              borderWidth: 1,
+              color: COLORS.text,
+              minHeight: 96,
+              padding: 12,
+              textAlignVertical: "top",
+            }}
+            testID="goal-objective-input"
+            value={creation.objective}
+          />
+          <View accessibilityLabel="Profil d’autonomie" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {PROFILES.map((item) => {
+              const selected = creation.profile === item.key;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: source !== "authoritative" || creation.creating || refreshing, selected }}
+                  disabled={source !== "authoritative" || creation.creating || refreshing}
+                  key={item.key}
+                  onPress={() => creation.setProfile(item.key)}
+                  style={{
+                    backgroundColor: selected ? `${COLORS.accent}1f` : COLORS.panelRaised,
+                    borderColor: selected ? COLORS.accent : COLORS.border,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    minHeight: 44,
+                    justifyContent: "center",
+                    paddingHorizontal: 14,
+                  }}
+                >
+                  <Text style={{ color: selected ? COLORS.accent : COLORS.muted, fontWeight: "700" }}>
+                    {item.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <ActionButton
+            busy={creation.creating}
+            disabled={source !== "authoritative" || refreshing || !creation.objective.trim()}
+            label="Créer le projet"
+            onPress={() => void creation.submit()}
+            testID="create-goal-button"
+            variant="accent"
+          />
+        </Card>
+      ) : null}
       <GoalEmptyState error={error} goalCount={data.goals.length} refreshing={refreshing} />
       <View style={{ gap: 12 }} testID="goal-list">
         {data.goals.map((goal) => (

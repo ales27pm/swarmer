@@ -32,6 +32,8 @@ async def test_numbered_wire_response_returns_unchanged_public_decision(
     raw["status"] = status
     if status != "continue":
         raw["suggested_new_nodes"] = []
+    if status == "done":
+        raw["missing_requirements"] = []
     if status == "needs_user":
         raw["user_question"] = "Which document should be used?"
     wire = wire_decision(raw)

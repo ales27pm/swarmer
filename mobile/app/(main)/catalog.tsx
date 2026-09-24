@@ -106,7 +106,7 @@ export default function CatalogScreen() {
   const integrated = catalog?.skills.filter((skill) => skill.execution.kind !== "planned").length ?? 0;
 
   return (
-    <ScreenShell title="Catalogue d’agents" subtitle="Des profils pour le code, le travail et le quotidien. Chaque compétence précise ses outils et ses prérequis."
+    <ScreenShell showTitle={false} title="Catalogue d’agents" subtitle="Des profils pour le code, le travail et le quotidien. Chaque compétence précise ses outils et ses prérequis."
       onRefresh={() => void refresh()} refreshing={refreshing} testID="catalog-screen">
       <ErrorBanner message={error} />
       <ActionButton label="Actualiser le catalogue" busy={refreshing} onPress={() => void refresh()} />

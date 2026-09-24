@@ -77,6 +77,30 @@ beforeEach(() => {
 afterEach(() => { jest.restoreAllMocks(); });
 
 describe("ScreenShell", () => {
+  it("renders when keyboard metrics are unavailable on the web", async () => {
+    const metrics = Keyboard.metrics;
+    Object.defineProperty(Keyboard, "metrics", { value: undefined, configurable: true });
+    try {
+      await render(<ScreenShell title="Aperçu web"><Text>Prêt</Text></ScreenShell>);
+      expect(screen.getByText("Prêt")).toBeOnTheScreen();
+    } finally { Object.defineProperty(Keyboard, "metrics", { value: metrics, configurable: true }); }
+  });
+
+  it("keeps a long objective accessible when its heading is collapsed", async () => {
+    const title = "Objectif détaillé ".repeat(20);
+    await render(<ScreenShell title={title} />);
+    expect(screen.getByText(title)).toHaveProp("numberOfLines", 3);
+    await fireEvent.press(screen.getByRole("button", { name: "Lire l’objectif complet" }));
+    expect(screen.getByText(title)).not.toHaveProp("numberOfLines", 3);
+  });
+
+  it("does not truncate a multiline heading without offering expansion", async () => {
+    const title = "Préparer agenda\nLire le calendrier\nComparer disponibilités\nProposer créneaux";
+    await render(<ScreenShell title={title} />);
+    expect(screen.getByText(title)).not.toHaveProp("numberOfLines", 3);
+    expect(screen.queryByRole("button", { name: "Lire l’objectif complet" })).not.toBeOnTheScreen();
+  });
+
   it("declares French for assistive-technology pronunciation", async () => {
     await render(
       <ScreenShell title="Réglages" testID="screen-shell">

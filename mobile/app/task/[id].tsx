@@ -1,3 +1,4 @@
+import { ActivityTimeline } from "@/components/activity-timeline";
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Text, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
@@ -592,6 +593,7 @@ export default function TaskDetailScreen() {
         onPress={() => void state.refresh()}
         testID="refresh-task-button"
       />
+      {task ? <ActivityTimeline scope="task" id={task.id} enabled={!state.offline && !state.initialLoading} refreshKey={task.updated_at} /> : null}
       <TaskDetailContent
         actions={actions}
         busy={state.busy}

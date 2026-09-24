@@ -13,6 +13,7 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: COLORS.background },
           headerStyle: { backgroundColor: COLORS.background },
           headerTintColor: COLORS.text,
+          headerShadowVisible: false,
         }}
       >
         <Stack.Screen name="(main)" options={{ headerShown: false }} />
@@ -20,6 +21,7 @@ export default function RootLayout() {
           name="local-model"
           options={{ headerBackTitle: "Réglages", title: "Modèle local" }}
         />
+        <Stack.Screen name="goal/[id]" options={{ headerBackTitle: "Retour", title: "Projet" }} />
         <Stack.Screen
           name="task/[id]"
           options={{ headerBackTitle: "Retour", title: "Tâche" }}

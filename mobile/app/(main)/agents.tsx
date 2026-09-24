@@ -51,6 +51,7 @@ export default function AgentsScreen() {
 
   return (
     <ScreenShell
+      showTitle={false}
       title="Agents"
       subtitle={`${active}/${items.length} agent${items.length === 1 ? "" : "s"} actif${active === 1 ? "" : "s"} · ${unverified} non vérifié${unverified === 1 ? "" : "s"} · lecture seule`}
       onRefresh={() => void refresh()}

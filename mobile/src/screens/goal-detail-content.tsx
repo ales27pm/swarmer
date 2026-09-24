@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { ActivityTimeline } from "@/components/activity-timeline";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
 
 import { ScreenShell } from "@/components/screen-shell";
@@ -581,21 +582,73 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
   );
 }
 
+function goalPhaseNotice(goal: GoalDetail["goal"]) {
+  if (awaitsEvaluatorRetry(goal)) return EVALUATOR_RETRY_PHASE;
+  if (goal.status === "planning") return PLANNING_PHASES[goal.current_phase];
+  if (goal.status === "running") return runningPhase(goal);
+  if (goal.status !== "waiting_permission") return undefined;
+  switch (goal.current_phase) {
+    case "needs_user":
+      return { label: "Intervention attendue", description: "Consultez le message dans la conversation du projet pour préciser la demande ou reprendre le travail." };
+    case "project_ready":
+      return { label: "Projet prêt à relire", description: "Examinez les fichiers et les vérifications avant de préparer une autorisation d’écriture." };
+    case "code_proposal_ready":
+      return CODE_PROPOSAL_PHASE;
+    default:
+      return undefined;
+  }
+}
+
+function GoalBudgets({ goal }: { goal: GoalDetail["goal"] }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        onPress={() => setExpanded(!expanded)}
+        style={{ minHeight: 44, justifyContent: "center" }}
+      >
+        <Text style={{ color: COLORS.accent, fontWeight: "600" }}>
+          {expanded ? "− Masquer les budgets" : "+ Budgets et planificateur"}
+        </Text>
+      </Pressable>
+      {expanded ? (
+        <View style={{ gap: 8 }}>
+          <Text selectable style={{ color: COLORS.subtle, fontSize: 12 }}>
+            Profil {goal.autonomy_profile} · planificateur {goal.planner_source}
+          </Text>
+          <Text style={{ color: COLORS.subtle, fontSize: 12 }}>
+            Étapes {goal.step_count}/{goal.max_steps} · replans {goal.replan_count}/{goal.max_replans} · appels modèle {goal.model_call_count}/{goal.max_model_calls}
+          </Text>
+        </View>
+      ) : null}
+    </>
+  );
+}
+
+function GoalProgress({ completed, total }: { completed: number; total: number }) {
+  if (!total) return null;
+  return (
+    <View
+      accessibilityRole="progressbar"
+      accessibilityLabel="Étapes terminées"
+      accessibilityValue={{ min: 0, max: total, now: completed }}
+      style={{ height: 6, backgroundColor: COLORS.panelRaised, borderRadius: 3, overflow: "hidden" }}
+    >
+      <View style={{ height: 6, width: `${Math.min(100, completed / total * 100)}%`, backgroundColor: COLORS.accent }} />
+    </View>
+  );
+}
+
 function GoalOverview({ controller, navigation }: {
   controller: GoalDetailController;
   navigation: GoalDetailNavigation;
 }) {
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
   if (!goal) return null;
-  const phaseNotice = awaitsEvaluatorRetry(goal) ? EVALUATOR_RETRY_PHASE
-    : goal.status === "waiting_permission" ? goal.current_phase === "needs_user"
-      ? { label: "Intervention attendue", description: "Consultez le message dans la conversation du projet pour préciser la demande ou reprendre le travail." }
-      : goal.current_phase === "project_ready"
-        ? { label: "Projet prêt à relire", description: "Examinez les fichiers et les vérifications avant de préparer une autorisation d’écriture." }
-        : goal.current_phase === "code_proposal_ready" ? CODE_PROPOSAL_PHASE : undefined
-    : goal.status === "planning" ? PLANNING_PHASES[goal.current_phase]
-      : goal.status === "running" ? runningPhase(goal) : undefined;
-  const phaseColor = goal.current_phase === "project_continue" || goal.current_phase === "project_building" || goal.current_phase === "evaluator_retrying"
+  const phaseNotice = goalPhaseNotice(goal);
+  const phaseColor = ["project_continue", "project_building", "evaluator_retrying"].includes(goal.current_phase)
     ? COLORS.info : COLORS.warning;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
@@ -603,11 +656,11 @@ function GoalOverview({ controller, navigation }: {
     : "Aucun agent en cours.";
   return (
     <>
-      <SectionTitle title="État autoritaire" />
+      <SectionTitle title="Avancement" />
       <Card>
-        <Text style={{ color: phaseNotice ? phaseColor : COLORS.info, fontWeight: "800" }}>
+        {goalLabel(goal) !== phaseNotice?.label ? <Text style={{ color: phaseNotice ? phaseColor : COLORS.info, fontWeight: "800" }}>
           {goalLabel(goal)}
-        </Text>
+        </Text> : null}
         <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>
           Phase : {phaseNotice?.label ?? goal.current_phase}
         </Text>
@@ -616,16 +669,12 @@ function GoalOverview({ controller, navigation }: {
             {phaseNotice.description}
           </Text>
         ) : null}
+        <GoalProgress completed={completedCount} total={nodes.length} />
         <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
           {completedCount}/{nodes.length} nœuds terminés · {blockedCount} bloqué{blockedSuffix}
         </Text>
         <Text style={{ color: COLORS.muted, lineHeight: 20 }}>{agentsSummary}</Text>
-        <Text style={{ color: COLORS.subtle, fontSize: 12 }}>
-          Profil {goal.autonomy_profile} · planificateur {goal.planner_source}
-        </Text>
-        <Text style={{ color: COLORS.subtle, fontSize: 12 }}>
-          Étapes {goal.step_count}/{goal.max_steps} · replans {goal.replan_count}/{goal.max_replans} · appels modèle {goal.model_call_count}/{goal.max_model_calls}
-        </Text>
+        <GoalBudgets goal={goal} />
         {goal.evaluator_summary ? (
           <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
             Évaluation : {goal.evaluator_summary}
@@ -731,7 +780,7 @@ export function GoalDetailContent({ controller, navigation }: {
   navigation: GoalDetailNavigation;
 }) {
   const subtitle = controller.goal
-    ? `${controller.goal.id} · ${goalLabel(controller.goal)}`
+    ? goalLabel(controller.goal)
     : "Preuves du control plane";
   return (
     <ScreenShell
@@ -757,6 +806,7 @@ export function GoalDetailContent({ controller, navigation }: {
         onPress={() => void controller.refresh()}
         testID="refresh-goal-button"
       />
+      {controller.goal ? <ActivityTimeline scope="goal" id={controller.goal.id} enabled={controller.source === "authoritative"} refreshKey={controller.goal.updated_at} /> : null}
       <GoalBody controller={controller} navigation={navigation} />
     </ScreenShell>
   );

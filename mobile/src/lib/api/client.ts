@@ -1,5 +1,6 @@
 import { fetch } from "expo/fetch";
 import { parseProjectContext } from "./project-context";
+import { activityCursor, activityIdentifier, parseActivityPage, type ActivityPage, type ActivityScopeType } from "@/lib/api/activity";
 import * as SecureStore from "expo-secure-store";
 import {
   newGoalMessageId,
@@ -1023,6 +1024,19 @@ export function listGoalNodes(
     undefined,
     shouldAccept,
   );
+}
+
+export async function getActivity(
+  scope: ActivityScopeType,
+  id: string,
+  cursor?: string,
+  shouldAccept: () => boolean = () => true,
+): Promise<ActivityPage> {
+  activityIdentifier(id);
+  if (scope !== "task" && scope !== "goal") throw new Error("Le type d’activité demandé est invalide.");
+  const query = cursor === undefined ? "" : `?cursor=${encodeURIComponent(activityCursor(cursor))}`;
+  const value = await fencedRequest<unknown>(`/${scope === "task" ? "tasks" : "goals"}/${resourceId(id)}/activity${query}`, undefined, shouldAccept);
+  return parseActivityPage(value, scope, id);
 }
 
 export async function getGoalWritingDraft(

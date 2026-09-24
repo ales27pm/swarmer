@@ -19,7 +19,7 @@ jest.mock("expo-router", () => {
     return null;
   }
   Tabs.Screen = MockTabScreen;
-  return { Tabs };
+  return { Tabs, useRouter: () => ({ replace: jest.fn() }) };
 });
 
 describe("MainLayout", () => {
@@ -27,13 +27,16 @@ describe("MainLayout", () => {
     mockTabScreen.mockClear();
   });
 
-  it("promotes Swarm to the main navigation while retaining the agent registry route", async () => {
+  it("groups the app in four visible sections while keeping secondary routes", async () => {
     await render(<MainLayout />);
 
     const screens = new Map(mockTabScreen.mock.calls.map(([props]) => [props.name, props]));
-    expect(screens.get("swarm")).toMatchObject({ options: { title: "Swarm" } });
-    expect(screens.get("agents")).toMatchObject({ options: { href: null, title: "Agents" } });
-    expect(screens.get("catalog")).toMatchObject({ options: { href: null, title: "Catalogue" } });
-    expect(screens.get("settings")).toMatchObject({ options: { href: null } });
+    const visible = [...screens.values()].filter((screen) => screen.options?.href !== null).map((screen) => screen.name);
+    expect(visible).toEqual(["index", "tasks", "swarm", "settings"]);
+    expect(screens.get("swarm")).toMatchObject({ options: { title: "Équipe" } });
+    expect(screens.get("agents")).toMatchObject({ options: { href: null, title: "Agents connectés" } });
+    expect(screens.get("catalog")).toMatchObject({ options: { href: null, title: "Compétences" } });
+    expect(screens.get("approvals")).toMatchObject({ options: { href: null, title: "Autorisations" } });
+    expect(screens.get("memory")).toMatchObject({ options: { href: null, title: "Mémoire" } });
   });
 });

@@ -613,6 +613,7 @@ export default function ApprovalsScreen() {
 
   return (
     <ScreenShell
+      showTitle={false}
       title="Accords"
       subtitle="Chaque secret d’autorisation est à usage unique. Seule la récupération explicite d’un secret approuvé mais perdu peut le remplacer."
       onRefresh={() => void refreshAll()}

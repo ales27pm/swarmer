@@ -18,14 +18,14 @@ import {
 import type { Approval, TaskStatus } from "@/lib/application-api/server";
 
 export const COLORS = {
-  background: "#09090b",
-  panel: "#18181b",
-  panelRaised: "#27272a",
-  border: "#71717a",
-  text: "#fafafa",
-  muted: "#a1a1aa",
+  background: "#0b1113",
+  panel: "#141e21",
+  panelRaised: "#213034",
+  border: "#576c72",
+  text: "#f5f5ed",
+  muted: "#b5c4c7",
   // Meets WCAG AA for small text on every surface token, including panelRaised.
-  subtle: "#8f8f99",
+  subtle: "#a0b2b7",
   accent: "#34d399",
   accentText: "#052e20",
   danger: "#f87171",
@@ -62,8 +62,8 @@ export function Card({
       style={[
         {
           backgroundColor: COLORS.panel,
-          borderColor: COLORS.border,
-          borderRadius: 16,
+          borderColor: "#2c3e43",
+          borderRadius: 20,
           borderWidth: 1,
           gap: 10,
           padding: 16,
@@ -834,12 +834,13 @@ function ApprovalDecisionCardContent({
 }
 
 export function ErrorBanner({ message }: { message: string | null }) {
+  const [details, setDetails] = useState(false);
+  useEffect(() => setDetails(false), [message]);
   if (!message) return null;
+  const networkFailure = ["Failed to fetch", "Network request failed", "Load failed"].includes(message);
+  const display = networkFailure ? "Le serveur est injoignable. Vérifie ta connexion ou l’adresse dans Réglages, puis actualise." : message;
   return (
     <View
-      accessible
-      accessibilityLiveRegion="polite"
-      accessibilityRole="alert"
       style={{
         backgroundColor: `${COLORS.danger}14`,
         borderColor: `${COLORS.danger}66`,
@@ -848,9 +849,11 @@ export function ErrorBanner({ message }: { message: string | null }) {
         padding: 12,
       }}
     >
-      <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>
-        {message}
+      <Text accessibilityRole="alert" accessibilityLiveRegion="polite" selectable style={{ color: COLORS.danger, lineHeight: 20 }}>
+        {display}
       </Text>
+      {networkFailure ? <Pressable accessibilityRole="button" accessibilityState={{ expanded: details }} onPress={() => setDetails(!details)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: COLORS.muted }}>{details ? "Masquer le détail technique" : "Détail technique"}</Text></Pressable> : null}
+      {networkFailure && details ? <Text selectable style={{ color: COLORS.muted }}>{message}</Text> : null}
     </View>
   );
 }

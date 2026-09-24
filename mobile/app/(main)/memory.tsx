@@ -379,6 +379,7 @@ export default function MemoryScreen() {
 
   return (
     <ScreenShell
+      showTitle={false}
       title="Mémoire"
       subtitle="Recherche lexicale locale et éléments épinglés du control plane."
       onRefresh={() => void refresh()}

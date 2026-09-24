@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { Text, TextInput, View } from "react-native";
+import { Linking, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
+import { SettingsDisclosure, SettingsNavigationRow } from "@/components/settings-section";
 import { SemanticMemoryPanel } from "@/components/semantic-memory-panel";
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle, timeAgo, useAccessibilityAnnouncement } from "@/components/swarm-ui";
 import {
@@ -29,36 +30,28 @@ function ControlPlaneSection({
   const candidateUrl = url.trim().replace(/\/+$/, "");
   return (
     <>
-      <SectionTitle title="Control plane" />
-      <Card>
-        <Text style={{ color: COLORS.muted, fontSize: 13 }}>
-          HTTPS est obligatoire hors de la boucle locale. L’adresse n’est enregistrée qu’après un jumelage réussi.
+      <Text style={{ color: COLORS.muted, fontSize: 13 }}>
+          Utilise l’adresse HTTPS de ton serveur. Elle est enregistrée uniquement après un jumelage réussi.
+      </Text>
+      <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
+        Adresse du serveur
+      </Text>
+      <TextInput
+        accessibilityLabel="Adresse du serveur"
+        autoCapitalize="none"
+        autoCorrect={false}
+        onChangeText={onUrlChange}
+        placeholder="https://mon-serveur.example"
+        placeholderTextColor={COLORS.subtle}
+        style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
+        testID="server-url-input"
+        value={url}
+      />
+      {paired && activeUrl && candidateUrl !== activeUrl ? (
+        <Text accessibilityRole="alert" style={{ color: COLORS.warning, lineHeight: 19 }}>
+          Cette adresse est une candidate non vérifiée. La connexion active reste {activeUrl} jusqu’à un nouveau jumelage réussi.
         </Text>
-        <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
-          Adresse du control plane
-        </Text>
-        <TextInput
-          accessibilityLabel="Adresse du control plane"
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={onUrlChange}
-          placeholder="https://control-plane.example"
-          placeholderTextColor={COLORS.subtle}
-          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
-          testID="server-url-input"
-          value={url}
-        />
-        <Text style={{ color: paired ? COLORS.accent : COLORS.warning, fontWeight: "700" }}>
-          {paired && activeUrl
-            ? `Connexion authentifiée : ${activeUrl}`
-            : "Connexion non authentifiée ou non vérifiée"}
-        </Text>
-        {paired && activeUrl && candidateUrl !== activeUrl ? (
-          <Text accessibilityRole="alert" style={{ color: COLORS.warning, lineHeight: 19 }}>
-            Cette adresse est une candidate non vérifiée. La connexion active reste {activeUrl} jusqu’à un nouveau jumelage réussi.
-          </Text>
-        ) : null}
-      </Card>
+      ) : null}
     </>
   );
 }
@@ -67,7 +60,6 @@ function PairingSection({
   busy,
   code,
   deviceName,
-  notice,
   onCodeChange,
   onDeviceNameChange,
   onPair,
@@ -75,61 +67,49 @@ function PairingSection({
   busy: "pair" | null;
   code: string;
   deviceName: string;
-  notice: string;
   onCodeChange: (value: string) => void;
   onDeviceNameChange: (value: string) => void;
   onPair: () => void;
 }) {
   return (
     <>
-      <SectionTitle title="Jumelage" />
-      <Card>
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
-          1. Sur le serveur, ouvre la procédure de jumelage de l’installation locale.
-        </Text>
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
-          2. Depuis la boucle locale du serveur, l’opérateur génère un code temporaire à six chiffres.
-        </Text>
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
-          3. Sur l’iPhone, saisis uniquement l’adresse du control plane et ce code temporaire.
-        </Text>
-        <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>Nom de cet appareil</Text>
-        <TextInput
-          accessibilityLabel="Nom de cet appareil"
-          onChangeText={onDeviceNameChange}
-          placeholder="Nom de l’appareil"
-          placeholderTextColor={COLORS.subtle}
-          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
-          testID="device-name-input"
-          value={deviceName}
-        />
-        <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>Code de jumelage (6 chiffres)</Text>
-        <TextInput
-          accessibilityLabel="Code de jumelage à six chiffres"
-          keyboardType="number-pad"
-          maxLength={6}
-          onChangeText={onCodeChange}
-          placeholder="123456"
-          placeholderTextColor={COLORS.subtle}
-          style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, fontSize: 22, fontWeight: "800", letterSpacing: 5, minHeight: 52, paddingHorizontal: 12, textAlign: "center" }}
-          testID="pairing-code-input"
-          value={code}
-        />
-        <ActionButton
-          busy={busy === "pair"}
-          disabled={code.length !== 6 || Boolean(busy)}
-          label="Jumeler cet iPhone"
-          onPress={onPair}
-          testID="pairing-confirm-button"
-          variant="accent"
-        />
-        <Text accessibilityLiveRegion="polite" selectable style={{ color: COLORS.muted, lineHeight: 19 }}>
-          {notice}
-        </Text>
-      </Card>
+      <Text selectable style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
+        Sur le serveur, génère un code temporaire à six chiffres avec la procédure de jumelage, puis saisis-le ici.
+      </Text>
+      <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>Nom de cet appareil</Text>
+      <TextInput
+        accessibilityLabel="Nom de cet appareil"
+        onChangeText={onDeviceNameChange}
+        placeholder="Nom de l’appareil"
+        placeholderTextColor={COLORS.subtle}
+        style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, minHeight: 46, paddingHorizontal: 12 }}
+        testID="device-name-input"
+        value={deviceName}
+      />
+      <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>Code de jumelage (6 chiffres)</Text>
+      <TextInput
+        accessibilityLabel="Code de jumelage à six chiffres"
+        keyboardType="number-pad"
+        maxLength={6}
+        onChangeText={onCodeChange}
+        placeholder="123456"
+        placeholderTextColor={COLORS.subtle}
+        style={{ backgroundColor: COLORS.background, borderColor: COLORS.border, borderRadius: 12, borderWidth: 1, color: COLORS.text, fontSize: 22, fontWeight: "800", letterSpacing: 5, minHeight: 52, paddingHorizontal: 12, textAlign: "center" }}
+        testID="pairing-code-input"
+        value={code}
+      />
+      <ActionButton
+        busy={busy === "pair"}
+        disabled={code.length !== 6 || Boolean(busy)}
+        label="Jumeler cet iPhone"
+        onPress={onPair}
+        testID="pairing-confirm-button"
+        variant="accent"
+      />
     </>
   );
 }
+
 
 function AuthenticatedState({ counts }: { counts: Bootstrap["counts"] | undefined }) {
   if (!counts) return null;
@@ -137,12 +117,12 @@ function AuthenticatedState({ counts }: { counts: Bootstrap["counts"] | undefine
     ["Tâches", counts.tasks],
     ["Agents", counts.agents],
     ["Mémoires", counts.memory_items],
-    ["Accords", counts.approvals_pending],
+    ["Autorisations", counts.approvals_pending],
     ["Audit", counts.audit_events],
   ];
   return (
     <>
-      <SectionTitle title="État authentifié" />
+      <SectionTitle title="Données du serveur" />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {entries.map(([label, value]) => (
           <Card key={String(label)} style={{ alignItems: "center", minWidth: "30%" }}>
@@ -356,6 +336,8 @@ function usePairing({
 export default function SettingsScreen() {
   const router = useRouter();
   const [url, setUrl] = useState("");
+  const [connectionExpanded, setConnectionExpanded] = useState<boolean | null>(null);
+  const [deviceSettingsError, setDeviceSettingsError] = useState<string | null>(null);
   const dashboard = useAuthenticatedDashboard(setUrl);
   const pairing = usePairing({
     adoptVerifiedConnection: dashboard.adoptVerifiedConnection,
@@ -365,58 +347,107 @@ export default function SettingsScreen() {
   });
   useAccessibilityAnnouncement(pairing.notice);
 
+  const showConnection = connectionExpanded ?? !dashboard.paired;
+
   return (
     <ScreenShell
       title="Réglages"
-      subtitle="Connexion locale, jumelage externe et preuves d’audit."
+      showTitle={false}
+      subtitle="Tes connexions, tes modèles et ce que l’assistant retient."
       onRefresh={() => void dashboard.refreshDashboard()}
       refreshing={dashboard.refreshing}
       testID="settings-screen"
     >
-      <ErrorBanner message={dashboard.error} />
-      <SectionTitle title="Inférence sur l’iPhone" />
-      <Card>
-        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-          Dolphin 3.0 Llama 3.2 3B est proposé en MLX 4 bits, GGUF Q4_K_M et Core ML INT4. Choisis ton runtime et enregistre les réglages pour tes prochaines itérations sur l’iPhone.
+      <SectionTitle title="Connexion" />
+      <Card style={{ gap: 6 }}>
+        <Text accessibilityLiveRegion="polite" selectable style={{ color: dashboard.paired ? COLORS.accent : COLORS.text, fontSize: 15, fontWeight: "600" }}>
+          {dashboard.paired && dashboard.activeUrl
+            ? `Connexion authentifiée : ${dashboard.activeUrl}`
+            : dashboard.refreshing ? "Vérification de la connexion…" : "Connexion non authentifiée ou non vérifiée"}
         </Text>
-        <ActionButton
-          label="Ouvrir les modèles locaux"
-          onPress={() => router.push("/local-model")}
-          testID="open-local-model-button"
+        <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
+          {dashboard.paired ? "Ton iPhone peut accéder aux agents et aux données de ce serveur." : "Jumelle cet iPhone pour retrouver tes agents, tes projets et ta mémoire."}
+        </Text>
+        {pairing.busy || pairing.notice !== "Configure l’adresse, puis saisis un code généré localement sur le serveur." ? (
+          <Text accessibilityLiveRegion="polite" selectable style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>{pairing.notice}</Text>
+        ) : null}
+      </Card>
+      {dashboard.error ? (
+        <>
+          <Text accessibilityRole="alert" selectable style={{ color: COLORS.warning, fontSize: 13, lineHeight: 19 }}>
+            La connexion n’a pas pu être vérifiée. Actualise ou vérifie le jumelage.
+          </Text>
+          <SettingsDisclosure title="Détail de l’erreur" description="Informations utiles pour rétablir la connexion." testID="settings-connection-error-toggle">
+            <ErrorBanner message={dashboard.error} />
+          </SettingsDisclosure>
+        </>
+      ) : null}
+      <SettingsDisclosure
+        title="Adresse et jumelage"
+        description={dashboard.paired ? "Changer de serveur ou jumeler à nouveau cet iPhone." : "Adresse du serveur et code de connexion à six chiffres."}
+        expanded={showConnection}
+        onToggle={() => setConnectionExpanded(!showConnection)}
+        testID="settings-connection-toggle"
+      >
+        <ControlPlaneSection activeUrl={dashboard.activeUrl} onUrlChange={setUrl} paired={dashboard.paired} url={url} />
+        <PairingSection
+          busy={pairing.busy}
+          code={pairing.code}
+          deviceName={pairing.deviceName}
+          onCodeChange={(value) => pairing.setCode(value.replace(/\D/g, ""))}
+          onDeviceNameChange={pairing.setDeviceName}
+          onPair={() => void pairing.pair()}
         />
-      </Card>
-      <SemanticMemoryPanel />
-      <SectionTitle title="Modèles des agents du swarm" />
-      <Card>
-        <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>Préréglages serveur abliterated</Text>
+      </SettingsDisclosure>
+
+      <SectionTitle title="Intelligence et mémoire" />
+      <SettingsNavigationRow
+        title="Ouvrir les modèles locaux"
+        description="Choisir, télécharger et utiliser un modèle sur cet iPhone."
+        onPress={() => router.push("/local-model")}
+        testID="open-local-model-button"
+      />
+      <SettingsNavigationRow
+        title="Consulter la mémoire"
+        description="Retrouver, ajouter ou modifier les informations conservées sur le serveur."
+        onPress={() => router.push("/memory")}
+        testID="settings-open-memory"
+      />
+      <SettingsDisclosure title="Mémoire et calcul local" description="Vérifier la mémoire du serveur et tester les embeddings sur l’iPhone." testID="settings-memory-toggle">
+        <SemanticMemoryPanel />
+      </SettingsDisclosure>
+      <SettingsDisclosure title="Modèles des agents" description="Comprendre la différence entre les agents du serveur et les modèles de l’iPhone." testID="settings-server-models-toggle">
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-          Hermes 3 · Llama 3.2 3B pour l’orchestrateur, la planification et l’évaluation. G9v3 3B Heretic pour les workers rapides. Les deux utilisent GGUF Q4_K_M.
+          Les agents utilisent les modèles configurés sur ton serveur. Ils peuvent avoir un modèle différent pour la planification, la rédaction ou le code.
         </Text>
-        <Text selectable style={{ color: COLORS.subtle, lineHeight: 19 }}>
-          Ces préréglages se configurent sur le serveur. Les modèles réellement actifs dépendent de cette configuration; les modèles de l’iPhone se règlent séparément ci-dessus.
+        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
+          Les modèles téléchargés sur cet iPhone se règlent dans « Modèles locaux ». Les changer ne modifie pas les modèles des agents du serveur.
         </Text>
-      </Card>
-      <ControlPlaneSection
-        activeUrl={dashboard.activeUrl}
-        onUrlChange={setUrl}
-        paired={dashboard.paired}
-        url={url}
+      </SettingsDisclosure>
+
+      <SectionTitle title="Appareil et autorisations" />
+      <SettingsNavigationRow
+        title="Autorisations en attente"
+        description="Examiner les actions proposées avant de les autoriser."
+        onPress={() => router.push("/approvals")}
+        testID="settings-open-approvals"
       />
-      <PairingSection
-        busy={pairing.busy}
-        code={pairing.code}
-        deviceName={pairing.deviceName}
-        notice={pairing.notice}
-        onCodeChange={(value) => pairing.setCode(value.replace(/\D/g, ""))}
-        onDeviceNameChange={pairing.setDeviceName}
-        onPair={() => void pairing.pair()}
+      <SettingsNavigationRow
+        title="Autorisations de cet appareil"
+        description="Gérer les accès de monGARS dans les réglages du système."
+        onPress={() => {
+          setDeviceSettingsError(null);
+          void Linking.openSettings().catch(() => setDeviceSettingsError("Impossible d’ouvrir les réglages du système. Ouvre-les depuis ton appareil."));
+        }}
+        testID="settings-open-device-settings"
       />
-      <AuthenticatedState counts={dashboard.bootstrap?.counts} />
-      <AuditJournal
-        audit={dashboard.audit}
-        auditLoaded={dashboard.auditLoaded}
-        error={dashboard.error}
-      />
+      <ErrorBanner message={deviceSettingsError} />
+
+      <SectionTitle title="Diagnostics avancés" />
+      <SettingsDisclosure title="État du serveur et journal" description="Compteurs et événements techniques de la connexion vérifiée." testID="settings-diagnostics-toggle">
+        <AuthenticatedState counts={dashboard.bootstrap?.counts} />
+        <AuditJournal audit={dashboard.audit} auditLoaded={dashboard.auditLoaded} error={dashboard.error} />
+      </SettingsDisclosure>
     </ScreenShell>
   );
 }

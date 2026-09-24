@@ -19,7 +19,10 @@ import { useGoalDetailController } from "@/screens/goal-detail-content";
 
 const mockPush = jest.fn();
 const mockStackScreen = jest.fn();
-let refreshFromLiveEvent: (() => void | Promise<unknown>) | undefined;
+const mockLiveRefreshListeners = new Set<() => void | Promise<unknown>>();
+async function refreshFromLiveEvent() {
+  await Promise.all([...mockLiveRefreshListeners].map((refresh) => refresh()));
+}
 
 jest.mock("expo-router", () => {
   function StackScreen(props: unknown) {
@@ -43,11 +46,20 @@ jest.mock("@/lib/api/client", () => ({
   startGoal: jest.fn(),
 }));
 jest.mock("@/lib/state/replica", () => ({ localGoalDetail: jest.fn() }));
-jest.mock("@/lib/sync/live-sync-context", () => ({
-  useLiveRefresh: (refresh: () => void | Promise<unknown>) => {
-    refreshFromLiveEvent = refresh;
-  },
-}));
+jest.mock("@/lib/sync/live-sync-context", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  return {
+    useLiveRefresh: (refresh: () => void | Promise<unknown>) => {
+      const latest = React.useRef(refresh);
+      React.useEffect(() => { latest.current = refresh; }, [refresh]);
+      React.useEffect(() => {
+        const notify = () => latest.current();
+        mockLiveRefreshListeners.add(notify);
+        return () => { mockLiveRefreshListeners.delete(notify); };
+      }, []);
+    },
+  };
+});
 
 const mockCancelGoal = jest.mocked(cancelGoal);
 const mockCreateFeedback = jest.mocked(createGoalFeedback);
@@ -170,7 +182,7 @@ describe("GoalDetailScreen", () => {
       prepareReply: () => ({ clientMessageId: "reply_test", send: async () => detail }),
     });
     jest.clearAllMocks();
-    refreshFromLiveEvent = undefined;
+    mockLiveRefreshListeners.clear();
     mockGetGoal.mockResolvedValue(detail);
     mockGetServerUrl.mockResolvedValue("https://control.example");
     mockLocalGoal.mockResolvedValue(null);

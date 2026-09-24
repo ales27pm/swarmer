@@ -91,6 +91,15 @@ describe("swarm UI primitives", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Le serveur a refusé la décision.");
   });
 
+  it("announces a useful network error and keeps its technical detail independently accessible", async () => {
+    await render(<ErrorBanner message="Failed to fetch" />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/^Le serveur est injoignable\./);
+    expect(screen.queryByText("Failed to fetch")).not.toBeOnTheScreen();
+    await fireEvent.press(screen.getByRole("button", { name: "Détail technique" }));
+    expect(screen.getByText("Failed to fetch")).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Masquer le détail technique" })).toBeOnTheScreen();
+  });
+
   it("blocks a disabled destructive action", async () => {
     const onPress = jest.fn();
     const user = userEvent.setup();

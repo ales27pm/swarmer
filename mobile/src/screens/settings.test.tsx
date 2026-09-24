@@ -1,5 +1,6 @@
 import { act, render, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { Linking } from "react-native";
 
 import SettingsScreen from "@/../app/(main)/settings";
 import {
@@ -69,6 +70,7 @@ const oldAuditEvent: AuditEvent = {
 describe("SettingsScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockBootstrap.mockResolvedValue(bootstrap);
     mockGetServerUrl.mockResolvedValue("https://control.example");
     mockHasDeviceToken.mockResolvedValue(true);
     mockListAudit.mockResolvedValue([]);
@@ -79,7 +81,10 @@ describe("SettingsScreen", () => {
 
     await render(<SettingsScreen />);
 
-    expect(await screen.findByText("Jeton révoqué")).toBeOnTheScreen();
+    const user = userEvent.setup();
+    await user.press(await screen.findByRole("button", { name: "Détail de l’erreur" }));
+    expect(screen.getByText("Jeton révoqué")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "État du serveur et journal" }));
     expect(screen.queryByText("Connexion authentifiée")).not.toBeOnTheScreen();
     expect(
       screen.getByText("Connexion non authentifiée ou non vérifiée"),
@@ -100,7 +105,8 @@ describe("SettingsScreen", () => {
     await user.press(screen.getByRole("button", { name: "Jumeler cet iPhone" }));
 
     await waitFor(() => expect(mockPairDevice).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText("Bootstrap refusé")).toBeOnTheScreen();
+    await user.press(await screen.findByRole("button", { name: "Détail de l’erreur" }));
+    expect(screen.getByText("Bootstrap refusé")).toBeOnTheScreen();
     expect(
       screen.getByText("Le jumelage n’a pas été confirmé par un accès authentifié complet."),
     ).toBeOnTheScreen();
@@ -129,10 +135,12 @@ describe("SettingsScreen", () => {
     expect(
       await screen.findByText("Connexion authentifiée : https://control.example"),
     ).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "État du serveur et journal" }));
     expect(screen.getByText("old.origin.event")).toBeOnTheScreen();
-    await user.clear(screen.getByLabelText("Adresse du control plane"));
+    await user.press(screen.getByRole("button", { name: "Adresse et jumelage" }));
+    await user.clear(screen.getByLabelText("Adresse du serveur"));
     await user.type(
-      screen.getByLabelText("Adresse du control plane"),
+      screen.getByLabelText("Adresse du serveur"),
       "https://candidate.example",
     );
     await user.type(screen.getByLabelText("Code de jumelage à six chiffres"), "123456");
@@ -172,9 +180,9 @@ describe("SettingsScreen", () => {
     await render(<SettingsScreen />);
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
-    await user.clear(screen.getByLabelText("Adresse du control plane"));
+    await user.clear(screen.getByLabelText("Adresse du serveur"));
     await user.type(
-      screen.getByLabelText("Adresse du control plane"),
+      screen.getByLabelText("Adresse du serveur"),
       "https://candidate.example",
     );
     await user.type(screen.getByLabelText("Code de jumelage à six chiffres"), "123456");
@@ -192,6 +200,7 @@ describe("SettingsScreen", () => {
     expect(
       screen.getByText("Connexion authentifiée : https://candidate.example"),
     ).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "État du serveur et journal" }));
     expect(screen.getByText("9")).toBeOnTheScreen();
     expect(screen.queryByText("old.origin.event")).not.toBeOnTheScreen();
     expect(mockGetServerUrl).toHaveBeenCalledTimes(1);
@@ -222,14 +231,16 @@ describe("SettingsScreen", () => {
     expect(
       await screen.findByText("Connexion authentifiée : https://control.example"),
     ).toBeOnTheScreen();
-    await user.clear(screen.getByLabelText("Adresse du control plane"));
-    await user.type(screen.getByLabelText("Adresse du control plane"), "https://candidate.example");
+    await user.press(screen.getByRole("button", { name: "Adresse et jumelage" }));
+    await user.clear(screen.getByLabelText("Adresse du serveur"));
+    await user.type(screen.getByLabelText("Adresse du serveur"), "https://candidate.example");
 
     expect(
       screen.getByText(
         "Cette adresse est une candidate non vérifiée. La connexion active reste https://control.example jusqu’à un nouveau jumelage réussi.",
       ),
     ).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "État du serveur et journal" }));
     expect(screen.getByText("Aucun événement authentifié à afficher.")).toBeOnTheScreen();
   });
 
@@ -238,22 +249,49 @@ describe("SettingsScreen", () => {
 
     await render(<SettingsScreen />);
 
-    expect(
-      await screen.findByText(
-        "1. Sur le serveur, ouvre la procédure de jumelage de l’installation locale.",
-      ),
-    ).toBeOnTheScreen();
-    expect(
-      screen.getByText(
-        "2. Depuis la boucle locale du serveur, l’opérateur génère un code temporaire à six chiffres.",
-      ),
-    ).toBeOnTheScreen();
-    expect(
-      screen.getByText(
-        "3. Sur l’iPhone, saisis uniquement l’adresse du control plane et ce code temporaire.",
-      ),
-    ).toBeOnTheScreen();
+    expect(await screen.findByText(/Sur le serveur, génère un code temporaire à six chiffres/)).toBeOnTheScreen();
     expect(screen.queryByLabelText(/secret/i)).not.toBeOnTheScreen();
+  });
+
+
+  it("keeps verified connection and diagnostics compact without discarding pairing input", async () => {
+    mockListAudit.mockResolvedValue([oldAuditEvent]);
+    const user = userEvent.setup();
+    await render(<SettingsScreen />);
+    await screen.findByText("Connexion authentifiée : https://control.example");
+    expect(screen.getByRole("button", { name: "Adresse et jumelage" })).toBeCollapsed();
+    expect(screen.getByRole("button", { name: "État du serveur et journal" })).toBeCollapsed();
+    expect(screen.queryByText("old.origin.event")).not.toBeOnTheScreen();
+    expect(screen.queryByLabelText("Code de jumelage à six chiffres")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Adresse et jumelage" }));
+    await user.type(screen.getByLabelText("Code de jumelage à six chiffres"), "123");
+    await user.press(screen.getByRole("button", { name: "Adresse et jumelage" }));
+    await user.press(screen.getByRole("button", { name: "Adresse et jumelage" }));
+    expect(screen.getByLabelText("Code de jumelage à six chiffres")).toHaveDisplayValue("123");
+    expect(mockPairDevice).not.toHaveBeenCalled();
+  });
+
+  it("links memory and pending approvals to their existing routes", async () => {
+    const user = userEvent.setup();
+    await render(<SettingsScreen />);
+    await user.press(screen.getByRole("button", { name: "Consulter la mémoire" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/memory");
+    await user.press(screen.getByRole("button", { name: "Autorisations en attente" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/approvals");
+  });
+
+  it("opens system permissions only on request and explains a failed launch", async () => {
+    const openSettings = jest.spyOn(Linking, "openSettings")
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Unavailable"));
+    const user = userEvent.setup();
+    await render(<SettingsScreen />);
+    expect(openSettings).not.toHaveBeenCalled();
+    await user.press(screen.getByRole("button", { name: "Autorisations de cet appareil" }));
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    await user.press(screen.getByRole("button", { name: "Autorisations de cet appareil" }));
+    expect(await screen.findByText(/Impossible d’ouvrir les réglages du système/)).toBeOnTheScreen();
+    openSettings.mockRestore();
   });
 
   it("opens the isolated local-model workspace", async () => {

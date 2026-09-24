@@ -139,17 +139,49 @@ describe("SwarmScreen", () => {
     mockLocalSnapshot.mockResolvedValue(null);
   });
 
+  it("keeps the team and navigation ahead of the optional project form", async () => {
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    expect(await screen.findByText("Worker Alpha")).toBeOnTheScreen();
+    const headings = screen.getAllByRole("header").map((heading) => heading.props.children);
+    expect(headings).toEqual(["Ton équipe", "Tes projets"]);
+    expect(screen.queryByTestId("goal-objective-input")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Catalogue des compétences" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/catalog");
+    await user.press(screen.getByRole("button", { name: "Tous les agents" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/agents");
+    await user.press(screen.getByRole("button", { name: "Voir les autorisations" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/approvals");
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+  });
+
+  it("preserves the objective when the creation form is collapsed", async () => {
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    await screen.findByText("Worker Alpha");
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    await user.type(screen.getByTestId("goal-objective-input"), "Mon agenda");
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    expect(screen.queryByTestId("goal-objective-input")).not.toBeOnTheScreen();
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    expect(screen.getByTestId("goal-objective-input")).toHaveDisplayValue("Mon agenda");
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+  });
+
   it("shows authoritative goals and creates without automatically starting", async () => {
     const user = userEvent.setup();
     await render(<SwarmScreen />);
 
     expect(await screen.findByText("Qualifier le runtime distribué")).toBeOnTheScreen();
-    expect(screen.getByText("1 agent en travail")).toBeOnTheScreen();
+    expect(screen.getByText("1 agent mobilisé")).toBeOnTheScreen();
     expect(screen.getByText("Worker Alpha")).toBeOnTheScreen();
 
-    await user.type(screen.getByLabelText("Objectif du but"), "Préparer une qualification");
+    expect(screen.queryByTestId("goal-objective-input")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Nouveau projet" }));
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Objectif du projet"), "Préparer une qualification");
     await user.press(screen.getByRole("button", { name: "Autonome" }));
-    await user.press(screen.getByRole("button", { name: "Créer le but" }));
+    await user.press(screen.getByRole("button", { name: "Créer le projet" }));
 
     await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledWith({
       autonomy_profile: "autonomous",
@@ -174,10 +206,38 @@ describe("SwarmScreen", () => {
     await render(<SwarmScreen />);
 
     expect(await screen.findByText(/Les données peuvent être périmées/)).toBeOnTheScreen();
-    expect(screen.getByRole("button", { name: "Créer le but" })).toBeDisabled();
-    await user.press(screen.getByRole("button", { name: /Ouvrir le but Qualifier/ }));
+    expect(screen.getByText("1 agent mobilisé · copie précédente")).toBeOnTheScreen();
+    expect(screen.queryByText("1 agent mobilisé")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Nouveau projet" }));
+    expect(screen.getByRole("button", { name: "Créer le projet" })).toBeDisabled();
+    await user.press(screen.getByRole("button", { name: /Ouvrir le projet Qualifier/ }));
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_1" } });
     expect(mockCreateGoal).not.toHaveBeenCalled();
+  });
+
+  it("keeps team activity unverified while loading and after a failure without cache", async () => {
+    const pending = deferred<Bootstrap>();
+    mockBootstrap.mockImplementationOnce(async () => pending.promise);
+    await render(<SwarmScreen />);
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+    expect(screen.queryByText("0 agents mobilisés")).not.toBeOnTheScreen();
+
+    mockBootstrap.mockRejectedValueOnce(new Error("Failed to fetch"));
+    await act(async () => { await refreshFromLiveEvent?.(); });
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+    expect(screen.getByText("Connecte le serveur pour vérifier l’activité.")).toBeOnTheScreen();
+    expect(screen.queryByText("Aucun agent mobilisé sur ces projets.")).not.toBeOnTheScreen();
+    expect(screen.queryByText("0 agents mobilisés")).not.toBeOnTheScreen();
+    await act(async () => pending.resolve(bootstrap));
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+  });
+
+  it("reports an empty team only from a successful server response", async () => {
+    mockBootstrap.mockResolvedValueOnce({ ...bootstrap, agents: [], plan_nodes: [], goals: [] });
+    await render(<SwarmScreen />);
+    expect(await screen.findByText("0 agents mobilisés")).toBeOnTheScreen();
+    expect(screen.getByText("Aucun agent mobilisé sur ces projets.")).toBeOnTheScreen();
+    expect(screen.queryByText("Équipe non vérifiée")).not.toBeOnTheScreen();
   });
 
   it("does not let a slower stale refresh overwrite a newer authoritative view", async () => {
@@ -203,6 +263,7 @@ describe("SwarmScreen", () => {
   });
 
   it("discards cached data if the active server origin changes during lookup", async () => {
+    const user = userEvent.setup();
     const cache = deferred<Awaited<ReturnType<typeof localSwarmSnapshot>>>();
     mockBootstrap.mockRejectedValue(new Error("Serveur indisponible"));
     mockLocalSnapshot.mockImplementationOnce(async () => cache.promise);
@@ -223,6 +284,7 @@ describe("SwarmScreen", () => {
 
     await waitFor(() => expect(mockGetServerUrl).toHaveBeenCalledTimes(2));
     expect(screen.queryByText("Qualifier le runtime distribué")).not.toBeOnTheScreen();
-    expect(screen.getByRole("button", { name: "Créer le but" })).toBeDisabled();
+    await user.press(screen.getByRole("button", { name: "Nouveau projet" }));
+    expect(screen.getByRole("button", { name: "Créer le projet" })).toBeDisabled();
   });
 });

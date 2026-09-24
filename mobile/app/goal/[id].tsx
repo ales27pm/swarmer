@@ -22,7 +22,7 @@ export default function GoalDetailScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "But" }} />
+      <Stack.Screen options={{ title: "Projet", headerBackTitle: "Retour" }} />
       <GoalDetailContent controller={controller} navigation={navigation} />
     </>
   );

@@ -1,12 +1,11 @@
 import { type Dispatch, useCallback, useEffect, useReducer, useRef } from "react";
-import { AppState, Pressable, Text, TextInput, View } from "react-native";
+import { AppState, Image, Pressable, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import {
   ActionButton,
   COLORS,
-  EmptyState,
   ErrorBanner,
   SectionTitle,
   timeAgo,
@@ -26,8 +25,8 @@ import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
 import type { LiveSyncState } from "@/lib/sync/live-sync";
 
 const SUGGESTIONS = [
-  "Liste les fichiers à la racine du projet.",
-  "Vérifie les tests actuels sans modifier le code.",
+  "Aide-moi à organiser ma semaine.",
+  "Prépare un résumé clair de mon projet.",
 ];
 
 type PlanningResult = ToolCall | { task_id: string; proposal: unknown; task: Task | null };
@@ -266,7 +265,7 @@ function ConnectionPanel({
           }}
         />
         <Text style={{ color: COLORS.muted, flex: 1, fontSize: 12 }}>
-          {bootstrap ? "Control plane authentifié" : "Control plane injoignable ou non jumelé"}
+          {bootstrap ? "Serveur connecté" : "Connexion au serveur à vérifier"}
           {pending ? ` · ${pendingAgreementLabel(pending)}` : ""}
         </Text>
         <Pressable
@@ -287,7 +286,7 @@ function ConnectionPanel({
             : liveState === "paused"
               ? "Temps réel en pause"
               : bootstrap
-                ? "Temps réel déconnecté — actualisation REST disponible"
+                ? "Suivi interrompu · tire pour actualiser"
                 : "Temps réel non établi"}
       </Text>
 
@@ -390,10 +389,13 @@ function Conversation({
   if (messages.length) return <MessageList messages={messages} />;
   return (
     <>
-      <EmptyState
-        title="Console du swarm"
-        subtitle="Décris une intention. Le modèle du control plane propose; l’exécuteur prouve; les actions sensibles attendent ton accord."
-      />
+      <View style={{ backgroundColor: COLORS.panel, borderRadius: 24, overflow: "hidden" }}>
+        <Image source={require("../../assets/illustrations/assistant-compass.png")} style={{ width: "100%", height: 150 }} resizeMode="cover" accessibilityIgnoresInvertColors accessible={false} />
+        <View style={{ padding: 20, paddingTop: 8, gap: 8 }}>
+          <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 23, fontWeight: "700" }}>Qu’est-ce qu’on avance aujourd’hui ?</Text>
+          <Text style={{ color: COLORS.muted, lineHeight: 21 }}>Une idée, une recherche, un projet. Discute ou confie une tâche à ton équipe.</Text>
+        </View>
+      </View>
       <Suggestions onSelect={onSelectSuggestion} />
     </>
   );
@@ -427,6 +429,7 @@ function IntentComposer({
         {(["chat", "task"] as const).map((mode) => (
           <Pressable
             accessibilityRole="button"
+            accessibilityState={{ selected: interactionMode === mode }}
             key={mode}
             onPress={() => onChangeMode(mode)}
             style={{
@@ -450,7 +453,7 @@ function IntentComposer({
         ))}
       </View>
       <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
-        {interactionMode === "chat" ? "Message" : "Intention pour le swarm"}
+        {interactionMode === "chat" ? "Message" : "Résultat souhaité"}
       </Text>
       <TextInput
         accessibilityLabel="Intention pour le swarm"
@@ -518,8 +521,9 @@ export default function ChatScreen() {
 
   return (
     <ScreenShell
+      showTitle={false}
       title="monGARS"
-      subtitle="Console locale du swarm"
+      subtitle="Ton assistant, tes projets, une équipe pour avancer."
       testID="chat-screen"
       onRefresh={() => void chat.refreshStatus()}
       refreshing={chat.refreshing}

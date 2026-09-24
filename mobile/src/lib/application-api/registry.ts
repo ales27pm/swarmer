@@ -108,6 +108,9 @@ register("sync.refresh", noInput, (_, context) => server.bootstrapSync(context.s
 } });
 register("goals.list", noInput, (_, context) => context.shouldAccept ? server.listGoals(context.shouldAccept) : server.listGoals());
 register<{ id: string }>("goals.get", idInput, ({ id }, context) => context.shouldAccept ? server.getGoal(id, context.shouldAccept) : server.getGoal(id));
+const activityInput = object({ id: { ...text(200), pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }, cursor: { ...text(4096), pattern: "^[A-Za-z0-9_-]+$" } }, ["id"]);
+register<{ id: string; cursor?: string }>("tasks.activity", activityInput, ({ id, cursor }, context) => server.getActivity("task", id, cursor, context.shouldAccept));
+register<{ id: string; cursor?: string }>("goals.activity", activityInput, ({ id, cursor }, context) => server.getActivity("goal", id, cursor, context.shouldAccept));
 register<{ id: string }>("goals.nodes", idInput, ({ id }, context) => context.shouldAccept ? server.listGoalNodes(id, context.shouldAccept) : server.listGoalNodes(id));
 register<{ id: string }>("goals.result", idInput, ({ id }, context) => context.shouldAccept ? server.getGoalResult(id, context.shouldAccept) : server.getGoalResult(id));
 register<{ goalId: string; nodeId: string; workerJobId: string }>("goals.writing-draft", object({ goalId: identifier, nodeId: identifier, workerJobId: identifier }),
