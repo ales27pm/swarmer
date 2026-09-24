@@ -239,6 +239,10 @@ Always include user_question and completion_summary. For needs_user, user_questi
 a nonempty concrete question; for every other status it must be null. For done, provide a
 completion_summary grounded in the recorded results; otherwise use null when unavailable.
 Use [] for missing_requirements, invalid_results and suggested_new_nodes when empty.
+For done, both missing_requirements and invalid_results must be empty: unresolved
+diagnostics contradict completion. For failed, include at least one concrete item in
+missing_requirements or invalid_results; reason_summary alone is not a structured diagnosis.
+Do not invent diagnostics to satisfy the format. Select the status supported by the evidence.
 Only continue or replan may suggest new nodes; done, failed and needs_user require [].
 Each suggested temporary_id is a short identifier local to this proposal (at most 64 characters);
 never copy or append the goal UUID, because the server assigns durable node IDs.
@@ -285,7 +289,16 @@ The Ubuntu control plane independently validates your proposal and remains autho
         # Explicit alternatives expose the same status/question/node constraints
         # to local grammar decoding, before the unchanged authoritative parser.
         alternatives: list[dict[str, Any]] = []
-        for statuses in (("continue", "replan"), ("done", "failed"), ("needs_user",)):
+        # Separate complete object branches also encode diagnostic consistency.
+        # Avoid if/then and anyOf sibling rules that local grammar converters can
+        # ignore. Either diagnostic list can ground a failed model verdict.
+        for statuses, required_diagnostic in (
+            (("continue", "replan"), None),
+            (("done",), None),
+            (("failed",), "missing_requirements"),
+            (("failed",), "invalid_results"),
+            (("needs_user",), None),
+        ):
             branch = deepcopy(schema)
             properties = branch["properties"]
             properties["status"] = {"type": "string", "enum": list(statuses)}
@@ -303,6 +316,15 @@ The Ubuntu control plane independently validates your proposal and remains autho
                     "items": {"type": "null"},
                     "maxItems": 0,
                 }
+            if statuses == ("done",):
+                for field in ("missing_requirements", "invalid_results"):
+                    properties[field] = {
+                        "type": "array",
+                        "items": {"type": "null"},
+                        "maxItems": 0,
+                    }
+            elif required_diagnostic is not None:
+                properties[required_diagnostic]["minItems"] = 1
             # Prefix only top-level transport fields. The public contract and
             # every nested node schema remain unchanged.
             branch["properties"] = {alias: properties[name] for alias, name in _WIRE_FIELDS.items()}
@@ -400,6 +422,22 @@ The Ubuntu control plane independently validates your proposal and remains autho
                 diagnostic="schema" if isinstance(exc.__cause__, ValidationError) else "json",
                 output_digest=output_digest,
             ) from exc
+        # These are model-response invariants, not rules for server-generated
+        # failures or legacy persisted decisions. Never infer a diagnosis from
+        # free text, invent recovery work, or rewrite the proposed status.
+        has_diagnostics = bool(decision.missing_requirements or decision.invalid_results)
+        diagnostic_error = None
+        if decision.status is EvaluationStatus.DONE and has_diagnostics:
+            diagnostic_error = "evaluator done contradicts unresolved diagnostics"
+        elif decision.status is EvaluationStatus.FAILED and not has_diagnostics:
+            diagnostic_error = "evaluator failed requires at least one structured diagnostic"
+        if diagnostic_error is not None:
+            raise EvaluatorProviderError(
+                diagnostic_error,
+                category="invalid_response",
+                diagnostic="schema",
+                output_digest=output_digest,
+            )
         try:
             validated = validate_evaluation_decision(
                 decision,

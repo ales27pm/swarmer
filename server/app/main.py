@@ -52,6 +52,13 @@ from app.services.activity_catalog import (
     ActivityCatalogResponse,
     ActivityCatalogService,
 )
+from app.services.activity_contracts import ActivityPage
+from app.services.activity_service import (
+    ActivityCursorError,
+    ActivityCursorStale,
+    ActivityEvidenceError,
+    read_activity,
+)
 from app.services.agent_card import AgentCardPolicyError, validate_agent_registration
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
@@ -1375,6 +1382,35 @@ def create_app(config: Settings | None = None) -> FastAPI:
         del principal
         return await goal_manager.list_goals(limit=limit)
 
+    async def activity_page(
+        scope_type: Literal["task", "goal"], scope_id: str, limit: int, cursor: str | None
+    ) -> ActivityPage:
+        try:
+            page = await read_activity(
+                settings.db_path, scope_type, scope_id, limit=limit, cursor=cursor
+            )
+        except ActivityCursorStale as exc:
+            raise HTTPException(status_code=409, detail="activity history changed; refresh") from exc
+        except ActivityCursorError as exc:
+            raise HTTPException(status_code=400, detail="invalid activity cursor") from exc
+        except (ActivityEvidenceError, sqlite3.Error) as exc:
+            raise HTTPException(status_code=503, detail="activity evidence unavailable") from exc
+        if page is None:
+            raise HTTPException(status_code=404, detail="activity scope not found")
+        return page
+
+    @app.get("/goals/{goal_id}/activity", response_model=ActivityPage)
+    async def get_goal_activity(
+        goal_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
+    ) -> ActivityPage:
+        del principal
+        response.headers["Cache-Control"] = "private, no-store"
+        return await activity_page("goal", goal_id, limit, cursor)
+
     @app.get("/goals/{goal_id}", response_model=GoalDetail)
     async def get_goal(
         goal_id: str,
@@ -1792,6 +1828,18 @@ def create_app(config: Settings | None = None) -> FastAPI:
     ) -> list[TaskRecord]:
         del principal
         return await state_service.list_tasks(limit, task_status.value if task_status else None)
+
+    @app.get("/tasks/{task_id}/activity", response_model=ActivityPage)
+    async def get_task_activity(
+        task_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
+    ) -> ActivityPage:
+        del principal
+        response.headers["Cache-Control"] = "private, no-store"
+        return await activity_page("task", task_id, limit, cursor)
 
     @app.get("/tasks/{task_id}")
     async def get_task_detail(
