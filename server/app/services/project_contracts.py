@@ -16,6 +16,13 @@ from pydantic import (
     model_validator,
 )
 
+from app.services.writing_contracts import (
+    MAX_DEPENDENCY_BYTES,
+    MAX_RESEARCH_SOURCE_BYTES,
+    DependencyContextItem,
+    WritingResearchSource,
+)
+
 PROJECT_SKILL = "code.build_project"
 MAX_PROJECT_BYTES = 1_000_000
 MAX_PROJECT_FILES = 80
@@ -222,10 +229,27 @@ class ProjectPayload(NativeValidationState):
         default_factory=list, max_length=8
     )
     memory: ProjectMemoryContext | None = None
+    dependency_context: list[DependencyContextItem] = Field(default_factory=list, max_length=8)
+    research_sources: list[WritingResearchSource] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def validate_payload(self) -> ProjectPayload:
         validate_files(self.files)
+        for entries, limit in (
+            (self.dependency_context, MAX_DEPENDENCY_BYTES),
+            (self.research_sources, MAX_RESEARCH_SOURCE_BYTES),
+        ):
+            if (
+                len(
+                    json.dumps(
+                        [item.model_dump() for item in entries],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode()
+                )
+                > limit
+            ):
+                raise ValueError("project dependency context exceeds its byte limit")
         if any(path not in {file.path for file in self.files} for path in self.focus_paths):
             raise ValueError("project inspection requires an existing file")
         for message in self.conversation:

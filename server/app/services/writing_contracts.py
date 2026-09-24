@@ -18,6 +18,8 @@ MAX_WRITING_CONTEXT_CHARACTERS = 4_000
 MAX_WRITING_CONVERSATION_MESSAGES = 12
 MAX_RESEARCH_SOURCES = 5
 MAX_RESEARCH_SOURCE_BYTES = 8_000
+MAX_DEPENDENCY_ITEMS = 8
+MAX_DEPENDENCY_BYTES = 12_000
 
 
 def checked_research_url(value: str) -> str:
@@ -110,19 +112,62 @@ class WritingResearchSource(_StrictModel):
         return value
 
 
+class DependencyContextItem(_StrictModel):
+    content_trust: Literal["untrusted"]
+    node_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+    worker_job_id: str = Field(pattern=r"^job_[A-Za-z0-9._:-]+$", max_length=200)
+    required_skill: str = Field(min_length=1, max_length=100)
+    summary: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("summary", "required_skill")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        return _checked_text(value)
+
+
 class WritingPayload(_StrictModel):
     schema_version: Literal["1.0"]
     objective: str = Field(min_length=1, max_length=MAX_WRITING_CONTEXT_CHARACTERS)
+    step_objective: str | None = Field(
+        default=None, min_length=1, max_length=MAX_WRITING_CONTEXT_CHARACTERS
+    )
     conversation: list[WritingConversationMessage] = Field(
         max_length=MAX_WRITING_CONVERSATION_MESSAGES
     )
     research_sources: list[WritingResearchSource] = Field(
         default_factory=list, max_length=MAX_RESEARCH_SOURCES
     )
+    dependency_context: list[DependencyContextItem] = Field(
+        default_factory=list, max_length=MAX_DEPENDENCY_ITEMS
+    )
+
+    @field_validator("dependency_context")
+    @classmethod
+    def validate_dependency_bytes(
+        cls, value: list[DependencyContextItem]
+    ) -> list[DependencyContextItem]:
+        if (
+            len(
+                json.dumps(
+                    [item.model_dump() for item in value], ensure_ascii=False, separators=(",", ":")
+                ).encode()
+            )
+            > MAX_DEPENDENCY_BYTES
+        ):
+            raise ValueError("dependency context exceeds its byte limit")
+        return value
 
     @field_validator("objective")
     @classmethod
     def validate_objective(cls, value: str) -> str:
+        return _checked_text(value)
+
+    @field_validator("step_objective")
+    @classmethod
+    def validate_step_objective(cls, value: str | None) -> str:
+        # Optional means absent on the wire, preserving the older payload shape.
+        if value is None:
+            raise ValueError("step objective must be text when provided")
         return _checked_text(value)
 
     @model_validator(mode="after")
