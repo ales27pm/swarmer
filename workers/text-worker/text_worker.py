@@ -43,7 +43,10 @@ MAX_DEPENDENCY_CONTEXT_BYTES = 12_000
 
 SYSTEM_PROMPT = """Write the actual requested draft, plan, instructions, or analysis.
 Return exactly one JSON object with schema_version "1.0", content_trust "untrusted",
-text (the complete deliverable), and summary (a short overview).
+text (the complete deliverable), summary (a short overview), and outcome.
+Set outcome to "delivered" for the requested draft or "declined" if you decline
+the request. For a declined request, explain that briefly in text and summary;
+do not label a refusal or an alternative suggestion as a delivered draft.
 Use the user's language. Keep text to 100–140 words and summary to 80 characters.
 Return the complete JSON object within 512 output tokens, including JSON overhead.
 The text value must be plain prose, not another JSON object, a code block, or a
@@ -92,6 +95,15 @@ RESPONSE_SCHEMA: dict[str, Any] = {
         "summary": {"type": "string"},
     },
     "required": ["schema_version", "content_trust", "text", "summary"],
+}
+
+MODEL_RESPONSE_SCHEMA: dict[str, Any] = {
+    **RESPONSE_SCHEMA,
+    "properties": {
+        **RESPONSE_SCHEMA["properties"],
+        "outcome": {"type": "string", "enum": ["delivered", "declined"]},
+    },
+    "required": [*RESPONSE_SCHEMA["required"], "outcome"],
 }
 
 SOURCED_SYSTEM_PROMPT = (
@@ -370,14 +382,35 @@ def validate_result(value: object, payload: dict[str, Any] | None = None) -> dic
     allowed = {source["url"] for source in (payload or {}).get("research_sources", [])}
     if allowed and any(unsupported_citation(content, allowed) for content in (text, summary)):
         raise GenerationError("unsupported_citation", reason="unsupported_citation")
-    return {"schema_version": "1.0", "content_trust": "untrusted", "text": text, "summary": summary}
+    return {
+        "schema_version": "1.0",
+        "content_trust": "untrusted",
+        "text": text,
+        "summary": summary,
+    }
+
+
+def validate_generation_result(
+    value: object, payload: dict[str, Any] | None = None
+) -> dict[str, str]:
+    if isinstance(value, dict) and value.get("outcome") == "declined":
+        if set(value) != {*RESPONSE_SCHEMA["required"], "outcome", "model_id"}:
+            raise GenerationError("declined result fields are invalid")
+        model = _text(value["model_id"], 500)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", model) is None:
+            raise GenerationError("declined model identity is invalid")
+        canonical = validate_result(
+            {key: value[key] for key in RESPONSE_SCHEMA["required"]}, payload
+        )
+        return {**canonical, "outcome": "declined", "model_id": model}
+    return validate_result(value, payload)
 
 
 def _model_input(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Project validated evidence into a private, URL-free citation vocabulary."""
     sources = payload.get("research_sources", [])
     if not sources:
-        return payload, RESPONSE_SCHEMA
+        return payload, MODEL_RESPONSE_SCHEMA
     ids = [f"S{index}" for index in range(1, len(sources) + 1)]
 
     def source_text(text: str) -> str:
@@ -415,9 +448,9 @@ def _model_input(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
             "draft model input exceeds its UTF-8 byte limit", reason="invalid_payload"
         )
     schema = {
-        **RESPONSE_SCHEMA,
+        **MODEL_RESPONSE_SCHEMA,
         "properties": {
-            **RESPONSE_SCHEMA["properties"],
+            **MODEL_RESPONSE_SCHEMA["properties"],
             "source_ids": {
                 "type": "array",
                 "items": {"type": "string", "enum": ids},
@@ -425,17 +458,37 @@ def _model_input(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
                 "maxItems": len(ids),
             },
         },
-        "required": [*RESPONSE_SCHEMA["required"], "source_ids"],
+        "required": [*MODEL_RESPONSE_SCHEMA["required"], "source_ids"],
     }
     return projected, schema
 
 
-def _decode_model_result(value: object, payload: dict[str, Any]) -> dict[str, str]:
+def _decode_model_result(
+    value: object, payload: dict[str, Any], *, model_id: str | None = None
+) -> dict[str, str]:
     """Resolve private IDs before the unchanged canonical contract and URL guard."""
+    if not isinstance(value, dict):
+        raise GenerationError("draft result must be an object")
+    outcome = value.get("outcome")
+    if outcome not in ("delivered", "declined"):
+        raise GenerationError("draft outcome is invalid")
+    content = {key: item for key, item in value.items() if key != "outcome"}
+    result = _decode_draft_content(content, payload)
+    if outcome == "declined":
+        return validate_generation_result(
+            {**result, "outcome": "declined", "model_id": model_id}, payload
+        )
+    return result
+
+
+def _decode_draft_content(value: object, payload: dict[str, Any]) -> dict[str, str]:
     sources = payload.get("research_sources", [])
     if not sources:
         return validate_result(value, payload)
-    if not isinstance(value, dict) or set(value) != {*RESPONSE_SCHEMA["required"], "source_ids"}:
+    if not isinstance(value, dict) or set(value) != {
+        *RESPONSE_SCHEMA["required"],
+        "source_ids",
+    }:
         raise GenerationError("sourced draft fields are invalid")
     ids = value["source_ids"]
     by_id = {f"S{index}": source for index, source in enumerate(sources, 1)}
@@ -507,11 +560,18 @@ class TextGenerator:
                     "content": system,
                 },
                 # Keep historical assistant messages as quoted task data, not authority.
-                {"role": "user", "content": json.dumps(model_payload, ensure_ascii=False)},
+                {
+                    "role": "user",
+                    "content": json.dumps(model_payload, ensure_ascii=False),
+                },
             ],
             "stream": True,
             "format": response_schema,
-            "options": {"temperature": 0, "num_predict": MAX_OUTPUT_TOKENS, "num_gpu": 0},
+            "options": {
+                "temperature": 0,
+                "num_predict": MAX_OUTPUT_TOKENS,
+                "num_gpu": 0,
+            },
         }
         if "qwen3" in self.model.casefold():
             body["think"] = False
@@ -532,7 +592,8 @@ class TextGenerator:
         if response.status != 200:
             response.close()
             raise GenerationError(
-                "local text model returned an unsuccessful response", reason="model_http_error"
+                "local text model returned an unsuccessful response",
+                reason="model_http_error",
             )
         total = 0
         pending = b""
@@ -545,7 +606,8 @@ class TextGenerator:
             check()
             if terminal:
                 raise GenerationError(
-                    "local text model returned data after completion", reason="invalid_stream"
+                    "local text model returned data after completion",
+                    reason="invalid_stream",
                 )
             value = _parse_model_json(raw)
             if isinstance(value, dict) and "error" in value:
@@ -560,13 +622,15 @@ class TextGenerator:
                 or type(value.get("done")) is not bool
             ):
                 raise GenerationError(
-                    "local text model returned an invalid stream event", reason="invalid_stream"
+                    "local text model returned an invalid stream event",
+                    reason="invalid_stream",
                 )
             content = message["content"]
             content_bytes += len(content.encode("utf-8"))
             if content_bytes > MAX_RESPONSE_BYTES:
                 raise GenerationError(
-                    "local text model content exceeded its byte limit", reason="response_limit"
+                    "local text model content exceeded its byte limit",
+                    reason="response_limit",
                 )
             parts.append(content)
             if value["done"]:
@@ -589,7 +653,8 @@ class TextGenerator:
                 total += len(chunk)
                 if total > MAX_RESPONSE_BYTES:
                     raise GenerationError(
-                        "local text model stream exceeded its byte limit", reason="response_limit"
+                        "local text model stream exceeded its byte limit",
+                        reason="response_limit",
                     )
                 pending += chunk
                 while b"\n" in pending:
@@ -600,10 +665,13 @@ class TextGenerator:
                 event(pending)
             if not terminal:
                 raise GenerationError(
-                    "local text model stream ended without completion", reason="incomplete_stream"
+                    "local text model stream ended without completion",
+                    reason="incomplete_stream",
                 )
             check()
-            return _decode_model_result(_parse_model_json("".join(parts)), payload)
+            return _decode_model_result(
+                _parse_model_json("".join(parts)), payload, model_id=self.model
+            )
         finally:
             response.close()
 
@@ -629,7 +697,8 @@ class TextGenerator:
             ensure_active()
             if cancelled.is_set() or time.monotonic() >= deadline:
                 raise GenerationError(
-                    "local text model exceeded its wall-time limit", reason="wall_timeout"
+                    "local text model exceeded its wall-time limit",
+                    reason="wall_timeout",
                 )
 
         def request() -> None:
@@ -660,7 +729,7 @@ class TextGenerator:
                     continue
                 check()
                 if accepted:
-                    return validate_result(value, payload)
+                    return validate_generation_result(value, payload)
                 if isinstance(value, (protocol.LeaseLost, protocol.LeaseUnavailable)):
                     raise value
                 if isinstance(value, GenerationError):
@@ -707,13 +776,21 @@ def run_once(
         try:
             payload = parse_job(job)
             heartbeat.ensure_active()
-            result = validate_result(
-                generator.generate(payload, ensure_active=heartbeat.ensure_active), payload
+            result = validate_generation_result(
+                generator.generate(payload, ensure_active=heartbeat.ensure_active),
+                payload,
             )
-            result_body: dict[str, Any] = {"status": "completed", "result": result}
+            result_body: dict[str, Any] = (
+                {"status": "failed", "error": "model_declined", "result": result}
+                if result.get("outcome") == "declined"
+                else {"status": "completed", "result": result}
+            )
         except (GenerationError, OSError, TypeError, UnicodeError, ValueError) as exc:
             LOGGER.warning("text draft generation failed: reason=%s", failure_reason(exc))
-            result_body = {"status": "failed", "error": "Text draft generation failed validation"}
+            result_body = {
+                "status": "failed",
+                "error": "Text draft generation failed validation",
+            }
         heartbeat.ensure_active()
         # Renew synchronously after generation as the final cancellation fence.
         client.heartbeat_job(job_id, lease)

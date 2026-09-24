@@ -63,7 +63,7 @@ def event(content: str, *, done: bool = False, reason: str = "stop") -> bytes:
 
 
 def stream(value: dict[str, Any] | None = None) -> list[bytes]:
-    text = json.dumps(value or draft(), ensure_ascii=False)
+    text = json.dumps({"outcome": "delivered", **(value or draft())}, ensure_ascii=False)
     return [event(text[:12]), event(text[12:]), event("", done=True)]
 
 
@@ -170,7 +170,9 @@ def test_step_objective_is_strict_bounded_unicode(worker: ModuleType, value: obj
         worker.validate_payload({**payload(), "step_objective": value})
 
 
-def test_step_objective_counts_against_worker_payload_byte_budget(worker: ModuleType) -> None:
+def test_step_objective_counts_against_worker_payload_byte_budget(
+    worker: ModuleType,
+) -> None:
     value = {
         **payload(),
         "objective": "é" * 4000,
@@ -365,7 +367,7 @@ def test_complete_native_stream_is_one_cpu_call_with_bounded_tokens(
     assert body["options"] == {"temperature": 0, "num_predict": 512, "num_gpu": 0}
     assert body["stream"] is True
     assert body["think"] is False
-    assert body["format"] == worker.RESPONSE_SCHEMA
+    assert body["format"] == worker.MODEL_RESPONSE_SCHEMA
     assert json.loads(body["messages"][1]["content"]) == payload()
     assert "Authorization" not in headers
     assert "tools" not in body
@@ -586,6 +588,83 @@ def test_run_once_publishes_only_valid_complete_draft_after_final_renewal(
     assert client.renewals == 2
 
 
+def test_declared_refusal_is_a_failed_job_with_model_provenance(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    response = {
+        **draft(),
+        "outcome": "declined",
+        "text": "Je ne peux pas rédiger ce calendrier familial.",
+        "summary": "Demande déclinée.",
+    }
+    generator, connection = generator_for(
+        worker, monkeypatch, [event(json.dumps(response), done=True)]
+    )
+    assert worker.run_once("http://127.0.0.1", "agent", "secret", generator)
+    assert client.submitted == [
+        {
+            "status": "failed",
+            "error": "model_declined",
+            "result": {**response, "model_id": generator.model},
+        }
+    ]
+    assert len([call for call in connection.calls if call[0] == "POST"]) == 1
+    assert client.renewals == 2
+
+
+def test_declared_delivery_keeps_legacy_client_contract(worker: ModuleType) -> None:
+    assert (
+        worker._decode_model_result(
+            {**draft(), "outcome": "delivered"}, payload(), model_id="local:7b"
+        )
+        == draft()
+    )
+    # Words in quoted drafts cannot turn an otherwise valid response into a refusal.
+    quoted = {**draft(), "text": "Voici le message demandé : « Je ne peux pas venir. »"}
+    assert worker._decode_model_result(
+        {**quoted, "outcome": "delivered"}, payload(), model_id="local:7b"
+    ) == quoted
+
+
+def test_new_model_response_must_declare_an_outcome(worker: ModuleType) -> None:
+    with pytest.raises(worker.GenerationError):
+        worker._decode_model_result(draft(), payload(), model_id="local:7b")
+
+
+@pytest.mark.parametrize("outcome", [None, False, {}, "", "refused", "DELIVERED"])
+def test_invalid_declared_outcome_is_rejected(worker: ModuleType, outcome: object) -> None:
+    with pytest.raises(worker.GenerationError):
+        worker._decode_model_result({**draft(), "outcome": outcome}, payload(), model_id="local:7b")
+
+
+def test_model_cannot_supply_its_own_provenance(worker: ModuleType) -> None:
+    with pytest.raises(worker.GenerationError):
+        worker._decode_model_result(
+            {**draft(), "outcome": "declined", "model_id": "invented:30b"},
+            payload(),
+            model_id="local:7b",
+        )
+
+
+@pytest.mark.parametrize("renewal", [1, 2])
+def test_declared_refusal_respects_cancellation_fences(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch, renewal: int
+) -> None:
+    client = FakeClient()
+    client.failed_renewal = renewal
+    client.raise_lease = worker.protocol.LeaseLost("cancelled")
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    generator, _ = generator_for(
+        worker,
+        monkeypatch,
+        [event(json.dumps({**draft(), "outcome": "declined"}), done=True)],
+    )
+    assert worker.run_once("http://127.0.0.1", "agent", "secret", generator)
+    assert client.submitted == []
+
+
 @pytest.mark.parametrize("renewal", [1, 2])
 def test_cancellation_at_initial_or_final_fence_never_publishes(
     worker: ModuleType,
@@ -626,7 +705,10 @@ def test_failed_generation_publishes_only_fixed_error_and_no_private_text(
     ("chunks", "reason"),
     [
         ([event(json.dumps(draft()), done=True, reason="length")], "token_limit"),
-        ([event(json.dumps(draft()), done=True, reason="private-reason")], "non_stop_finish"),
+        (
+            [event(json.dumps(draft()), done=True, reason="private-reason")],
+            "non_stop_finish",
+        ),
         ([event(json.dumps(draft()))], "incomplete_stream"),
         ([event("private-generated-text", done=True)], "invalid_json"),
         ([b'{"error":"private-model-error"}\n'], "model_error"),
@@ -676,7 +758,9 @@ def test_transport_failures_keep_safe_diagnostic_classification(
     assert connection.initial_sock.closed.is_set()
 
 
-def test_failure_reason_cannot_leak_exception_text_or_unrecognized_code(worker: ModuleType) -> None:
+def test_failure_reason_cannot_leak_exception_text_or_unrecognized_code(
+    worker: ModuleType,
+) -> None:
     error = worker.GenerationError("private-generated-text", reason="private-model-reason")
     assert worker.failure_reason(error) == "invalid_output"
     error.reason_code = "private-overwritten-code"

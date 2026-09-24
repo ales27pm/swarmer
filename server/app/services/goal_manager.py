@@ -97,7 +97,7 @@ from app.services.swarm_contracts import (
 )
 from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
 from app.services.worker_context import read_worker_context
-from app.services.writing_contracts import WRITING_SKILL
+from app.services.writing_contracts import WRITING_SKILL, validate_writing_declined_result
 from app.services.writing_drafts import read_writing_draft, writing_payload
 
 logger = logging.getLogger(__name__)
@@ -2520,7 +2520,7 @@ class GoalManager:
                         goal_run_id, maintenance_guard=maintenance_guard
                     )
                 return await self.get_goal(goal_run_id)
-            if node["required_skill"] in SWIFT_SKILLS:
+            if node["required_skill"] in SWIFT_SKILLS or node["required_skill"] == WRITING_SKILL:
                 recorded_job = await self.agent_dispatcher.get_job(str(job["id"]))
                 if (
                     recorded_job is None
@@ -2531,6 +2531,19 @@ class GoalManager:
                 ):
                     return await self.get_goal(goal_run_id)
                 job = recorded_job
+            if (
+                node["required_skill"] == WRITING_SKILL
+                and job["status"] == "failed"
+                and isinstance(job.get("result"), dict)
+                and job["result"].get("outcome") == "declined"
+            ):
+                await self._accept_writing_declined_result(
+                    goal_run_id,
+                    str(node["id"]),
+                    str(job["id"]),
+                    maintenance_guard=maintenance_guard,
+                )
+                return await self.get_goal(goal_run_id)
             valid_evidence = validate_worker_evidence(
                 node.get("required_skill"),
                 job.get("result"),
@@ -2600,6 +2613,88 @@ class GoalManager:
                 maintenance_guard=maintenance_guard,
             )
             return await self.get_goal(goal_run_id)
+
+    async def _accept_writing_declined_result(
+        self,
+        goal_id: str,
+        node_id: str,
+        job_id: str,
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> None:
+        """Stop a current declared refusal; preserve newer user input and raw evidence."""
+        terminated = False
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            goal = await (
+                await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal_id,))
+            ).fetchone()
+            if goal is None or goal["status"] in self.graph.GOAL_TERMINAL:
+                return
+            row = await (
+                await db.execute(
+                    """SELECT n.status,n.conversation_revision,j.result_json,j.payload_json,
+                              j.claimed_by,j.last_agent_id
+                    FROM plan_nodes n JOIN agent_jobs j
+                      ON j.id=n.worker_job_id AND j.task_id=n.task_id
+                    JOIN tasks t ON t.id=j.task_id AND t.source=? AND t.status='failed'
+                    WHERE n.id=? AND n.goal_run_id=? AND n.required_skill=?
+                      AND j.id=? AND j.required_skill=? AND j.status='failed'
+                      AND j.error='model_declined'""",
+                    (f"goal:{goal_id}", node_id, goal_id, WRITING_SKILL, job_id, WRITING_SKILL),
+                )
+            ).fetchone()
+            if row is None:
+                raise GoalManagerConflict("writing refusal evidence is unavailable")
+            if row["status"] not in {"dispatched", "running", "waiting_capability"}:
+                return
+            try:
+                result = validate_writing_declined_result(
+                    json.loads(str(row["result_json"])),
+                    payload=json.loads(str(row["payload_json"])),
+                )
+            except (TypeError, ValueError) as exc:
+                raise GoalManagerConflict("writing refusal evidence is invalid") from exc
+            now = self._now()
+            await db.execute(
+                """UPDATE plan_nodes SET status='failed',error_summary='model_declined',
+                   result_summary=NULL,assigned_agent_id=?,updated_at=?,completed_at=?
+                   WHERE id=?""",
+                (row["claimed_by"] or row["last_agent_id"], now, now, node_id),
+            )
+            stale = int(row["conversation_revision"]) != int(goal["conversation_revision"])
+            if not stale and not int(goal["pending_message_revision"] or 0):
+                model_id = safe_context_text(str(result["model_id"]), max_chars=500)
+                excerpt = safe_context_text(str(result["text"]), max_chars=2_800)
+                await GoalConversationService.assistant_locked(
+                    db,
+                    goal_id,
+                    f"Le modèle {model_id} a déclaré un refus de produire le document demandé. "
+                    "Le texte ci-dessous est sa réponse, pas une conclusion vérifiée du serveur. "
+                    "Le but est arrêté sans nouvelle tentative automatique. "
+                    f"Les résultats enregistrés sont conservés.\n\n{excerpt}",
+                    question=False,
+                    now=now,
+                )
+                await self._terminate_goal_locked(
+                    db,
+                    dict(goal),
+                    status="failed",
+                    reason="model_declined",
+                    now=now,
+                    maintenance_guard=maintenance_guard,
+                )
+                terminated = True
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+        if terminated:
+            await self._finalize_terminal_goal(
+                goal_id, status="failed", maintenance_guard=maintenance_guard
+            )
 
     async def on_tool_call_updated(self, tool_call_id: str) -> dict[str, Any] | None:
         changed: set[str] = set()
