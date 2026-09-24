@@ -40,7 +40,12 @@ def test_native_source_ids_project_evidence_and_resolve_exact_urls(
     value["objective"] += " " + urls + " https://example.net/user-link"
     value["conversation"][0]["content"] += " " + urls
     original = copy.deepcopy(value)
-    private = {**draft(), "text": "Un atelier est annoncé [S1].", "source_ids": ["S1"]}
+    private = {
+        **draft(),
+        "outcome": "delivered",
+        "text": "Un atelier est annoncé [S1].",
+        "source_ids": ["S1"],
+    }
     generator, connection = generator_for(worker, monkeypatch, stream(private))
     result = generator.generate(value, ensure_active=lambda: None)
     assert result["text"] == "Un atelier est annoncé [S1].\n\n[S1] <" + source["url"] + ">"
@@ -208,7 +213,7 @@ def test_unsourced_transport_and_historical_canonical_results_are_unchanged(
     generator, connection = generator_for(worker, monkeypatch, stream(legacy))
     assert generator.generate(value, ensure_active=lambda: None) == legacy
     body = next(call[2] for call in connection.calls if call[0] == "POST")
-    assert body["format"] == worker.RESPONSE_SCHEMA
+    assert body["format"] == worker.MODEL_RESPONSE_SCHEMA
     assert body["messages"][0]["content"] == worker.SYSTEM_PROMPT
     assert json.loads(body["messages"][1]["content"]) == value
     with pytest.raises(worker.GenerationError):
