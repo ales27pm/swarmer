@@ -1,0 +1,23 @@
+{
+  "route_keys": [
+    "./(main)/_layout.tsx",
+    "./(main)/agents.tsx",
+    "./(main)/approvals.tsx",
+    "./(main)/catalog.tsx",
+    "./(main)/index.tsx",
+    "./(main)/memory.tsx",
+    "./(main)/settings.tsx",
+    "./(main)/swarm.tsx",
+    "./(main)/tasks.tsx",
+    "./_layout.tsx",
+    "./goal/[id].tsx",
+    "./local-model.tsx",
+    "./task/[id].tsx"
+  ],
+  "native_strings": [
+    "SwarmerLocalInference",
+    "automationRequest",
+    "startAutomationServer",
+    "completeAutomationRequest"
+  ]
+}

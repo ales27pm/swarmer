@@ -1,5 +1,6 @@
 const { getDefaultConfig } = require("expo/metro-config");
 const { withVibecodeMetro } = require("@vibecodeapp/sdk/metro");
+const { assertIOSApplicationGraph } = require("./scripts/ios-bundle-guard.cjs");
 
 /** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
@@ -33,6 +34,12 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   return resolveRequest
     ? resolveRequest(context, moduleName, platform)
     : context.resolveRequest(context, moduleName, platform);
+};
+
+const serializerHook = config.serializer.experimentalSerializerHook;
+config.serializer.experimentalSerializerHook = (graph, delta) => {
+  assertIOSApplicationGraph(__dirname, graph);
+  serializerHook?.(graph, delta);
 };
 
 module.exports = config;
