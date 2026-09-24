@@ -1,0 +1,16 @@
+# Candidate only; activation requires a recorded planner/evaluator qualification.
+# Copy this file beside the verified GGUF before importing it with Ollama.
+# Hugging Face: mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF
+# Revision: 9f646d7eda193ddf2348134f3bff3d49eed7a2c6
+# SHA-256: ea1858ef4dc4b648b8dbb44612962a0333e945060dd0545ac0f28d7c4416e4b3
+# Size: 5627045248 bytes
+# Alias: swarmer-research-qwen35-abliterated:9b-8k-9f646d7e
+FROM ./Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf
+RENDERER qwen3.5
+PARSER qwen3.5
+PARAMETER num_ctx 8192
+PARAMETER num_predict 2048
+PARAMETER temperature 1
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+PARAMETER presence_penalty 1.5

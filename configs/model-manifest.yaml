@@ -14,6 +14,27 @@ profiles:
     notes: "Dolphin3.0 3B is the compact iteration preset; Core ML has a 2048-token context. Device memory, latency, and quality still require an iPhone test."
 
 models:
+  - id: huihui_qwen35_9b_research_8k
+    hf: mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF
+    hf_revision: 9f646d7eda193ddf2348134f3bff3d49eed7a2c6
+    file: Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf
+    sha256: ea1858ef4dc4b648b8dbb44612962a0333e945060dd0545ac0f28d7c4416e4b3
+    size_bytes: 5627045248
+    served_model_id: swarmer-research-qwen35-abliterated:9b-8k-9f646d7e
+    ollama_digest: dea44495ce5b261fda71feeb08020d0b960f2f563869d1c70fb1bb0276a9ffdc
+    quant: Q4_K_M
+    role: research_planner_evaluator
+    abliterated: true
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434/v1
+    context_tokens: 8192
+    max_output_tokens: 2048
+    modelfile: configs/ollama/research-huihui-qwen35-9b-8k.Modelfile
+    active_by_default: false
+    validation: planner_controls_passed_evaluator_rejected
+    qualification_evidence: docs/evidence/model-role-alignment-2026-09-24.md
+    notes: "Downloaded and imported; not activated. Two planner controls passed with an unnecessary synthesis reservation. The evaluator misclassified a French draft as English. Preserve the Qwen3.5 renderer/parser and reasoning_effort none. Existing roles and old weights remain intact until a complete replacement profile is qualified and verified."
+
   - id: qwen35_9b_research_8k
     ollama_source: qwen3.5:9b
     ollama_source_digest: 6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7

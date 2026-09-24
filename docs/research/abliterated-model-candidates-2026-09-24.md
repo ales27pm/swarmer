@@ -4,6 +4,11 @@ Cette recherche compare six checkpoints pour l’assistant personnel Swarmer. El
 
 ## Choix proposés
 
+Mise à jour après essais : le 9B a été téléchargé, vérifié et importé, mais sa
+qualification comme évaluateur a échoué. Le 7B et le 30B existants ont aussi été
+comparés pour ce rôle, sans établir de remplaçant qualifié. Les rôles actifs et
+anciens poids sont conservés. Voir les [résultats mesurés et limites](../evidence/model-role-alignment-2026-09-24.md).
+
 - **iPhone MLX : tester d’abord Huihui Qwen3.5 4B**, conversion `TheWirelessPhoenix/Qwen3.5-4B-abliterated_4bit`, en comparaison avec le Dolphin actuel. Son architecture est reconnue dans la version Swift intégrée ; génération, mémoire et annulation sur l’iPhone restent à mesurer.
 - **iPhone GGUF : comparer Huihui Qwen3 4B Instruct 2507 et Huihui Qwen3.5 4B**, tous deux en Q4_K_M. Le premier est un modèle texte dense non-thinking ; le second utilise une attention hybride et conserve une filiation multimodale. Ce sont deux expériences distinctes.
 - **Ubuntu : comparer Huihui Qwen3.5 9B Q4_K_M au planificateur Qwen3.5 9B standard actuel**, à budget et contexte identiques. Aucune preuve consultée ne justifie encore son remplacement en production.
@@ -51,7 +56,7 @@ Commencer à 2–4K de contexte sur iPhone et conserver les 8K du planificateur 
 
 ## Pins de transport GGUF à réutiliser si une qualification est autorisée
 
-Ces SHA-256 sont les métadonnées LFS du Hub, **pas des sommes recalculées sur des poids téléchargés**. Chaque fichier doit être récupéré depuis la révision liée plus haut, puis vérifié localement avant utilisation.
+Ces SHA-256 proviennent des métadonnées LFS du Hub relevées pendant la recherche initiale. Chaque fichier doit être récupéré depuis la révision liée plus haut, puis vérifié localement avant utilisation. Le téléchargement ultérieur du 9B a été vérifié contre cette somme, comme indiqué dans le bilan d’essais lié en tête du document.
 
 | Fichier | Octets | SHA-256 annoncé |
 |---|---:|---|
