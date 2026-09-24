@@ -211,6 +211,13 @@ class WritingResult(_StrictModel):
         return _checked_text(value)
 
 
+class WritingDeclinedResult(WritingResult):
+    """A model-declared refusal, never a delivered writing draft."""
+
+    outcome: Literal["declined"]
+    model_id: str = Field(min_length=1, max_length=500, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+
+
 class UnsupportedCitationError(ValueError):
     def __init__(self) -> None:
         super().__init__("unsupported_citation")
@@ -260,4 +267,14 @@ def validate_writing_result(value: object, *, payload: object = None) -> dict[st
             unsupported_citation(result[key], allowed) for key in ("text", "summary")
         ):
             raise UnsupportedCitationError()
+    return result
+
+
+def validate_writing_declined_result(value: object, *, payload: object = None) -> dict[str, Any]:
+    """Preserve a bounded refusal without upgrading it into success evidence."""
+    result = WritingDeclinedResult.model_validate(value).model_dump()
+    validate_writing_result(
+        {key: value for key, value in result.items() if key not in {"outcome", "model_id"}},
+        payload=payload,
+    )
     return result

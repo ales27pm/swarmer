@@ -33,7 +33,11 @@ from app.services.swift_project_validation import (
     require_project_grant_locked,
 )
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
-from app.services.writing_contracts import UnsupportedCitationError, validate_writing_result
+from app.services.writing_contracts import (
+    UnsupportedCitationError,
+    validate_writing_declined_result,
+    validate_writing_result,
+)
 
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "quarantined"})
 DISPATCHABLE_TASK_STATUSES = frozenset({"created", "planned"})
@@ -871,6 +875,21 @@ class AgentDispatcher:
                 except (TypeError, ValueError):
                     await db.rollback()
                     raise AgentDispatchConflict("invalid_writing_result") from None
+            elif (
+                status == "failed"
+                and row["required_skill"] == "writing.draft"
+                and isinstance(result, dict)
+                and result.get("outcome") == "declined"
+            ):
+                try:
+                    validate_writing_declined_result(result, payload=native_payload)
+                except UnsupportedCitationError:
+                    await db.rollback()
+                    raise AgentDispatchConflict("unsupported_citation") from None
+                except (TypeError, ValueError):
+                    await db.rollback()
+                    raise AgentDispatchConflict("invalid_writing_result") from None
+                public_error = "model_declined"
             try:
                 await AgentJobStateMachine.transition_locked(
                     db,
