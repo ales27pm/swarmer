@@ -200,7 +200,7 @@ export function ScreenShell({
           ) : undefined
         }
       >
-        <View style={{ gap: 6 }}>
+        {showTitle || subtitle ? <View style={{ gap: 6 }}>
           {showTitle ? <Text accessibilityRole="header" selectable numberOfLines={title.length > 150 && !expandedTitle ? 3 : undefined} style={{ color: COLORS.text, fontSize: 26, lineHeight: 32, fontWeight: "800" }}>
             {title}
           </Text> : null}
@@ -210,7 +210,7 @@ export function ScreenShell({
               {subtitle}
             </Text>
           ) : null}
-        </View>
+        </View> : null}
         {children}
       </ScrollView>
     </KeyboardScrollContext.Provider>

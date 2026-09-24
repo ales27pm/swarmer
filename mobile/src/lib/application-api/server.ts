@@ -27,14 +27,14 @@ export const createTask: typeof adapter.createTask = (input, mode) => call("task
 export const listTasks: typeof adapter.listTasks = (status) => call("tasks.list", { status });
 export const getTask: typeof adapter.getTask = (id) => call("tasks.get", { id });
 export const cancelTask: typeof adapter.cancelTask = (id) => call("tasks.cancel", { id });
-export const planTask: typeof adapter.planTask = (id) => call("tasks.plan", { id });
-export const createGoal: typeof adapter.createGoal = (input) => call("goals.create", input);
+export const planTask: typeof adapter.planTask = (id, shouldAccept) => invokeApplicationCommand("tasks.plan", { id }, { shouldAccept });
+export const createGoal: typeof adapter.createGoal = (input, shouldAccept) => invokeApplicationCommand("goals.create", Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)), { shouldAccept });
 export const cancelGoal: typeof adapter.cancelGoal = (id) => call("goals.cancel", { id });
 export const replanGoal: typeof adapter.replanGoal = (id, reason) => call("goals.replan", { id, reason });
 // Optional iPhone plans stay with the original opaque-session route; remote callers cannot supply a fabricated plan.
 export const startGoal: typeof adapter.startGoal = (id, input) => input ? adapter.startGoal(id, input) : call("goals.start", { id });
 export const createGoalFeedback: typeof adapter.createGoalFeedback = (id, feedback) => call("goals.feedback", { id, feedback });
-export const sendChat: typeof adapter.sendChat = (content, conversationId, mode, startTask) => call("chat.send", { content, conversationId, mode, startTask });
+export const sendChat: typeof adapter.sendChat = (content, conversationId, mode, startTask, shouldAccept) => invokeApplicationCommand("chat.send", Object.fromEntries(Object.entries({ content, conversationId, mode, startTask }).filter(([, value]) => value !== undefined)), { shouldAccept });
 export const listApprovals: typeof adapter.listApprovals = (status) => call("approvals.list", { status });
 export const decideApproval: typeof adapter.decideApproval = (id, decision) => call("approvals.decide", { id, decision, confirm: true });
 export const listMemory: typeof adapter.listMemory = () => call("memory.list");

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import * as server from "@/lib/api/client";
 import * as native from "@/lib/local-inference";
 import { applicationApi, ApplicationApiError } from "./index";
-import { getActivity, getGoalWritingDraft, listAgents } from "./server";
+import { createGoal, getActivity, getGoalWritingDraft, listAgents, planTask, sendChat } from "./server";
 import { createLocalGenerationSession, generateLocalProposal, pickAndImportLocalModel } from "./local-inference";
 import { applicationSessions, ApplicationSessions } from "./sessions";
 import { notifyConnectionChanged } from "@/lib/connection-events";
@@ -24,7 +24,7 @@ jest.mock("expo-constants", () => ({ __esModule: true, default: {
 
 jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
-  listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(),
+  listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(), planTask: jest.fn(), sendChat: jest.fn(),
   listAudit: jest.fn(), getActivity: jest.fn(), getGoalWritingDraft: jest.fn(),
   getSwiftProjectValidation: jest.fn(), cancelSwiftProjectValidation: jest.fn(), createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
 }));
@@ -376,6 +376,23 @@ describe("application API contract", () => {
     expect(result.data).toEqual([{ id: "agent_one" }]);
     expect(result.metadata).toEqual({ source: "authoritative", observedAt: expect.any(String) });
     expect(server.listAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it("forwards caller guards for chat, planning and project creation without changing public inputs", async () => {
+    const shouldAccept = () => true;
+    const goalInput = { objective: "Préparer mon agenda", autonomy_profile: "assisted" as const };
+    jest.mocked(server.createGoal).mockResolvedValue({ goal: { id: "goal_one" }, nodes: [], result: null } as unknown as server.GoalDetail);
+    jest.mocked(server.sendChat).mockResolvedValue({ conversation_id: "conv_one", task: null });
+    jest.mocked(server.planTask).mockResolvedValue({ task_id: "task_one", task: null, proposal: { tool_name: "none", arguments: {}, summary: "Proposition" } });
+
+    await createGoal({ ...goalInput, max_steps: undefined }, shouldAccept);
+    await sendChat("Préparer mon agenda", undefined, "normal", false, shouldAccept);
+    await planTask("task_one", shouldAccept);
+
+    expect(server.createGoal).toHaveBeenCalledWith(goalInput, shouldAccept);
+    expect(server.sendChat).toHaveBeenCalledWith("Préparer mon agenda", undefined, "normal", false, shouldAccept);
+    expect(server.planTask).toHaveBeenCalledWith("task_one", shouldAccept);
+    expect(applicationApi.catalog().commands.find((command) => command.name === "chat.send")?.inputSchema).not.toHaveProperty("properties.shouldAccept");
   });
 
   it("preserves real goal bounds and the existing 0–5 feedback scale", async () => {

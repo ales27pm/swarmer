@@ -14,6 +14,7 @@ import {
   type ToolCall,
 } from "@/lib/api/client";
 import { LiveSyncContextProvider } from "@/lib/sync/live-sync-context";
+import { notifyConnectionChanged } from "@/lib/connection-events";
 
 const mockPush = jest.fn();
 let mockSearchParams: { draft?: string; intentMode?: string } = {};
@@ -170,15 +171,55 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
 
     expect(await screen.findByText("Serveur connecté")).toBeOnTheScreen();
-    expect(screen.getByText("Aide-moi à organiser ma semaine.")).toBeOnTheScreen();
+    expect(screen.getByText("Organiser ma semaine")).toBeOnTheScreen();
     expect(
       screen.getByText(
-        "Une idée, une recherche, un projet. Discute ou confie une tâche à ton équipe.",
+        "Une idée, une recherche, un projet.",
       ),
     ).toBeOnTheScreen();
     expect(
-      screen.getByText("Prêt à discuter. Passe en mode Tâche lorsque tu veux agir."),
+      screen.getByText("Échange avec ton assistant, sans lancer de tâche."),
     ).toBeOnTheScreen();
+  });
+
+  it("prepares a suggestion without sending and keeps the draft when switching modes", async () => {
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByRole("button", { name: "Organiser ma semaine" }));
+    expect(screen.getByDisplayValue("Aide-moi à organiser ma semaine.")).toBeOnTheScreen();
+    await user.press(screen.getByTestId("interaction-mode-task"));
+    expect(screen.getByDisplayValue("Aide-moi à organiser ma semaine.")).toBeOnTheScreen();
+    expect(screen.getByTestId("interaction-mode-task")).toHaveProp("accessibilityState", { selected: true, disabled: false });
+    expect(mockSendChat).not.toHaveBeenCalled();
+    expect(mockPlanTask).not.toHaveBeenCalled();
+  });
+
+  it("explains disabled sending and opens connection settings without clearing the draft", async () => {
+    mockBootstrap.mockRejectedValue(new Error("not paired"));
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Préparer ma semaine");
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    await user.press(screen.getByRole("button", { name: "Connecter le serveur pour envoyer" }));
+    expect(mockPush).toHaveBeenCalledWith("/settings");
+    expect(screen.getByDisplayValue("Préparer ma semaine")).toBeOnTheScreen();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("locks mode and suggestions during an in-flight request", async () => {
+    const response = deferred<Awaited<ReturnType<typeof sendChat>>>();
+    mockSendChat.mockReturnValue(response.promise);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Aide-moi à planifier");
+    await user.press(screen.getByTestId("send-button"));
+    expect(screen.getByTestId("interaction-mode-task")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Organiser ma semaine" })).toBeDisabled();
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveProp("editable", false);
+    await act(async () => response.resolve({ conversation_id: "conv_test", task: null }));
+    expect(await screen.findByText("Réponse conversationnelle reçue. Aucune tâche n’a été créée.")).toBeOnTheScreen();
   });
 
   it("prefills but does not submit an App Intent task draft", async () => {
@@ -214,7 +255,7 @@ describe("ChatScreen", () => {
       </LiveSyncContextProvider>,
     );
     await screen.findByText("Serveur connecté");
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
     await waitFor(() => expect(mockListMessages).toHaveBeenCalledTimes(2));
     expect(screen.queryByText(pushedMessage.content)).not.toBeOnTheScreen();
@@ -237,7 +278,7 @@ describe("ChatScreen", () => {
 
     await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
     expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     expect(screen.getByRole("button", { name: "Envoyer" })).toBeDisabled();
 
     mockBootstrap.mockResolvedValue(bootstrap);
@@ -292,7 +333,7 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
 
     await screen.findByText("Serveur connecté");
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
 
     expect(await screen.findByText("Proposition du modèle — non vérifiée")).toBeOnTheScreen();
@@ -304,10 +345,10 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
 
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
 
-    await waitFor(() => expect(mockPlanTask).toHaveBeenCalledWith(task.id));
+    await waitFor(() => expect(mockPlanTask).toHaveBeenCalledWith(task.id, expect.any(Function)));
     expect(
       screen.getByText("Le modèle a produit une proposition, sans prétendre l’avoir exécutée."),
     ).toBeOnTheScreen();
@@ -320,7 +361,7 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
 
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
 
     expect(
@@ -337,7 +378,7 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
 
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
 
     expect(
@@ -376,7 +417,7 @@ describe("ChatScreen", () => {
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
 
-    await user.type(screen.getByLabelText("Intention pour le swarm"), task.input);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
 
     expect(await screen.findByText("Planification indisponible")).toBeOnTheScreen();
@@ -390,5 +431,154 @@ describe("ChatScreen", () => {
     ).not.toBeOnTheScreen();
     expect(mockListMessages).toHaveBeenCalledTimes(2);
     expect(mockBootstrap).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the previous pairing's conversation and authority while preserving the draft and mode", async () => {
+    mockBootstrap.mockResolvedValue({ ...bootstrap, counts: { ...bootstrap.counts, approvals_pending: 2 } });
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté · 2 accords en attente");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByTestId("send-button"));
+    await waitFor(() => expect(screen.getByTestId("interaction-mode-task")).toBeEnabled());
+    expect(screen.getByText(message.content)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Voir la tâche et ses preuves" })).toBeOnTheScreen();
+    await user.press(screen.getByTestId("interaction-mode-task"));
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Préparer mon agenda");
+
+    await act(async () => notifyConnectionChanged());
+    expect(screen.queryByText(message.content)).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Voir la tâche et ses preuves" })).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Voir 2 accords en attente" })).not.toBeOnTheScreen();
+    expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
+    expect(screen.getByDisplayValue("Préparer mon agenda")).toBeOnTheScreen();
+    expect(screen.getByTestId("interaction-mode-task")).toHaveProp("accessibilityState", { selected: true, disabled: false });
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(mockSendChat).toHaveBeenCalledTimes(1);
+
+    mockSendChat.mockResolvedValueOnce({ conversation_id: "conv_new", task: null });
+    mockListMessages.mockResolvedValue([]);
+    await refocusChat();
+    await user.press(screen.getByTestId("send-button"));
+    await waitFor(() => expect(mockSendChat).toHaveBeenCalledTimes(2));
+    expect(mockSendChat).toHaveBeenLastCalledWith("Préparer mon agenda", undefined, "normal", true, expect.any(Function));
+  });
+
+  it.each(["resolve", "reject"] as const)("ignores a late chat %s after pairing changes without a follow-up request", async (outcome) => {
+    const pending = deferred<Awaited<ReturnType<typeof sendChat>>>();
+    mockSendChat.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByTestId("send-button"));
+    const isCurrent = mockSendChat.mock.calls[0]?.[4];
+    expect(isCurrent?.()).toBe(true);
+
+    await act(async () => notifyConnectionChanged());
+    expect(isCurrent?.()).toBe(false);
+    await act(async () => {
+      if (outcome === "resolve") pending.resolve({ conversation_id: "conv_test", task });
+      else pending.reject(new Error("Ancienne requête en échec"));
+    });
+    expect(screen.getByDisplayValue(task.input)).toBeOnTheScreen();
+    expect(screen.getByText(/Une opération déjà envoyée peut se poursuivre/)).toBeOnTheScreen();
+    expect(screen.queryByText("Ancienne requête en échec")).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Voir la tâche et ses preuves" })).not.toBeOnTheScreen();
+    expect(mockSendChat).toHaveBeenCalledTimes(1);
+    expect(mockListMessages).not.toHaveBeenCalled();
+    expect(mockPlanTask).not.toHaveBeenCalled();
+    expect(mockBootstrap).toHaveBeenCalledTimes(1);
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("restores the submitted draft and never starts a plan after a late message read", async () => {
+    const pending = deferred<Message[]>();
+    mockListMessages.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByTestId("send-button"));
+    await waitFor(() => expect(mockListMessages).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveDisplayValue("");
+    const isCurrent = mockListMessages.mock.calls[0]?.[1];
+
+    await act(async () => notifyConnectionChanged());
+    expect(isCurrent?.()).toBe(false);
+    await act(async () => pending.resolve([message]));
+    expect(screen.queryByText(message.content)).not.toBeOnTheScreen();
+    expect(screen.getByDisplayValue(task.input)).toBeOnTheScreen();
+    expect(mockSendChat).toHaveBeenCalledTimes(1);
+    expect(mockListMessages).toHaveBeenCalledTimes(1);
+    expect(mockPlanTask).not.toHaveBeenCalled();
+    expect(mockBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards late planning evidence and skips all follow-up reads after a pairing change", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof planTask>>>();
+    mockPlanTask.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByTestId("send-button"));
+    await waitFor(() => expect(mockPlanTask).toHaveBeenCalledTimes(1));
+    const isCurrent = mockPlanTask.mock.calls[0]?.[1];
+
+    await act(async () => notifyConnectionChanged());
+    expect(isCurrent?.()).toBe(false);
+    await act(async () => pending.resolve(completedToolCallWith({ entries: [] })));
+    expect(screen.getByDisplayValue(task.input)).toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Voir la tâche et ses preuves" })).not.toBeOnTheScreen();
+    expect(screen.queryByText("L’exécuteur local a terminé et enregistré un résultat vérifié.")).not.toBeOnTheScreen();
+    expect(mockListMessages).toHaveBeenCalledTimes(1);
+    expect(mockPlanTask).toHaveBeenCalledTimes(1);
+    expect(mockBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an old submission's finally unlock a newer request on the replacement pairing", async () => {
+    const oldResponse = deferred<Awaited<ReturnType<typeof sendChat>>>();
+    const newResponse = deferred<Awaited<ReturnType<typeof sendChat>>>();
+    mockSendChat.mockReturnValueOnce(oldResponse.promise).mockReturnValueOnce(newResponse.promise);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByTestId("send-button"));
+    await act(async () => notifyConnectionChanged());
+    await refocusChat();
+    await user.press(screen.getByTestId("send-button"));
+    await waitFor(() => expect(mockSendChat).toHaveBeenCalledTimes(2));
+
+    await act(async () => oldResponse.resolve({ conversation_id: "conv_test", task }));
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveProp("editable", false);
+    expect(mockListMessages).not.toHaveBeenCalled();
+    expect(mockPlanTask).not.toHaveBeenCalled();
+    expect(mockBootstrap).toHaveBeenCalledTimes(2);
+    expect(mockSendChat.mock.calls[1]?.[4]?.()).toBe(true);
+
+    mockListMessages.mockResolvedValue([]);
+    await act(async () => newResponse.resolve({ conversation_id: "conv_new", task: null }));
+    expect(await screen.findByText("Réponse conversationnelle reçue. Aucune tâche n’a été créée.")).toBeOnTheScreen();
+    await waitFor(() => expect(screen.getByLabelText("Demande pour l’assistant")).toHaveProp("editable", true));
+    expect(mockSendChat).toHaveBeenCalledTimes(2);
+    expect(mockListMessages).toHaveBeenCalledTimes(2);
+    expect(mockListMessages).toHaveBeenLastCalledWith("conv_new", expect.any(Function));
+  });
+
+  it("invalidates a pending authentication refresh as soon as the pairing changes", async () => {
+    const pending = deferred<Bootstrap>();
+    mockBootstrap.mockReturnValueOnce(pending.promise);
+    await render(<ChatScreen />);
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    const isCurrent = mockBootstrap.mock.calls[0]?.[0];
+    await act(async () => notifyConnectionChanged());
+    expect(isCurrent?.()).toBe(false);
+    await act(async () => pending.resolve(bootstrap));
+    expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(mockSendChat).not.toHaveBeenCalled();
   });
 });

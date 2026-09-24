@@ -1,13 +1,13 @@
 import { type Dispatch, useCallback, useEffect, useReducer, useRef } from "react";
-import { AppState, Image, Pressable, Text, TextInput, View } from "react-native";
+import { AppState, Pressable, Text, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
+import { AssistantSuggestions, AssistantWelcome, IntentComposer } from "@/components/assistant-start";
 import { ScreenShell } from "@/components/screen-shell";
 import {
   ActionButton,
   COLORS,
   ErrorBanner,
-  SectionTitle,
   timeAgo,
   useAccessibilityAnnouncement,
 } from "@/components/swarm-ui";
@@ -23,11 +23,7 @@ import {
 } from "@/lib/application-api/server";
 import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
 import type { LiveSyncState } from "@/lib/sync/live-sync";
-
-const SUGGESTIONS = [
-  "Aide-moi à organiser ma semaine.",
-  "Prépare un résumé clair de mon projet.",
-];
+import { subscribeConnectionChanges } from "@/lib/connection-events";
 
 type PlanningResult = ToolCall | { task_id: string; proposal: unknown; task: Task | null };
 
@@ -54,7 +50,7 @@ const INITIAL_CHAT_STATE: ChatState = {
   messages: [],
   lastTask: null,
   bootstrap: null,
-  notice: "Prêt à discuter. Passe en mode Tâche lorsque tu veux agir.",
+  notice: "",
   error: null,
   busy: false,
   refreshing: false,
@@ -142,16 +138,17 @@ async function submitChatIntent(
   state: ChatState,
   dispatch: ChatDispatch,
   refreshStatus: (updateError?: boolean) => Promise<void>,
+  isCurrent: () => boolean,
 ) {
   const content = state.input.trim();
-  if (!content || state.busy) return;
+  if (!content || state.busy || !state.bootstrap || !isCurrent()) return;
 
   dispatch({
     busy: true,
     error: null,
     notice: state.interactionMode === "task"
       ? "Création de la tâche authentifiée…"
-      : "Le modèle local prépare une réponse…",
+      : "L’assistant prépare une réponse…",
   });
   let activeConversation = state.conversationId;
   let createdTask: Task | null = null;
@@ -161,7 +158,9 @@ async function submitChatIntent(
       state.conversationId,
       "normal",
       state.interactionMode === "task",
+      isCurrent,
     );
+    if (!isCurrent()) return;
     createdTask = chat.task;
     activeConversation = chat.conversation_id;
     dispatch({
@@ -169,29 +168,72 @@ async function submitChatIntent(
       lastTask: chat.task ?? state.lastTask,
       input: "",
     });
-    dispatch({ messages: await listMessages(chat.conversation_id) });
+    const messages = await listMessages(chat.conversation_id, isCurrent);
+    if (!isCurrent()) return;
+    dispatch({ messages });
     if (chat.task) {
-      dispatch({ notice: "Le modèle du control plane prépare un plan…" });
-      const result = await planTask(chat.task.id);
+      dispatch({ notice: "L’équipe prépare un plan…" });
+      const result = await planTask(chat.task.id, isCurrent);
+      if (!isCurrent()) return;
       dispatch({ notice: planningStatus(result) });
       dispatch({ lastTask: taskAfterPlanning(result, chat.task) });
     } else {
       dispatch({ notice: "Réponse conversationnelle reçue. Aucune tâche n’a été créée." });
     }
   } catch (cause) {
-    dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
+    if (isCurrent()) dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
   } finally {
-    await refreshConversation(activeConversation, dispatch);
-    await refreshStatus(false);
-    dispatch({ busy: false });
+    if (isCurrent()) await refreshConversation(activeConversation, dispatch, isCurrent);
+    if (isCurrent()) await refreshStatus(false);
+    if (isCurrent()) dispatch({ busy: false });
   }
 }
 
 function useChatController() {
   const [state, dispatch] = useReducer(mergeChatState, INITIAL_CHAT_STATE);
   const refreshEpoch = useRef(0);
+  const connectionEpoch = useRef(0);
+  const activeSubmission = useRef<{ input: string } | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   useAccessibilityAnnouncement(state.notice);
   const setInput = useCallback((input: string) => dispatch({ input }), []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeConnectionChanges(() => {
+      refreshEpoch.current += 1;
+      connectionEpoch.current += 1;
+      const pending = activeSubmission.current;
+      activeSubmission.current = null;
+      dispatch({
+        bootstrap: null, conversationId: undefined, messages: [], lastTask: null,
+        input: stateRef.current.input || pending?.input || "",
+        busy: false, refreshing: false, error: null,
+        notice: pending
+          ? "Le jumelage a changé. Une opération déjà envoyée peut se poursuivre sur l’ancien serveur ; elle n’est pas renvoyée automatiquement."
+          : "Le jumelage a changé. Vérifie la connexion avant d’envoyer ton prochain message.",
+      });
+    });
+    return () => {
+      unsubscribe();
+      refreshEpoch.current += 1;
+      connectionEpoch.current += 1;
+      activeSubmission.current = null;
+    };
+  }, []);
+
+  const submit = async () => {
+    if (activeSubmission.current || state.busy || !state.bootstrap || !state.input.trim()) return;
+    const submission = { input: state.input };
+    const connection = connectionEpoch.current;
+    activeSubmission.current = submission;
+    const isCurrent = () => connectionEpoch.current === connection && activeSubmission.current === submission;
+    try {
+      await submitChatIntent(state, dispatch, refreshStatus, isCurrent);
+    } finally {
+      if (activeSubmission.current === submission) activeSubmission.current = null;
+    }
+  };
 
   const refreshStatus = useCallback(
     (updateError = true) => {
@@ -230,7 +272,7 @@ function useChatController() {
     refreshStatus,
     setInteractionMode: (interactionMode: "chat" | "task") => dispatch({ interactionMode }),
     setInput,
-    submit: () => submitChatIntent(state, dispatch, refreshStatus),
+    submit,
   };
 }
 
@@ -254,7 +296,7 @@ function ConnectionPanel({
   onOpenApprovals,
 }: ConnectionPanelProps) {
   return (
-    <>
+    <View style={{ gap: 4 }}>
       <View style={{ alignItems: "center", flexDirection: "row", gap: 8 }}>
         <View
           style={{
@@ -271,7 +313,7 @@ function ConnectionPanel({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Ouvrir les réglages"
-          hitSlop={12}
+          style={{ minHeight: 44, justifyContent: "center", paddingLeft: 8 }}
           onPress={onOpenSettings}
           testID="open-settings-button"
         >
@@ -297,7 +339,7 @@ function ConnectionPanel({
           testID="open-pending-approvals"
         />
       ) : null}
-    </>
+    </View>
   );
 }
 
@@ -354,146 +396,6 @@ function MessageList({ messages }: { messages: Message[] }) {
   );
 }
 
-function Suggestions({ onSelect }: { onSelect: (suggestion: string) => void }) {
-  return (
-    <View style={{ gap: 8 }}>
-      {SUGGESTIONS.map((suggestion) => (
-        <Pressable
-          accessibilityRole="button"
-          key={suggestion}
-          onPress={() => onSelect(suggestion)}
-          style={({ pressed }) => ({
-            backgroundColor: COLORS.panel,
-            borderColor: COLORS.border,
-            borderRadius: 12,
-            borderWidth: 1,
-            minHeight: 46,
-            opacity: pressed ? 0.75 : 1,
-            padding: 13,
-          })}
-        >
-          <Text style={{ color: COLORS.muted, lineHeight: 19 }}>{suggestion}</Text>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
-function Conversation({
-  messages,
-  onSelectSuggestion,
-}: {
-  messages: Message[];
-  onSelectSuggestion: (suggestion: string) => void;
-}) {
-  if (messages.length) return <MessageList messages={messages} />;
-  return (
-    <>
-      <View style={{ backgroundColor: COLORS.panel, borderRadius: 24, overflow: "hidden" }}>
-        <Image source={require("../../assets/illustrations/assistant-compass.png")} style={{ width: "100%", height: 150 }} resizeMode="cover" accessibilityIgnoresInvertColors accessible={false} />
-        <View style={{ padding: 20, paddingTop: 8, gap: 8 }}>
-          <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 23, fontWeight: "700" }}>Qu’est-ce qu’on avance aujourd’hui ?</Text>
-          <Text style={{ color: COLORS.muted, lineHeight: 21 }}>Une idée, une recherche, un projet. Discute ou confie une tâche à ton équipe.</Text>
-        </View>
-      </View>
-      <Suggestions onSelect={onSelectSuggestion} />
-    </>
-  );
-}
-
-type IntentComposerProps = {
-  input: string;
-  interactionMode: "chat" | "task";
-  busy: boolean;
-  authenticated: boolean;
-  notice: string;
-  onChangeInput: (input: string) => void;
-  onChangeMode: (mode: "chat" | "task") => void;
-  onSubmit: () => void;
-};
-
-function IntentComposer({
-  input,
-  interactionMode,
-  busy,
-  authenticated,
-  notice,
-  onChangeInput,
-  onChangeMode,
-  onSubmit,
-}: IntentComposerProps) {
-  return (
-    <>
-      <SectionTitle title={interactionMode === "chat" ? "Discussion" : "Nouvelle tâche"} />
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        {(["chat", "task"] as const).map((mode) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: interactionMode === mode }}
-            key={mode}
-            onPress={() => onChangeMode(mode)}
-            style={{
-              backgroundColor: interactionMode === mode ? COLORS.accent : COLORS.panel,
-              borderColor: interactionMode === mode ? COLORS.accent : COLORS.border,
-              borderRadius: 12,
-              borderWidth: 1,
-              flex: 1,
-              padding: 12,
-            }}
-            testID={`interaction-mode-${mode}`}
-          >
-            <Text style={{
-              color: interactionMode === mode ? COLORS.accentText : COLORS.text,
-              fontWeight: "700",
-              textAlign: "center",
-            }}>
-              {mode === "chat" ? "Discuter" : "Tâche"}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: "700" }}>
-        {interactionMode === "chat" ? "Message" : "Résultat souhaité"}
-      </Text>
-      <TextInput
-        accessibilityLabel="Intention pour le swarm"
-        editable={!busy}
-        multiline
-        onChangeText={onChangeInput}
-        placeholder="Qu’est-ce qu’on fait?"
-        placeholderTextColor={COLORS.subtle}
-        style={{
-          backgroundColor: COLORS.panel,
-          borderColor: COLORS.border,
-          borderRadius: 16,
-          borderWidth: 1,
-          color: COLORS.text,
-          minHeight: 104,
-          padding: 14,
-          textAlignVertical: "top",
-        }}
-        testID="chat-input"
-        value={input}
-      />
-      <ActionButton
-        busy={busy}
-        disabled={!input.trim() || !authenticated}
-        label="Envoyer"
-        onPress={onSubmit}
-        testID="send-button"
-        variant="accent"
-      />
-      <Text
-        accessibilityLiveRegion="polite"
-        selectable
-        style={{ color: COLORS.muted, lineHeight: 19 }}
-      >
-        {notice}
-      </Text>
-    </>
-  );
-}
-
 function LastTaskLink({ lastTask, onOpen }: { lastTask: Task | null; onOpen: (id: string) => void }) {
   if (!lastTask) return null;
   return <ActionButton label="Voir la tâche et ses preuves" onPress={() => onOpen(lastTask.id)} />;
@@ -523,7 +425,6 @@ export default function ChatScreen() {
     <ScreenShell
       showTitle={false}
       title="monGARS"
-      subtitle="Ton assistant, tes projets, une équipe pour avancer."
       testID="chat-screen"
       onRefresh={() => void chat.refreshStatus()}
       refreshing={chat.refreshing}
@@ -536,7 +437,7 @@ export default function ChatScreen() {
         onOpenApprovals={() => router.push("/approvals")}
       />
       <ErrorBanner message={chat.error} />
-      <Conversation messages={chat.messages} onSelectSuggestion={chat.setInput} />
+      {chat.messages.length ? <MessageList messages={chat.messages} /> : <AssistantWelcome />}
       <IntentComposer
         authenticated={Boolean(chat.bootstrap)}
         busy={chat.busy}
@@ -545,8 +446,10 @@ export default function ChatScreen() {
         notice={chat.notice}
         onChangeInput={chat.setInput}
         onChangeMode={chat.setInteractionMode}
+        onOpenSettings={() => router.push("/settings")}
         onSubmit={() => void chat.submit()}
       />
+      {!chat.messages.length ? <AssistantSuggestions onSelect={chat.setInput} disabled={chat.busy} /> : null}
       <LastTaskLink
         lastTask={chat.lastTask}
         onOpen={(id) => router.push({ pathname: "/task/[id]", params: { id } })}

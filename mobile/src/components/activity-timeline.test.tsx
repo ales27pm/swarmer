@@ -27,7 +27,7 @@ async function open() {
 
 describe("persisted activity timeline", () => {
   beforeEach(() => { jest.restoreAllMocks(); jest.clearAllMocks(); load.mockReset(); AppState.currentState = "active"; load.mockResolvedValue(activityPage()); });
-  it("loads on disclosure and shows evidence, with unknown timing left unknown", async () => {
+  it("shows compact evidence and discloses technical details without estimating unknown timing", async () => {
     const model = activityItem("model_call:model_1", { kind: "model_call", role: "planner", title: "Appel modèle", model_id: "local-model-7b", duration_ms: null });
     const check = activityItem("project_check:rev_1:00", { kind: "project_check", title: "Vérification du projet", duration_ms: 0,
       detail: { revision_id: "revision_1", check_index: 0, file_count: 4, exit_code: 0, command: ["python", "-m", "pytest"] } });
@@ -35,15 +35,79 @@ describe("persisted activity timeline", () => {
     const user = userEvent.setup(); await render(<ActivityTimeline {...props} />);
     expect(load).not.toHaveBeenCalled();
     await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
-    expect(await screen.findByText("Modèle : local-model-7b")).toBeOnTheScreen();
-    expect(screen.getByText("python -m pytest")).toBeOnTheScreen();
+    expect(await screen.findByText("Appel modèle")).toBeOnTheScreen();
+    expect(screen.queryByText("Modèle : local-model-7b")).not.toBeOnTheScreen();
+    expect(screen.queryByText("python -m pytest")).not.toBeOnTheScreen();
     expect(screen.getByText("Durée non enregistrée")).toBeOnTheScreen();
     expect(screen.getByText("Durée enregistrée : 0 ms")).toBeOnTheScreen();
     expect(screen.getByText(/Seules les preuves enregistrées/)).toBeOnTheScreen();
     expect(screen.queryByText("Révision : revision_1")).not.toBeOnTheScreen();
     await user.press(screen.getByRole("button", { name: "Détails de Vérification du projet" }));
     expect(screen.getByText("Révision : revision_1")).toBeOnTheScreen();
+    expect(screen.getByText("python -m pytest")).toBeOnTheScreen();
+    expect(screen.getByText("Code de sortie : 0")).toBeOnTheScreen();
+    expect(screen.getByText("Fichiers enregistrés : 4")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Détails de Appel modèle" }));
+    expect(screen.getByText("Modèle : local-model-7b")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Détails de Vérification du projet" }));
+    expect(screen.queryByText("python -m pytest")).not.toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith("goal", "goal_1", undefined, expect.any(Function));
+  });
+  it("filters only loaded records and preserves the filter when older pages arrive", async () => {
+    const model = activityItem("model_1", { kind: "model_call", title: "Planification locale" });
+    const first = activityItem("first", { title: "Agent de recherche" });
+    const tool = activityItem("tool_1", { kind: "tool_call", title: "Recherche web" });
+    load.mockResolvedValueOnce(activityPage([model, first], { next_cursor: "page_two", has_more: true }))
+      .mockResolvedValueOnce(activityPage([first, tool]));
+    const user = await open();
+    await user.press(await screen.findByRole("button", { name: "Filtrer les opérations" }));
+    expect(screen.getByText("Le filtre s’applique uniquement aux opérations déjà chargées.")).toBeOnTheScreen();
+    await user.press(screen.getByTestId("activity-filter-tool_call"));
+    expect(screen.getByText("0 sur 2 opérations chargées")).toBeOnTheScreen();
+    expect(screen.getByText("Aucune opération de ce type parmi celles déjà chargées.")).toBeOnTheScreen();
+    expect(screen.queryByText("Aucune opération enregistrée dans ce relevé.")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Planification locale")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Filtrer les opérations" }));
+    expect(screen.getByRole("button", { name: "Filtrer les opérations" }).props.accessibilityValue).toEqual({ text: "Outils" });
+    expect(screen.getByRole("button", { name: "Filtrer les opérations" }).props.accessibilityState).toMatchObject({ expanded: false });
+    expect(screen.queryByTestId("activity-filter-tool_call")).not.toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(1);
+    await user.press(screen.getByRole("button", { name: "Voir les opérations précédentes" }));
+    expect(await screen.findByText("Recherche web")).toBeOnTheScreen();
+    expect(screen.getByText("1 sur 3 opérations chargées")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Filtrer les opérations" }));
+    expect(screen.getByTestId("activity-filter-tool_call").props.accessibilityState).toMatchObject({ selected: true });
+    expect(load.mock.calls[1][2]).toBe("page_two");
+    await user.press(screen.getByTestId("activity-filter-all"));
+    expect(screen.getByText("3 sur 3 opérations chargées")).toBeOnTheScreen();
+    expect(screen.getAllByText("Agent de recherche")).toHaveLength(1);
+    expect(screen.getByText("Planification locale")).toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it.each(["pairing", "scope"] as const)("resets presentation filters and expanded details after a %s change", async (change) => {
+    load.mockResolvedValueOnce(activityPage([activityItem("old_model", { kind: "model_call", title: "Ancien modèle", model_id: "old-private-model" })]))
+      .mockResolvedValueOnce(activityPage([activityItem("new_agent", { title: "Nouvel agent" })]));
+    const user = await open();
+    await user.press(await screen.findByRole("button", { name: "Filtrer les opérations" }));
+    await user.press(screen.getByTestId("activity-filter-model_call"));
+    await user.press(screen.getByRole("button", { name: "Détails de Ancien modèle" }));
+    expect(screen.getByText("Modèle : old-private-model")).toBeOnTheScreen();
+    if (change === "pairing") {
+      await act(async () => notifyConnectionChanged());
+      expect(screen.queryByText("Modèle : old-private-model")).not.toBeOnTheScreen();
+      expect(screen.queryByTestId("activity-filter-model_call")).not.toBeOnTheScreen();
+      await user.press(screen.getByRole("button", { name: "Actualiser les opérations" }));
+    } else {
+      await screen.rerender(<ActivityTimeline {...props} scope="task" id="task_2" />);
+      expect(screen.queryByText("Modèle : old-private-model")).not.toBeOnTheScreen();
+      await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    }
+    expect(await screen.findByText("Nouvel agent")).toBeOnTheScreen();
+    expect(screen.queryByText("Ancien modèle")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Filtrer les opérations" }));
+    expect(screen.getByTestId("activity-filter-all").props.accessibilityState).toMatchObject({ selected: true });
+    expect(screen.queryByText("Agent : agent_1")).not.toBeOnTheScreen();
   });
   it("deduplicates pagination and replaces paged rows on live refresh", async () => {
     const first = activityItem("first", { title: "Opération récente" });

@@ -905,11 +905,11 @@ export function listGoals(
   return fencedRequest<GoalRecord[]>("/goals", undefined, shouldAccept);
 }
 
-export function createGoal(input: GoalCreateInput): Promise<GoalDetail> {
+export function createGoal(input: GoalCreateInput, shouldAccept?: () => boolean): Promise<GoalDetail> {
   return fencedRequest<GoalDetail>("/goals", {
     method: "POST",
     body: JSON.stringify(input),
-  });
+  }, shouldAccept);
 }
 
 export function getGoal(
@@ -1227,10 +1227,12 @@ export function cancelTask(taskId: string): Promise<Task> {
 
 export function planTask(
   taskId: string,
+  shouldAccept?: () => boolean,
 ): Promise<ToolCall | { task_id: string; proposal: unknown; task: Task | null }> {
-  return request<ToolCall | { task_id: string; proposal: unknown; task: Task | null }>(
+  return fencedRequest<ToolCall | { task_id: string; proposal: unknown; task: Task | null }>(
     `/tasks/${resourceId(taskId)}/plan`,
     { method: "POST" },
+    shouldAccept,
   );
 }
 
@@ -1277,11 +1279,12 @@ export function sendChat(
   conversationId?: string,
   mode: TaskMode = "normal",
   startTask = false,
+  shouldAccept?: () => boolean,
 ): Promise<{ conversation_id: string; task: Task | null; message?: Message }> {
-  return request<{ conversation_id: string; task: Task | null; message?: Message }>("/chat", {
+  return fencedRequest<{ conversation_id: string; task: Task | null; message?: Message }>("/chat", {
     method: "POST",
     body: JSON.stringify({ content, conversation_id: conversationId, mode, start_task: startTask }),
-  });
+  }, shouldAccept);
 }
 
 export async function listMessages(

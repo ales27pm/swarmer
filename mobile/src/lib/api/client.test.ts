@@ -22,7 +22,9 @@ import {
   listMessages,
   listIPhoneCapabilityRequests,
   pairDevice,
+  planTask,
   replanGoal,
+  sendChat,
   startGoal,
   submitIPhoneCapabilityResult,
   submitToolProposal,
@@ -1509,6 +1511,46 @@ describe("goal API contract and connection fencing", () => {
     response.resolve(successfulJson({ id: "task_created" }));
     await expect(pending).rejects.toMatchObject({ name: "ConnectionChangedError", outcomeUnknown: true });
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  const guardedMutations = [
+    { name: "chat", path: "/chat", submit: (guard: () => boolean) => sendChat("Préparer mon agenda", undefined, "normal", true, guard) },
+    { name: "planning", path: "/tasks/task_1/plan", submit: (guard: () => boolean) => planTask("task_1", guard) },
+    { name: "goal creation", path: "/goals", submit: (guard: () => boolean) => createGoal({ objective: "Préparer mon agenda", autonomy_profile: "assisted" }, guard) },
+  ];
+
+  it.each(guardedMutations)("never sends $name to a replacement pairing captured after the caller was invalidated", async ({ submit }) => {
+    const captured = deferred<string | null>();
+    const started = deferred<void>();
+    let shouldAccept = true;
+    let firstRead = true;
+    let active = storedConnection("https://old.example", "old-device-token");
+    getItem.mockImplementation(async (key) => {
+      if (key !== CONNECTION_KEY) return null;
+      if (firstRead) { firstRead = false; started.resolve(); return captured.promise; }
+      return active;
+    });
+    const pending = submit(() => shouldAccept);
+    await started.promise;
+    active = storedConnection("https://replacement.example", "replacement-device-token");
+    shouldAccept = false;
+    captured.resolve(active);
+    await expect(pending).rejects.toMatchObject({ name: "ConnectionChangedError", outcomeUnknown: false });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each(guardedMutations)("marks an already sent $name as uncertain when its caller is invalidated without retrying", async ({ path, submit }) => {
+    const response = deferred<never>();
+    const started = deferred<void>();
+    let shouldAccept = true;
+    request.mockImplementationOnce(() => { started.resolve(); return response.promise; });
+    const pending = submit(() => shouldAccept);
+    await started.promise;
+    shouldAccept = false;
+    response.resolve(successfulJson({ accepted: true }));
+    await expect(pending).rejects.toMatchObject({ name: "ConnectionChangedError", outcomeUnknown: true });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(`https://control.example${path}`, expect.objectContaining({ method: "POST" }));
   });
 
   it("keeps the created task identity but never sends a local proposal to a newly paired server", async () => {

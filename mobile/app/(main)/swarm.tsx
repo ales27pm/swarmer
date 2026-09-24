@@ -13,6 +13,8 @@ import {
   timeAgo,
 } from "@/components/swarm-ui";
 import {
+  ApiError,
+  ConnectionChangedError,
   bootstrapSync,
   createGoal,
   getServerUrl,
@@ -23,6 +25,7 @@ import {
   type GoalResult,
   type PlanNode,
 } from "@/lib/application-api/server";
+import { subscribeConnectionChanges } from "@/lib/connection-events";
 import {
   localSwarmSnapshot,
   type LocalSwarmSnapshot,
@@ -42,13 +45,20 @@ type SwarmLoadResult = {
   data: SwarmData;
   error: string | null;
   source: SwarmSource;
+  scope: string | null;
 };
 
 const EMPTY_DATA: SwarmData = { agents: [], goals: [], nodes: [], results: [] };
-const PROFILES: { key: GoalAutonomyProfile; label: string }[] = [
-  { key: "manual", label: "Manuel" },
-  { key: "assisted", label: "Assisté" },
-  { key: "autonomous", label: "Autonome" },
+const CONNECTION_CHANGED = "Le jumelage a changé. Actualise les projets depuis cette connexion.";
+const TEAM_LINKS = [
+  { title: "Agents", label: "Tous les agents", route: "/agents", testID: "swarm-open-agents" },
+  { title: "Compétences", label: "Catalogue des compétences", route: "/catalog", testID: "swarm-open-catalog" },
+  { title: "Autorisations", label: "Voir les autorisations", route: "/approvals", testID: "swarm-open-approvals" },
+] as const;
+const PROFILES: { key: GoalAutonomyProfile; label: string; description: string }[] = [
+  { key: "manual", label: "Manuel", description: "Tu pilotes les étapes du projet." },
+  { key: "assisted", label: "Assisté", description: "L’équipe t’accompagne dans l’avancement du projet." },
+  { key: "autonomous", label: "Autonome", description: "L’équipe avance dans les limites du projet et te sollicite pour les autorisations nécessaires." },
 ];
 
 const GOAL_COLORS: Record<GoalRecord["status"], string> = {
@@ -90,37 +100,50 @@ function cachedData(snapshot: LocalSwarmSnapshot): SwarmData {
 }
 
 function emptyLoad(message: string): SwarmLoadResult {
-  return { data: EMPTY_DATA, error: message, source: null };
+  return { data: EMPTY_DATA, error: message, source: null, scope: null };
 }
 
 async function cachedLoad(
   message: string,
   isCurrent: () => boolean,
+  scope: string,
 ): Promise<SwarmLoadResult | null> {
-  const scope = await getServerUrl();
+  if (await getServerUrl() !== scope) return emptyLoad(CONNECTION_CHANGED);
+  if (!isCurrent()) return null;
   const cached = await localSwarmSnapshot(scope);
   const currentScope = await getServerUrl();
-  if (!isCurrent() || currentScope !== scope) return null;
+  if (!isCurrent()) return null;
+  if (currentScope !== scope) return emptyLoad(CONNECTION_CHANGED);
   if (!cached || cached.origin !== scope) return emptyLoad(message);
   return {
     data: cachedData(cached),
     error: `Hors ligne — copie locale en lecture seule. ${message}`,
     source: "cache",
+    scope,
   };
 }
 
 async function loadSwarm(
   isCurrent: () => boolean,
+  onScope: (scope: string) => void,
 ): Promise<SwarmLoadResult | null> {
+  let scope: string | null = null;
   try {
+    scope = await getServerUrl();
+    if (!isCurrent()) return null;
+    onScope(scope);
     const bootstrap = await bootstrapSync(isCurrent);
     if (!isCurrent()) return null;
-    return { data: bootstrapData(bootstrap), error: null, source: "authoritative" };
+    if (await getServerUrl() !== scope) return emptyLoad(CONNECTION_CHANGED);
+    return { data: bootstrapData(bootstrap), error: null, source: "authoritative", scope };
   } catch (cause) {
     if (!isCurrent()) return null;
     const message = messageFor(cause);
+    if (!scope || cause instanceof ConnectionChangedError || (cause instanceof ApiError && [401, 403].includes(cause.status))) {
+      return emptyLoad(message);
+    }
     try {
-      return await cachedLoad(message, isCurrent);
+      return await cachedLoad(message, isCurrent, scope);
     } catch {
       return isCurrent() ? emptyLoad(message) : null;
     }
@@ -129,6 +152,7 @@ async function loadSwarm(
 
 function useSwarmData() {
   const refreshEpoch = useRef(0);
+  const dataScope = useRef<string | null>(null);
   const [data, setData] = useState<SwarmData>(EMPTY_DATA);
   const [source, setSource] = useState<SwarmSource>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -140,8 +164,15 @@ function useSwarmData() {
     setRefreshing(true);
     setError(null);
     try {
-      const loaded = await loadSwarm(isCurrent);
+      const loaded = await loadSwarm(isCurrent, (scope) => {
+        if (dataScope.current !== scope) {
+          dataScope.current = null;
+          setData(EMPTY_DATA);
+          setSource(null);
+        }
+      });
       if (!loaded || !isCurrent()) return;
+      dataScope.current = loaded.scope;
       setData(loaded.data);
       setSource(loaded.source);
       setError(loaded.error);
@@ -149,6 +180,15 @@ function useSwarmData() {
       if (isCurrent()) setRefreshing(false);
     }
   }, []);
+
+  useEffect(() => subscribeConnectionChanges(() => {
+    refreshEpoch.current += 1;
+    dataScope.current = null;
+    setData(EMPTY_DATA);
+    setSource(null);
+    setRefreshing(false);
+    setError(CONNECTION_CHANGED);
+  }), []);
 
   useEffect(() => {
     void (async () => {
@@ -221,12 +261,17 @@ function GoalCard({
           <GoalBadge goal={goal} />
           <Text style={{ color: COLORS.subtle, fontSize: 11 }}>{timeAgo(goal.updated_at)}</Text>
         </View>
-        <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700", lineHeight: 23 }}>
+        <Text numberOfLines={3} style={{ color: COLORS.text, fontSize: 17, fontWeight: "700", lineHeight: 23 }}>
           {goal.objective}
         </Text>
-        <Text style={{ color: COLORS.muted }}>
-          {completed}/{nodes.length} étapes terminées
-        </Text>
+        {nodes.length ? (
+          <View style={{ gap: 6 }}>
+            <View accessibilityRole="progressbar" accessibilityLabel="Étapes terminées" accessibilityValue={{ min: 0, max: nodes.length, now: completed, text: `${completed} sur ${nodes.length} étapes terminées` }} style={{ backgroundColor: COLORS.panelRaised, borderRadius: 3, height: 6, overflow: "hidden" }}>
+              <View style={{ backgroundColor: COLORS.accent, height: "100%", width: `${completed / nodes.length * 100}%` }} />
+            </View>
+            <Text style={{ color: COLORS.muted, fontSize: 12 }}>{completed}/{nodes.length} étapes terminées</Text>
+          </View>
+        ) : <Text style={{ color: COLORS.muted, fontSize: 12 }}>Aucune étape enregistrée</Text>}
         <Text style={{ color: blocked ? COLORS.warning : COLORS.subtle, fontSize: 12 }}>
           {runningAgents.size} agent{runningAgents.size === 1 ? "" : "s"} mobilisé{runningAgents.size === 1 ? "" : "s"} · {blocked} bloquée{blocked === 1 ? "" : "s"}
         </Text>
@@ -258,25 +303,43 @@ function useGoalCreation(
   const [objective, setObjective] = useState("");
   const [profile, setProfile] = useState<GoalAutonomyProfile>("assisted");
   const [creating, setCreating] = useState(false);
+  const creationEpoch = useRef(0);
+  const creatingRef = useRef(false);
+
+  useEffect(() => {
+    const unsubscribe = subscribeConnectionChanges(() => {
+      creationEpoch.current += 1;
+      if (creatingRef.current) {
+        setError("Le jumelage a changé pendant la création. Vérifie le serveur précédent avant de réessayer.");
+      }
+      creatingRef.current = false;
+      setCreating(false);
+    });
+    return () => { creationEpoch.current += 1; unsubscribe(); };
+  }, [setError]);
 
   const submit = useCallback(async () => {
     const trimmedObjective = objective.trim();
-    if (!trimmedObjective || source !== "authoritative" || creating || refreshing) return;
+    if (!trimmedObjective || source !== "authoritative" || creatingRef.current || refreshing) return;
+    const epoch = ++creationEpoch.current;
+    const isCurrent = () => epoch === creationEpoch.current;
+    creatingRef.current = true;
     setCreating(true);
     setError(null);
     try {
       const detail = await createGoal({
         autonomy_profile: profile,
         objective: trimmedObjective,
-      });
+      }, isCurrent);
+      if (!isCurrent()) return;
       setObjective("");
       router.push({ pathname: "/goal/[id]", params: { id: detail.goal.id } });
     } catch (cause) {
-      setError(`${messageFor(cause)} La création incertaine n’est pas renvoyée automatiquement.`);
+      if (isCurrent()) setError(`${messageFor(cause)} La création incertaine n’est pas renvoyée automatiquement.`);
     } finally {
-      setCreating(false);
+      if (isCurrent()) { creatingRef.current = false; setCreating(false); }
     }
-  }, [creating, objective, profile, refreshing, router, setError, source]);
+  }, [objective, profile, refreshing, router, setError, source]);
 
   return { creating, objective, profile, router, setObjective, setProfile, submit };
 }
@@ -295,12 +358,17 @@ function GoalEmptyState({
   error,
   goalCount,
   refreshing,
+  source,
 }: {
   error: string | null;
   goalCount: number;
   refreshing: boolean;
+  source: SwarmSource;
 }) {
-  if (goalCount || refreshing || error) return null;
+  if (goalCount) return null;
+  if (refreshing) return <Text accessibilityLiveRegion="polite" style={{ color: COLORS.muted }}>Chargement des projets…</Text>;
+  if (source === "cache") return <Text style={{ color: COLORS.muted }}>Aucun projet dans la copie locale. Reconnecte le serveur pour vérifier.</Text>;
+  if (source !== "authoritative" || error) return null;
   return (
     <EmptyState
       title="Aucun projet"
@@ -336,15 +404,16 @@ export default function SwarmScreen() {
     >
       <ErrorBanner message={error} />
       <OfflineNotice source={source} />
+      {error ? <ActionButton label="Actualiser les projets" onPress={() => void refresh()} busy={refreshing} testID="swarm-retry" /> : null}
+      {refreshing && data.goals.length ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.muted }}>Actualisation… Les projets affichés proviennent de la dernière lecture.</Text> : null}
 
-      <SectionTitle title="Ton équipe" />
-      <Card>
-        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "700" }}>
+      <Card style={{ gap: 6 }}>
+        <Text style={{ color: COLORS.text, fontSize: 15, fontWeight: "700" }}>
           {source === null
             ? "Équipe non vérifiée"
             : `${activeAgentIds.size} agent${activeAgentIds.size === 1 ? "" : "s"} mobilisé${activeAgentIds.size === 1 ? "" : "s"}${source === "cache" ? " · copie précédente" : ""}`}
         </Text>
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
+        <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
           {source === null
             ? "Connecte le serveur pour vérifier l’activité."
             : activeAgentIds.size
@@ -353,32 +422,48 @@ export default function SwarmScreen() {
                 ? "Aucun agent mobilisé dans cette copie précédente."
                 : "Aucun agent mobilisé sur ces projets."}
         </Text>
-        <ActionButton
-          label="Catalogue des compétences"
-          onPress={() => creation.router.push("/catalog")}
-        />
-        <ActionButton
-          label="Tous les agents"
-          onPress={() => creation.router.push("/agents")}
-        />
-        <ActionButton
-          label="Voir les autorisations"
-          onPress={() => creation.router.push("/approvals")}
-        />
+        {source !== "authoritative" ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Vérifier la connexion dans Réglages"
+            onPress={() => creation.router.push("/settings")}
+            style={({ pressed }) => ({ justifyContent: "center", minHeight: 44, opacity: pressed ? 0.7 : 1 })}
+            testID="swarm-open-settings"
+          >
+            <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "600" }}>Ouvrir les réglages de connexion ›</Text>
+          </Pressable>
+        ) : null}
       </Card>
 
-      <SectionTitle title="Tes projets" />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: creationOpen }}
-        onPress={() => setCreationOpen((expanded) => !expanded)}
-        style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 4 }}
-        testID="new-project-disclosure"
-      >
-        <Text style={{ color: COLORS.accent, fontSize: 16, fontWeight: "700" }}>
-          {creationOpen ? "Fermer le formulaire" : "Nouveau projet"}
-        </Text>
-      </Pressable>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }} testID="swarm-team-navigation">
+        {TEAM_LINKS.map((link) => (
+          <Pressable
+            key={link.route}
+            accessibilityRole="button"
+            accessibilityLabel={link.label}
+            onPress={() => creation.router.push(link.route)}
+            style={({ pressed }) => ({ backgroundColor: COLORS.panel, borderColor: COLORS.border, borderRadius: 12, borderWidth: 0.5, justifyContent: "center", minHeight: 44, paddingHorizontal: 10, opacity: pressed ? 0.7 : 1 })}
+            testID={link.testID}
+          >
+            <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "600" }}>{link.title} ›</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <View style={{ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "space-between" }}>
+        <SectionTitle title="Tes projets" />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: creationOpen }}
+          onPress={() => setCreationOpen((expanded) => !expanded)}
+          style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 4 }}
+          testID="new-project-disclosure"
+        >
+          <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "700" }}>
+            {creationOpen ? "Fermer le formulaire" : "Nouveau projet"}
+          </Text>
+        </Pressable>
+      </View>
       {creationOpen ? (
         <Card>
           <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
@@ -431,6 +516,9 @@ export default function SwarmScreen() {
               );
             })}
           </View>
+          <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
+            {PROFILES.find((item) => item.key === creation.profile)?.description}
+          </Text>
           <ActionButton
             busy={creation.creating}
             disabled={source !== "authoritative" || refreshing || !creation.objective.trim()}
@@ -441,7 +529,7 @@ export default function SwarmScreen() {
           />
         </Card>
       ) : null}
-      <GoalEmptyState error={error} goalCount={data.goals.length} refreshing={refreshing} />
+      <GoalEmptyState error={error} goalCount={data.goals.length} refreshing={refreshing} source={source} />
       <View style={{ gap: 12 }} testID="goal-list">
         {data.goals.map((goal) => (
           <GoalCard

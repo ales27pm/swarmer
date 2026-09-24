@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Image, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { ActionButton, Card, COLORS, ErrorBanner, StatusBadge, timeAgo } from "@/components/swarm-ui";
-import { getServerUrl, listTasks, type Task, type TaskStatus } from "@/lib/application-api/server";
+import { ApiError, ConnectionChangedError, getServerUrl, listTasks, type Task, type TaskStatus } from "@/lib/application-api/server";
+import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { localTasks } from "@/lib/state/replica";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
@@ -21,32 +22,48 @@ const FILTERS: { key: TaskStatus | "all"; label: string }[] = [
   { key: "cancelled", label: "Annulées" },
 ];
 
-type TaskLoad = { tasks: Task[]; offline: boolean; error: string | null };
+type TaskLoad = { tasks: Task[]; offline: boolean; error: string | null; scope: string | null };
+type TaskSnapshot = { tasks: Task[]; scope: string; filter: TaskStatus | "all" };
 const SERVER_CHANGED = "Le serveur a changé. Actualise l’activité.";
+const PAIRING_CHANGED = "Le jumelage a changé. Actualise l’activité depuis cette connexion.";
 
 async function cachedTasks(scope: string | null, filter: TaskStatus | undefined, message: string): Promise<TaskLoad> {
-  const unavailable = { tasks: [], offline: false, error: message };
+  const unavailable = { tasks: [], offline: false, error: message, scope: null };
   try {
     if (!scope || await getServerUrl() !== scope) return unavailable;
     const tasks = await localTasks(scope, filter);
     if (await getServerUrl() !== scope) return { ...unavailable, error: SERVER_CHANGED };
-    return { tasks, offline: true, error: tasks.length ? `Hors ligne — affichage du cache local. ${message}` : message };
+    return { tasks, offline: true, error: tasks.length ? `Hors ligne — affichage du cache local. ${message}` : message, scope };
   } catch {
     return unavailable;
   }
 }
 
-async function loadTasks(filter: TaskStatus | undefined, isCurrent: () => boolean): Promise<TaskLoad | null> {
+async function loadTasks(
+  filter: TaskStatus | undefined,
+  isCurrent: () => boolean,
+  currentSnapshot: (scope: string) => TaskSnapshot | null,
+): Promise<TaskLoad | null> {
   let scope: string | null = null;
   try {
     scope = await getServerUrl();
     if (!isCurrent()) return null;
+    currentSnapshot(scope);
     const tasks = await listTasks(filter);
-    if (await getServerUrl() !== scope) return { tasks: [], offline: false, error: SERVER_CHANGED };
-    return { tasks, offline: false, error: null };
+    if (await getServerUrl() !== scope) return { tasks: [], offline: false, error: SERVER_CHANGED, scope: null };
+    return { tasks, offline: false, error: null, scope };
   } catch (cause) {
     if (!isCurrent()) return null;
     const message = cause instanceof Error ? cause.message : String(cause);
+    if (cause instanceof ConnectionChangedError || (cause instanceof ApiError && [401, 403].includes(cause.status))) {
+      return { tasks: [], offline: false, error: message, scope: null };
+    }
+    try {
+      if (scope && await getServerUrl() === scope && isCurrent()) {
+        const previous = currentSnapshot(scope);
+        if (previous) return { tasks: previous.tasks, offline: true, error: message, scope };
+      }
+    } catch { /* An unreadable connection cannot authorize retained rows. */ }
     return cachedTasks(scope, filter, message);
   }
 }
@@ -54,6 +71,7 @@ async function loadTasks(filter: TaskStatus | undefined, isCurrent: () => boolea
 export default function TasksScreen() {
   const router = useRouter();
   const refreshEpoch = useRef(0);
+  const snapshot = useRef<TaskSnapshot | null>(null);
   const [filter, setFilter] = useState<TaskStatus | "all">("all");
   const [moreFilters, setMoreFilters] = useState(false);
   const [items, setItems] = useState<Task[]>([]);
@@ -66,11 +84,17 @@ export default function TasksScreen() {
     const isCurrent = () => refreshEpoch.current === epoch;
     setRefreshing(true);
     setError(null);
-    setItems([]);
-    setOffline(false);
     try {
-      const result = await loadTasks(filter === "all" ? undefined : filter, isCurrent);
+      const result = await loadTasks(filter === "all" ? undefined : filter, isCurrent, (scope) => {
+        if (snapshot.current?.scope !== scope || snapshot.current?.filter !== filter) {
+          snapshot.current = null;
+          setItems([]);
+          setOffline(false);
+        }
+        return snapshot.current;
+      });
       if (!isCurrent() || !result) return;
+      snapshot.current = result.scope ? { tasks: result.tasks, scope: result.scope, filter } : null;
       setItems(result.tasks);
       setOffline(result.offline);
       setError(result.error);
@@ -79,11 +103,32 @@ export default function TasksScreen() {
     }
   }, [filter]);
 
+  useEffect(() => subscribeConnectionChanges(() => {
+    // A new token on the same origin is still a new private connection.
+    refreshEpoch.current += 1;
+    snapshot.current = null;
+    setItems([]);
+    setOffline(false);
+    setRefreshing(false);
+    setError(PAIRING_CHANGED);
+  }), []);
+
   useEffect(() => {
     void refresh();
     return () => { refreshEpoch.current += 1; };
   }, [refresh]);
   useLiveRefresh(refresh);
+
+  const selectFilter = (next: TaskStatus | "all") => {
+    if (next === filter) return;
+    refreshEpoch.current += 1;
+    snapshot.current = null;
+    setItems([]);
+    setError(null);
+    setOffline(false);
+    setFilter(next);
+  };
+  const visibleFilters = moreFilters ? FILTERS : FILTERS.filter((item, index) => index < 4 || item.key === filter);
 
   return (
     <ScreenShell
@@ -100,20 +145,14 @@ export default function TasksScreen() {
         testID="tasks-approvals-button"
       />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {FILTERS.slice(0, moreFilters ? FILTERS.length : 4).map((item) => {
+        {visibleFilters.map((item) => {
           const selected = filter === item.key;
           return (
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected }}
               key={item.key}
-              onPress={() => {
-                if (filter !== item.key) {
-                  refreshEpoch.current += 1;
-                  setItems([]);
-                  setFilter(item.key);
-                }
-              }}
+              onPress={() => selectFilter(item.key)}
               style={{
                 backgroundColor: selected ? `${COLORS.accent}1f` : COLORS.panel,
                 borderColor: selected ? COLORS.accent : COLORS.border,
@@ -146,7 +185,21 @@ export default function TasksScreen() {
         </Text>
       </Pressable>
       <ErrorBanner message={error} />
-      {offline ? (
+      {error ? (
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+          <ActionButton label="Réessayer" onPress={() => void refresh()} busy={refreshing} testID="tasks-retry" />
+          <ActionButton label="Vérifier la connexion" onPress={() => router.push("/settings")} testID="tasks-connection" />
+        </View>
+      ) : null}
+      {refreshing ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }} testID="tasks-loading">
+          <ActivityIndicator color={COLORS.accent} accessible={false} />
+          <Text accessibilityLiveRegion="polite" style={{ color: COLORS.muted, flex: 1, lineHeight: 20 }}>
+            {items.length ? "Actualisation… Les statuts affichés proviennent de la dernière lecture." : "Chargement des tâches…"}
+          </Text>
+        </View>
+      ) : null}
+      {offline && items.length > 0 ? (
         <Text style={{ color: COLORS.warning }}>Les statuts affichés peuvent être périmés.</Text>
       ) : null}
       {!items.length && !refreshing && !error ? (
@@ -165,6 +218,11 @@ export default function TasksScreen() {
               ? "Tes demandes et leurs résultats apparaîtront ici."
               : "Choisis un autre filtre pour retrouver tes demandes."}
           </Text>
+          <ActionButton
+            label={filter === "all" ? "Faire une demande" : "Voir toutes les tâches"}
+            onPress={() => filter === "all" ? router.push("/") : selectFilter("all")}
+            testID="tasks-empty-action"
+          />
         </View>
       ) : null}
       <View style={{ gap: 12 }} testID="tasks-list">

@@ -119,7 +119,7 @@ register<GoalCreateInput>("goals.create", object({
   objective: text(4000), autonomy_profile: choice("manual", "assisted", "autonomous"),
   completion_criteria: list(text(500), 20), max_steps: integer(1, 20), max_parallelism: integer(1, 3),
   max_replans: integer(0, 10), max_runtime_seconds: integer(30, 86_400), max_model_calls: integer(1, 100),
-}, ["objective", "autonomy_profile"]), (input) => server.createGoal(input), mutation);
+}, ["objective", "autonomy_profile"]), (input, context) => context.shouldAccept ? server.createGoal(input, context.shouldAccept) : server.createGoal(input), mutation);
 register<{ id: string }>("goals.start", idInput, ({ id }) => server.startGoal(id), mutation);
 register<{ id: string; reason?: string }>("goals.replan", object({ id: identifier, reason: text(500) }, ["id"]),
   ({ id, reason }) => server.replanGoal(id, reason), mutation);
@@ -133,13 +133,15 @@ register<{ status?: TaskStatus }>("tasks.list", object({ status: taskStatus }, [
 register<{ id: string }>("tasks.get", idInput, ({ id }) => server.getTask(id));
 register<{ input: string; mode?: TaskMode }>("tasks.create", object({ input: text(32_000), mode: taskMode }, ["input"]),
   ({ input, mode }) => server.createTask(input, mode), mutation);
-register<{ id: string }>("tasks.plan", idInput, ({ id }) => server.planTask(id), mutation);
+register<{ id: string }>("tasks.plan", idInput, ({ id }, context) => context.shouldAccept ? server.planTask(id, context.shouldAccept) : server.planTask(id), mutation);
 register<{ id: string }>("tasks.cancel", idInput, ({ id }) => server.cancelTask(id), mutation);
 register<{ conversationId: string }>("chat.messages", object({ conversationId: identifier }),
   ({ conversationId }, context) => context.shouldAccept ? server.listMessages(conversationId, context.shouldAccept) : server.listMessages(conversationId));
 register<{ content: string; conversationId?: string; mode?: TaskMode; startTask?: boolean }>("chat.send", object({
   content: text(32_000), conversationId: identifier, mode: taskMode, startTask: boolean,
-}, ["content"]), ({ content, conversationId, mode, startTask }) => server.sendChat(content, conversationId, mode, startTask), mutation);
+}, ["content"]), ({ content, conversationId, mode, startTask }, context) => context.shouldAccept
+  ? server.sendChat(content, conversationId, mode, startTask, context.shouldAccept)
+  : server.sendChat(content, conversationId, mode, startTask), mutation);
 
 register<{ status?: server.Approval["status"] }>("approvals.list", object({ status: choice("pending", "approved", "denied", "expired", "cancelled") }, []),
   ({ status }) => server.listApprovals(status));

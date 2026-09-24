@@ -3,12 +3,15 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 import SwarmScreen from "@/../app/(main)/swarm";
 import {
+  ApiError,
+  ConnectionChangedError,
   bootstrapSync,
   createGoal,
   getServerUrl,
   type Bootstrap,
   type GoalDetail,
 } from "@/lib/api/client";
+import { notifyConnectionChanged } from "@/lib/connection-events";
 import { localSwarmSnapshot } from "@/lib/state/replica";
 
 const mockPush = jest.fn();
@@ -19,6 +22,13 @@ jest.mock("@/lib/api/client", () => ({
   bootstrapSync: jest.fn(),
   createGoal: jest.fn(),
   getServerUrl: jest.fn(),
+  ApiError: class extends Error {
+    readonly status: number;
+    constructor(status: number, message: string) { super(message); this.status = status; }
+  },
+  ConnectionChangedError: class extends Error {
+    constructor() { super("La connexion jumelée a changé pendant la requête."); }
+  },
 }));
 jest.mock("@/lib/state/replica", () => ({ localSwarmSnapshot: jest.fn() }));
 jest.mock("@/lib/sync/live-sync-context", () => ({
@@ -139,12 +149,17 @@ describe("SwarmScreen", () => {
     mockLocalSnapshot.mockResolvedValue(null);
   });
 
-  it("keeps the team and navigation ahead of the optional project form", async () => {
+  it("keeps compact team links before a long project list and separate from creation", async () => {
+    mockBootstrap.mockResolvedValueOnce({ ...bootstrap, goals: Array.from({ length: 30 }, (_, index) => ({
+      ...goalDetail.goal, id: `goal_${index}`, objective: `Projet ${index}`,
+    })) });
     const user = userEvent.setup();
     await render(<SwarmScreen />);
     expect(await screen.findByText("Worker Alpha")).toBeOnTheScreen();
     const headings = screen.getAllByRole("header").map((heading) => heading.props.children);
-    expect(headings).toEqual(["Ton équipe", "Tes projets"]);
+    expect(headings).toEqual(["Tes projets"]);
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.indexOf(screen.getByTestId("swarm-open-approvals"))).toBeLessThan(buttons.indexOf(screen.getByTestId("goal-row-goal_0")));
     expect(screen.queryByTestId("goal-objective-input")).not.toBeOnTheScreen();
     await user.press(screen.getByRole("button", { name: "Catalogue des compétences" }));
     expect(mockPush).toHaveBeenLastCalledWith("/catalog");
@@ -153,6 +168,26 @@ describe("SwarmScreen", () => {
     await user.press(screen.getByRole("button", { name: "Voir les autorisations" }));
     expect(mockPush).toHaveBeenLastCalledWith("/approvals");
     expect(mockCreateGoal).not.toHaveBeenCalled();
+  });
+
+  it("summarizes long project objectives while preserving the full accessible destination", async () => {
+    const objective = "Organiser les rendez-vous, préparer les documents et suivre les tâches de la semaine. ".repeat(8);
+    mockBootstrap.mockResolvedValueOnce({ ...bootstrap, goals: [{ ...goalDetail.goal, objective }] });
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    expect((await screen.findByText(objective)).props.numberOfLines).toBe(3);
+    const destination = screen.getByRole("button", { name: `Ouvrir le projet ${objective}` });
+    await user.press(destination);
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_1" } });
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+  });
+
+  it("does not suggest progress when a project has no recorded steps", async () => {
+    mockBootstrap.mockResolvedValueOnce({ ...bootstrap, plan_nodes: [] });
+    await render(<SwarmScreen />);
+    expect(await screen.findByText("Aucune étape enregistrée")).toBeOnTheScreen();
+    expect(screen.queryByRole("progressbar")).not.toBeOnTheScreen();
+    expect(screen.queryByText("0/0 étapes terminées")).not.toBeOnTheScreen();
   });
 
   it("preserves the objective when the creation form is collapsed", async () => {
@@ -186,7 +221,7 @@ describe("SwarmScreen", () => {
     await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledWith({
       autonomy_profile: "autonomous",
       objective: "Préparer une qualification",
-    }));
+    }, expect.any(Function)));
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_1" } });
     expect(mockBootstrap).toHaveBeenCalledTimes(1);
   });
@@ -216,11 +251,18 @@ describe("SwarmScreen", () => {
   });
 
   it("keeps team activity unverified while loading and after a failure without cache", async () => {
+    const user = userEvent.setup();
     const pending = deferred<Bootstrap>();
     mockBootstrap.mockImplementationOnce(async () => pending.promise);
     await render(<SwarmScreen />);
     expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+    expect(screen.getByText("Chargement des projets…")).toBeOnTheScreen();
+    expect(screen.queryByText("Aucun projet")).not.toBeOnTheScreen();
     expect(screen.queryByText("0 agents mobilisés")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Aucun projet")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Vérifier la connexion dans Réglages" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/settings");
+    expect(mockCreateGoal).not.toHaveBeenCalled();
 
     mockBootstrap.mockRejectedValueOnce(new Error("Failed to fetch"));
     await act(async () => { await refreshFromLiveEvent?.(); });
@@ -238,6 +280,25 @@ describe("SwarmScreen", () => {
     expect(await screen.findByText("0 agents mobilisés")).toBeOnTheScreen();
     expect(screen.getByText("Aucun agent mobilisé sur ces projets.")).toBeOnTheScreen();
     expect(screen.queryByText("Équipe non vérifiée")).not.toBeOnTheScreen();
+    expect(screen.getByText("Aucun projet")).toBeOnTheScreen();
+    expect(screen.queryByTestId("swarm-open-settings")).not.toBeOnTheScreen();
+  });
+
+  it("distinguishes an empty cached project list from the current server state", async () => {
+    mockBootstrap.mockRejectedValueOnce(new Error("Serveur indisponible"));
+    mockLocalSnapshot.mockResolvedValueOnce({
+      origin: "https://control.example", goals: [], plan_nodes: [], goal_results: [], agents: [],
+      counts: bootstrap.counts, cursor: bootstrap.cursor,
+    });
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    expect(await screen.findByText("Aucun projet dans la copie locale. Reconnecte le serveur pour vérifier.")).toBeOnTheScreen();
+    expect(screen.queryByText("Aucun projet")).not.toBeOnTheScreen();
+    await user.press(screen.getByTestId("swarm-open-settings"));
+    expect(mockPush).toHaveBeenLastCalledWith("/settings");
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    expect(screen.getByRole("button", { name: "Créer le projet" })).toBeDisabled();
+    expect(mockCreateGoal).not.toHaveBeenCalled();
   });
 
   it("does not let a slower stale refresh overwrite a newer authoritative view", async () => {
@@ -267,10 +328,10 @@ describe("SwarmScreen", () => {
     const cache = deferred<Awaited<ReturnType<typeof localSwarmSnapshot>>>();
     mockBootstrap.mockRejectedValue(new Error("Serveur indisponible"));
     mockLocalSnapshot.mockImplementationOnce(async () => cache.promise);
-    mockGetServerUrl
-      .mockResolvedValueOnce("https://old.example")
-      .mockResolvedValueOnce("https://new.example");
+    mockGetServerUrl.mockResolvedValue("https://old.example");
     await render(<SwarmScreen />);
+    await waitFor(() => expect(mockLocalSnapshot).toHaveBeenCalledWith("https://old.example"));
+    mockGetServerUrl.mockResolvedValue("https://new.example");
 
     await act(async () => cache.resolve({
       origin: "https://old.example",
@@ -282,9 +343,105 @@ describe("SwarmScreen", () => {
       cursor: null,
     }));
 
-    await waitFor(() => expect(mockGetServerUrl).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/Le jumelage a changé/)).toBeOnTheScreen();
     expect(screen.queryByText("Qualifier le runtime distribué")).not.toBeOnTheScreen();
     await user.press(screen.getByRole("button", { name: "Nouveau projet" }));
     expect(screen.getByRole("button", { name: "Créer le projet" })).toBeDisabled();
+  });
+
+  it("immediately clears authoritative rows and locks creation after pairing changes on the same origin", async () => {
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    await screen.findByText("Worker Alpha");
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    await user.type(screen.getByLabelText("Objectif du projet"), "Préparer mon agenda");
+    expect(screen.getByTestId("create-goal-button")).not.toBeDisabled();
+    await act(async () => notifyConnectionChanged());
+    expect(screen.queryByText("Worker Alpha")).not.toBeOnTheScreen();
+    expect(screen.queryByText(goalDetail.goal.objective)).not.toBeOnTheScreen();
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+    expect(screen.getByTestId("create-goal-button")).toBeDisabled();
+    expect(screen.getByTestId("goal-objective-input")).toHaveDisplayValue("Préparer mon agenda");
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+    mockBootstrap.mockResolvedValueOnce({ ...bootstrap, goals: [], agents: [], plan_nodes: [] });
+    await user.press(screen.getByTestId("swarm-retry"));
+    expect(await screen.findByText("Aucun projet")).toBeOnTheScreen();
+    expect(screen.getByTestId("create-goal-button")).not.toBeDisabled();
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+  });
+
+  it("discards an in-flight authoritative response after a pairing change", async () => {
+    const pending = deferred<Bootstrap>();
+    mockBootstrap.mockReturnValueOnce(pending.promise);
+    await render(<SwarmScreen />);
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(1));
+    await act(async () => notifyConnectionChanged());
+    await act(async () => pending.resolve(bootstrap));
+    expect(screen.queryByText("Worker Alpha")).not.toBeOnTheScreen();
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+    expect(mockLocalSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("discards an in-flight cache read after a same-origin pairing change", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof localSwarmSnapshot>>>();
+    mockBootstrap.mockRejectedValueOnce(new Error("Offline"));
+    mockLocalSnapshot.mockReturnValueOnce(pending.promise);
+    await render(<SwarmScreen />);
+    await waitFor(() => expect(mockLocalSnapshot).toHaveBeenCalledTimes(1));
+    await act(async () => notifyConnectionChanged());
+    await act(async () => pending.resolve({ origin: "https://control.example", goals: bootstrap.goals!,
+      agents: bootstrap.agents, plan_nodes: bootstrap.plan_nodes!, goal_results: [], counts: null, cursor: null }));
+    expect(screen.queryByText(goalDetail.goal.objective)).not.toBeOnTheScreen();
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+  });
+
+  it.each([401, 403, "pairing"])("clears an earlier authoritative state without reading cache after %s rejection", async (failure) => {
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    await screen.findByText("Worker Alpha");
+    mockBootstrap.mockRejectedValueOnce(failure === "pairing" ? new ConnectionChangedError() : new ApiError(Number(failure), "Accès refusé"));
+    await act(async () => { await refreshFromLiveEvent?.(); });
+    expect(screen.queryByText("Worker Alpha")).not.toBeOnTheScreen();
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+    expect(mockLocalSnapshot).not.toHaveBeenCalled();
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    expect(screen.getByTestId("create-goal-button")).toBeDisabled();
+  });
+
+  it("clears old-origin rows before refreshing another server and rejects a response whose origin changed", async () => {
+    const pending = deferred<Bootstrap>();
+    await render(<SwarmScreen />);
+    await screen.findByText("Worker Alpha");
+    mockGetServerUrl.mockResolvedValue("https://new.example");
+    mockBootstrap.mockReturnValueOnce(pending.promise);
+    await act(async () => { void refreshFromLiveEvent?.(); });
+    await waitFor(() => expect(mockBootstrap).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Worker Alpha")).not.toBeOnTheScreen();
+    mockGetServerUrl.mockResolvedValue("https://third.example");
+    await act(async () => pending.resolve(bootstrap));
+    expect(screen.queryByText(goalDetail.goal.objective)).not.toBeOnTheScreen();
+    expect(screen.getByText("Équipe non vérifiée")).toBeOnTheScreen();
+  });
+
+  it("preserves the draft and never navigates or resends when pairing changes during creation", async () => {
+    const pending = deferred<GoalDetail>();
+    mockCreateGoal.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    await render(<SwarmScreen />);
+    await screen.findByText("Worker Alpha");
+    await user.press(screen.getByTestId("new-project-disclosure"));
+    await user.type(screen.getByLabelText("Objectif du projet"), "Mon agenda");
+    await user.press(screen.getByTestId("create-goal-button"));
+    await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledTimes(1));
+    const isCurrent = mockCreateGoal.mock.calls[0]?.[1];
+    expect(isCurrent?.()).toBe(true);
+    await act(async () => notifyConnectionChanged());
+    expect(isCurrent?.()).toBe(false);
+    await act(async () => pending.resolve(goalDetail));
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockCreateGoal).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("goal-objective-input")).toHaveDisplayValue("Mon agenda");
+    expect(screen.getByTestId("create-goal-button")).toBeDisabled();
+    expect(screen.getByText(/Le jumelage a changé pendant la création/)).toBeOnTheScreen();
   });
 });
