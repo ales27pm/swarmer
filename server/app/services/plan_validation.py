@@ -9,7 +9,7 @@ from typing import Any, NoReturn
 
 from pydantic import BaseModel, ValidationError
 
-from app.services.agent_card import PROJECT_BUILD_SKILLS
+from app.services.agent_card import CODE_GENERATION_SKILLS, PROJECT_BUILD_SKILLS
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.planner_diagnostics import known_diagnostic
 from app.services.swarm_contracts import (
@@ -126,15 +126,20 @@ def parse_evaluation_json(text: str) -> EvaluationDecision:
 
 
 def _validate_project_plan_shape(nodes: Sequence[SwarmPlanNodeProposal]) -> None:
-    projects = [node for node in nodes if node.required_skill in PROJECT_BUILD_SKILLS]
-    if projects and (
-        len(nodes) != 1
-        or projects[0].node_type is not PlanNodeType.WORKER
-        or projects[0].dependencies
-        or projects[0].optional_dependencies
+    mutating_skills = PROJECT_BUILD_SKILLS | CODE_GENERATION_SKILLS
+    projects = [node for node in nodes if node.required_skill in mutating_skills]
+    if len(projects) > 1 or any(node.node_type is not PlanNodeType.WORKER for node in projects):
+        raise PlanValidationError(
+            "a project plan permits at most one project-mutating worker across project and legacy code skills",
+            diagnostic_code="project_plan_shape",
+        )
+    if any(
+        node.required_skill in CODE_GENERATION_SKILLS
+        and (node.dependencies or node.optional_dependencies)
+        for node in projects
     ):
         raise PlanValidationError(
-            "a project plan requires exactly one worker with no hard or optional dependencies",
+            "legacy code generation cannot consume worker dependencies",
             diagnostic_code="project_plan_shape",
         )
 

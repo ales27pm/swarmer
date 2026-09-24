@@ -17,8 +17,8 @@ DIAGNOSTICS: dict[str, tuple[str, str]] = {
         "Check required fields, types, enum values and bounds against the supplied schema.",
     ),
     "project_plan_shape": (
-        "Le projet doit être confié à un seul agent de construction, sans dépendance.",
-        "A project-build plan must contain exactly one worker and no dependencies.",
+        "Un plan peut confier les modifications du projet à un seul agent, avec les dépendances nécessaires. L’ancien générateur Python ne consomme pas de dépendances.",
+        "Use at most one project-mutating worker across code.build_project and code.generate_python combined; other capabilities and required dependencies are allowed. Legacy code.generate_python must have dependencies=[] and optional_dependencies=[] because its payload cannot consume worker results.",
     ),
     "unavailable_skill": (
         "Le plan demande une compétence absente des agents disponibles.",

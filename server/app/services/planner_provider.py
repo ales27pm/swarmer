@@ -8,7 +8,11 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
-from app.services.agent_card import PROJECT_BUILD_SKILLS, SUPPORTED_AGENT_SKILLS
+from app.services.agent_card import (
+    CODE_GENERATION_SKILLS,
+    PROJECT_BUILD_SKILLS,
+    SUPPORTED_AGENT_SKILLS,
+)
 from app.services.model_wire_schema import (
     decode_research_query_nodes,
     encode_model_wire_response,
@@ -98,10 +102,12 @@ def worker_node_array_schema(
     available_skills: Sequence[str] | None,
     workers_first: bool = False,
 ) -> dict[str, Any]:
-    """Constrain grammar decoding while keeping project loops exclusive.
+    """Constrain worker grammar while allowing capability-dependent mixed DAGs.
 
     None retains the evaluator's historical unknown-availability semantics.
     Execution eligibility remains independently validated by the control plane.
+    Cross-node limits, including a single project mutator, remain server rules;
+    the grammar uses supported item branches rather than contains/maxContains.
     """
 
     # Put the capability first for both insertion-order and sorted decoders,
@@ -154,7 +160,13 @@ def worker_node_array_schema(
         )
         specialist["required"] = [*specialist["required"], "worker_arguments"]
         general_nodes.append(specialist)
-    if general_skills := skills - PROJECT_BUILD_SKILLS - {"research.query"} - SPECIALIST_SKILLS:
+    if (
+        general_skills := skills
+        - PROJECT_BUILD_SKILLS
+        - CODE_GENERATION_SKILLS
+        - {"research.query"}
+        - SPECIALIST_SKILLS
+    ):
         worker = deepcopy(node_schema)
         worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
         worker["properties"]["00_required_skill"] = {
@@ -162,27 +174,32 @@ def worker_node_array_schema(
             "enum": sorted(general_skills),
         }
         general_nodes.append(worker)
+    if legacy_skills := skills & CODE_GENERATION_SKILLS:
+        legacy = deepcopy(node_schema)
+        legacy["properties"]["node_type"] = {"type": "string", "const": "worker"}
+        legacy["properties"]["00_required_skill"] = {
+            "type": "string",
+            "enum": sorted(legacy_skills),
+        }
+        for field in ("dependencies", "optional_dependencies"):
+            legacy["properties"][field]["maxItems"] = 0
+        general_nodes.append(legacy)
+    if project_skills := skills & PROJECT_BUILD_SKILLS:
+        project = deepcopy(node_schema)
+        project["properties"]["node_type"] = {"type": "string", "const": "worker"}
+        project["properties"]["00_required_skill"] = {
+            "type": "string",
+            "enum": sorted(project_skills),
+        }
+        general_nodes.append(project)
     # Root deliverables come from executable workers. Putting a dependency-requiring
     # synthesis first biases ordered grammar decoders toward an orphan join before
     # any real input has been proposed. Preserve synthesis, after worker branches.
     if workers_first:
         general_nodes.append(synthesis)
-    general_array = {
+    return {
         **deepcopy(array_schema),
         "items": general_nodes[0] if len(general_nodes) == 1 else {"anyOf": general_nodes},
-    }
-    if not (project_skills := skills & PROJECT_BUILD_SKILLS):
-        return general_array
-    project = deepcopy(node_schema)
-    project["properties"]["node_type"] = {"type": "string", "const": "worker"}
-    project["properties"]["00_required_skill"] = {"type": "string", "enum": sorted(project_skills)}
-    for field in ("dependencies", "optional_dependencies"):
-        project["properties"][field]["maxItems"] = 0
-    return {
-        "anyOf": [
-            {"type": "array", "minItems": 1, "maxItems": 1, "items": project},
-            general_array,
-        ]
     }
 
 
@@ -229,6 +246,9 @@ Never emit both names. Context cards retain their normal public field names.
 Return exactly one JSON object matching the supplied schema and no prose.
 Decompose only the bounded, redacted context supplied by the Ubuntu control plane.
 The goal card's objective and current user guidance define the requested outcome.
+The latest user guidance can change the next capability, even when a coding project already
+exists. Plan the requested next work with the advertised agents; do not default every reply
+to the project's previous worker. Preserve the existing project and its requirements.
 planner_validation_feedback is a server-authored diagnostic from a prior rejected proposal;
 correct that contract defect while preserving the requested outcome and advertised capabilities.
 Support personal organization, web research, comparisons, writing and technical work
@@ -303,8 +323,11 @@ with required dependencies supplying those results. Do not add independent place
 Do not ask the user to write the plan. Asking for a plan for an application is a writing request, not a
 request to implement that application. A draft does not prove external actions took place.
 When code.build_project is available and the user requests implementing or modifying an application,
-create exactly one code.build_project worker node with no dependencies.
-Do not use a synthesis-only plan or an environment/framework research node for that deliverable.
+use one code.build_project worker for that deliverable. A plan may contain at most one project-mutating worker
+across code.build_project and code.generate_python combined, never one of each or two of either.
+Add required dependencies for work whose outputs the project needs, including requested research.
+Other requested capabilities may run independently in parallel within the advertised resources and budgets.
+Do not use a synthesis-only plan or replace implementation with environment/framework research.
 Its objective must carry the requested outcome and all functional requirements, not a generic
 completion criterion. Its implementation loop persists a
 cumulative multi-file project and actual build/test receipts. It can ask material clarification
@@ -317,8 +340,9 @@ If code.build_project is absent and code.generate_python is available, it can pr
 using only the standard library. Use a single worker node for that deliverable, carrying the
 user's functional requirements in its objective. The worker cannot edit, execute, install,
 or deploy files. The server waits for user review and a separate file-write approval.
-For this single-file deliverable use exactly one code.generate_python worker node with no
-dependencies. Do not add placeholder capability-gap, assessment, or synthesis nodes when
+For this single-file deliverable use one code.generate_python worker with dependencies=[] and
+optional_dependencies=[]: its legacy payload cannot consume other workers' results.
+Do not add placeholder capability-gap, assessment, or synthesis nodes when
 this coding skill is available. Completion means the proposed source was approved and saved;
 execution, testing, installation and deployment remain explicitly unverified limitations.
 If the user explicitly requests execution, tests or deployment, preserve those requirements

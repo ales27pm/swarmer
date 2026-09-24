@@ -215,8 +215,13 @@ how to build it. Applying files to the user's workspace still requires separate 
 If the plan skipped requested implementation, propose continue or replan grounded in the
 available evidence; missing implementation is work remaining, not a question about how to code.
 When application implementation is requested, functional requirements are supplied and code.build_project is available,
-but no worker implementation evidence is recorded, return continue with exactly one worker
-node using code.build_project, dependencies=[] and optional_dependencies=[]. Put the original
+but no worker implementation evidence is recorded, return continue with one code.build_project
+node and any required dependencies on other workers' outputs. A suggested plan may include
+other advertised capabilities, but at most one project-mutating worker across code.build_project
+and code.generate_python combined.
+Legacy code.generate_python cannot consume worker results; its hard and optional dependencies must be empty.
+Preserve the latest requested next action when it redirects work to another capability;
+do not force every follow-up back to coding. Put the original
 requested language/platform and the user's supplied features in its objective. Do not return
 continue with no suggested work in that situation. The worker owns implementation/check/repair
 iterations and can request a genuinely new material input if needed. user_question must be null.

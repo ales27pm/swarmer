@@ -96,8 +96,9 @@ from app.services.swarm_contracts import (
     SwarmPlanProposal,
 )
 from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
+from app.services.worker_context import read_worker_context
 from app.services.writing_contracts import WRITING_SKILL
-from app.services.writing_drafts import read_research_sources, read_writing_draft, writing_payload
+from app.services.writing_drafts import read_writing_draft, writing_payload
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
@@ -367,23 +368,26 @@ class GoalManager:
     async def _worker_payload(
         self, goal: Mapping[str, Any], node: Mapping[str, Any]
     ) -> dict[str, Any]:
+        dependency_context: list[dict[str, str]] = []
+        sources: list[dict[str, str]] = []
+        if node["required_skill"] in {WRITING_SKILL, PROJECT_SKILL} and node.get("id"):
+            try:
+                dependency_context, sources = await read_worker_context(
+                    self.db_path, str(node["goal_run_id"]), str(node["id"])
+                )
+            except (ValueError, TypeError) as exc:
+                raise GoalManagerConflict("Completed dependency evidence is unavailable.") from exc
         if node["required_skill"] == WRITING_SKILL:
             goal_id = str(node["goal_run_id"])
             original = await self.graph.get_goal(goal_id)
             if original is None:
                 raise GoalManagerConflict("The writing goal is unavailable.")
-            try:
-                sources = (
-                    await read_research_sources(self.db_path, goal_id, str(node["id"]))
-                    if node.get("id") is not None
-                    else []
-                )
-            except (ValueError, TypeError) as exc:
-                raise GoalManagerConflict("Completed research evidence is unavailable.") from exc
             return writing_payload(
                 str(original["objective"]),
                 await self.recent_conversation(goal_id, limit=12),
                 research_sources=sources,
+                dependency_context=dependency_context,
+                step_objective=str(node["objective"]) if node.get("id") else None,
             )
         if node["required_skill"] != PROJECT_SKILL:
             return self._payload_for_node(node)
@@ -393,9 +397,14 @@ class GoalManager:
         from app.services.project_context import ProjectContextConflict
 
         try:
-            return await self.project_applications.payload(
+            payload = await self.project_applications.payload(
                 goal_id, dict(node), await self.recent_conversation(goal_id)
             )
+            if dependency_context:
+                payload["dependency_context"] = dependency_context
+            if sources:
+                payload["research_sources"] = sources
+            return ProjectPayload.model_validate(payload).model_dump(exclude_unset=True)
         except ProjectContextConflict as exc:
             raise GoalManagerConflict(str(exc)) from exc
 
@@ -421,7 +430,11 @@ class GoalManager:
             if goal is None:
                 return
         nodes = await self.graph.list_nodes(goal_id)
-        if any(node["status"] in {"dispatched", "running", "waiting_capability"} for node in nodes):
+        if any(
+            node["status"] in {"dispatched", "running", "waiting_capability"}
+            and (pending or node["required_skill"] == PROJECT_SKILL)
+            for node in nodes
+        ):
             return
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -432,6 +445,18 @@ class GoalManager:
                 await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal_id,))
             ).fetchone()
             if current is None or current["status"] in self.graph.GOAL_TERMINAL:
+                return
+            if any(
+                current[key] != goal[key]
+                for key in ("conversation_revision", "pending_message_revision", "current_phase")
+            ):
+                return
+            current_nodes = await (
+                await db.execute("SELECT id,status FROM plan_nodes WHERE goal_run_id=?", (goal_id,))
+            ).fetchall()
+            if {(row["id"], row["status"]) for row in current_nodes} != {
+                (node["id"], node["status"]) for node in nodes
+            }:
                 return
             # A real approval is never implicitly denied, replaced or approved
             # by text. A child committed before call creation is not a grant.
@@ -494,77 +519,99 @@ class GoalManager:
                 )
             ).fetchone()
             project = linked is not None or any(n["required_skill"] == PROJECT_SKILL for n in nodes)
-            if project and self.project_applications is not None:
-                count = len(nodes)
-                now = self._now()
-                if count >= int(current["max_steps"]) or int(current["model_call_count"]) >= int(
-                    current["max_model_calls"]
-                ):
-                    await self._terminate_goal_locked(
-                        db,
-                        dict(current),
-                        status="budget_exhausted",
-                        reason="goal project iteration budget exhausted",
-                        now=now,
-                        maintenance_guard=maintenance_guard,
-                    )
-                    await db.commit()
-                    return
-                # Unprepared old proposals are superseded; their snapshots remain inspectable.
-                await db.execute(
-                    """UPDATE plan_nodes SET status='completed',completed_at=?,updated_at=?,
-                    result_summary='Project draft retained; newer instructions require another iteration.'
-                    WHERE goal_run_id=? AND required_skill=? AND status='waiting_permission'""",
-                    (now, now, goal_id, PROJECT_SKILL),
-                )
-                if any(n["status"] in {"planned", "ready"} for n in nodes):
+            if project and self.project_applications is not None and not pending:
+                latest = await (
                     await db.execute(
-                        "UPDATE goal_runs SET pending_message_revision=0 WHERE id=?", (goal_id,)
+                        "SELECT node_id FROM project_revisions WHERE goal_run_id=? ORDER BY revision DESC LIMIT 1",
+                        (goal_id,),
                     )
-                    await db.commit()
-                    return
-                await db.execute(
-                    """INSERT INTO plan_nodes(id,goal_run_id,node_type,title,objective,required_skill,
-                    status,priority,expected_output,created_at,updated_at,conversation_revision)
-                    VALUES(?,?,'worker','Continue project implementation',?,?,'ready',50,?,?,?,?)""",
+                ).fetchone()
+                previous = next(
                     (
-                        f"node_{uuid4().hex}",
-                        goal_id,
-                        current["objective"],
-                        PROJECT_SKILL,
-                        "A cumulative project snapshot with actual build and test receipts.",
-                        now,
-                        now,
-                        int(current["conversation_revision"]),
+                        n
+                        for n in nodes
+                        if latest
+                        and n["id"] == latest[0]
+                        and n["status"] == "completed"
+                        and int(n["conversation_revision"]) == int(current["conversation_revision"])
                     ),
+                    None,
                 )
-                # Only a fixed application SQL fragment is interpolated; values are bound.
-                await db.execute(
-                    f"""UPDATE goal_runs SET status='running',current_phase='project_building',
-                    pending_message_revision=0,updated_at=?,{RESUME_RUNTIME_SQL} WHERE id=?""",  # nosec B608
-                    (now, now, goal_id),
-                )
-                await db.execute(
-                    "UPDATE tasks SET status='running',updated_at=? WHERE id=?",
-                    (now, current["root_task_id"]),
+                if previous is None:
+                    return
+                await self._enqueue_project_successor_locked(
+                    db,
+                    dict(current),
+                    previous,
+                    now=self._now(),
+                    maintenance_guard=maintenance_guard,
                 )
                 await db.commit()
                 return
-        if not nodes or goal["status"] == "planning":
+            # Persist only the orphaned, never-proposed application cleanup
+            # before releasing this lock for the planner's network call.
+            await db.commit()
+        goal = await self.graph.get_goal(goal_id)
+        if goal is None or (not pending and (not nodes or goal["status"] == "planning")):
             return
-        if any(n["status"] in self.ACTIVE_NODE_STATUSES for n in nodes):
+        if any(n["status"] in {"dispatched", "running", "waiting_capability"} for n in nodes):
             return
-        if int(goal["replan_count"]) >= int(goal["max_replans"]):
+        initial_continuation = not nodes and goal["status"] == "planning"
+        if not initial_continuation and int(goal["replan_count"]) >= int(goal["max_replans"]):
             await self._terminate_goal(
                 goal_id, status="budget_exhausted", reason="goal replan budget exhausted"
             )
             return
+        # Failed routing remains recoverable, but reconciliation must not consume
+        # a fresh model call on every tick while older ready nodes still exist.
+        async with aiosqlite.connect(self.db_path) as db:
+            cooling = await (
+                await db.execute(
+                    """SELECT 1 FROM goal_model_calls WHERE goal_run_id=? AND role='planner'
+                AND conversation_revision=? AND status='failed'
+                AND julianday(completed_at)+?/86400.0>julianday(?) LIMIT 1""",
+                    (
+                        goal_id,
+                        goal["conversation_revision"],
+                        _PLANNER_RETRY_COOLDOWN_SECONDS,
+                        self._now(),
+                    ),
+                )
+            ).fetchone()
+        if cooling:
+            return
         proposal, source, call_id = await self._obtain_plan(
-            goal, GoalStartRequest(), maintenance_guard=maintenance_guard
+            goal,
+            GoalStartRequest(),
+            user_guidance=(
+                "Route the latest user request using available worker skills, even when this goal "
+                "already has a code project. Preserve its saved files. Include code.build_project "
+                "only if implementation is requested; it resumes the existing snapshot. Connect "
+                "workers to the dependencies they need. Independent work may run in parallel "
+                "within the goal limits. Do not repeat completed work."
+            )
+            if pending
+            else None,
+            maintenance_guard=maintenance_guard,
         )
         try:
-            await self._append_replan_nodes(goal, proposal, source=source, model_call_id=call_id)
-        except _PlannerProposalRejected as exc:
+            if initial_continuation:
+                await self._persist_initial_plan(
+                    goal,
+                    proposal,
+                    source=source,
+                    model_call_id=call_id,
+                    maintenance_guard=maintenance_guard,
+                )
+            else:
+                await self._append_replan_nodes(
+                    goal,
+                    proposal,
+                    source=source,
+                    model_call_id=call_id,
+                    maintenance_guard=maintenance_guard,
+                )
+        except (PlanValidationError, _PlannerProposalRejected) as exc:
             if call_id is not None:
                 await self._record_planner_failure(
                     goal_id,
@@ -573,14 +620,106 @@ class GoalManager:
                     diagnostic_code=rejection_diagnostic(exc),
                     maintenance_guard=maintenance_guard,
                 )
+            raise GoalManagerConflict(str(exc)) from exc
+        except GoalManagerConflict:
+            if call_id is not None:
+                await self._finish_model_call(
+                    call_id,
+                    status="failed",
+                    error_category="state_changed",
+                    maintenance_guard=maintenance_guard,
+                )
             raise
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """UPDATE goal_runs SET pending_message_revision=0 WHERE id=?
-                AND conversation_revision=?""",
-                (goal_id, goal["conversation_revision"]),
+
+    async def _enqueue_project_successor_locked(
+        self,
+        db: aiosqlite.Connection,
+        goal: Mapping[str, Any],
+        previous: Mapping[str, Any],
+        *,
+        now: str,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> None:
+        """Advance a partial snapshot and its DAG edges in the same transaction."""
+        goal_id = str(goal["id"])
+        count = await (
+            await db.execute("SELECT COUNT(*) FROM plan_nodes WHERE goal_run_id=?", (goal_id,))
+        ).fetchone()
+        if (count is not None and int(count[0]) >= int(goal["max_steps"])) or int(
+            goal["model_call_count"]
+        ) >= int(goal["max_model_calls"]):
+            await self._terminate_goal_locked(
+                db,
+                goal,
+                status="budget_exhausted",
+                reason="goal project iteration budget exhausted",
+                now=now,
+                maintenance_guard=maintenance_guard,
             )
-            await db.commit()
+            return
+        successor = f"node_{uuid4().hex}"
+        await db.execute(
+            """INSERT INTO plan_nodes(id,goal_run_id,parent_node_id,node_type,title,objective,
+            required_skill,status,priority,depends_on_json,expected_output,created_at,updated_at,conversation_revision)
+            VALUES(?,?,?,'worker','Continue project implementation',?,?,'planned',50,?,?,?,?,?)""",
+            (
+                successor,
+                goal_id,
+                previous["id"],
+                previous["objective"],
+                PROJECT_SKILL,
+                json.dumps(previous["depends_on"]),
+                "A cumulative project snapshot with actual build and test receipts.",
+                now,
+                now,
+                int(goal["conversation_revision"]),
+            ),
+        )
+        await self._carry_project_dependencies_locked(
+            db, goal_id, str(previous["id"]), successor, now
+        )
+        await db.execute(
+            f"""UPDATE goal_runs SET status='running',current_phase='project_building',
+            updated_at=?,{RESUME_RUNTIME_SQL} WHERE id=?""",  # nosec B608
+            (now, now, goal_id),
+        )
+        await db.execute(
+            "UPDATE tasks SET status='running',updated_at=? WHERE id=?", (now, goal["root_task_id"])
+        )
+
+    @staticmethod
+    async def _carry_project_dependencies_locked(
+        db: aiosqlite.Connection, goal_id: str, previous: str, successor: str, now: str
+    ) -> None:
+        """Keep upstream context and make downstream work await the final iteration."""
+        await db.execute(
+            """INSERT INTO plan_edges(goal_run_id,from_node_id,to_node_id,dependency_type)
+            SELECT goal_run_id,from_node_id,?,dependency_type FROM plan_edges
+            WHERE goal_run_id=? AND to_node_id=?""",
+            (successor, goal_id, previous),
+        )
+        rows = await (
+            await db.execute(
+                "SELECT id,depends_on_json FROM plan_nodes WHERE goal_run_id=? AND status IN ('planned','ready') AND id<>?",
+                (goal_id, successor),
+            )
+        ).fetchall()
+        for row in rows:
+            dependencies = json.loads(row["depends_on_json"])
+            if previous not in dependencies:
+                continue
+            await db.execute(
+                "UPDATE plan_nodes SET depends_on_json=?,status='planned',updated_at=? WHERE id=?",
+                (
+                    json.dumps([successor if item == previous else item for item in dependencies]),
+                    now,
+                    row["id"],
+                ),
+            )
+            await db.execute(
+                "UPDATE plan_edges SET from_node_id=? WHERE goal_run_id=? AND from_node_id=? AND to_node_id=?",
+                (successor, goal_id, previous, row["id"]),
+            )
 
     @staticmethod
     async def _project_stalled_locked(
@@ -752,6 +891,10 @@ class GoalManager:
                 "UPDATE tasks SET status=?,updated_at=? WHERE id=?",
                 ("waiting_permission" if waiting else "running", now, current["root_task_id"]),
             )
+            if not waiting and not stale and not int(current["pending_message_revision"] or 0):
+                await self._enqueue_project_successor_locked(
+                    db, dict(current), node, now=now, maintenance_guard=maintenance_guard
+                )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             await db.commit()
@@ -1950,6 +2093,10 @@ class GoalManager:
         )
         goal = await self.graph.get_goal(goal_run_id)
         if goal is None or goal["status"] != "running":
+            return
+        if int(goal.get("pending_message_revision") or 0):
+            # A failed/cooling-down routing attempt must not silently execute an
+            # older ready plan and consume the user's pending instruction.
             return
         if self._runtime_expired(goal):
             await self._terminate_goal(
@@ -3819,9 +3966,16 @@ class GoalManager:
         *,
         source: PlannerSource,
         model_call_id: str | None,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
         proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
+        validated = validate_swarm_plan(
+            proposal,
+            policy=self.permission_policy,
+            max_nodes=int(goal["max_steps"]),
+            max_parallelism=int(goal["max_parallelism"]),
+        )
         existing = await self.graph.list_nodes(str(goal["id"]))
         if len(existing) + len(proposal.nodes) > int(goal["max_steps"]):
             raise GoalManagerConflict("replan exceeds the goal step budget")
@@ -3830,6 +3984,8 @@ class GoalManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             current = await (
                 await db.execute(
                     """SELECT replan_count,max_replans,status,plan_fingerprint,max_steps,
@@ -3841,6 +3997,8 @@ class GoalManager:
             if current is None or str(current["status"]) not in {"running", "waiting_permission"}:
                 await db.rollback()
                 raise GoalManagerConflict("goal changed while replanning")
+            if int(current["conversation_revision"]) != int(goal["conversation_revision"]):
+                raise GoalManagerConflict("goal conversation changed while replanning")
             if current["plan_fingerprint"] != goal.get("plan_fingerprint"):
                 await db.rollback()
                 raise GoalManagerConflict("goal plan changed while replanning")
@@ -3867,11 +4025,27 @@ class GoalManager:
                 await self._require_current_model_call_locked(db, model_call_id, now=now)
             await self._require_current_worker_capabilities_locked(db, proposal.nodes)
             if int(goal.get("pending_message_revision") or 0):
+                prepared = await (
+                    await db.execute(
+                        """SELECT 1 FROM plan_nodes n LEFT JOIN project_revisions r ON r.node_id=n.id
+                    WHERE n.goal_run_id=? AND n.status='waiting_permission'
+                    AND (n.required_skill<>? OR r.apply_task_id IS NOT NULL) LIMIT 1""",
+                        (goal["id"], PROJECT_SKILL),
+                    )
+                ).fetchone()
+                if prepared:
+                    raise GoalManagerConflict("an existing approval must settle before rerouting")
                 await db.execute(
                     """UPDATE plan_nodes SET status='skipped',updated_at=?,completed_at=?,
                     result_summary='Superseded by newer user instructions.'
                     WHERE goal_run_id=? AND status IN ('planned','ready')""",
                     (now, now, goal["id"]),
+                )
+                await db.execute(
+                    """UPDATE plan_nodes SET status='completed',completed_at=?,updated_at=?,
+                    result_summary='Project draft retained; newer instructions superseded its unprepared review.'
+                    WHERE goal_run_id=? AND required_skill=? AND status='waiting_permission'""",
+                    (now, now, goal["id"], PROJECT_SKILL),
                 )
             for node in proposal.nodes:
                 hard_dependencies = sorted(by_temp[item] for item in node.dependencies)
@@ -3925,12 +4099,7 @@ class GoalManager:
                 failure_reason=NULL,pending_message_revision=0,updated_at=? WHERE id=?""",
                 (
                     source.value,
-                    validate_swarm_plan(
-                        proposal,
-                        policy=self.permission_policy,
-                        max_nodes=int(goal["max_steps"]),
-                        max_parallelism=int(goal["max_parallelism"]),
-                    ).fingerprint,
+                    validated.fingerprint,
                     proposal.max_parallelism,
                     now,
                     goal["id"],
@@ -3938,6 +4107,10 @@ class GoalManager:
             )
             await db.execute(
                 f"UPDATE goal_runs SET {RESUME_RUNTIME_SQL} WHERE id=?",  # nosec B608
+                (now, goal["id"]),
+            )
+            await db.execute(
+                "UPDATE tasks SET status='running',updated_at=? WHERE id=(SELECT root_task_id FROM goal_runs WHERE id=?)",
                 (now, goal["id"]),
             )
             if model_call_id is not None:
@@ -3960,8 +4133,10 @@ class GoalManager:
                 if cursor.rowcount != 1:
                     await db.rollback()
                     raise GoalManagerConflict("planner model call lease was fenced")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
             await db.commit()
-        await self.graph.refresh_ready_nodes(str(goal["id"]))
+        await self.graph.refresh_ready_nodes(str(goal["id"]), maintenance_guard=maintenance_guard)
 
     async def add_feedback(
         self,

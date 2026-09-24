@@ -134,7 +134,8 @@ async def test_project_question_reply_resumes_with_snapshot_and_history(tmp_path
     await manager.reconcile()
     current = await manager.get_goal(goal_id)
     assert current is not None and len(current["nodes"]) == 2
-    assert current["goal"]["model_call_count"] == 3
+    # A new user reply pays for routing as well as the next worker call.
+    assert current["goal"]["model_call_count"] == 4
     _, payload = await _result(manager, agent, action="complete")
     assert payload["iteration"] == 2 and payload["base_revision_id"] is not None
     assert payload["files"][0]["content"] == SOURCE
@@ -213,7 +214,7 @@ async def test_manual_reply_grants_one_durable_dispatch_and_replay_grants_none(
     assert await manager.agent_dispatcher.claim(agent) is None
     current = await manager.graph.get_goal(goal_id)
     assert current is not None and current["reply_dispatch_credit"] == 0
-    assert current["model_call_count"] == 3
+    assert current["model_call_count"] == 4
 
 
 @pytest.mark.asyncio

@@ -361,7 +361,7 @@ def test_evaluator_schema_limits_workers_but_preserves_unknown_availability(
     assert validator.is_valid(wire_decision({**raw, "suggested_new_nodes": []}))
 
 
-def test_evaluator_schema_preserves_project_exclusivity() -> None:
+def test_evaluator_schema_allows_a_project_to_depend_on_another_capability() -> None:
     schema = UbuntuEvaluatorProvider._response_format(
         ["code.build_project", "workspace.read_text"]
     )["json_schema"]["schema"]
@@ -370,7 +370,9 @@ def test_evaluator_schema_preserves_project_exclusivity() -> None:
     raw["suggested_new_nodes"][0].update(required_skill="code.build_project", dependencies=[])
     assert Draft202012Validator(schema).is_valid(wire_decision(raw))
     raw["suggested_new_nodes"].append(continue_decision()["suggested_new_nodes"][0])
-    assert not Draft202012Validator(schema).is_valid(wire_decision(raw))
+    raw["suggested_new_nodes"][1].update(temporary_id="source_input", dependencies=[])
+    raw["suggested_new_nodes"][0]["dependencies"] = ["source_input"]
+    assert Draft202012Validator(schema).is_valid(wire_decision(raw))
 
 
 @pytest.mark.parametrize("status", ["done", "failed", "needs_user"])

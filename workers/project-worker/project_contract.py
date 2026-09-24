@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 SKILL = "code.build_project"
 MAX_FILES = 80
@@ -14,6 +16,10 @@ MAX_FILE_BYTES = 64_000
 MAX_PROJECT_BYTES = 1_000_000
 MAX_CONTROL_BYTES = 4_000_000
 MAX_PATCH_BYTES = 8_000
+MAX_RESEARCH_SOURCES = 5
+MAX_RESEARCH_SOURCE_BYTES = 8_000
+MAX_DEPENDENCY_CONTEXT_ITEMS = 8
+MAX_DEPENDENCY_CONTEXT_BYTES = 12_000
 RUNTIMES = frozenset({"python", "node", "python_node"})
 PAYLOAD_FIELDS = frozenset(
     {
@@ -168,6 +174,125 @@ def checks_value(value: object) -> list[dict[str, Any]]:
     return checks
 
 
+def evidence_text(value: object, maximum: int, *, empty: bool = False) -> str:
+    """Match the server's bounded source text without treating it as instructions."""
+    if (
+        not isinstance(value, str)
+        or len(value) > maximum
+        or (not value.strip() and not (empty and value == ""))
+        or "\0" in value
+    ):
+        raise ProjectError("project evidence text is invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeError as exc:
+        raise ProjectError("project evidence text is not valid UTF-8") from exc
+    return value
+
+
+def evidence_job_id(value: object) -> str:
+    value = evidence_text(value, 200)
+    if re.fullmatch(r"job_[A-Za-z0-9._:-]+", value) is None:
+        raise ProjectError("project evidence job identity is invalid")
+    return value
+
+
+def research_url(value: object) -> str:
+    value = evidence_text(value, 1_000)
+    try:
+        if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("URL contains whitespace or controls")
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or host.lower() == "localhost"
+            or host.lower().endswith((".localhost", ".local", ".internal"))
+        ):
+            raise ValueError("URL is not public HTTP(S)")
+        _ = parsed.port
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            if "." not in host or "\\" in host or "%" in host:
+                raise ValueError("URL hostname is invalid") from None
+        else:
+            if not address.is_global:
+                raise ValueError("URL address is not public")
+    except ValueError as exc:
+        raise ProjectError("project research URL is invalid") from exc
+    return value
+
+
+def research_sources_value(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > MAX_RESEARCH_SOURCES:
+        raise ProjectError("project research source count is invalid")
+    sources = []
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"content_trust", "worker_job_id", "title", "url", "snippet"}
+            or item["content_trust"] != "untrusted"
+        ):
+            raise ProjectError("project research source fields are invalid")
+        sources.append(
+            {
+                "content_trust": "untrusted",
+                "worker_job_id": evidence_job_id(item["worker_job_id"]),
+                "title": evidence_text(item["title"], 240),
+                "url": research_url(item["url"]),
+                "snippet": evidence_text(item["snippet"], 700, empty=True),
+            }
+        )
+    if (
+        len(json.dumps(sources, ensure_ascii=False, separators=(",", ":")).encode())
+        > MAX_RESEARCH_SOURCE_BYTES
+    ):
+        raise ProjectError("project research sources exceed their UTF-8 byte limit")
+    return sources
+
+
+def dependency_context_value(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > MAX_DEPENDENCY_CONTEXT_ITEMS:
+        raise ProjectError("project dependency context count is invalid")
+    items = []
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item)
+            != {
+                "content_trust",
+                "node_id",
+                "worker_job_id",
+                "required_skill",
+                "summary",
+            }
+            or item["content_trust"] != "untrusted"
+        ):
+            raise ProjectError("project dependency context fields are invalid")
+        node_id = evidence_text(item["node_id"], 128)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", node_id) is None:
+            raise ProjectError("project dependency node identity is invalid")
+        items.append(
+            {
+                "content_trust": "untrusted",
+                "node_id": node_id,
+                "worker_job_id": evidence_job_id(item["worker_job_id"]),
+                "required_skill": evidence_text(item["required_skill"], 100),
+                "summary": evidence_text(item["summary"], 2_000),
+            }
+        )
+    if (
+        len(json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode())
+        > MAX_DEPENDENCY_CONTEXT_BYTES
+    ):
+        raise ProjectError("project dependency context exceeds its UTF-8 byte limit")
+    return items
+
+
 def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("required_skill") != SKILL:
         raise ProjectError("unsupported project worker skill")
@@ -182,6 +307,8 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
             "context_compaction",
             "guidance_version",
             "native_validation",
+            "research_sources",
+            "dependency_context",
         }
         != PAYLOAD_FIELDS
     ):
@@ -244,6 +371,16 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
         "memory": memory_value(value.get("memory")),
         "durable_context": durable_context_value(value.get("durable_context")),
         "context_compaction": compaction_value(value.get("context_compaction")),
+        **(
+            {"research_sources": research_sources_value(value["research_sources"])}
+            if "research_sources" in value
+            else {}
+        ),
+        **(
+            {"dependency_context": dependency_context_value(value["dependency_context"])}
+            if "dependency_context" in value
+            else {}
+        ),
     }
 
 

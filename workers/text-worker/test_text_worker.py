@@ -143,6 +143,44 @@ def test_bounded_payload_roundtrip_preserves_language_and_returns_copy(
     assert worker.validate_payload({**value, "conversation": []})["conversation"] == []
 
 
+def test_step_objective_is_advisory_and_reaches_the_model_with_original_request(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = {**payload(), "step_objective": "Explain calendar conflict handling."}
+    assert worker.validate_payload(value) == value
+    generator, connection = generator_for(worker, monkeypatch, stream())
+    assert generator.generate(value, ensure_active=lambda: None) == draft()
+    body = next(call[2] for call in connection.calls if call[0] == "POST")
+    task = json.loads(body["messages"][1]["content"])
+    assert task["objective"] == payload()["objective"]
+    assert task["conversation"] == payload()["conversation"]
+    assert task["step_objective"] == value["step_objective"]
+    instructions = body["messages"][0]["content"]
+    assert "planner-authored" in instructions
+    assert "original objective and latest user instructions take precedence" in instructions
+    assert "Never ask the user to provide the plan or draft" in instructions
+    assert body["options"]["num_predict"] == 512
+
+
+@pytest.mark.parametrize(
+    "value", [None, 1, b"task", "", "  ", "a" * 4001, "bad\0text", "bad\ud800text"]
+)
+def test_step_objective_is_strict_bounded_unicode(worker: ModuleType, value: object) -> None:
+    with pytest.raises(worker.GenerationError):
+        worker.validate_payload({**payload(), "step_objective": value})
+
+
+def test_step_objective_counts_against_worker_payload_byte_budget(worker: ModuleType) -> None:
+    value = {
+        **payload(),
+        "objective": "é" * 4000,
+        "step_objective": "🧠" * 4000,
+        "conversation": [{"role": "user", "content": "é" * 4000}],
+    }
+    with pytest.raises(worker.GenerationError, match="byte limit"):
+        worker.validate_payload(value)
+
+
 def research_source() -> dict[str, str]:
     return {
         "content_trust": "untrusted",

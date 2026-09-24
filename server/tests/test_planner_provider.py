@@ -163,7 +163,7 @@ def test_planner_schema_limits_workers_to_presented_skills(skills: list[str]) ->
     assert not validator.is_valid(_wire_proposal(malformed))
 
 
-def test_planner_schema_keeps_project_work_exclusive_with_other_advertised_skills() -> None:
+def test_planner_schema_allows_project_dependencies_on_other_advertised_skills() -> None:
     schema = UbuntuSwarmPlannerProvider._response_format(
         available_skills=["code.build_project", "workspace.list_dir"]
     )["json_schema"]["schema"]
@@ -172,11 +172,12 @@ def test_planner_schema_keeps_project_work_exclusive_with_other_advertised_skill
     assert isinstance(mixed["nodes"], list)
     assert validator.is_valid(_wire_proposal(mixed))
     mixed["nodes"].append(_proposal("workspace.list_dir")["nodes"][0])
-    assert not validator.is_valid(_wire_proposal(mixed))
-    project = _proposal()
-    assert isinstance(project["nodes"], list)
-    project["nodes"][0]["optional_dependencies"] = ["context_hint"]
-    assert not validator.is_valid(_wire_proposal(project))
+    mixed["nodes"][1]["temporary_id"] = "context_hint"
+    mixed["nodes"][0]["dependencies"] = ["context_hint"]
+    assert validator.is_valid(_wire_proposal(mixed))
+    mixed["nodes"][0]["dependencies"] = []
+    mixed["nodes"][0]["optional_dependencies"] = ["context_hint"]
+    assert validator.is_valid(_wire_proposal(mixed))
 
 
 @pytest.mark.asyncio

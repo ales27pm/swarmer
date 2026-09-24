@@ -119,7 +119,12 @@ async def test_planner_wire_prioritizes_user_goal_over_legacy_generic_criterion(
         "Generic completion criteria and historical context cannot replace or weaken it"
         in instruction
     )
-    assert "create exactly one code.build_project worker node with no dependencies" in instruction
+    assert "at most one project-mutating worker" in instruction
+    assert "latest user guidance can change the next capability" in instruction
+    assert "Add required dependencies for work whose outputs the project needs" in instruction
+    assert (
+        "create exactly one code.build_project worker node with no dependencies" not in instruction
+    )
     assert "Do not use a synthesis-only plan" in instruction
     assert "Choose routine implementation details yourself" in instruction
     assert "in the user's language" in instruction
@@ -183,6 +188,9 @@ async def test_evaluator_wire_keeps_implementation_work_with_agent(
         "A synthesis with no implementation evidence does not fulfill an application request"
         in instruction
     )
+    assert "at most one project-mutating worker" in instruction
+    assert "required dependencies on other workers' outputs" in instruction
+    assert "node using code.build_project, dependencies=[]" not in instruction
     assert result.status == status and result.user_question == question
     assert request["response_format"]["json_schema"]["strict"] is True
     assert not {"tools", "tool_choice", "execution"}.intersection(request)

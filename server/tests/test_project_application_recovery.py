@@ -44,7 +44,8 @@ async def _assert_resumed(manager: Any, goal_id: str, child_id: str) -> None:
     assert goal and goal["pending_message_revision"] == 0
     nodes = await manager.graph.list_nodes(goal_id)
     assert len(nodes) == 2 and sum(n["status"] == "dispatched" for n in nodes) == 1
-    assert goal["model_call_count"] == 3 and goal["step_count"] == 2
+    # The reply now reserves a planner call before selecting the next worker.
+    assert goal["model_call_count"] == 4 and goal["step_count"] == 2
     async with aiosqlite.connect(manager.db_path) as db:
         assert await (
             await db.execute("SELECT status FROM tasks WHERE id=?", (child_id,))

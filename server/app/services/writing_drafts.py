@@ -34,13 +34,17 @@ def writing_payload(
     objective: str,
     conversation: Sequence[Mapping[str, str]],
     *,
+    step_objective: str | None = None,
     research_sources: Sequence[Mapping[str, str]] = (),
+    dependency_context: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": "1.0",
         "objective": safe_context_text(objective, max_chars=4_000),
         "conversation": [],
     }
+    if dependency_context:
+        payload["dependency_context"] = [dict(item) for item in dependency_context]
     if research_sources:
         selected_sources: list[dict[str, str]] = []
         for source in research_sources[:MAX_RESEARCH_SOURCES]:
@@ -82,6 +86,23 @@ def writing_payload(
         if low < len(content):
             break
     payload["conversation"] = selected
+    # The planner's assigned step is subordinate to the saved objective and user
+    # instructions. It may use remaining space but cannot evict retained history.
+    if step_objective is not None:
+        step = safe_context_text(step_objective, max_chars=4_000)
+        low, high = 0, len(step)
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = {**payload, "step_objective": step[:middle]}
+            if (
+                len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode())
+                <= MAX_WRITING_PAYLOAD_BYTES
+            ):
+                low = middle
+            else:
+                high = middle - 1
+        if step[:low].strip():
+            payload["step_objective"] = step[:low]
     return WritingPayload.model_validate(payload).model_dump(exclude_unset=True)
 
 
