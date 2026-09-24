@@ -8,6 +8,12 @@ The native stack reports a React Native fatal JavaScript exception. The crash
 report does not contain its JavaScript message. The `ggml_uncaught_exception`
 frame is an exception termination handler, not proof of a model inference crash.
 
+A subsequent physical-device reproduction on the installed TestFlight build
+confirmed the exact exception in its console:
+`RCTFatalException: Unhandled JS Exception: Error: No routes found`, followed by
+signal 6. CoreDevice's network tunnel was connected and developer services were
+available for this capture. No app installation or data reset was needed.
+
 ## Reproduction from the distributed artifact
 
 The archived Metro source contains an empty Expo Router context (`keys() => []`).
@@ -52,7 +58,52 @@ directory by symlink; that fact alone does not establish causality.
 - A real iOS production export with the Metro guard produces 1,170 modules and
   all application routes. Archive inspection and route discovery are packaging
   evidence, not substitutes for launching the replacement on a device.
+- The 25 archive-gate tests, seven Metro-guard tests, and 19 existing bootstrap,
+  network-bridge and live-sync tests pass. The latter mock native integrations;
+  their success alone did not and cannot prove a packaged app launches.
 
 Private logs, reproducible compiled-context harnesses, raw source, and receipts
 are retained outside Git under `~/Library/Logs/SwarmerCrash/20260923215000`.
 No backend goal, generated project, model runtime, or user data was changed.
+
+## Replacement archive: 20260924001000
+
+Source commit: `e6ed0070e83fc226962b49fea50a276fcb19801a`. The isolated Release
+archive succeeded in 1,439.301 seconds with all 189 tracked mobile source files
+unchanged. The dependency directory is physical, production environment flags
+are explicit, and the archive's source map is retained outside Git.
+
+The distribution IPA passes both the independent release audit and the enhanced
+Mach-O/Hermes verifier. The actual archived route context also passes the
+13-route discovery smoke. Its hashes are:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Distribution IPA | `319f0a461896c8173d931aea1b90d2b05cd0c750c36c09d01151d582dd5f906b` |
+| Bundled Hermes bytecode | `7282798a22e73ce26340a82326b194408dd69da343c1ccc9602952cb3b0ef1ae` |
+| Archive source map | `c2fa09122670e1ef5a5d321b23437e51f2b7533bbe2317758aaf96948bf803af` |
+
+A development-signed derivative was exported from the same immutable archive
+and independently checked for identical JavaScript, valid signatures, a matching
+certificate/profile, and preserved application/team/keychain identifiers. Its
+installation did not proceed: the CoreDevice network connection became
+unavailable before an installation session could be established. The user then
+requested TestFlight delivery without waiting for the physical test.
+
+**The replacement's startup has not been tested on the physical iPhone.** The
+device reproduction above concerns the broken installed build, while the new
+build's evidence covers compilation, packaging, route discovery and signatures.
+
+## TestFlight delivery
+
+The distribution IPA was uploaded once, successfully, in 80.600 seconds. App
+Store Connect readback at `2026-09-24T00:56:30.547Z` confirms build
+`20260924001000` is `VALID`, non-expired and `IN_BETA_TESTING`, with verified
+membership in the existing internal group `27pm`. The French Canadian test
+notes were applied and read back successfully. Their SHA-256 is
+`ed6f6ccdee5d345d6cd540ad224febced170e49223e78efefe0032e9c18e6c66`.
+
+The notes explicitly ask for startup verification on the user's iPhone. Apple
+processing and internal TestFlight availability do not establish device runtime
+success. Upload, processing, group membership and notes receipts are retained
+under `~/Library/Developer/Xcode/SwarmerTestFlight/20260924001000`.
