@@ -62,7 +62,58 @@ writer and legacy-contract run passed 291. The project worker suite passed
 461 with 5 skips. Ruff, mypy and diff checks passed for the changed sources.
 These counts overlap and must not be added together.
 
-The deployed immutable release and real-model qualification are recorded after
-activation. Production must backport only this change onto the existing
-runtime: the repository also contains unrelated undeployed features. The live
-project files and schema are not migration targets.
+The production release backports only this change onto the existing runtime:
+the repository also contains unrelated undeployed features. Live project files
+and the schema were preserved. Deployment and real-model evidence follow.
+
+## Live model qualification
+
+On 2026-09-24 at 04:22–04:24 UTC, source `e654659` was exercised in a temporary
+local database with a benign, seeded CRM snapshot. The actual Ubuntu planner
+selected `research.query` followed by `writing.draft` for a new request for
+Python sqlite3 documentation and a French explanation. It did not dispatch
+another coding iteration. Actual SearXNG returned five results; the actual text
+model returned a French draft with three source links. There was one planner
+request (22.766 s), one search request and one writer request (62.599 s), with no
+retry. Model-call accounting increased from 2 to 4.
+
+The snapshot digest before and after was
+`cca6c65bdb2937c2f7f9f072d000d05ae3c4a18874439254d429ad19ca2898ef`.
+No production database was accessed, no file application or approval was
+created, and the private SSH forwarding was stopped. The fixture was not a
+model-generated CRM; this proves live routing, search and sourced drafting,
+not full application completion or physical iPhone behavior.
+
+Private receipt: `Library/Logs/SwarmerDeploy/agent-routing-20260924/live-model-qualification/run-bmogxf84/receipt.json`.
+SHA-256: `726ae1327032df6be86a9c07d461c915915abf12722b3cc9537e3346f787d478`.
+
+## Production deployment
+
+Source commit `e654659c26dc4b030d65441636c02c0f920c0d99` was pushed to both
+`origin/main` and `vibecode/main`. Reviewed narrow backports were deployed on
+Ubuntu rather than shipping unrelated changes from the source tree.
+
+| Component | Active immutable release | Independent verification (UTC) |
+| --- | --- | --- |
+| Project worker | `e9de98269e1f18413871139a446bd77442d5986f-44acc1e0deb8` | 2026-09-24 04:33:20 |
+| Text worker | `e654659c26dc4b030d65441636c02c0f920c0d99-48a389352797` | 2026-09-24 04:36:41 |
+| API | `ff2f31ee6f91cf68e84691a846a1ae4c6ab8c1e0-8eb0e92e5c21` | 2026-09-24 04:40:45 |
+
+The final API verification saw six online workers with fresh authenticated
+heartbeats. The 37 protected database fingerprints stayed identical through
+all three cutovers, including 14 projects and 318 saved revisions. There were
+no active jobs or goals at cutover. No project was cancelled or resumed, and no
+database restoration was performed. Schema version 26, model configuration,
+worker identities, credentials and runtime bindings remained unchanged.
+
+A separate root check at 04:41:06 UTC verified the exact API release, the
+installed handoff module hash and HTTP 200 with health `ok` (API 0.14.2).
+The installed `worker_context.py` SHA-256 is
+`a48839a43e65e6ad37b6abf58654c044231a530d595146846161d3cdb9bd86b8`.
+Production readiness was checked without submitting a goal to the live database;
+the real inference exercise above used its own temporary database. No physical
+iPhone test or new TestFlight binary is claimed by this backend deployment.
+
+Private final API receipt:
+`Library/Logs/SwarmerDeploy/agent-routing-20260924/receipts/api/independent-verification.json`.
+SHA-256: `e562e21220e1d3acb0f7b66f97f95bee31ac4b2f43581df42e92849445fc0521`.
