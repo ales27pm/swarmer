@@ -13,7 +13,7 @@ from app.services.model_wire_schema import (
 )
 from app.services.plan_validation import PlanValidationError, parse_swarm_plan_json
 from app.services.planner_graph_wire import constrain_planner_graph, decode_planner_graph
-from app.services.planner_provider import worker_node_array_schema
+from app.services.planner_provider import UbuntuSwarmPlannerProvider, worker_node_array_schema
 from app.services.swarm_contracts import MAX_PLAN_NODES, SwarmPlanProposal
 
 
@@ -108,6 +108,21 @@ def test_parallel_sources_and_optional_edges_are_not_serialized_into_a_chain() -
     assert plan.max_parallelism == 2
     assert [node.dependencies for node in plan.nodes] == [[], [], ["step_1"]]
     assert [node.optional_dependencies for node in plan.nodes] == [[], [], ["step_2"]]
+
+
+def test_prompt_example_is_a_valid_complete_plan_with_independent_deliverables() -> None:
+    example_line = next(
+        line for line in UbuntuSwarmPlannerProvider.SYSTEM_PROMPT.splitlines()
+        if line.startswith('{"00_temporary_id"')
+    )
+    wire = _wire(_body("writing.draft"))
+    wire["nodes"] = json.loads(example_line)
+    schema = constrain_planner_graph(_source_schema(["writing.draft"]))
+    assert Draft202012Validator(schema).is_valid(wire)
+    plan = _public(wire)
+    assert [node.temporary_id for node in plan.nodes] == ["step_1", "step_2"]
+    assert all(node.required_skill == "writing.draft" for node in plan.nodes)
+    assert all(not node.dependencies and not node.optional_dependencies for node in plan.nodes)
 
 
 @pytest.mark.parametrize("count", [1, MAX_PLAN_NODES])

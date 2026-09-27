@@ -5,8 +5,10 @@
 Read-only inspection of the reported goal confirmed successive planner rejections for
 unknown dependencies, a cycle, and a self-dependency. A later call naturally produced
 an accepted five-node plan before this fix. Raw rejected proposals were not retained,
-so their exact text cannot be reconstructed. The operator did not resume, cancel,
-modify, or execute this project.
+so their exact text cannot be reconstructed. No project operation was performed during this initial inspection. Later, on the
+user’s explicit instruction to stop the active evaluation, the canonical cancellation
+API cancelled the goal/run and fenced its current worker job. All four stored project
+revision rows had the same content fingerprint before and after cancellation.
 
 The reproduced general defect is a contract gap: the previous generation schema
 accepted arbitrary dependency identifiers that the strict public DAG validator correctly
@@ -44,3 +46,29 @@ and argument restrictions, query aliases, charged calls, stale-call fencing, coo
 and recovery. Independent comparison found the evaluator schema byte-for-byte equal
 for 193 capability combinations. Static analysis and the focused integration suites
 pass. Runtime probe and deployment evidence are recorded below when verified.
+
+
+## Live model qualification
+
+The first native probes using only prose instructions returned a valid one-step chain
+while their rationale claimed multiple deliverables. Both finished with `stop`, well
+below the token limit. The linked grammar itself worked when three steps were required
+in a diagnostic fixture. A complete nested example was therefore added to the actual
+prompt, explicitly distinguishing list order from execution dependencies and requiring
+all requested deliverables before the final null link.
+
+With the ordinary one-to-twenty-step grammar and that prompt, the installed Ollama
+planner returned three valid steps in 18.696 seconds: research, writing dependent on
+that research, and an independent directory listing. This was one model call and no
+goal, worker, tool, or database write. It verifies this benign multi-agent fixture;
+it is not evidence that arbitrary generated projects are complete.
+
+Private probe receipt: `planner-dependency-20260927/probe/candidate-20260927T231553Z/receipt.json`.
+Response SHA-256: `d38e58eb0fbdaf704586f342558a35ba2a3ad837f75e356cf3a71bd7e3379ac2`.
+The prompt example is also decoded and validated against the production contract in
+a regression test, which confirms that independent example steps remain independent.
+
+A single-deliverable control with the same prompt returned exactly one writing step,
+no dependencies, and parallelism one in 17.592 seconds. It used one model call and
+created no tasks or database writes. Receipt: `probe/candidate-20260927T232323Z/receipt.json`.
+Response SHA-256: `d7c09b275e96dfd42fbf129680d571f2ebcaebd68307b02c608462563dd484c9`.
