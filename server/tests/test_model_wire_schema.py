@@ -3,12 +3,13 @@ from typing import Annotated, Any
 from unittest.mock import patch
 
 import pytest
+from jsonschema import Draft202012Validator
+from pydantic import BaseModel, Field
+
 from app.services.evaluator_provider import UbuntuEvaluatorProvider
 from app.services.model_wire_schema import model_wire_schema
 from app.services.planner_provider import UbuntuSwarmPlannerProvider
 from app.services.swarm_contracts import EvaluationDecision, SwarmPlanProposal
-from jsonschema import Draft202012Validator
-from pydantic import BaseModel, Field
 
 
 @pytest.mark.parametrize("model", [SwarmPlanProposal, EvaluationDecision])
@@ -86,11 +87,8 @@ def test_identifier_quantifier_comes_from_its_declared_bound_only() -> None:
     assert public["properties"]["prose"]["maxLength"] == 4_000
 
 
-@pytest.mark.parametrize("provider", ["planner", "evaluator"])
 @pytest.mark.parametrize("field", ["temporary_id", "dependencies", "optional_dependencies"])
-def test_actual_provider_grammars_reject_overlong_ids_in_worker_nodes(
-    provider: str, field: str
-) -> None:
+def test_actual_provider_grammars_reject_overlong_ids_in_worker_nodes(field: str) -> None:
     node: dict[str, Any] = {
         "00_required_skill": "writing.draft",
         "temporary_id": "draft",
@@ -102,33 +100,36 @@ def test_actual_provider_grammars_reject_overlong_ids_in_worker_nodes(
         "expected_output": "Overview",
         "priority": 1,
     }
-    if provider == "planner":
-        schema = UbuntuSwarmPlannerProvider._response_format(available_skills=["writing.draft"])[
-            "json_schema"
-        ]["schema"]
-        value = {
-            "schema_version": "1.0",
-            "objective": "Overview",
-            "rationale_summary": "Write.",
-            "nodes": [node],
-            "completion_criteria": ["Overview"],
-            "max_parallelism": 1,
-        }
-    else:
-        schema = UbuntuEvaluatorProvider._response_format(["writing.draft"])["json_schema"][
-            "schema"
-        ]
-        value = {
-            "00_schema_version": "1.0",
-            "10_invalid_results": [],
-            "20_missing_requirements": ["Overview"],
-            "30_reason_summary": "A draft is needed.",
-            "40_status": "replan",
-            "50_suggested_new_nodes": [node],
-            "60_user_question": None,
-            "70_completion_summary": None,
-        }
+    schema = UbuntuEvaluatorProvider._response_format(["writing.draft"])["json_schema"]["schema"]
+    value = {
+        "00_schema_version": "1.0",
+        "10_invalid_results": [],
+        "20_missing_requirements": ["Overview"],
+        "30_reason_summary": "A draft is needed.",
+        "40_status": "replan",
+        "50_suggested_new_nodes": [node],
+        "60_user_question": None,
+        "70_completion_summary": None,
+    }
     validator = Draft202012Validator(schema)
     for length in (1, 64, 65, 67, 74):
         node[field] = "n" * length if field == "temporary_id" else ["n" * length]
         assert validator.is_valid(value) is (length <= 64)
+
+
+@pytest.mark.parametrize(
+    "field", ["00_temporary_id", "02_dependencies", "03_optional_dependencies"]
+)
+def test_planner_grammar_requires_fixed_step_ids_and_preceding_dependencies(field: str) -> None:
+    from tests.test_planner_provider import _graph_wire_proposal, _proposal
+
+    schema = UbuntuSwarmPlannerProvider._response_format(available_skills=["writing.draft"])[
+        "json_schema"
+    ]["schema"]
+    wire = _graph_wire_proposal(_proposal("writing.draft"))
+    validator = Draft202012Validator(schema)
+    validator.validate(wire)
+    for length in (1, 64, 65, 67, 74):
+        invalid = deepcopy(wire)
+        invalid["nodes"][field] = "n" * length if field == "00_temporary_id" else ["n" * length]
+        assert not validator.is_valid(invalid)

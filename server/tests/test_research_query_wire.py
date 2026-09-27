@@ -25,7 +25,7 @@ from tests.test_evaluator import (
     evaluation_context,
     wire_decision,
 )
-from tests.test_planner_provider import _planner_context, _proposal
+from tests.test_planner_provider import _graph_wire_proposal, _planner_context, _proposal
 
 Kind = Literal["planner", "evaluator"]
 QUERY = "bibliothèques Sorel-Tracy services"
@@ -43,9 +43,10 @@ def public_response(kind: Kind, skill: str | None = "research.query") -> dict[st
 
 
 def wire_response(kind: Kind, value: dict[str, Any]) -> dict[str, Any]:
-    wire = deepcopy(value if kind == "planner" else wire_decision(value, node_aliases=False))
-    field = "nodes" if kind == "planner" else "50_suggested_new_nodes"
-    for node in wire[field]:
+    if kind == "planner":
+        return _graph_wire_proposal(value)
+    wire = deepcopy(wire_decision(value, node_aliases=False))
+    for node in wire["50_suggested_new_nodes"]:
         if node["required_skill"] == "research.query":
             node["search_query"] = node.pop("objective")
         node["00_required_skill"] = node.pop("required_skill")
@@ -53,7 +54,14 @@ def wire_response(kind: Kind, value: dict[str, Any]) -> dict[str, Any]:
 
 
 def wire_nodes(kind: Kind, value: dict[str, Any]) -> list[dict[str, Any]]:
-    return value["nodes" if kind == "planner" else "50_suggested_new_nodes"]
+    if kind == "evaluator":
+        return value["50_suggested_new_nodes"]
+    bodies = []
+    step = value["nodes"]
+    while step is not None:
+        bodies.append(step["01_node"])
+        step = step["04_next"]
+    return bodies
 
 
 def grammar(kind: Kind, skills: list[str]) -> Draft202012Validator:
@@ -146,7 +154,10 @@ async def test_new_wire_and_legacy_response_produce_identical_public_contract(
     )
     actual = await through_provider(kind, json.dumps(wire))
     model = SwarmPlanProposal if kind == "planner" else EvaluationDecision
-    assert actual == model.model_validate(public)
+    expected = deepcopy(public)
+    if kind == "planner" and not legacy:
+        expected["nodes"][0]["temporary_id"] = "step_1"
+    assert actual == model.model_validate(expected)
     assert "search_query" not in actual.model_dump_json()
 
 
@@ -307,8 +318,16 @@ def test_connected_writer_grammar_excludes_inert_synthesis_but_keeps_real_worker
     assert connected.is_valid(writing)
     assert connected.is_valid(research)
     # Preserve real aggregation of tool results, including non-writing work.
-    dependent = deepcopy(synthesis)
-    wire_nodes(kind, dependent)[0]["dependencies"] = ["completed_research"]
+    if kind == "planner":
+        public = public_response(kind, None)
+        source = public_response(kind)["nodes"][0]
+        source["temporary_id"] = "completed_research"
+        public["nodes"][0]["dependencies"] = ["completed_research"]
+        public["nodes"].insert(0, source)
+        dependent = wire_response(kind, public)
+    else:
+        dependent = deepcopy(synthesis)
+        wire_nodes(kind, dependent)[0]["dependencies"] = ["completed_research"]
     assert connected.is_valid(dependent)
     assert grammar(kind, []).is_valid(synthesis)
     assert grammar(kind, ["research.query"]).is_valid(synthesis)

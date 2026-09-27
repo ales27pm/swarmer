@@ -114,13 +114,14 @@ def test_swift_arguments_survive_constrained_plan_and_dispatch() -> None:
         )
         == ARGS
     )
-    raw["00_required_skill"] = raw.pop("required_skill")
+    from tests.test_planner_provider import _graph_wire_proposal
+
     validator = Draft202012Validator(
         UbuntuSwarmPlannerProvider._response_format()["json_schema"]["schema"]
     )
-    assert validator.is_valid(_plan([raw]))
+    assert validator.is_valid(_graph_wire_proposal(_plan([raw])))
     raw["worker_arguments"] = {"source_sha256": "guess", "shell": "swift test"}
-    assert not validator.is_valid(_plan([raw]))
+    assert not validator.is_valid(_graph_wire_proposal(_plan([raw])))
 
 
 @pytest.mark.asyncio
