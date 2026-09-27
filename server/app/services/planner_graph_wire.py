@@ -1,4 +1,4 @@
-"""Bounded, planner-only graph grammar; the public DAG contract stays unchanged."""
+"""Counted, planner-only graph grammar; the public DAG contract stays unchanged."""
 
 from __future__ import annotations
 
@@ -15,16 +15,17 @@ _WRAPPER_FIELDS = (
     "01_node",
     "02_dependencies",
     "03_optional_dependencies",
-    "04_next",
 )
+_CHAIN_FIELDS = (*_WRAPPER_FIELDS, "04_next")
+_COUNT_FIELDS = frozenset({"00_node_count", "01_steps"})
 _GRAPH_FIELDS = frozenset({"temporary_id", "dependencies", "optional_dependencies"})
 
 
 def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
-    """Encode topologically listed nodes using shared, bounded step definitions.
+    """Select a bounded count first, then emit exactly that many shared steps.
 
-    ``04_next`` is only the wire representation of the node list, never an
-    execution dependency. Every position can still declare independent work.
+    The count prevents a repeated next-link decision from extending an already
+    complete plan. Slot order is serialization, never an execution dependency.
     Body groups retain the existing capability-specific dependency bounds, so
     synthesis still needs evidence and legacy code generation stays standalone.
     The already materialized worker branches and the input schema are not changed.
@@ -65,9 +66,6 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
         for group_index, (dependencies, optional, _) in enumerate(groups.values(), start=1):
             if any(field.get("minItems", 0) > len(prior_ids) for field in (dependencies, optional)):
                 continue
-            next_schema: dict[str, Any] = {"type": "null"}
-            if index < MAX_PLAN_NODES:
-                next_schema = {"anyOf": [{"type": "null"}, {"$ref": f"#/$defs/Step{index + 1}"}]}
             alternatives.append(
                 {
                     "type": "object",
@@ -77,7 +75,6 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
                         "01_node": {"$ref": f"#/$defs/PlannerGraphBody{group_index}"},
                         "02_dependencies": _prior_dependencies(dependencies, prior_ids),
                         "03_optional_dependencies": _prior_dependencies(optional, prior_ids),
-                        "04_next": next_schema,
                     },
                     "required": list(_WRAPPER_FIELDS),
                 }
@@ -87,7 +84,28 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
         definitions[f"Step{index}"] = (
             alternatives[0] if len(alternatives) == 1 else {"anyOf": alternatives}
         )
-    result["properties"]["nodes"] = {"$ref": "#/$defs/Step1"}
+    counted_alternatives = []
+    for count in range(1, MAX_PLAN_NODES + 1):
+        slots = {
+            f"step_{index:02d}": {"$ref": f"#/$defs/Step{index}"} for index in range(1, count + 1)
+        }
+        counted_alternatives.append(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "00_node_count": {"type": "integer", "const": count},
+                    "01_steps": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": slots,
+                        "required": list(slots),
+                    },
+                },
+                "required": ["00_node_count", "01_steps"],
+            }
+        )
+    result["properties"]["nodes"] = {"anyOf": counted_alternatives}
     return result
 
 
@@ -97,7 +115,7 @@ def _prior_dependencies(schema: dict[str, Any], prior_ids: list[str]) -> dict[st
     result["items"] = {"type": "string", **({"enum": prior_ids} if prior_ids else {})}
     result["description"] = (
         "Exact IDs of preceding steps supplying input; use [] for independent work. "
-        "The next link does not imply a dependency."
+        "Slot order does not imply a dependency."
     )
     return result
 
@@ -110,23 +128,21 @@ def decode_planner_graph(value: Mapping[str, object]) -> dict[str, object]:
     overlapping hard/optional edges, and all node payload constraints.
     """
     result = dict(value)
-    current = value.get("nodes")
-    if isinstance(current, list):
+    wire = value.get("nodes")
+    if isinstance(wire, list):
         return result
-    if not isinstance(current, Mapping):
-        raise _invalid_fields("planner nodes must be a nonempty step chain or a legacy node array")
+    if not isinstance(wire, Mapping):
+        raise _invalid_fields("planner nodes must be a counted graph, legacy chain or node array")
+    steps = _counted_steps(wire) if _COUNT_FIELDS & wire.keys() else _legacy_steps(wire)
     nodes: list[dict[str, object]] = []
     prior_ids: set[str] = set()
-    while current is not None:
-        if len(nodes) >= MAX_PLAN_NODES:
-            raise _invalid_fields(f"planner step chain exceeds {MAX_PLAN_NODES} nodes")
-        if not isinstance(current, Mapping) or current.keys() != set(_WRAPPER_FIELDS):
-            raise _invalid_fields("planner step has missing, unknown, or malformed wire fields")
+    for current in steps:
         node_id = f"step_{len(nodes) + 1}"
         if current["00_temporary_id"] != node_id:
             raise _invalid_fields("planner step IDs must be consecutive and match their positions")
         body = current["01_node"]
-        if not isinstance(body, Mapping) or (_GRAPH_FIELDS | set(_WRAPPER_FIELDS)) & body.keys():
+        forbidden = _GRAPH_FIELDS | set(_CHAIN_FIELDS) | _COUNT_FIELDS
+        if not isinstance(body, Mapping) or forbidden & body.keys():
             raise _invalid_fields("planner node body cannot shadow graph wire fields")
         dependencies = _decode_dependencies(current["02_dependencies"], node_id, prior_ids)
         optional = _decode_dependencies(current["03_optional_dependencies"], node_id, prior_ids)
@@ -139,9 +155,39 @@ def decode_planner_graph(value: Mapping[str, object]) -> dict[str, object]:
             }
         )
         prior_ids.add(node_id)
-        current = current["04_next"]
     result["nodes"] = nodes
     return result
+
+
+def _counted_steps(wire: Mapping[str, object]) -> list[Mapping[str, object]]:
+    if wire.keys() != _COUNT_FIELDS:
+        raise _invalid_fields("planner counted graph has missing or unknown fields")
+    count, slots = wire["00_node_count"], wire["01_steps"]
+    if type(count) is not int or not 1 <= count <= MAX_PLAN_NODES:
+        raise _invalid_fields(f"planner node count must be an integer from 1 to {MAX_PLAN_NODES}")
+    keys = [f"step_{index:02d}" for index in range(1, count + 1)]
+    if not isinstance(slots, Mapping) or slots.keys() != set(keys):
+        raise _invalid_fields("planner slots must match the declared node count exactly")
+    steps: list[Mapping[str, object]] = []
+    for key in keys:
+        step = slots[key]
+        if not isinstance(step, Mapping) or step.keys() != set(_WRAPPER_FIELDS):
+            raise _invalid_fields("planner step has missing, unknown, or malformed wire fields")
+        steps.append(step)
+    return steps
+
+
+def _legacy_steps(wire: Mapping[str, object]) -> list[Mapping[str, object]]:
+    steps: list[Mapping[str, object]] = []
+    current: object = wire
+    while current is not None:
+        if len(steps) >= MAX_PLAN_NODES:
+            raise _invalid_fields(f"planner step chain exceeds {MAX_PLAN_NODES} nodes")
+        if not isinstance(current, Mapping) or current.keys() != set(_CHAIN_FIELDS):
+            raise _invalid_fields("planner step has missing, unknown, or malformed wire fields")
+        steps.append(current)
+        current = current["04_next"]
+    return steps
 
 
 def _decode_dependencies(value: object, node_id: str, prior_ids: set[str]) -> list[str]:

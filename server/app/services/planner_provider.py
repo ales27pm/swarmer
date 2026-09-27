@@ -277,15 +277,18 @@ describing missing execution capabilities; do not pretend that the available run
 or modify software. A synthesis node requires required_skill=null and preferred_agent_constraints=null.
 Choose the worker deliverables first; then add a synthesis only if those declared workers
 produce results that need literal concatenation. Prefer listing input nodes before dependents.
-The wire field nodes is an ordered chain, not an array. Each step contains exactly
-00_temporary_id, 01_node, 02_dependencies, 03_optional_dependencies and 04_next.
-Use the fixed IDs step_1, step_2, ... in order, with at most 20 steps. Put worker or
-synthesis content inside 01_node, without IDs or dependency fields in that body.
+The wire field nodes is a counted object, not an array or a next-link chain.
+First choose 00_node_count from 1 through 20: the smallest count that covers every
+requested deliverable and its necessary inputs. Then write 01_steps with exactly
+that many slots named step_01, step_02, ... . Do not repeat a completed deliverable.
+Each slot contains exactly 00_temporary_id, 01_node, 02_dependencies and
+03_optional_dependencies. The ID in slot step_01 is step_1, in step_02 it is step_2,
+and so on. Put worker or synthesis content inside 01_node, without graph fields.
 Dependencies may name only earlier step IDs. Put input steps before consumers.
 For example, a research step_1 has 02_dependencies=[]; its writer step_2 uses
 02_dependencies=["step_1"]. Independent steps use [] for both dependency lists.
-04_next holds the next step or null to end the plan. It is only serialization order,
-NOT an execution dependency: independent steps can still run in parallel.
+Slot order is only serialization, NOT an execution dependency: independent steps
+can still run in parallel. Emit no 04_next field and no slot beyond the chosen count.
 Never insert a goal ID or result/card ID as a dependency. Do not add a synthesis for a
 single already-complete deliverable. Preserve all requested work and required inputs.
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
@@ -356,18 +359,16 @@ search_query to the public node objective; all other nodes still use objective.
 The writing.draft objective carries
 the requested answer format, language and other writing requirements.
 
-Before ending a step with 04_next=null, account for every requested deliverable.
-A terminal next link ends the ENTIRE plan, not just the current worker. If another
-worker must use its result or do other requested work, put that worker in 04_next.
+Count every requested deliverable and necessary input before writing 01_steps.
 The rationale and completion criteria must describe the nodes actually present.
 Never add hard or optional dependencies just because a step appears later.
 An independent step has both dependency arrays empty.
 For example, two independent writing deliverables use this nodes shape (adapt the
 objectives and skills to the actual request; these are only structural examples):
-{"00_temporary_id":"step_1","01_node":{"00_required_skill":"writing.draft","node_type":"worker","title":"Premier livrable","objective":"Rédiger le premier livrable demandé.","expected_output":"Premier texte demandé.","priority":50,"preferred_agent_constraints":null,"worker_arguments":null},"02_dependencies":[],"03_optional_dependencies":[],"04_next":{"00_temporary_id":"step_2","01_node":{"00_required_skill":"writing.draft","node_type":"worker","title":"Second livrable","objective":"Rédiger le second livrable demandé.","expected_output":"Second texte demandé.","priority":50,"preferred_agent_constraints":null,"worker_arguments":null},"02_dependencies":[],"03_optional_dependencies":[],"04_next":null}}
-For dependent work, keep this nesting and put the earlier step ID in 02_dependencies.
-Continue nesting step_3 and so on whenever the request needs further deliverables.
+{"00_node_count":2,"01_steps":{"step_01":{"00_temporary_id":"step_1","01_node":{"00_required_skill":"writing.draft","node_type":"worker","title":"Premier livrable","objective":"Rédiger le premier livrable demandé.","expected_output":"Premier texte demandé.","priority":50,"preferred_agent_constraints":null,"worker_arguments":null},"02_dependencies":[],"03_optional_dependencies":[]},"step_02":{"00_temporary_id":"step_2","01_node":{"00_required_skill":"writing.draft","node_type":"worker","title":"Second livrable","objective":"Rédiger le second livrable demandé.","expected_output":"Second texte demandé.","priority":50,"preferred_agent_constraints":null,"worker_arguments":null},"02_dependencies":[],"03_optional_dependencies":[]}}}
+For dependent work, put the earlier step ID in 02_dependencies.
 Do not return a single node when the request requires several distinct workers.
+
 """
 
     def __init__(

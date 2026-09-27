@@ -56,12 +56,7 @@ def wire_response(kind: Kind, value: dict[str, Any]) -> dict[str, Any]:
 def wire_nodes(kind: Kind, value: dict[str, Any]) -> list[dict[str, Any]]:
     if kind == "evaluator":
         return value["50_suggested_new_nodes"]
-    bodies = []
-    step = value["nodes"]
-    while step is not None:
-        bodies.append(step["01_node"])
-        step = step["04_next"]
-    return bodies
+    return [step["01_node"] for step in value["nodes"]["01_steps"].values()]
 
 
 def grammar(kind: Kind, skills: list[str]) -> Draft202012Validator:

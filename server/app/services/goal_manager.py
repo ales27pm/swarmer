@@ -2024,6 +2024,12 @@ class GoalManager:
                     "node_count": len(proposal.nodes),
                     "plan_fingerprint": validated.fingerprint,
                     "memory_context_fingerprint": memory_context_fingerprint,
+                    "rationale_summary": (
+                        redact_dataset_text(proposal.rationale_summary) or ""
+                    )[:4_000],
+                    "node_ids": list(by_temp.values()),
+                    "model_call_id": model_call_id,
+                    "conversation_revision": int(current["conversation_revision"]),
                 },
                 actor_type="control-plane",
                 actor_id="goal-manager",
@@ -4189,6 +4195,26 @@ class GoalManager:
             await db.execute(
                 "UPDATE tasks SET status='running',updated_at=? WHERE id=(SELECT root_task_id FROM goal_runs WHERE id=?)",
                 (now, goal["id"]),
+            )
+            await append_audit_event(
+                db,
+                "goal.replan.accepted",
+                {
+                    "goal_run_id": goal["id"],
+                    "planner_source": source.value,
+                    "plan_fingerprint": validated.fingerprint,
+                    "rationale_summary": (
+                        redact_dataset_text(proposal.rationale_summary) or ""
+                    )[:4_000],
+                    "node_ids": list(by_temp.values()),
+                    "model_call_id": model_call_id,
+                    "conversation_revision": int(current["conversation_revision"]),
+                },
+                actor_type="control-plane",
+                actor_id="goal-manager",
+                task_id=str(goal["root_task_id"]),
+                trace_id=str(goal["id"]),
+                created_at=now,
             )
             if model_call_id is not None:
                 cursor = await db.execute(

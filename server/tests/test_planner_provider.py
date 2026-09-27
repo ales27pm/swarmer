@@ -83,20 +83,19 @@ def _graph_wire_proposal(proposal: dict[str, object]) -> dict[str, object]:
         ).static_order()
     )
     identifiers = {key: f"step_{index + 1}" for index, key in enumerate(order)}
-    following = None
-    for key in reversed(order):
+    slots = {}
+    for index, key in enumerate(order, start=1):
         node = nodes[key]
         node.pop("temporary_id")
-        following = {
+        slots[f"step_{index:02d}"] = {
             "00_temporary_id": identifiers[key],
             "01_node": node,
             "02_dependencies": [identifiers[dep] for dep in node.pop("dependencies")],
             "03_optional_dependencies": [
                 identifiers[dep] for dep in node.pop("optional_dependencies", [])
             ],
-            "04_next": following,
         }
-    wire["nodes"] = following
+    wire["nodes"] = {"00_node_count": len(slots), "01_steps": slots}
     return wire
 
 

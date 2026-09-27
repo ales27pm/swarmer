@@ -118,6 +118,8 @@ from app.services.orchestrator_service import OrchestratorError, OrchestratorSer
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.planner_provider import UbuntuLLMPlannerProvider, UbuntuSwarmPlannerProvider
 from app.services.project_contracts import ProjectApplication, ProjectApplyRequest, ProjectPreview
+from app.services.project_graph import ProjectGraphEvidenceError, read_project_graph
+from app.services.project_graph_contracts import ProjectGraph
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.result_aggregator import ResultAggregator
@@ -1410,6 +1412,22 @@ def create_app(config: Settings | None = None) -> FastAPI:
         del principal
         response.headers["Cache-Control"] = "private, no-store"
         return await activity_page("goal", goal_id, limit, cursor)
+
+    @app.get("/goals/{goal_id}/graph", response_model=ProjectGraph)
+    async def get_project_graph(
+        goal_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> ProjectGraph:
+        del principal
+        response.headers["Cache-Control"] = "private, no-store"
+        try:
+            graph = await read_project_graph(settings.db_path, goal_id)
+        except (ProjectGraphEvidenceError, sqlite3.Error) as exc:
+            raise HTTPException(status_code=503, detail="project graph evidence unavailable") from exc
+        if graph is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        return graph
 
     @app.get("/goals/{goal_id}", response_model=GoalDetail)
     async def get_goal(
