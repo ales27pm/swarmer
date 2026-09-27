@@ -355,6 +355,19 @@ query itself, with no objective field. Do not copy the full goal into it. The se
 search_query to the public node objective; all other nodes still use objective.
 The writing.draft objective carries
 the requested answer format, language and other writing requirements.
+
+Before ending a step with 04_next=null, account for every requested deliverable.
+A terminal next link ends the ENTIRE plan, not just the current worker. If another
+worker must use its result or do other requested work, put that worker in 04_next.
+The rationale and completion criteria must describe the nodes actually present.
+Never add hard or optional dependencies just because a step appears later.
+An independent step has both dependency arrays empty.
+For example, two independent writing deliverables use this nodes shape (adapt the
+objectives and skills to the actual request; these are only structural examples):
+{"00_temporary_id":"step_1","01_node":{"00_required_skill":"writing.draft","node_type":"worker","title":"Premier livrable","objective":"Rédiger le premier livrable demandé.","expected_output":"Premier texte demandé.","priority":50,"preferred_agent_constraints":null,"worker_arguments":null},"02_dependencies":[],"03_optional_dependencies":[],"04_next":{"00_temporary_id":"step_2","01_node":{"00_required_skill":"writing.draft","node_type":"worker","title":"Second livrable","objective":"Rédiger le second livrable demandé.","expected_output":"Second texte demandé.","priority":50,"preferred_agent_constraints":null,"worker_arguments":null},"02_dependencies":[],"03_optional_dependencies":[],"04_next":null}}
+For dependent work, keep this nesting and put the earlier step ID in 02_dependencies.
+Continue nesting step_3 and so on whenever the request needs further deliverables.
+Do not return a single node when the request requires several distinct workers.
 """
 
     def __init__(
