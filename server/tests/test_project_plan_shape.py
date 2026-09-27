@@ -211,14 +211,7 @@ def test_planner_generation_schema_supports_mixed_project_dags_with_server_singl
     schema = UbuntuSwarmPlannerProvider._response_format()["json_schema"]["schema"]
     validator = Draft202012Validator(schema)
 
-    def wire(plan: dict[str, Any]) -> dict[str, Any]:
-        result = deepcopy(plan)
-        for node in result["nodes"]:
-            skill = node.pop("required_skill")
-            node["00_required_skill"] = skill
-            if skill == "research.query":
-                node["search_query"] = node.pop("objective")
-        return result
+    from tests.test_planner_provider import _graph_wire_proposal as wire
 
     assert validator.is_valid(wire(_plan([_node("project", "code.build_project")])))
     assert validator.is_valid(wire(valid_plan()))
@@ -228,7 +221,7 @@ def test_planner_generation_schema_supports_mixed_project_dags_with_server_singl
         assert validator.is_valid(wire(_plan([_node("worker", skill), _node("summary", None)])))
     for case in ("synthesis", "dependencies", "optional_dependencies", "independent"):
         assert validator.is_valid(wire(_plan(_mixed_nodes(case)))), case
-    # Use the supported items.anyOf grammar. Cross-item uniqueness is enforced
+    # Cross-node mutator limits are enforced
     # by the independent server parser, not unsupported contains/maxContains.
     for case in ("mixed_legacy", "two_projects", "two_legacy"):
         duplicate = _plan(_invalid_nodes(case))
@@ -287,12 +280,9 @@ def test_legacy_generator_cannot_claim_it_consumes_other_worker_results(
     with pytest.raises(PlanValidationError, match="legacy.*dependencies"):
         validate_evaluation_decision(decision, policy=policy)
     schema = UbuntuSwarmPlannerProvider._response_format()["json_schema"]["schema"]
-    wire = deepcopy(proposal)
-    for item in wire["nodes"]:
-        item["00_required_skill"] = item.pop("required_skill")
-        if item["00_required_skill"] == "research.query":
-            item["search_query"] = item.pop("objective")
-    assert not Draft202012Validator(schema).is_valid(wire)
+    from tests.test_planner_provider import _graph_wire_proposal
+
+    assert not Draft202012Validator(schema).is_valid(_graph_wire_proposal(proposal))
 
 
 @pytest.mark.asyncio

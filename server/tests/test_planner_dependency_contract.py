@@ -16,7 +16,7 @@ from app.services.planner_provider import SwarmPlannerProviderError, UbuntuSwarm
 from app.services.swarm_contracts import GoalCreateRequest, GoalStartRequest
 from tests.test_goal_runtime_recovery import _manager, _worker_plan
 from tests.test_plan_validation import valid_plan
-from tests.test_planner_provider import _wire_proposal
+from tests.test_planner_provider import _graph_wire_proposal, _proposal, _wire_proposal
 
 
 def response_for(proposal):
@@ -58,11 +58,58 @@ def test_wire_grammar_prioritizes_real_workers_before_dependent_synthesis():
         available_skills=["research.query", "writing.draft", "workspace.read_text"]
     )["json_schema"]["schema"]
     Draft202012Validator.check_schema(schema)
-    branches = schema["properties"]["nodes"]["items"]["anyOf"]
-    assert all(branch["properties"]["node_type"]["const"] == "worker" for branch in branches[:-1])
-    assert branches[-1]["properties"]["node_type"]["const"] == "synthesis"
-    assert branches[-1]["properties"]["dependencies"]["minItems"] == 1
-    assert "temporary_id" in branches[-1]["properties"]["dependencies"]["description"]
+    validator = Draft202012Validator(schema)
+    assert not validator.is_valid(_graph_wire_proposal(_proposal(None)))
+    plan = _proposal("writing.draft")
+    synthesis = _proposal(None)["nodes"][0]
+    synthesis["temporary_id"] = "join"
+    synthesis["dependencies"] = ["deliverable"]
+    plan["nodes"].append(synthesis)
+    validator.validate(_graph_wire_proposal(plan))
+
+
+@pytest.mark.asyncio
+async def test_provider_decodes_ordered_research_inputs_without_serializing_independent_work():
+    plan = _proposal("research.query")
+    independent = _proposal("workspace.list_dir")["nodes"][0]
+    independent["temporary_id"] = "inventory"
+    writer = _proposal("writing.draft")["nodes"][0]
+    writer["temporary_id"] = "answer"
+    writer["dependencies"] = ["deliverable"]
+    plan["nodes"].extend([independent, writer])
+    plan["max_parallelism"] = 2
+    wire = _graph_wire_proposal(plan)
+    context = {
+        "cards": [
+            {"kind": "goal", "card_id": "goal:goal_current"},
+            {
+                "kind": "agent_card",
+                "skills": ["research.query", "workspace.list_dir", "writing.draft"],
+            },
+        ]
+    }
+    response = httpx.Response(
+        200,
+        request=httpx.Request("POST", "http://127.0.0.1:8711/v1/chat/completions"),
+        json={"choices": [{"message": {"content": json.dumps(wire)}}]},
+    )
+    post = AsyncMock(return_value=response)
+    provider = UbuntuSwarmPlannerProvider(base_url="http://127.0.0.1:8711/v1", model="local")
+    with patch("httpx.AsyncClient.post", post):
+        parsed = await provider.propose(context)
+    assert post.await_count == 1
+    Draft202012Validator(
+        post.await_args.kwargs["json"]["response_format"]["json_schema"]["schema"]
+    ).validate(wire)
+    assert parsed.max_parallelism == 2
+    assert [node.required_skill for node in parsed.nodes] == [
+        "research.query",
+        "workspace.list_dir",
+        "writing.draft",
+    ]
+    assert [node.dependencies for node in parsed.nodes] == [[], [], ["step_1"]]
+    assert all(node.optional_dependencies == [] for node in parsed.nodes)
+    assert parsed.nodes[0].objective == plan["nodes"][0]["objective"]
 
 
 def test_graph_parser_keeps_valid_unordered_dags_unchanged():

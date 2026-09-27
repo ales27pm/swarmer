@@ -89,10 +89,11 @@ def test_specialist_plan_requires_arguments_and_generation_schema_constrains_the
         SwarmPlanNodeProposal.model_validate(raw)
     raw["worker_arguments"] = {"path": "customers.sqlite"}
     assert SwarmPlanNodeProposal.model_validate(raw).worker_arguments == raw["worker_arguments"]
-    raw["00_required_skill"] = raw.pop("required_skill")
+    from tests.test_planner_provider import _graph_wire_proposal
+
     validator = Draft202012Validator(
         UbuntuSwarmPlannerProvider._response_format()["json_schema"]["schema"]
     )
-    assert validator.is_valid(_plan([raw]))
+    assert validator.is_valid(_graph_wire_proposal(_plan([raw])))
     raw["worker_arguments"] = {"shell": "arbitrary"}
-    assert not validator.is_valid(_plan([raw]))
+    assert not validator.is_valid(_graph_wire_proposal(_plan([raw])))

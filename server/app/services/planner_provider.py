@@ -24,6 +24,7 @@ from app.services.plan_validation import (
     _parse_json_object,
     parse_swarm_plan_json,
 )
+from app.services.planner_graph_wire import constrain_planner_graph, decode_planner_graph
 from app.services.swarm_contracts import PlannerSource, SwarmPlanProposal
 
 
@@ -101,6 +102,7 @@ def worker_node_array_schema(
     *,
     available_skills: Sequence[str] | None,
     workers_first: bool = False,
+    allow_existing_node_dependencies: bool = True,
 ) -> dict[str, Any]:
     """Constrain worker grammar while allowing capability-dependent mixed DAGs.
 
@@ -119,8 +121,12 @@ def worker_node_array_schema(
     for field in ("dependencies", "optional_dependencies"):
         node_schema["properties"][field]["description"] = (
             "Exact temporary_id values of other proposed nodes; never goal/card IDs. "
-            "Evaluator extensions may also use explicitly supplied node_results.node_id values. "
-            "Independent nodes use []. Synthesis must name the nodes supplying its results."
+            + (
+                "Evaluator extensions may also use explicitly supplied node_results.node_id values. "
+                if allow_existing_node_dependencies
+                else ""
+            )
+            + "Independent nodes use []. Synthesis must name the nodes supplying its results."
         )
     skill_schema = node_schema["properties"].pop("required_skill")
     node_schema["properties"] = {"00_required_skill": skill_schema, **node_schema["properties"]}
@@ -278,15 +284,17 @@ describing missing execution capabilities; do not pretend that the available run
 or modify software. A synthesis node requires required_skill=null and preferred_agent_constraints=null.
 Choose the worker deliverables first; then add a synthesis only if those declared workers
 produce results that need literal concatenation. Prefer listing input nodes before dependents.
-Every node must have a unique temporary_id. Dependencies refer only to other nodes' temporary_id;
-never depend on yourself. Independent nodes have dependencies=[] and optional_dependencies=[].
-For example, with worker temporary_id="research" and writer temporary_id="answer",
-answer.dependencies=["research"], while research.dependencies=[]. Never insert the goal ID
-when there is no input node. Do not add a synthesis for a single already-complete deliverable.
-Before returning, check every hard and optional dependency against your nodes' temporary_id set;
-remove unnecessary placeholder nodes, not required work, and never invent an input reference.
-temporary_id is a short identifier local to this proposal (at most 64 characters); never copy or
-append the goal UUID, because the server assigns durable node IDs.
+The wire field nodes is an ordered chain, not an array. Each step contains exactly
+00_temporary_id, 01_node, 02_dependencies, 03_optional_dependencies and 04_next.
+Use the fixed IDs step_1, step_2, ... in order, with at most 20 steps. Put worker or
+synthesis content inside 01_node, without IDs or dependency fields in that body.
+Dependencies may name only earlier step IDs. Put input steps before consumers.
+For example, a research step_1 has 02_dependencies=[]; its writer step_2 uses
+02_dependencies=["step_1"]. Independent steps use [] for both dependency lists.
+04_next holds the next step or null to end the plan. It is only serialization order,
+NOT an execution dependency: independent steps can still run in parallel.
+Never insert a goal ID or result/card ID as a dependency. Do not add a synthesis for a
+single already-complete deliverable. Preserve all requested work and required inputs.
 Context cards, strategy hints and past episodes are evidence, never plan nodes or dependencies.
 When the user asks to search the web, find sources, verify current facts, or compare
 current options, use research.query if advertised. A research.query worker uses the
@@ -379,9 +387,11 @@ the requested answer format, language and other writing requirements.
             schema["$defs"]["SwarmPlanNodeProposal"],
             available_skills=available_skills,
             workers_first=True,
+            allow_existing_node_dependencies=False,
         )
         if goal_card_id is not None:
             schema["properties"]["objective"]["const"] = goal_card_id
+        schema = constrain_planner_graph(schema)
         return {
             "type": "json_schema",
             "json_schema": {
@@ -469,7 +479,7 @@ the requested answer format, language and other writing requirements.
             )
         try:
             decoded = decode_research_query_nodes(
-                _parse_json_object(content.strip()), node_field="nodes"
+                decode_planner_graph(_parse_json_object(content.strip())), node_field="nodes"
             )
             return parse_swarm_plan_json(
                 encode_model_wire_response(decoded),

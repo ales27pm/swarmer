@@ -13,7 +13,7 @@ from app.services.planner_provider import UbuntuSwarmPlannerProvider
 from app.services.specialist_contracts import SPECIALIST_SKILLS
 from app.services.swarm_contracts import SwarmPlanNodeProposal
 from tests.test_evaluator import continue_decision, wire_decision
-from tests.test_planner_provider import _proposal, _wire_proposal
+from tests.test_planner_provider import _graph_wire_proposal, _proposal
 
 
 def schema_and_wire(consumer: str, node: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -23,7 +23,7 @@ def schema_and_wire(consumer: str, node: dict[str, Any]) -> tuple[dict[str, Any]
         raw = _proposal(skill)
         raw["nodes"] = [node]
         schema = UbuntuSwarmPlannerProvider._response_format(available_skills=available)
-        wire = _wire_proposal(raw)
+        wire = _graph_wire_proposal(raw)
     else:
         raw = continue_decision()
         raw["suggested_new_nodes"] = [node]
