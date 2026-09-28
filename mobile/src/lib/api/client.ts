@@ -1,5 +1,6 @@
 import { fetch } from "expo/fetch";
 import { parseProjectContext } from "./project-context";
+import { parseProjectGraph, type ProjectGraph } from "./project-graph";
 import { activityCursor, activityIdentifier, parseActivityPage, type ActivityPage, type ActivityScopeType } from "@/lib/api/activity";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -921,6 +922,11 @@ export function getGoal(
     undefined,
     shouldAccept,
   );
+}
+
+export async function getProjectGraph(goalId: string, shouldAccept: () => boolean = () => true): Promise<ProjectGraph> {
+  activityIdentifier(goalId);
+  return parseProjectGraph(await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/graph`, undefined, shouldAccept), goalId);
 }
 
 function goalStartBody(input?: GoalStartInput): string {

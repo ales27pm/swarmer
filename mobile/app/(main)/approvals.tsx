@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Text, View } from "react-native";
+import { AppState, Linking, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
+import { SettingsDisclosure, SettingsNavigationRow } from "@/components/settings-section";
 import {
   ActionButton,
   ApprovalDecisionCard,
@@ -45,6 +46,21 @@ const CAPABILITY_LABELS: Record<IPhoneCapabilityName, string> = {
   "iphone.photos.pick": "Choisir une photo",
   "iphone.mail.compose": "Composer un courriel",
   "iphone.sms.compose": "Composer un SMS",
+};
+
+const CAPABILITY_EFFECTS: Record<IPhoneCapabilityName, string> = {
+  "iphone.location.current": "La position actuelle sera transmise à l’agent après l’accès autorisé par iOS.",
+  "iphone.contacts.lookup": "Les contacts correspondant à cette recherche seront transmis à l’agent.",
+  "iphone.calendar.events": "Les événements de cette période seront transmis à l’agent.",
+  "iphone.calendar.reminders": "Les rappels demandés seront transmis à l’agent.",
+  "iphone.calendar.calendars": "Les noms et identifiants des calendriers seront transmis à l’agent.",
+  "iphone.calendar.event.create": "Un événement sera ajouté au calendrier indiqué.",
+  "iphone.calendar.event.update": "L’événement indiqué sera modifié dans le calendrier.",
+  "iphone.calendar.reminder.create": "Un rappel sera ajouté à la liste indiquée.",
+  "iphone.calendar.reminder.update": "Le rappel indiqué sera mis à jour.",
+  "iphone.photos.pick": "Tu choisiras la photo à partager dans le sélecteur iOS.",
+  "iphone.mail.compose": "Le brouillon s’ouvrira dans iOS. Tu gardes la décision de l’envoyer.",
+  "iphone.sms.compose": "Le brouillon s’ouvrira dans iOS. Tu gardes la décision de l’envoyer.",
 };
 
 function textLength(value: string | undefined): number {
@@ -125,7 +141,7 @@ function capabilityResultNotice(result: CapabilityResult): string {
     case "cancelled":
       return "Action annulée dans iOS; résultat transmis.";
     case "denied":
-      return "Permission iOS refusée; résultat transmis.";
+      return "Autorisation iOS refusée; résultat transmis.";
     case "failed":
       return "Échec de l’action iPhone; résultat transmis.";
   }
@@ -240,11 +256,13 @@ function IPhoneCapabilityCard({
   busy,
   locked,
   onDecision,
+  onOpenTask,
   request,
 }: {
   busy: string | null;
   locked: boolean;
   onDecision: (decision: CapabilityAuthorizationDecision) => void;
+  onOpenTask: () => void;
   request: CapabilityRequestDetail;
 }) {
   const expired = useCapabilityExpiry(request.expires_at);
@@ -255,22 +273,20 @@ function IPhoneCapabilityCard({
       <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 17, fontWeight: "800" }}>
         {CAPABILITY_LABELS[request.capability]}
       </Text>
-      <Text selectable style={{ color: COLORS.muted }}>
-        Demande : {request.request_id}
+      <Text accessibilityLiveRegion="polite" style={{ color: expired ? COLORS.danger : recoveringGrant ? COLORS.accent : COLORS.warning, fontSize: 13, fontWeight: "600" }}>
+        {expired ? "Autorisation expirée" : recoveringGrant ? "Autorisation accordée · récupération nécessaire" : "Autorisation demandée"}
       </Text>
-      <Text selectable style={{ color: COLORS.muted }}>
-        Agent : {request.agent_id} · appareil : {request.target_device_id}
-      </Text>
-      <Text selectable style={{ color: expired ? COLORS.danger : COLORS.muted }}>
-        Expiration : {request.expires_at}
-      </Text>
-      <Text selectable style={{ color: COLORS.muted }}>
-        Empreinte exacte : {request.action_digest}
-      </Text>
-      <Text style={{ color: COLORS.text }}>{capabilitySafeSummary(request)}</Text>
+      <Text selectable style={{ color: COLORS.muted, fontSize: 13 }}>Agent : {request.agent_id}</Text>
+      <View style={{ gap: 6, paddingVertical: 8 }}>
+        <Text style={{ color: COLORS.text, fontSize: 13, fontWeight: "700" }}>Effet de l’action</Text>
+        <Text style={{ color: COLORS.text, lineHeight: 21 }}>{CAPABILITY_EFFECTS[request.capability]}</Text>
+        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>{capabilitySafeSummary(request)}</Text>
+      </View>
+      <Text selectable style={{ color: expired ? COLORS.danger : COLORS.muted, fontSize: 12 }}>Expiration : {request.expires_at}</Text>
+      <ActionButton label="Voir la tâche concernée" onPress={onOpenTask} testID={`capability-task-${request.request_id}`} />
       {recoveringGrant ? (
         <Text accessibilityRole="alert" style={{ color: COLORS.warning }}>
-          L’accord est déjà enregistré, mais son secret à usage unique n’est plus disponible sur cet iPhone. Une nouvelle autorisation explicite remplacera l’ancien secret non consommé.
+          L’autorisation est déjà enregistrée, mais son secret à usage unique n’est plus disponible sur cet iPhone. Une nouvelle autorisation explicite remplacera l’ancien secret non consommé.
         </Text>
       ) : null}
       {expired ? (
@@ -308,6 +324,13 @@ function IPhoneCapabilityCard({
           />
         )}
       </View>
+      <SettingsDisclosure title="Détails de l’autorisation" grouped testID={`capability-details-${request.request_id}`}>
+        <Text selectable style={{ color: COLORS.muted }}>Tâche : {request.task_id}</Text>
+        <Text selectable style={{ color: COLORS.muted }}>Demande : {request.request_id}</Text>
+        <Text selectable style={{ color: COLORS.muted }}>Appareil : {request.target_device_id}</Text>
+        <Text selectable style={{ color: COLORS.muted }}>Demandée le : {request.created_at}</Text>
+        <Text selectable style={{ color: COLORS.muted }}>Empreinte exacte : {request.action_digest}</Text>
+      </SettingsDisclosure>
     </Card>
   );
 }
@@ -343,7 +366,7 @@ function useApprovalQueue() {
         setOffline(true);
         setError(
           cached.length
-            ? `Hors ligne — accords en cache, décisions désactivées. ${message}`
+            ? `Hors ligne — autorisations en cache, décisions désactivées. ${message}`
             : message,
         );
       } catch {
@@ -540,7 +563,7 @@ function EmptyApprovalQueue({
   if (items.length || capabilityItems.length || loading || unavailable) return null;
   return (
     <EmptyState
-      title="Aucun accord en attente"
+      title="Aucune autorisation en attente"
       subtitle="Les actions sensibles et les demandes iPhone apparaîtront ici avant toute exécution."
     />
   );
@@ -581,6 +604,7 @@ function PendingDecisionLists({
             busy={capabilityBusy}
             locked={capabilityRefreshing || capabilityBusy !== null}
             onDecision={(decision) => onCapabilityDecision(item.request_id, decision)}
+            onOpenTask={() => onOpenTask(item.task_id)}
             request={item}
           />
         ))}
@@ -610,12 +634,13 @@ export default function ApprovalsScreen() {
   const router = useRouter();
   const { approvalQueue, capabilityQueue, refreshAll } = useApprovalQueues();
   const refreshing = approvalQueue.refreshing || capabilityQueue.refreshing;
+  const [deviceSettingsError, setDeviceSettingsError] = useState<string | null>(null);
 
   return (
     <ScreenShell
       showTitle={false}
-      title="Accords"
-      subtitle="Chaque secret d’autorisation est à usage unique. Seule la récupération explicite d’un secret approuvé mais perdu peut le remplacer."
+      title="Autorisations"
+      subtitle="Examine l’action et son effet avant de décider. Chaque autorisation vaut une seule fois."
       onRefresh={() => void refreshAll()}
       refreshing={refreshing}
       testID="approvals-screen"
@@ -625,7 +650,7 @@ export default function ApprovalsScreen() {
       <ActionButton
         busy={refreshing}
         disabled={capabilityQueue.busy !== null || approvalQueue.deciding !== null}
-        label="Actualiser les accords"
+        label="Actualiser les autorisations"
         onPress={() => void refreshAll()}
         testID="refresh-approvals-button"
       />
@@ -661,6 +686,17 @@ export default function ApprovalsScreen() {
           router.push({ pathname: "/task/[id]", params: { id: taskId } })
         }
       />
+      <SettingsNavigationRow
+        title="Autorisations de cet appareil"
+        description="Gérer les accès de monGARS dans les réglages iOS."
+        icon="authorization"
+        testID="settings-open-device-settings"
+        onPress={() => {
+          setDeviceSettingsError(null);
+          void Linking.openSettings().catch(() => setDeviceSettingsError("Impossible d’ouvrir les réglages du système. Ouvre-les depuis ton appareil."));
+        }}
+      />
+      <ErrorBanner message={deviceSettingsError} />
     </ScreenShell>
   );
 }

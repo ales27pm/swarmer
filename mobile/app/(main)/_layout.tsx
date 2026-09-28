@@ -27,14 +27,14 @@ export default function MainLayout() {
       tabBarItemStyle: { paddingTop: 4 },
       tabBarStyle: { minHeight: 64, backgroundColor: COLORS.panel, borderTopColor: "#2c3e43" },
     }}>
-      <Tabs.Screen name="index" options={{ title: "monGARS", tabBarLabel: "Assistant", tabBarIcon: icon("assistant") }} />
+      <Tabs.Screen name="index" options={{ title: "monGARS", tabBarLabel: "Chat", tabBarIcon: icon("assistant") }} />
+      <Tabs.Screen name="swarm" options={{ title: "Projets", tabBarIcon: icon("projects") }} />
       <Tabs.Screen name="tasks" options={{ title: "Activité", tabBarIcon: icon("activity") }} />
-      <Tabs.Screen name="swarm" options={{ title: "Équipe", tabBarIcon: icon("team") }} />
       <Tabs.Screen name="settings" options={{ title: "Réglages", tabBarIcon: icon("settings") }} />
       <Tabs.Screen name="approvals" options={{ href: null, title: "Autorisations", headerLeft: back("/tasks") }} />
       <Tabs.Screen name="memory" options={{ href: null, title: "Mémoire", headerLeft: back("/settings") }} />
-      <Tabs.Screen name="agents" options={{ href: null, title: "Agents connectés", headerLeft: back("/swarm") }} />
-      <Tabs.Screen name="catalog" options={{ href: null, title: "Compétences", headerLeft: back("/swarm") }} />
+      <Tabs.Screen name="agents" options={{ href: null, title: "Agents connectés", headerLeft: back("/settings") }} />
+      <Tabs.Screen name="catalog" options={{ href: null, title: "Compétences", headerLeft: back("/settings") }} />
     </Tabs>
   );
 }

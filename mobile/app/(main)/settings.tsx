@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { Linking, Text, TextInput, View } from "react-native";
+import { Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
-import { SettingsDisclosure, SettingsNavigationRow } from "@/components/settings-section";
+import { SettingsDisclosure, SettingsGroup, SettingsNavigationRow } from "@/components/settings-section";
 import { SemanticMemoryPanel } from "@/components/semantic-memory-panel";
-import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle, timeAgo, useAccessibilityAnnouncement } from "@/components/swarm-ui";
+import { ActionButton, COLORS, ErrorBanner, SectionTitle, timeAgo, useAccessibilityAnnouncement } from "@/components/swarm-ui";
 import {
   bootstrapSync,
   getServerUrl,
@@ -125,10 +125,10 @@ function AuthenticatedState({ counts }: { counts: Bootstrap["counts"] | undefine
       <SectionTitle title="Données du serveur" />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {entries.map(([label, value]) => (
-          <Card key={String(label)} style={{ alignItems: "center", minWidth: "30%" }}>
+          <View key={String(label)} style={{ gap: 3, minWidth: "28%", paddingVertical: 8 }}>
             <Text style={{ color: COLORS.accent, fontSize: 20, fontWeight: "800" }}>{value}</Text>
             <Text style={{ color: COLORS.muted, fontSize: 11 }}>{label}</Text>
-          </Card>
+          </View>
         ))}
       </View>
     </>
@@ -147,7 +147,7 @@ function AuditJournal({
   return (
     <>
       <SectionTitle title="Journal d’audit" />
-      <Card>
+      <View>
         {audit.length ? audit.map((event) => (
           <View key={event.id} style={{ borderBottomColor: COLORS.border, borderBottomWidth: 1, gap: 3, paddingVertical: 8 }}>
             <Text selectable style={{ color: COLORS.text, fontSize: 12, fontWeight: "700" }}>{event.event_type}</Text>
@@ -164,7 +164,7 @@ function AuditJournal({
               : "Actualise pour charger le journal authentifié de cette connexion."}
           </Text>
         )}
-      </Card>
+      </View>
     </>
   );
 }
@@ -333,11 +333,12 @@ function usePairing({
   };
 }
 
+type SettingsCategory = "connection" | "memory" | "team" | "journal";
+
 export default function SettingsScreen() {
   const router = useRouter();
   const [url, setUrl] = useState("");
-  const [connectionExpanded, setConnectionExpanded] = useState<boolean | null>(null);
-  const [deviceSettingsError, setDeviceSettingsError] = useState<string | null>(null);
+  const [expandedCategory, setExpandedCategory] = useState<SettingsCategory | null>(null);
   const dashboard = useAuthenticatedDashboard(setUrl);
   const pairing = usePairing({
     adoptVerifiedConnection: dashboard.adoptVerifiedConnection,
@@ -346,108 +347,85 @@ export default function SettingsScreen() {
     url,
   });
   useAccessibilityAnnouncement(pairing.notice);
-
-  const showConnection = connectionExpanded ?? !dashboard.paired;
+  const toggleCategory = (category: SettingsCategory) => {
+    setExpandedCategory((current) => current === category ? null : category);
+  };
+  const connectionSummary = dashboard.paired && dashboard.activeUrl
+    ? `Connexion authentifiée : ${dashboard.activeUrl}`
+    : dashboard.refreshing ? "Vérification de la connexion…" : "Connexion non authentifiée ou non vérifiée";
 
   return (
     <ScreenShell
       title="Réglages"
       showTitle={false}
-      subtitle="Tes connexions, tes modèles et ce que l’assistant retient."
+      subtitle="Personnalise monGARS selon tes besoins."
       onRefresh={() => void dashboard.refreshDashboard()}
       refreshing={dashboard.refreshing}
       testID="settings-screen"
     >
-      <SectionTitle title="Connexion" />
-      <Card style={{ gap: 6 }}>
-        <Text accessibilityLiveRegion="polite" selectable style={{ color: dashboard.paired ? COLORS.accent : COLORS.text, fontSize: 15, fontWeight: "600" }}>
-          {dashboard.paired && dashboard.activeUrl
-            ? `Connexion authentifiée : ${dashboard.activeUrl}`
-            : dashboard.refreshing ? "Vérification de la connexion…" : "Connexion non authentifiée ou non vérifiée"}
-        </Text>
-        <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
-          {dashboard.paired ? "Ton iPhone peut accéder aux agents et aux données de ce serveur." : "Jumelle cet iPhone pour retrouver tes agents, tes projets et ta mémoire."}
-        </Text>
-        {pairing.busy || pairing.notice !== "Configure l’adresse, puis saisis un code généré localement sur le serveur." ? (
-          <Text accessibilityLiveRegion="polite" selectable style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>{pairing.notice}</Text>
-        ) : null}
-      </Card>
-      {dashboard.error ? (
-        <>
-          <Text accessibilityRole="alert" selectable style={{ color: COLORS.warning, fontSize: 13, lineHeight: 19 }}>
-            La connexion n’a pas pu être vérifiée. Actualise ou vérifie le jumelage.
-          </Text>
-          <SettingsDisclosure title="Détail de l’erreur" description="Informations utiles pour rétablir la connexion." testID="settings-connection-error-toggle">
+      <View style={{ gap: 10 }}>
+        <SectionTitle title="Connexion" />
+        <SettingsGroup>
+          <SettingsDisclosure
+            title="Serveur et jumelage"
+            description={connectionSummary}
+            icon="server"
+            grouped
+            expanded={expandedCategory === "connection"}
+            onToggle={() => toggleCategory("connection")}
+            testID="settings-connection-toggle"
+          >
             <ErrorBanner message={dashboard.error} />
+            {pairing.busy || pairing.notice !== "Configure l’adresse, puis saisis un code généré localement sur le serveur." ? (
+              <Text accessibilityLiveRegion="polite" selectable style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>{pairing.notice}</Text>
+            ) : null}
+            <ControlPlaneSection activeUrl={dashboard.activeUrl} onUrlChange={setUrl} paired={dashboard.paired} url={url} />
+            <PairingSection
+              busy={pairing.busy}
+              code={pairing.code}
+              deviceName={pairing.deviceName}
+              onCodeChange={(value) => pairing.setCode(value.replace(/\D/g, ""))}
+              onDeviceNameChange={pairing.setDeviceName}
+              onPair={() => void pairing.pair()}
+            />
           </SettingsDisclosure>
-        </>
-      ) : null}
-      <SettingsDisclosure
-        title="Adresse et jumelage"
-        description={dashboard.paired ? "Changer de serveur ou jumeler à nouveau cet iPhone." : "Adresse du serveur et code de connexion à six chiffres."}
-        expanded={showConnection}
-        onToggle={() => setConnectionExpanded(!showConnection)}
-        testID="settings-connection-toggle"
-      >
-        <ControlPlaneSection activeUrl={dashboard.activeUrl} onUrlChange={setUrl} paired={dashboard.paired} url={url} />
-        <PairingSection
-          busy={pairing.busy}
-          code={pairing.code}
-          deviceName={pairing.deviceName}
-          onCodeChange={(value) => pairing.setCode(value.replace(/\D/g, ""))}
-          onDeviceNameChange={pairing.setDeviceName}
-          onPair={() => void pairing.pair()}
-        />
-      </SettingsDisclosure>
+        </SettingsGroup>
+        {dashboard.error ? <Text accessibilityRole="alert" style={{ color: COLORS.warning, fontSize: 13, lineHeight: 19 }}>La connexion n’a pas pu être vérifiée. Ouvre « Serveur et jumelage » pour rétablir l’accès.</Text> : null}
+      </View>
 
-      <SectionTitle title="Intelligence et mémoire" />
-      <SettingsNavigationRow
-        title="Ouvrir les modèles locaux"
-        description="Choisir, télécharger et utiliser un modèle sur cet iPhone."
-        onPress={() => router.push("/local-model")}
-        testID="open-local-model-button"
-      />
-      <SettingsNavigationRow
-        title="Consulter la mémoire"
-        description="Retrouver, ajouter ou modifier les informations conservées sur le serveur."
-        onPress={() => router.push("/memory")}
-        testID="settings-open-memory"
-      />
-      <SettingsDisclosure title="Mémoire et calcul local" description="Vérifier la mémoire du serveur et tester les embeddings sur l’iPhone." testID="settings-memory-toggle">
-        <SemanticMemoryPanel />
-      </SettingsDisclosure>
-      <SettingsDisclosure title="Modèles des agents" description="Comprendre la différence entre les agents du serveur et les modèles de l’iPhone." testID="settings-server-models-toggle">
-        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-          Les agents utilisent les modèles configurés sur ton serveur. Ils peuvent avoir un modèle différent pour la planification, la rédaction ou le code.
-        </Text>
-        <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-          Les modèles téléchargés sur cet iPhone se règlent dans « Modèles locaux ». Les changer ne modifie pas les modèles des agents du serveur.
-        </Text>
-      </SettingsDisclosure>
+      <View style={{ gap: 10 }}>
+        <SectionTitle title="Intelligence" />
+        <SettingsGroup>
+          <SettingsNavigationRow
+            title="Modèles locaux"
+            icon="model"
+            grouped
+            onPress={() => router.push("/local-model")}
+            testID="open-local-model-button"
+          />
+          <SettingsDisclosure title="Mémoire" icon="memory" grouped expanded={expandedCategory === "memory"} onToggle={() => toggleCategory("memory")} testID="settings-memory-toggle">
+            <ActionButton label="Consulter la mémoire" onPress={() => router.push("/memory")} testID="settings-open-memory" />
+            <SemanticMemoryPanel />
+          </SettingsDisclosure>
+          <SettingsDisclosure title="Équipe et compétences" icon="team" grouped expanded={expandedCategory === "team"} onToggle={() => toggleCategory("team")} testID="settings-server-models-toggle">
+            <Text style={{ color: COLORS.muted, lineHeight: 20 }}>Consulte les agents du serveur, leurs modèles et les outils disponibles. Les modèles de cet iPhone se règlent séparément dans « Modèles locaux ».</Text>
+            <ActionButton label="Voir les agents" onPress={() => router.push("/agents")} testID="settings-open-agents" />
+            <ActionButton label="Explorer les compétences" onPress={() => router.push("/catalog")} testID="settings-open-catalog" />
+          </SettingsDisclosure>
+        </SettingsGroup>
+      </View>
 
-      <SectionTitle title="Appareil et autorisations" />
-      <SettingsNavigationRow
-        title="Autorisations en attente"
-        description="Examiner les actions proposées avant de les autoriser."
-        onPress={() => router.push("/approvals")}
-        testID="settings-open-approvals"
-      />
-      <SettingsNavigationRow
-        title="Autorisations de cet appareil"
-        description="Gérer les accès de monGARS dans les réglages du système."
-        onPress={() => {
-          setDeviceSettingsError(null);
-          void Linking.openSettings().catch(() => setDeviceSettingsError("Impossible d’ouvrir les réglages du système. Ouvre-les depuis ton appareil."));
-        }}
-        testID="settings-open-device-settings"
-      />
-      <ErrorBanner message={deviceSettingsError} />
-
-      <SectionTitle title="Diagnostics avancés" />
-      <SettingsDisclosure title="État du serveur et journal" description="Compteurs et événements techniques de la connexion vérifiée." testID="settings-diagnostics-toggle">
-        <AuthenticatedState counts={dashboard.bootstrap?.counts} />
-        <AuditJournal audit={dashboard.audit} auditLoaded={dashboard.auditLoaded} error={dashboard.error} />
-      </SettingsDisclosure>
+      <View style={{ gap: 10 }}>
+        <SectionTitle title="Confidentialité et suivi" />
+        <SettingsGroup>
+          <SettingsNavigationRow title="Autorisations" icon="authorization" grouped onPress={() => router.push("/approvals")} testID="settings-open-approvals" />
+          <SettingsDisclosure title="Journal" icon="journal" grouped expanded={expandedCategory === "journal"} onToggle={() => toggleCategory("journal")} testID="settings-diagnostics-toggle">
+            <ActionButton label="Actualiser le journal" busy={dashboard.refreshing} onPress={() => void dashboard.refreshDashboard()} />
+            <AuthenticatedState counts={dashboard.bootstrap?.counts} />
+            <AuditJournal audit={dashboard.audit} auditLoaded={dashboard.auditLoaded} error={dashboard.error} />
+          </SettingsDisclosure>
+        </SettingsGroup>
+      </View>
     </ScreenShell>
   );
 }

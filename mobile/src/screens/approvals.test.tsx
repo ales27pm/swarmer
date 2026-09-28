@@ -1,5 +1,6 @@
 import { render, screen, userEvent, waitFor, within } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { Linking } from "react-native";
 
 import ApprovalsScreen from "@/../app/(main)/approvals";
 import {
@@ -174,6 +175,8 @@ describe("ApprovalsScreen", () => {
 
     const allow = await screen.findByRole("button", { name: /^Autoriser une fois/ });
     expect(screen.getByText("Cible exacte : notes/result.txt")).toBeOnTheScreen();
+    expect(screen.queryByText(`Empreinte sha256:${"a".repeat(64)}`)).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Détails de l’autorisation" }));
     expect(screen.getByText(`Empreinte sha256:${"a".repeat(64)}`)).toBeOnTheScreen();
     const trusted = screen.getByTestId("approval-trusted-context-apr_test");
     const model = screen.getByTestId("approval-model-context-apr_test");
@@ -182,7 +185,7 @@ describe("ApprovalsScreen", () => {
       within(trusted).getByText(/Writing workspace file content requires explicit one-use approval/),
     ).toBeOnTheScreen();
     expect(within(trusted).getByText(/Writes 8 UTF-8 bytes to notes\/result.txt/)).toBeOnTheScreen();
-    expect(within(trusted).getByText(/Audit : 42/)).toBeOnTheScreen();
+    expect(screen.getByText(/Audit : 42/)).toBeOnTheScreen();
     expect(within(trusted).queryByText(approval.summary)).not.toBeOnTheScreen();
     expect(within(model).getByText(`Libellé public : ${approval.summary}`)).toBeOnTheScreen();
     await user.press(allow);
@@ -265,7 +268,7 @@ describe("ApprovalsScreen", () => {
     await user.press(allow);
     expect(mockDecideApproval).toHaveBeenCalledTimes(1);
 
-    await user.press(screen.getByRole("button", { name: "Actualiser les accords" }));
+    await user.press(screen.getByRole("button", { name: "Actualiser les autorisations" }));
     await waitFor(() => expect(mockListApprovals).toHaveBeenCalledTimes(3));
     expect(screen.queryByTestId("approval-card-apr_test")).not.toBeOnTheScreen();
   });
@@ -276,7 +279,7 @@ describe("ApprovalsScreen", () => {
     await render(<ApprovalsScreen />);
 
     const allow = await screen.findByRole("button", { name: /^Autoriser une fois/ });
-    expect(screen.getByText("Liaison invalide : cet accord ne peut pas être autorisé.")).toBeOnTheScreen();
+    expect(screen.getByText("Liaison invalide : cette autorisation ne peut pas être accordée.")).toBeOnTheScreen();
     await user.press(allow);
 
     expect(mockDecideApproval).not.toHaveBeenCalled();
@@ -291,7 +294,7 @@ describe("ApprovalsScreen", () => {
 
     const allow = await screen.findByRole("button", { name: /^Autoriser une fois/ });
     expect(
-      screen.getByText("Contexte de consentement invalide : cet accord ne peut pas être autorisé."),
+      screen.getByText("Contexte de consentement invalide : cette autorisation ne peut pas être accordée."),
     ).toBeOnTheScreen();
     await user.press(allow);
 
@@ -309,7 +312,7 @@ describe("ApprovalsScreen", () => {
     const deny = screen.getByRole("button", { name: /^Refuser/ });
     expect(allow).toBeDisabled();
     expect(deny).toBeDisabled();
-    expect(screen.getByText(/Hors ligne — accords en cache, décisions désactivées/)).toBeOnTheScreen();
+    expect(screen.getByText(/Hors ligne — autorisations en cache, décisions désactivées/)).toBeOnTheScreen();
     await user.press(allow);
     expect(mockDecideApproval).not.toHaveBeenCalled();
   });
@@ -319,7 +322,7 @@ describe("ApprovalsScreen", () => {
     await render(<ApprovalsScreen />);
 
     expect(await screen.findByText("Accords indisponibles")).toBeOnTheScreen();
-    expect(screen.queryByText("Aucun accord en attente")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Aucune autorisation en attente")).not.toBeOnTheScreen();
   });
 
   it("offers a non-drag refresh action", async () => {
@@ -327,7 +330,7 @@ describe("ApprovalsScreen", () => {
     await render(<ApprovalsScreen />);
 
     await screen.findByText("Cible exacte : notes/result.txt");
-    await user.press(screen.getByRole("button", { name: "Actualiser les accords" }));
+    await user.press(screen.getByRole("button", { name: "Actualiser les autorisations" }));
     await waitFor(() => expect(mockListApprovals).toHaveBeenCalledTimes(2));
   });
 
@@ -338,6 +341,10 @@ describe("ApprovalsScreen", () => {
     const card = await screen.findByTestId(`iphone-capability-card-${capabilityPreview.request_id}`);
     expect(within(card).getByText("Composer un courriel")).toBeOnTheScreen();
     expect(within(card).getByText(`Expiration : ${capabilityPreview.expires_at}`)).toBeOnTheScreen();
+    expect(within(card).getByText("Autorisation demandée")).toBeOnTheScreen();
+    expect(within(card).getByText("Le brouillon s’ouvrira dans iOS. Tu gardes la décision de l’envoyer.")).toBeOnTheScreen();
+    expect(within(card).queryByText(`Empreinte exacte : ${capabilityDetail.action_digest}`)).not.toBeOnTheScreen();
+    await userEvent.setup().press(within(card).getByRole("button", { name: "Détails de l’autorisation" }));
     expect(within(card).getByText(`Empreinte exacte : ${capabilityDetail.action_digest}`)).toBeOnTheScreen();
     expect(within(card).getByText(/Destinataires masqués : 1\/20/)).toBeOnTheScreen();
     expect(screen.queryByText("alice.private@example.test")).not.toBeOnTheScreen();
@@ -472,7 +479,7 @@ describe("ApprovalsScreen", () => {
       expires_at: "2000-09-08T12:05:00.000Z",
     });
     const user = userEvent.setup();
-    await user.press(screen.getByRole("button", { name: "Actualiser les accords" }));
+    await user.press(screen.getByRole("button", { name: "Actualiser les autorisations" }));
 
     const expiredAllow = await screen.findByRole("button", {
       name: "Autoriser l’action iPhone une fois",
@@ -480,4 +487,23 @@ describe("ApprovalsScreen", () => {
     expect(expiredAllow).toBeDisabled();
     expect(screen.getByText("Demande expirée — actualisez la liste.")).toBeOnTheScreen();
   });
+  it("opens the exact iPhone task without granting the action", async () => {
+    mockCapabilityRefresh.mockResolvedValue([capabilityPreview]);
+    await render(<ApprovalsScreen />);
+    await userEvent.setup().press(await screen.findByRole("button", { name: "Voir la tâche concernée" }));
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/task/[id]", params: { id: capabilityPreview.task_id } });
+    expect(mockCapabilityAuthorize).not.toHaveBeenCalled();
+    expect(mockCapabilityExecute).not.toHaveBeenCalled();
+  });
+
+  it("opens iOS authorization settings only on request and reports failure", async () => {
+    const openSettings = jest.spyOn(Linking, "openSettings").mockRejectedValue(new Error("Unavailable"));
+    await render(<ApprovalsScreen />);
+    expect(openSettings).not.toHaveBeenCalled();
+    await userEvent.setup().press(screen.getByRole("button", { name: "Autorisations de cet appareil" }));
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/Impossible d’ouvrir les réglages du système/)).toBeOnTheScreen();
+    openSettings.mockRestore();
+  });
+
 });

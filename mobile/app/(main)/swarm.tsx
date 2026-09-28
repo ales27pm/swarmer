@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { ScreenShell } from "@/components/screen-shell";
 import {
@@ -50,11 +50,6 @@ type SwarmLoadResult = {
 
 const EMPTY_DATA: SwarmData = { agents: [], goals: [], nodes: [], results: [] };
 const CONNECTION_CHANGED = "Le jumelage a changé. Actualise les projets depuis cette connexion.";
-const TEAM_LINKS = [
-  { title: "Agents", label: "Tous les agents", route: "/agents", testID: "swarm-open-agents" },
-  { title: "Compétences", label: "Catalogue des compétences", route: "/catalog", testID: "swarm-open-catalog" },
-  { title: "Autorisations", label: "Voir les autorisations", route: "/approvals", testID: "swarm-open-approvals" },
-] as const;
 const PROFILES: { key: GoalAutonomyProfile; label: string; description: string }[] = [
   { key: "manual", label: "Manuel", description: "Tu pilotes les étapes du projet." },
   { key: "assisted", label: "Assisté", description: "L’équipe t’accompagne dans l’avancement du projet." },
@@ -74,7 +69,7 @@ const GOAL_COLORS: Record<GoalRecord["status"], string> = {
 const GOAL_LABELS: Record<GoalRecord["status"], string> = {
   planning: "Planification",
   running: "En cours",
-  waiting_permission: "Permission",
+  waiting_permission: "Autorisation",
   completed: "Terminé",
   failed: "Échoué",
   cancelled: "Annulé",
@@ -382,73 +377,31 @@ export default function SwarmScreen() {
   const creation = useGoalCreation(source, refreshing, setError);
   const [creationOpen, setCreationOpen] = useState(false);
 
-  const agentNames = useMemo(
-    () => new Map(data.agents.map((agent) => [agent.id, agent.name])),
-    [data.agents],
-  );
-  const activeAgentIds = useMemo(() => new Set(
-    data.nodes
-      .filter((node) => ["dispatched", "running", "waiting_permission", "waiting_capability"].includes(node.status))
-      .map((node) => node.assigned_agent_id)
-      .filter((agentId): agentId is string => Boolean(agentId)),
-  ), [data.nodes]);
+  const params = useLocalSearchParams<{ create?: string }>();
+  useEffect(() => {
+    if (params.create === "1") {
+      setCreationOpen(true);
+      creation.router.setParams?.({ create: undefined });
+    }
+  }, [params.create, creation.router]);
 
   return (
     <ScreenShell
       showTitle={false}
-      title="Équipe"
-      subtitle="Tes agents, leurs compétences et les projets qu’ils accompagnent."
+      title="Projets"
+      subtitle="Un objectif, son contexte et ses résultats au même endroit."
       onRefresh={() => void refresh()}
       refreshing={refreshing}
       testID="swarm-screen"
     >
       <ErrorBanner message={error} />
       <OfflineNotice source={source} />
+      {source !== "authoritative" ? <View style={{ gap: 8 }}>
+        <Text style={{ color: COLORS.muted }}>{refreshing ? "Projets non vérifiés" : "Connecte le serveur pour vérifier les projets."}</Text>
+        <ActionButton label="Vérifier la connexion dans Réglages" onPress={() => creation.router.push("/settings")} testID="swarm-open-settings" />
+      </View> : null}
       {error ? <ActionButton label="Actualiser les projets" onPress={() => void refresh()} busy={refreshing} testID="swarm-retry" /> : null}
       {refreshing && data.goals.length ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.muted }}>Actualisation… Les projets affichés proviennent de la dernière lecture.</Text> : null}
-
-      <Card style={{ gap: 6 }}>
-        <Text style={{ color: COLORS.text, fontSize: 15, fontWeight: "700" }}>
-          {source === null
-            ? "Équipe non vérifiée"
-            : `${activeAgentIds.size} agent${activeAgentIds.size === 1 ? "" : "s"} mobilisé${activeAgentIds.size === 1 ? "" : "s"}${source === "cache" ? " · copie précédente" : ""}`}
-        </Text>
-        <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
-          {source === null
-            ? "Connecte le serveur pour vérifier l’activité."
-            : activeAgentIds.size
-              ? [...activeAgentIds].map((id) => agentNames.get(id) ?? id).join(", ")
-              : source === "cache"
-                ? "Aucun agent mobilisé dans cette copie précédente."
-                : "Aucun agent mobilisé sur ces projets."}
-        </Text>
-        {source !== "authoritative" ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Vérifier la connexion dans Réglages"
-            onPress={() => creation.router.push("/settings")}
-            style={({ pressed }) => ({ justifyContent: "center", minHeight: 44, opacity: pressed ? 0.7 : 1 })}
-            testID="swarm-open-settings"
-          >
-            <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "600" }}>Ouvrir les réglages de connexion ›</Text>
-          </Pressable>
-        ) : null}
-      </Card>
-
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }} testID="swarm-team-navigation">
-        {TEAM_LINKS.map((link) => (
-          <Pressable
-            key={link.route}
-            accessibilityRole="button"
-            accessibilityLabel={link.label}
-            onPress={() => creation.router.push(link.route)}
-            style={({ pressed }) => ({ backgroundColor: COLORS.panel, borderColor: COLORS.border, borderRadius: 12, borderWidth: 0.5, justifyContent: "center", minHeight: 44, paddingHorizontal: 10, opacity: pressed ? 0.7 : 1 })}
-            testID={link.testID}
-          >
-            <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "600" }}>{link.title} ›</Text>
-          </Pressable>
-        ))}
-      </View>
 
       <View style={{ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "space-between" }}>
         <SectionTitle title="Tes projets" />

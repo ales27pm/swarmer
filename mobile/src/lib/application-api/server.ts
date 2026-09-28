@@ -11,6 +11,7 @@ export type {
 } from "@/lib/api/types";
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
 export type { ActivityPage, ActivityItem, ActivityScopeType } from "@/lib/api/activity";
+export type { ProjectGraph } from "@/lib/api/project-graph";
 export type { GoalWritingDraft } from "@/lib/api/writing-draft";
 export type { GoalConversationSession, GoalReplyAttempt, ProjectReview, ProjectPreview } from "@/lib/api/project";
 export type { ApprovalDecisionReceipt, PairingResult } from "@/lib/api/client";
@@ -53,6 +54,7 @@ export const reviewGoalProject: typeof adapter.reviewGoalProject = (id) => call(
 // These callbacks fence React refresh epochs and must still reach the underlying service.
 export const listGoals: typeof adapter.listGoals = (shouldAccept) => invokeApplicationCommand("goals.list", {}, { shouldAccept });
 export const getGoal: typeof adapter.getGoal = (id, shouldAccept) => invokeApplicationCommand("goals.get", { id }, { shouldAccept });
+export const getProjectGraph: typeof adapter.getProjectGraph = (id, shouldAccept) => invokeApplicationCommand("goals.graph", { id }, { shouldAccept });
 export const listGoalNodes: typeof adapter.listGoalNodes = (id, shouldAccept) => invokeApplicationCommand("goals.nodes", { id }, { shouldAccept });
 export const getGoalResult: typeof adapter.getGoalResult = (id, shouldAccept) => invokeApplicationCommand("goals.result", { id }, { shouldAccept });
 export const getGoalWritingDraft: typeof adapter.getGoalWritingDraft = (goalId, nodeId, workerJobId, shouldAccept) => invokeApplicationCommand("goals.writing-draft", { goalId, nodeId, workerJobId }, { shouldAccept });

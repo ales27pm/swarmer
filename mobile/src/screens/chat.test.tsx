@@ -47,6 +47,7 @@ jest.mock("expo-router", () => {
     },
   };
 });
+jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock("@/lib/api/client", () => ({
   bootstrapSync: jest.fn(),
   listMessages: jest.fn(),
@@ -399,7 +400,7 @@ describe("ChatScreen", () => {
     const user = userEvent.setup();
     await render(<ChatScreen />);
 
-    await user.press(await screen.findByRole("button", { name: "Voir 2 accords en attente" }));
+    await user.press(await screen.findByRole("button", { name: "Voir 2 autorisations en attente" }));
     expect(mockPush).toHaveBeenCalledWith("/approvals");
   });
 
@@ -437,7 +438,7 @@ describe("ChatScreen", () => {
     mockBootstrap.mockResolvedValue({ ...bootstrap, counts: { ...bootstrap.counts, approvals_pending: 2 } });
     const user = userEvent.setup();
     await render(<ChatScreen />);
-    await screen.findByText("Serveur connecté · 2 accords en attente");
+    await screen.findByText("Serveur connecté · 2 autorisations en attente");
     await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByTestId("send-button"));
     await waitFor(() => expect(screen.getByTestId("interaction-mode-task")).toBeEnabled());
@@ -449,7 +450,7 @@ describe("ChatScreen", () => {
     await act(async () => notifyConnectionChanged());
     expect(screen.queryByText(message.content)).not.toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Voir la tâche et ses preuves" })).not.toBeOnTheScreen();
-    expect(screen.queryByRole("button", { name: "Voir 2 accords en attente" })).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Voir 2 autorisations en attente" })).not.toBeOnTheScreen();
     expect(screen.getByText("Connexion au serveur à vérifier")).toBeOnTheScreen();
     expect(screen.getByDisplayValue("Préparer mon agenda")).toBeOnTheScreen();
     expect(screen.getByTestId("interaction-mode-task")).toHaveProp("accessibilityState", { selected: true, disabled: false });
@@ -581,4 +582,107 @@ describe("ChatScreen", () => {
     expect(screen.getByTestId("send-button")).toBeDisabled();
     expect(mockSendChat).not.toHaveBeenCalled();
   });
+
+  it("resumes a selected conversation and sends its identifier", async () => {
+    mockBootstrap.mockResolvedValue({ ...bootstrap, conversations: [{ id: "conv_test", title: "Mon agenda", last_message: "Déjà prévu", created_at: task.created_at, updated_at: task.updated_at }] });
+    mockSendChat.mockResolvedValue({ conversation_id: "conv_test", task: null });
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByTestId("open-chat-history"));
+    await user.press(screen.getByRole("button", { name: "Reprendre Mon agenda" }));
+    expect(await screen.findByText(message.content)).toBeOnTheScreen();
+    expect(mockListMessages).toHaveBeenCalledWith("conv_test", expect.any(Function));
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Ajoute mes priorités");
+    await user.press(screen.getByTestId("send-button"));
+    await waitFor(() => expect(mockSendChat).toHaveBeenCalledWith("Ajoute mes priorités", "conv_test", "normal", false, expect.any(Function)));
+  });
+
+  it("preserves drafts per conversation and does not resurrect a sent new-chat draft", async () => {
+    mockBootstrap.mockResolvedValue({ ...bootstrap, conversations: [{ id: "conv_test", title: "Mon agenda", last_message: null, created_at: task.created_at, updated_at: task.updated_at }] });
+    mockSendChat.mockResolvedValue({ conversation_id: "conv_sent", task: null });
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Brouillon nouveau");
+    await user.press(screen.getByTestId("open-chat-history"));
+    await user.press(screen.getByRole("button", { name: "Reprendre Mon agenda" }));
+    await screen.findByText(message.content);
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Brouillon agenda");
+    await user.press(screen.getByTestId("new-chat-button"));
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveDisplayValue("Brouillon nouveau");
+    await user.press(screen.getByTestId("send-button"));
+    await screen.findByText("Réponse conversationnelle reçue. Aucune tâche n’a été créée.");
+    await waitFor(() => expect(screen.getByTestId("new-chat-button")).not.toBeDisabled());
+    await user.press(screen.getByTestId("new-chat-button"));
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveDisplayValue("");
+    await user.press(screen.getByTestId("open-chat-history"));
+    await user.press(screen.getByRole("button", { name: "Reprendre Mon agenda" }));
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveDisplayValue("Brouillon agenda");
+    expect(mockSendChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a late history read after pairing changes and keeps its draft", async () => {
+    mockBootstrap.mockResolvedValue({ ...bootstrap, conversations: [{ id: "conv_test", title: "Mon agenda", last_message: null, created_at: task.created_at, updated_at: task.updated_at }] });
+    const pending = deferred<Message[]>();
+    mockListMessages.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByTestId("open-chat-history"));
+    await user.press(screen.getByRole("button", { name: "Reprendre Mon agenda" }));
+    expect(screen.getByText("Chargement de la discussion…")).toBeOnTheScreen();
+    await act(async () => notifyConnectionChanged());
+    await act(async () => pending.resolve([message]));
+    expect(screen.queryByText(message.content)).not.toBeOnTheScreen();
+    expect(screen.queryByText("Chargement de la discussion…")).not.toBeOnTheScreen();
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("does not let an earlier history read overwrite a newer live read", async () => {
+    mockBootstrap.mockResolvedValue({ ...bootstrap, conversations: [{ id: "conv_test", title: "Mon agenda", last_message: null, created_at: task.created_at, updated_at: task.updated_at }] });
+    const pending = deferred<Message[]>();
+    mockListMessages.mockReturnValueOnce(pending.promise).mockResolvedValue([{ ...message, content: "Message plus récent" }]);
+    const user = userEvent.setup();
+    const view = (revision: number) => <LiveSyncContextProvider value={{ error: null, revision, state: "connected" }}><ChatScreen /></LiveSyncContextProvider>;
+    const rendered = await render(view(0));
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByTestId("open-chat-history"));
+    await user.press(screen.getByRole("button", { name: "Reprendre Mon agenda" }));
+    await rendered.rerender(view(1));
+    expect(await screen.findByText("Message plus récent")).toBeOnTheScreen();
+    await act(async () => pending.resolve([message]));
+    expect(screen.queryByText(message.content)).not.toBeOnTheScreen();
+    expect(screen.queryByText("Chargement de la discussion…")).not.toBeOnTheScreen();
+    expect(screen.getByText("Message plus récent")).toBeOnTheScreen();
+  });
+
+  it("clears a superseded refresh spinner when switching conversation", async () => {
+    const withHistory = { ...bootstrap, conversations: [{ id: "conv_test", title: "Mon agenda", last_message: null, created_at: task.created_at, updated_at: task.updated_at }] };
+    mockBootstrap.mockResolvedValue(withHistory);
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    const pending = deferred<Bootstrap>();
+    mockBootstrap.mockReturnValueOnce(pending.promise);
+    await refocusChat();
+    await user.press(screen.getByTestId("open-chat-history"));
+    await user.press(screen.getByRole("button", { name: "Reprendre Mon agenda" }));
+    await screen.findByText(message.content);
+    await act(async () => pending.resolve(withHistory));
+    expect(screen.getByTestId("chat-screen").props.refreshControl.props.refreshing).toBe(false);
+  });
+
+  it("offers explicit project creation without submitting the current chat draft", async () => {
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Garder ma note");
+    await user.press(screen.getByTestId("chat-new-project"));
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/swarm", params: { create: "1" } });
+    expect(screen.getByDisplayValue("Garder ma note")).toBeOnTheScreen();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
 });

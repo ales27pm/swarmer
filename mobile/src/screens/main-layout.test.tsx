@@ -5,7 +5,7 @@ import MainLayout from "@/../app/(main)/_layout";
 
 type TabScreenProps = {
   name: string;
-  options?: { href?: null; title?: string };
+  options?: { href?: null; title?: string; tabBarLabel?: string };
 };
 
 const mockTabScreen = jest.fn((_props: TabScreenProps) => null);
@@ -32,8 +32,9 @@ describe("MainLayout", () => {
 
     const screens = new Map(mockTabScreen.mock.calls.map(([props]) => [props.name, props]));
     const visible = [...screens.values()].filter((screen) => screen.options?.href !== null).map((screen) => screen.name);
-    expect(visible).toEqual(["index", "tasks", "swarm", "settings"]);
-    expect(screens.get("swarm")).toMatchObject({ options: { title: "Équipe" } });
+    expect(visible).toEqual(["index", "swarm", "tasks", "settings"]);
+    expect(screens.get("index")).toMatchObject({ options: { title: "monGARS", tabBarLabel: "Chat" } });
+    expect(screens.get("swarm")).toMatchObject({ options: { title: "Projets" } });
     expect(screens.get("agents")).toMatchObject({ options: { href: null, title: "Agents connectés" } });
     expect(screens.get("catalog")).toMatchObject({ options: { href: null, title: "Compétences" } });
     expect(screens.get("approvals")).toMatchObject({ options: { href: null, title: "Autorisations" } });

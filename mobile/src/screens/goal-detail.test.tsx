@@ -14,6 +14,7 @@ import {
   startGoal,
   type GoalDetail,
 } from "@/lib/api/client";
+import { notifyConnectionChanged } from "@/lib/connection-events";
 import { localGoalDetail } from "@/lib/state/replica";
 import { useGoalDetailController } from "@/screens/goal-detail-content";
 
@@ -24,6 +25,10 @@ async function refreshFromLiveEvent() {
   await Promise.all([...mockLiveRefreshListeners].map((refresh) => refresh()));
 }
 
+jest.mock("react-native-safe-area-context", () => ({
+  ...jest.requireActual<typeof import("react-native-safe-area-context")>("react-native-safe-area-context"),
+  useSafeAreaInsets: () => ({ top: 24, bottom: 16, left: 0, right: 0 }),
+}));
 jest.mock("expo-router", () => {
   function StackScreen(props: unknown) {
     mockStackScreen(props);
@@ -39,6 +44,8 @@ jest.mock("@/lib/api/client", () => ({
   cancelGoal: jest.fn(),
   createGoalFeedback: jest.fn(),
   getGoal: jest.fn(),
+  getProjectGraph: jest.fn(async () => { throw new Error("Graph unavailable"); }),
+  getActivity: jest.fn(async () => { throw new Error("Activity unavailable"); }),
   getGoalConversation: jest.fn(),
   getGoalWritingDraft: jest.fn(),
   getServerUrl: jest.fn(),
@@ -49,6 +56,7 @@ jest.mock("@/lib/state/replica", () => ({ localGoalDetail: jest.fn() }));
 jest.mock("@/lib/sync/live-sync-context", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   return {
+    useLiveSync: () => ({ state: "connected", revision: 0, error: null }),
     useLiveRefresh: (refresh: () => void | Promise<unknown>) => {
       const latest = React.useRef(refresh);
       React.useEffect(() => { latest.current = refresh; }, [refresh]);
@@ -192,6 +200,38 @@ describe("GoalDetailScreen", () => {
     mockCreateFeedback.mockResolvedValue({ accepted: true });
   });
 
+  it("preserves an unsent project draft and selected step across tabs", async () => {
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("tab", { name: "Échanges" }));
+    await fireEvent.changeText(await screen.findByLabelText("Message pour le projet"), "Ma précision non envoyée");
+    await user.press(screen.getByRole("tab", { name: "Plan" }));
+    await user.press(screen.getByRole("button", { name: "Étape : Vérifier les invariants" }));
+    await user.press(screen.getByRole("button", { name: "Voir les opérations de cette étape" }));
+    expect(screen.getByRole("tab", { name: "Activité" })).toBeSelected();
+    await user.press(screen.getByRole("tab", { name: "Plan" }));
+    expect(screen.getByRole("button", { name: "Étape : Vérifier les invariants" })).toBeSelected();
+    await user.press(screen.getByRole("tab", { name: "Échanges" }));
+    expect(screen.getByDisplayValue("Ma précision non envoyée")).toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft but locks stale goal evidence after pairing changes until an explicit refresh", async () => {
+    mockGetGoal.mockResolvedValue({ ...detail, goal: { ...detail.goal, status: "running" }, result: null });
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("tab", { name: "Échanges" }));
+    await fireEvent.changeText(await screen.findByLabelText("Message pour le projet"), "Brouillon conservé");
+    await act(async () => { notifyConnectionChanged(); });
+    expect(screen.getByDisplayValue("Brouillon conservé")).toBeOnTheScreen();
+    expect(screen.getByText(/Le jumelage a changé. Le dernier état reste en lecture seule/)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Envoyer au projet" })).toBeDisabled();
+    await act(async () => refreshFromLiveEvent());
+    expect(mockGetGoal).toHaveBeenCalledTimes(1);
+    await user.press(screen.getByRole("button", { name: "Actualiser les preuves" }));
+    await waitFor(() => expect(mockGetGoal).toHaveBeenCalledTimes(2));
+  });
+
   it("offers the full document only for a completed writing job and never loads it automatically", async () => {
     mockGetGoal.mockResolvedValue({ ...detail, nodes: [
       { ...detail.nodes[0], id: "write_done", status: "completed", required_skill: "writing.draft", worker_job_id: "job_draft" },
@@ -199,6 +239,7 @@ describe("GoalDetailScreen", () => {
       { ...detail.nodes[0], id: "write_missing_job", status: "completed", required_skill: "writing.draft", worker_job_id: null },
     ] });
     await render(<GoalDetailScreen />);
+    await userEvent.setup().press((await screen.findAllByRole("button", { name: "Étape : Vérifier les invariants" }))[0]);
     expect(await screen.findAllByRole("button", { name: "Lire le document complet" })).toHaveLength(1);
     expect(getGoalWritingDraft).not.toHaveBeenCalled();
   });
@@ -215,7 +256,7 @@ describe("GoalDetailScreen", () => {
   it("hides initial local planning after a server start was requested", async () => {
     mockGetGoal.mockResolvedValue(waitingForWorkers);
     await render(<GoalDetailScreen />);
-    await screen.findByText("En attente d’un agent");
+    await screen.findByText("Phase : En attente d’un agent");
     expect(screen.queryByRole("button", { name: "Préparer le plan sur l’iPhone" })).not.toBeOnTheScreen();
   });
 
@@ -242,6 +283,7 @@ describe("GoalDetailScreen", () => {
     }, prepareReply });
     const user = userEvent.setup();
     await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("tab", { name: "Échanges" }));
     await screen.findByRole("button", { name: "Planifier la suite sur l’iPhone" });
     await fireEvent.changeText(screen.getByLabelText("Message pour le projet"), "Ajoute une recherche aux clients existants.");
     await user.press(screen.getByRole("button", { name: "Planifier la suite sur l’iPhone" }));
@@ -282,13 +324,17 @@ describe("GoalDetailScreen", () => {
     expect(await screen.findByText("Qualifier le runtime distribué")).toBeOnTheScreen();
     expect(screen.getByText(/Les critères publics sont satisfaits/)).toBeOnTheScreen();
     expect(screen.getByText("Vérifier les invariants")).toBeOnTheScreen();
+    await user.press(screen.getByRole("tab", { name: "Résultats" }));
     expect(screen.getByText("Le runtime respecte les invariants observés.")).toBeOnTheScreen();
-    expect(screen.getByText(/Agents en cours : review-worker/)).toBeOnTheScreen();
+    await user.press(screen.getByRole("tab", { name: "Plan" }));
+    await user.press(screen.getByRole("button", { name: "Étape : Vérifier les invariants" }));
+    expect(screen.getByText("Aucun agent en cours.")).toBeOnTheScreen();
     expect(screen.queryByText("PRIVATE GOAL REASONING")).not.toBeOnTheScreen();
     expect(screen.queryByText("PRIVATE NODE REASONING")).not.toBeOnTheScreen();
 
     await user.press(screen.getByRole("button", { name: "Voir la tâche" }));
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/task/[id]", params: { id: "tsk_child" } });
+    await user.press(screen.getByRole("button", { name: "Étape : Vérifier les invariants" }));
     await user.press(screen.getByRole("button", { name: "Voir les accords" }));
     expect(mockPush).toHaveBeenCalledWith("/approvals");
   });
@@ -307,8 +353,10 @@ describe("GoalDetailScreen", () => {
     expect(screen.queryByRole("button", { name: "Démarrer le but" })).not.toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Continuer le but" })).not.toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Demander une replanification" })).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("tab", { name: "Résultats" }));
     expect(screen.getByRole("button", { name: "Noter le résultat 5 sur 5" })).toBeDisabled();
 
+    await user.press(screen.getByRole("tab", { name: "Résultats" }));
     await user.press(screen.getByRole("button", { name: "Noter le résultat 5 sur 5" }));
     expect(mockCreateFeedback).not.toHaveBeenCalled();
     expect(mockCancelGoal).not.toHaveBeenCalled();
@@ -326,6 +374,7 @@ describe("GoalDetailScreen", () => {
     });
     const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
     await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("button", { name: "Options du projet" }));
     await screen.findByRole("button", { name: "Annuler le but" });
 
     await user.press(screen.getByRole("button", { name: "Annuler le but" }));
@@ -345,7 +394,7 @@ describe("GoalDetailScreen", () => {
     mockStartGoal.mockImplementationOnce(async () => retry.promise);
     await render(<GoalDetailScreen />);
 
-    expect(await screen.findByText("En attente d’un agent")).toBeOnTheScreen();
+    expect(await screen.findByText("Phase : En attente d’un agent")).toBeOnTheScreen();
     expect(screen.getByText(/Connectez un agent d’exécution, puis réessayez/)).toBeOnTheScreen();
     expect(screen.getByText(/Aucun appel modèle n’est lancé pendant cette attente/)).toBeOnTheScreen();
     expect(screen.getByText("Aucun agent en cours.")).toBeOnTheScreen();
@@ -361,9 +410,10 @@ describe("GoalDetailScreen", () => {
     expect(mockStartGoal).toHaveBeenCalledTimes(1);
 
     await act(async () => retry.resolve(detail));
+    await user.press(await screen.findByRole("tab", { name: "Résultats" }));
     expect(await screen.findByText("Le runtime respecte les invariants observés.")).toBeOnTheScreen();
     expect(mockGetGoal).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("En attente d’un agent")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Phase : En attente d’un agent")).not.toBeOnTheScreen();
   });
 
   it("keeps a cached worker wait read-only", async () => {
@@ -371,7 +421,7 @@ describe("GoalDetailScreen", () => {
     mockLocalGoal.mockResolvedValue(waitingForWorkers);
     await render(<GoalDetailScreen />);
 
-    expect(await screen.findByText("En attente d’un agent")).toBeOnTheScreen();
+    expect(await screen.findByText("Phase : En attente d’un agent")).toBeOnTheScreen();
     expect(screen.getByText(/Copie locale possiblement périmée/)).toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Réessayer la planification" })).not.toBeOnTheScreen();
     expect(mockStartGoal).not.toHaveBeenCalled();
@@ -390,6 +440,7 @@ describe("GoalDetailScreen", () => {
     });
     await render(<GoalDetailScreen />);
 
+    await userEvent.setup().press(await screen.findByRole("button", { name: "Étape : Vérifier les invariants" }));
     expect(await screen.findByRole("button", { name: "Examiner le code proposé" })).toBeOnTheScreen();
     expect(screen.getByText("Phase : Code prêt à relire")).toBeOnTheScreen();
     expect(screen.getByText(/Le code n’a pas été exécuté/)).toBeOnTheScreen();
@@ -558,6 +609,7 @@ describe("GoalDetailScreen", () => {
 
       expect(await screen.findByText("Phase : Évaluation à réessayer")).toBeOnTheScreen();
       expect(screen.getByText(/Le budget déjà utilisé est conservé/)).toBeOnTheScreen();
+      await userEvent.setup().press(await screen.findByRole("tab", { name: "Échanges" }));
       expect(await screen.findByLabelText("Message pour le projet")).toBeOnTheScreen();
       expect(screen.queryByRole("button", { name: "Répondre à la question" })).not.toBeOnTheScreen();
       expect(screen.queryByText(/Répondez à la question dans la conversation/)).not.toBeOnTheScreen();
@@ -679,6 +731,7 @@ describe("GoalDetailScreen", () => {
       });
 
       await render(<GoalDetailScreen />);
+      await userEvent.setup().press(await screen.findByRole("button", { name: "Options du projet" }));
 
       expect(
         await screen.findByRole("button", { name: "Demander une replanification" }),
@@ -707,11 +760,14 @@ describe("GoalDetailScreen", () => {
     const user = userEvent.setup();
     mockCreateFeedback.mockRejectedValue(new Error("Réponse perdue"));
     await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("tab", { name: "Résultats" }));
     await screen.findByText("Le runtime respecte les invariants observés.");
 
+    await user.press(screen.getByRole("tab", { name: "Résultats" }));
     await user.press(screen.getByRole("button", { name: "Noter le résultat 5 sur 5" }));
     expect(await screen.findByText(/feedback incertain n’est pas renvoyé automatiquement/)).toBeOnTheScreen();
     expect(screen.getByRole("button", { name: "Noter le résultat 5 sur 5" })).toBeDisabled();
+    await user.press(screen.getByRole("tab", { name: "Résultats" }));
     await user.press(screen.getByRole("button", { name: "Noter le résultat 5 sur 5" }));
     expect(mockCreateFeedback).toHaveBeenCalledTimes(1);
   });
@@ -730,6 +786,8 @@ describe("GoalDetailScreen", () => {
         .mockResolvedValueOnce(pending)
         .mockImplementationOnce(async () => reconciliation.promise);
       await render(<GoalDetailScreen />);
+      await screen.findByRole("button", { name: "Options du projet" });
+      if (screen.getByRole("button", { name: "Options du projet" }).props.accessibilityState.expanded !== true) await userEvent.setup().press(screen.getByRole("button", { name: "Options du projet" }));
       expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
       expect(screen.getByRole("button", { name: label })).toBeOnTheScreen();
 
@@ -743,6 +801,8 @@ describe("GoalDetailScreen", () => {
       expect(mockStartGoal).not.toHaveBeenCalled();
 
       await act(async () => reconciliation.resolve(pending));
+      await screen.findByRole("button", { name: "Options du projet" });
+      if (screen.getByRole("button", { name: "Options du projet" }).props.accessibilityState.expanded !== true) await userEvent.setup().press(screen.getByRole("button", { name: "Options du projet" }));
       expect(await screen.findByRole("button", { name: "Annuler le but" })).toBeOnTheScreen();
       expect(screen.getByRole("button", { name: label })).toBeOnTheScreen();
     },

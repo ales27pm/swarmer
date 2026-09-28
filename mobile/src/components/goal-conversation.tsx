@@ -34,8 +34,8 @@ export function GoalConversation({ goal, disabled, onOpenGoal, onOpenLocalPlan, 
       authorityEpoch.current += 1;
       epoch.current += 1;
       deferredRefresh.current = false;
-      setSession(null); setInput(""); setPending(null); setLoading(false);
-      setNotice("Le jumelage a changé. Actualisez la conversation de cette connexion.");
+      setSession(null); setPending(null); setLoading(false);
+      setNotice("Le jumelage a changé. Le brouillon est conservé ; actualisez la conversation avant un nouvel envoi. Un message déjà transmis peut se poursuivre sur l’ancien serveur et n’est pas renvoyé automatiquement.");
     });
     return () => { mounted.current = false; unsubscribe(); };
   }, []);

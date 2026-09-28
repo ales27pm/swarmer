@@ -291,6 +291,8 @@ describe("TaskDetailScreen", () => {
     await render(<TaskDetailScreen />);
 
     expect(await screen.findByText("Cible exacte : release/result.txt")).toBeOnTheScreen();
+    expect(screen.queryByText(`Empreinte sha256:${"b".repeat(64)}`)).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Détails de l’autorisation" }));
     expect(screen.getByText(`Empreinte sha256:${"b".repeat(64)}`)).toBeOnTheScreen();
     const trusted = screen.getByTestId("approval-trusted-context-apr_detail");
     const model = screen.getByTestId("approval-model-context-apr_detail");
@@ -299,7 +301,7 @@ describe("TaskDetailScreen", () => {
       within(trusted).getByText(/Writing workspace file content requires explicit one-use approval/),
     ).toBeOnTheScreen();
     expect(within(trusted).getByText(/Writes 12 UTF-8 bytes to release\/result.txt/)).toBeOnTheScreen();
-    expect(within(trusted).getByText(/Audit : 84/)).toBeOnTheScreen();
+    expect(screen.getByText(/Audit : 84/)).toBeOnTheScreen();
     expect(within(trusted).queryByText(approval.summary)).not.toBeOnTheScreen();
     expect(within(model).getByText(`Libellé public : ${approval.summary}`)).toBeOnTheScreen();
 
@@ -348,7 +350,7 @@ describe("TaskDetailScreen", () => {
     const user = userEvent.setup();
     await render(<TaskDetailScreen />);
 
-    expect(await screen.findByText("Liaison invalide : cet accord ne peut pas être autorisé.")).toBeOnTheScreen();
+    expect(await screen.findByText("Liaison invalide : cette autorisation ne peut pas être accordée.")).toBeOnTheScreen();
     await user.press(screen.getByTestId("detail-allow-button"));
     expect(mockDecideApproval).not.toHaveBeenCalled();
   });

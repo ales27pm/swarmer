@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import * as server from "@/lib/api/client";
 import * as native from "@/lib/local-inference";
 import { applicationApi, ApplicationApiError } from "./index";
-import { createGoal, getActivity, getGoalWritingDraft, listAgents, planTask, sendChat } from "./server";
+import { createGoal, getActivity, getProjectGraph, getGoalWritingDraft, listAgents, planTask, sendChat } from "./server";
 import { createLocalGenerationSession, generateLocalProposal, pickAndImportLocalModel } from "./local-inference";
 import { applicationSessions, ApplicationSessions } from "./sessions";
 import { notifyConnectionChanged } from "@/lib/connection-events";
+import { projectGraphFixture } from "@/testing/project-graph-fixtures";
 import { activityPage } from "@/testing/activity-fixtures";
 import { projectFixture, projectGoalFixture } from "@/testing/project-fixtures";
 import type { LocalPlanContextHandle, GeneratedLocalPlan } from "./outputs";
@@ -25,7 +26,7 @@ jest.mock("expo-constants", () => ({ __esModule: true, default: {
 jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
   listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(), planTask: jest.fn(), sendChat: jest.fn(),
-  listAudit: jest.fn(), getActivity: jest.fn(), getGoalWritingDraft: jest.fn(),
+  listAudit: jest.fn(), getProjectGraph: jest.fn(), getActivity: jest.fn(), getGoalWritingDraft: jest.fn(),
   getSwiftProjectValidation: jest.fn(), cancelSwiftProjectValidation: jest.fn(), createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
 }));
 jest.mock("@/lib/local-inference", () => ({
@@ -64,7 +65,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: null, active: false, operationId: null, outputBytes: 0, state: "idle" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(82);
+    expect(applicationApi.catalog().commands).toHaveLength(83);
     expect(applicationApi.catalog().commands.find((command) => command.name === "models.status")).toMatchObject({ effect: "read", output: { dataType: "LocalInferenceStatus", validation: "existing_parser" } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(native.loadLocalModel).not.toHaveBeenCalled();
@@ -76,7 +77,7 @@ describe("application API contract", () => {
         entitlementGranted: null, executionDevice: "cpu", active: true, operationId: "cpu-operation", outputBytes: 42, state: "active" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(82);
+    expect(applicationApi.catalog().commands).toHaveLength(83);
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
   });
 
@@ -102,6 +103,18 @@ describe("application API contract", () => {
     await expect(applicationApi.execute(`${scope}s.activity`, { id: "id_1" })).resolves.toMatchObject({ data: page });
     await expect(applicationApi.execute(`${scope}s.activity`, { id: "id_1", cursor: "unsafe&other=1" })).rejects.toMatchObject({ code: "invalid_arguments" });
     await expect(applicationApi.execute(`${scope}s.activity`, { id: "id_1", execute: true })).rejects.toMatchObject({ code: "invalid_arguments" });
+  });
+
+  it("exposes the project graph as a readonly fenced command used by the screen", async () => {
+    const graph = projectGraphFixture(); jest.mocked(server.getProjectGraph).mockResolvedValue(graph);
+    const shouldAccept = () => true;
+    expect(await getProjectGraph("goal_preview", shouldAccept)).toEqual(graph);
+    expect(server.getProjectGraph).toHaveBeenCalledWith("goal_preview", shouldAccept);
+    expect(applicationApi.catalog().commands.find((command) => command.name === "goals.graph")).toMatchObject({
+      effect: "read", execution: "immediate", output: { dataType: "ProjectGraph", validation: "existing_parser" },
+    });
+    await expect(applicationApi.execute("goals.graph", { id: "goal_preview", execute: true })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(server.createGoal).not.toHaveBeenCalled();
   });
 
   it("exposes the full writing draft through the same read-only API used by the UI", async () => {

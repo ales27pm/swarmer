@@ -124,13 +124,28 @@ describe("swarm UI primitives", () => {
     );
 
     const trusted = screen.getByTestId("approval-trusted-context-apr_clock");
+    expect(screen.queryByTestId("approval-model-context-apr_clock")).not.toBeOnTheScreen();
+    await userEvent.setup().press(screen.getByRole("button", { name: "Détails de l’autorisation" }));
     const model = screen.getByTestId("approval-model-context-apr_clock");
     expect(within(trusted).getByText(/Clock Phone \(device device-clock\)/)).toBeOnTheScreen();
-    expect(within(trusted).getByText(/Audit : 101/)).toBeOnTheScreen();
+    expect(screen.getByText(/Audit : 101/)).toBeOnTheScreen();
     expect(within(trusted).queryByText(approval.summary)).not.toBeOnTheScreen();
     expect(within(model).getByText(`Libellé public : ${approval.summary}`)).toBeOnTheScreen();
     expect(within(model).getByText("Détails du modèle masqués")).toBeOnTheScreen();
     expect(within(model).getByText("Ce texte n’autorise pas l’action.")).toBeOnTheScreen();
+  });
+
+  it.each<{ status: Approval["status"]; label: string }>([
+    { status: "approved", label: "Accordée" },
+    { status: "denied", label: "Refusée" },
+  ])("shows $status as a decision without claiming execution", async ({ status, label }) => {
+    const onDecision = jest.fn();
+    await render(<ApprovalDecisionCard approval={{ ...approval, status }} busy={null} onDecision={onDecision} />);
+    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent(label);
+    expect(screen.getByText(/L’exécution sera confirmée séparément/)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: /^Autoriser une fois/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Refuser/ })).toBeDisabled();
+    expect(onDecision).not.toHaveBeenCalled();
   });
 
   it("fails closed when a contradictory payload claims validity without evidence", async () => {
@@ -207,6 +222,7 @@ describe("swarm UI primitives", () => {
       />,
     );
     expect(screen.getByRole("button", { name: /^Autoriser une fois/ })).toBeDisabled();
+    await userEvent.setup().press(screen.getByRole("button", { name: "Détails de l’autorisation" }));
     expect(screen.getByText("Empreinte indisponible ou invalide")).toBeOnTheScreen();
 
     await view.rerender(
@@ -313,7 +329,7 @@ describe("swarm UI primitives", () => {
       jest.advanceTimersByTime(1_001);
     });
 
-    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent("Expiré");
+    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent(/^Expirée/);
     expect(screen.getByText("Expiré : cette demande n’est plus actionnable.")).toBeOnTheScreen();
     expect(allow).toBeDisabled();
     expect(deny).toBeDisabled();
@@ -337,7 +353,7 @@ describe("swarm UI primitives", () => {
     );
 
     expect(screen.getByRole("button", { name: /^Autoriser une fois/ })).toBeDisabled();
-    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent("Expiré");
+    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent(/^Expirée/);
   });
 
   it("fails closed immediately when refreshed props move the deadline into the past", async () => {
@@ -361,7 +377,7 @@ describe("swarm UI primitives", () => {
     );
 
     expect(screen.getByRole("button", { name: /^Autoriser une fois/ })).toBeDisabled();
-    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent("Expiré");
+    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent(/^Expirée/);
   });
 
   it("rechecks the wall clock at press time even when the deadline timer is delayed", async () => {
@@ -396,7 +412,7 @@ describe("swarm UI primitives", () => {
     jest.setSystemTime(new Date("2030-01-01T12:00:02Z"));
     await act(() => appStateListener?.("active"));
 
-    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent("Expiré");
+    expect(screen.getByTestId("approval-status-apr_clock")).toHaveTextContent(/^Expirée/);
     expect(screen.getByRole("button", { name: /^Autoriser une fois/ })).toBeDisabled();
   });
 });

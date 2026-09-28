@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { AppState } from "react-native";
 import { LiveSyncContextProvider } from "@/lib/sync/live-sync-context";
 import { ActivityTimeline } from "@/components/activity-timeline";
-import { ApiError, getActivity, type ActivityPage } from "@/lib/application-api/server";
+import { ApiError, getActivity, type ActivityPage, type PlanNode } from "@/lib/application-api/server";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { activityItem, activityPage } from "@/testing/activity-fixtures";
 
@@ -219,6 +219,76 @@ describe("persisted activity timeline", () => {
     await act(async () => listener!("active"));
     expect(await screen.findByText("Relevé au retour")).toBeOnTheScreen();
     expect(load.mock.calls[1][2]).toBeUndefined();
+  });
+
+  it("follows recorded operations while collapsed and reveals who is working and its linked task", async () => {
+    const onOpenTask = jest.fn();
+    const node: PlanNode = { id: "node_1", goal_run_id: "goal_1", node_type: "worker", title: "Chercher les horaires", objective: "Trouver les horaires publiés", status: "running", priority: 1, depends_on: [], created_at: "2026-09-27T12:00:00Z", updated_at: "2026-09-27T12:00:00Z" };
+    load.mockResolvedValue(activityPage([activityItem("search", { title: "Recherche web", status: "running", model_id: "modele-local", completed_at: null, duration_ms: null })], { has_more: true, next_cursor: "older" }));
+    const view = (revision: number) => <LiveSyncContextProvider value={{ revision, state: "connected", error: null }}><ActivityTimeline {...props} follow nodes={[node]} onOpenTask={onOpenTask} /></LiveSyncContextProvider>;
+    await render(view(0));
+    expect(await screen.findByText("Recherche web")).toBeOnTheScreen();
+    expect(screen.queryByText("Agent : agent_1")).not.toBeOnTheScreen();
+    expect(screen.queryByText("Modèle : modele-local")).not.toBeOnTheScreen();
+    expect(screen.getByText("Étape liée : Chercher les horaires")).toBeOnTheScreen();
+    expect(screen.getByText(/Relevé partiel/)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Opérations détaillées" })).toBeCollapsed();
+    const user = userEvent.setup();
+    await user.press(screen.getByRole("button", { name: "Ouvrir la tâche de Recherche web" }));
+    expect(onOpenTask).toHaveBeenCalledWith("task_1");
+    await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    expect(screen.getByText("Agent : agent_1")).toBeOnTheScreen();
+    expect(screen.getByText("Modèle : modele-local")).toBeOnTheScreen();
+    expect(screen.getByText("Outil / compétence : research.query")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    load.mockResolvedValue(activityPage([activityItem("search", { title: "Recherche web terminée" })]));
+    await screen.rerender(view(1));
+    expect(await screen.findByText("Recherche web terminée")).toBeOnTheScreen();
+    expect(screen.getByText("Aucune opération active dans ce relevé")).toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks followed evidence unconfirmed when the event connection drops without inventing progress", async () => {
+    load.mockResolvedValue(activityPage([activityItem("running", { status: "running", duration_ms: null, completed_at: null })]));
+    const view = (state: "connected" | "disconnected") => <LiveSyncContextProvider value={{ revision: 0, state, error: null }}><ActivityTimeline {...props} follow /></LiveSyncContextProvider>;
+    await render(view("connected"));
+    await screen.findByText("Travail d’agent");
+    await screen.rerender(view("disconnected"));
+    expect(screen.getByText("Synchronisation interrompue")).toBeOnTheScreen();
+    expect(screen.getByText(/Dernier relevé conservé/)).toBeOnTheScreen();
+    expect(screen.getByText("En cours au dernier relevé", { exact: false })).toBeOnTheScreen();
+    expect(screen.queryByRole("progressbar")).not.toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears followed private activity after pairing changes and fences its delayed response", async () => {
+    const pending = deferred<ActivityPage>(); load.mockReturnValue(pending.promise);
+    await render(<ActivityTimeline {...props} follow />);
+    const accepts = load.mock.calls[0][3]!;
+    await act(() => notifyConnectionChanged());
+    expect(accepts()).toBe(false);
+    await act(() => pending.resolve(activityPage([activityItem("private", { title: "Ancien serveur" })])));
+    expect(screen.queryByText("Ancien serveur")).not.toBeOnTheScreen();
+    expect(screen.getByText(/Le jumelage a changé/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Aucune opération active/)).not.toBeOnTheScreen();
+  });
+
+  it("filters recorded operations to a graph node without losing details or starting work", async () => {
+    load.mockResolvedValue(activityPage([
+      activityItem("one", { title: "Premier travail", node_id: "node_1" }),
+      activityItem("two", { title: "Autre travail", node_id: "node_2" }),
+    ]));
+    const user = userEvent.setup();
+    await render(<ActivityTimeline {...props} follow selectedNodeId="node_1" />);
+    await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    expect(await screen.findByText("Premier travail")).toBeOnTheScreen();
+    expect(screen.queryByText("Autre travail")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Détails de Premier travail" }));
+    expect(screen.getByText("Opération : one")).toBeOnTheScreen();
+    await screen.rerender(<ActivityTimeline {...props} follow selectedNodeId={null} />);
+    expect(screen.getByText("Autre travail")).toBeOnTheScreen();
+    expect(screen.getByText("Opération : one")).toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
 });

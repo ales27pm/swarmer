@@ -369,7 +369,7 @@ function ApprovalRiskHeader({ approval, expired }: { approval: Approval; expired
         testID={`approval-status-${approval.id}`}
         style={{ color: expired ? COLORS.danger : COLORS.subtle, fontSize: 11, fontWeight: expired ? "800" : "400" }}
       >
-        {expired ? "Expiré" : timeAgo(approval.created_at)}
+        {expired ? "Expirée" : ({ pending: "Demandée", approved: "Accordée", denied: "Refusée", expired: "Expirée", cancelled: "Annulée" }[approval.status])}
       </Text>
     </View>
   );
@@ -401,7 +401,7 @@ function ApprovalExactAction({
         accessibilityRole="header"
         style={{ color: COLORS.info, fontSize: 12, fontWeight: "800", marginTop: 5 }}
       >
-        Action exacte liée
+        Action demandée
       </Text>
       <Text selectable style={{ color: COLORS.text, fontSize: 16, fontWeight: "700" }}>
         {approval.action_preview.operation}
@@ -452,12 +452,12 @@ function ApprovalValidityAlerts({
     <>
       {!bindingValid ? (
         <Text accessibilityRole="alert" selectable style={{ color: COLORS.danger, lineHeight: 20 }}>
-          Liaison invalide : cet accord ne peut pas être autorisé.
+          Liaison invalide : cette autorisation ne peut pas être accordée.
         </Text>
       ) : null}
       {consentUnavailable ? (
         <Text accessibilityRole="alert" selectable style={{ color: COLORS.danger, lineHeight: 20 }}>
-          Contexte de consentement invalide : cet accord ne peut pas être autorisé.
+          Contexte de consentement invalide : cette autorisation ne peut pas être accordée.
         </Text>
       ) : null}
       {actionUnavailable ? (
@@ -506,14 +506,8 @@ function ApprovalProvenance({ approval }: { approval: Approval }) {
       <Text selectable style={{ color: COLORS.text, lineHeight: 20 }}>
         Motif de la politique : {approval.policy?.reason ?? "indisponible"}
       </Text>
-      <Text selectable style={{ color: COLORS.muted, fontSize: 12, lineHeight: 18 }}>
-        Règle : {approval.policy?.rule_id ?? "indisponible"}
-      </Text>
       <Text selectable style={{ color: COLORS.text, lineHeight: 20 }}>
-        Données touchées : {approval.affected_data_summary ?? "indisponibles"}
-      </Text>
-      <Text selectable style={{ color: COLORS.muted, fontSize: 12 }}>
-        Audit : {approval.audit_id ?? "indisponible"} · Accord : {approval.id}
+        Effet et données touchées : {approval.affected_data_summary ?? "indisponibles"}
       </Text>
     </>
   );
@@ -534,7 +528,7 @@ function ApprovalBindingMetadata({ approval }: { approval: Approval }) {
           : "invalide"}
       </Text>
       <Text style={{ color: COLORS.subtle, fontSize: 10, lineHeight: 15 }}>
-        L’empreinte lie cet accord à l’appel, l’outil et tous ses arguments exacts.
+        L’empreinte lie cette autorisation à l’appel, l’outil et tous ses arguments exacts.
       </Text>
       <Text selectable style={{ color: COLORS.subtle, fontSize: 10 }}>
         Empreinte {digest}
@@ -559,25 +553,17 @@ function ApprovalTrustedContext({
   return (
     <View
       testID={`approval-trusted-context-${approval.id}`}
-      style={{
-        backgroundColor: COLORS.panelRaised,
-        borderColor: trustedContextValid ? `${COLORS.info}66` : `${COLORS.danger}66`,
-        borderRadius: 12,
-        borderWidth: 1,
-        gap: 7,
-        padding: 12,
-      }}
+      style={{ gap: 9, paddingVertical: 4 }}
     >
       <ApprovalTrustedHeading valid={trustedContextValid} />
-      <ApprovalProvenance approval={approval} />
       <ApprovalExactAction actionValid={actionValid} approval={approval} />
+      <ApprovalProvenance approval={approval} />
       <ApprovalValidityAlerts
         actionUnavailable={!actionValid}
         bindingValid={approval.binding_valid === true}
         consentUnavailable={consentUnavailable}
         expired={expired}
       />
-      <ApprovalBindingMetadata approval={approval} />
     </View>
   );
 }
@@ -590,12 +576,8 @@ function ApprovalModelContext({ approval }: { approval: Approval }) {
     <View
       testID={`approval-model-context-${approval.id}`}
       style={{
-        backgroundColor: `${COLORS.warning}0d`,
-        borderColor: `${COLORS.warning}55`,
-        borderRadius: 12,
-        borderWidth: 1,
         gap: 6,
-        padding: 12,
+        paddingVertical: 8,
       }}
     >
       <Text
@@ -778,6 +760,23 @@ function ApprovalTaskLink({ onOpenTask }: { onOpenTask?: () => void }) {
   return <ActionButton label="Voir la tâche et ses preuves" onPress={onOpenTask} />;
 }
 
+function ApprovalEvidenceDetails({ approval }: { approval: Approval }) {
+  const [expanded, setExpanded] = useState(false);
+  return <View style={{ borderTopColor: COLORS.border, borderTopWidth: 0.5 }}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Détails de l’autorisation" accessibilityState={{ expanded }} onPress={() => setExpanded((value) => !value)} style={{ minHeight: 44, justifyContent: "center" }}>
+      <Text style={{ color: COLORS.muted, fontSize: 13 }}>{expanded ? "Masquer les détails" : "Détails de l’autorisation"} {expanded ? "−" : "+"}</Text>
+    </Pressable>
+    {expanded ? <View style={{ gap: 8, paddingBottom: 8 }}>
+      <Text selectable style={{ color: COLORS.muted, fontSize: 12 }}>Demandée le : {approval.created_at}</Text>
+      {approval.decided_at ? <Text selectable style={{ color: COLORS.muted, fontSize: 12 }}>Décision enregistrée le : {approval.decided_at}</Text> : null}
+      <Text selectable style={{ color: COLORS.muted, fontSize: 12 }}>Règle : {approval.policy?.rule_id ?? "indisponible"}</Text>
+      <Text selectable style={{ color: COLORS.muted, fontSize: 12 }}>Audit : {approval.audit_id ?? "indisponible"} · Autorisation : {approval.id}</Text>
+      <ApprovalBindingMetadata approval={approval} />
+      <ApprovalModelContext approval={approval} />
+    </View> : null}
+  </View>;
+}
+
 export function ApprovalDecisionCard(props: ApprovalDecisionCardProps) {
   const { approval } = props;
   return (
@@ -816,8 +815,9 @@ function ApprovalDecisionCardContent({
         expired={expired}
         trustedContextValid={validation.trustedContextValid}
       />
-      <ApprovalModelContext approval={approval} />
       <ApprovalDecisionLockNotice locked={decisionLocked} />
+      <Text selectable style={{ color: COLORS.muted, fontSize: 12 }}>Tâche : {approval.task_id}</Text>
+      <Text style={{ color: COLORS.muted, fontSize: 12, lineHeight: 18 }}>Cette autorisation concerne uniquement l’action affichée. L’exécution sera confirmée séparément.</Text>
       <ApprovalTaskLink onOpenTask={onOpenTask} />
       <ApprovalDecisionControls
         approval={approval}
@@ -829,6 +829,7 @@ function ApprovalDecisionCardContent({
         expired={expired}
         onDecision={decide}
       />
+      <ApprovalEvidenceDetails approval={approval} />
     </Card>
   );
 }

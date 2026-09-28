@@ -28,13 +28,13 @@ describe("Settings memory tools", () => {
     await render(<SettingsScreen />);
     expect(invoke).not.toHaveBeenCalled();
     expect(screen.queryByTestId("embedding-load")).not.toBeOnTheScreen();
-    await user.press(screen.getByRole("button", { name: "Mémoire et calcul local" }));
+    await user.press(screen.getByRole("button", { name: "Mémoire" }));
     expect(screen.getByRole("button", { name: "Tester les embeddings locaux" })).toBeDisabled();
     await user.press(screen.getByRole("button", { name: "Charger E5 expérimental" }));
     expect(invoke).toHaveBeenCalledWith("embeddings.load", expect.objectContaining({ experimental: true }));
     await user.type(screen.getByLabelText("Texte du test d’embeddings"), "Mon rendez-vous");
-    await user.press(screen.getByRole("button", { name: "Mémoire et calcul local" }));
-    await user.press(screen.getByRole("button", { name: "Mémoire et calcul local" }));
+    await user.press(screen.getByRole("button", { name: "Mémoire" }));
+    await user.press(screen.getByRole("button", { name: "Mémoire" }));
     expect(screen.getByLabelText("Texte du test d’embeddings")).toHaveDisplayValue("Mon rendez-vous");
     await user.press(screen.getByRole("button", { name: "Tester les embeddings locaux" }));
     expect(invoke).toHaveBeenCalledWith("embeddings.generate", { texts: ["Mon rendez-vous"], kind: "query" });
@@ -45,7 +45,7 @@ describe("Settings memory tools", () => {
     invoke.mockRejectedValue(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
     const user = userEvent.setup();
     await render(<SettingsScreen />);
-    await user.press(screen.getByRole("button", { name: "Mémoire et calcul local" }));
+    await user.press(screen.getByRole("button", { name: "Mémoire" }));
     await user.press(screen.getByRole("button", { name: "Vérifier la mémoire serveur" }));
     expect(await screen.findByText(/Une mise à jour du serveur est nécessaire/)).toBeOnTheScreen();
     expect(screen.getByRole("button", { name: "Charger E5 expérimental" })).toBeEnabled();

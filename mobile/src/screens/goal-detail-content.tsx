@@ -1,6 +1,9 @@
+import { ProjectGraphEvidence, ProjectGraphPlan, useProjectGraph } from "@/components/project-graph";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Alert, Modal, Pressable, ScrollView, Text, View } from "react-native";
+
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScreenShell } from "@/components/screen-shell";
 import { GoalCodeProposalReview } from "@/components/goal-code-proposal";
@@ -27,6 +30,7 @@ import {
   type GoalStatus,
   type PlanNode,
 } from "@/lib/application-api/server";
+import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { localGoalDetail } from "@/lib/state/replica";
 import { useLiveRefresh } from "@/lib/sync/live-sync-context";
 
@@ -173,12 +177,7 @@ const NODE_COLORS: Partial<Record<GoalNodeStatus, string>> = {
   waiting_permission: COLORS.warning,
 };
 
-const ACTIVE_NODE_STATUSES = new Set<GoalNodeStatus>([
-  "dispatched",
-  "running",
-  "waiting_permission",
-  "waiting_capability",
-]);
+const ACTIVE_NODE_STATUSES = new Set<GoalNodeStatus>(["running"]);
 const CANCELLABLE_GOAL_STATUSES = new Set<GoalStatus>([
   "planning",
   "running",
@@ -319,16 +318,30 @@ function canSubmitFeedback(goalId: string | undefined, state: GoalDetailState, l
 export function useGoalDetailController(goalId: string | undefined): GoalDetailController {
   const refreshEpoch = useRef(0);
   const feedbackLockedRef = useRef(false);
+  const connectionEpoch = useRef(0);
+  const requiresConnectionRefresh = useRef(false);
   const [state, update] = useReducer(mergeState, INITIAL_STATE);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  useEffect(() => subscribeConnectionChanges(() => {
+    connectionEpoch.current += 1;
+    refreshEpoch.current += 1;
+    requiresConnectionRefresh.current = true;
+    update({ source: stateRef.current.detail ? "cache" : null, refreshing: false, busy: null,
+      notice: "Le jumelage a changé. Le dernier état reste en lecture seule ; actualisez pour vérifier ce projet sur la nouvelle connexion." });
+  }), []);
 
   const refresh = useCallback(async (clearError = true) => {
+    if (requiresConnectionRefresh.current && !clearError) return;
+    const reconnecting = requiresConnectionRefresh.current && clearError;
+    if (clearError) requiresConnectionRefresh.current = false;
     const epoch = ++refreshEpoch.current;
     const isCurrent = () => refreshEpoch.current === epoch;
     if (!goalId) {
       update({ initialLoading: false });
       return;
     }
-    update(clearError ? { refreshing: true, error: null } : { refreshing: true });
+    update(clearError ? { refreshing: true, error: null, ...(reconnecting ? { notice: null } : {}) } : { refreshing: true });
     try {
       const loaded = await loadGoalDetail(goalId, isCurrent);
       if (isCurrent() && loaded) update(loaded);
@@ -349,15 +362,16 @@ export function useGoalDetailController(goalId: string | undefined): GoalDetailC
     action: string,
     operation: () => Promise<GoalDetail>,
   ) => {
-    if (!canMutate(state)) return;
+    if (!canMutate(state) || requiresConnectionRefresh.current) return;
+    const connection = connectionEpoch.current;
+    const current = () => connection === connectionEpoch.current;
     update({ busy: action, error: null, notice: null });
     try {
       await operation();
     } catch (cause) {
-      update({ error: messageFor(cause) });
+      if (current()) update({ error: messageFor(cause) });
     } finally {
-      await refresh(false);
-      update({ busy: null });
+      if (current()) { await refresh(false); if (current()) update({ busy: null }); }
     }
   }, [refresh, state]);
 
@@ -389,13 +403,15 @@ export function useGoalDetailController(goalId: string | undefined): GoalDetailC
 
   const submitFeedback = useCallback(async (score: number) => {
     if (!canSubmitFeedback(goalId, state, feedbackLockedRef.current)) return;
+    if (requiresConnectionRefresh.current) return;
+    const connection = connectionEpoch.current;
     feedbackLockedRef.current = true;
     update({ feedbackLocked: true, error: null });
     try {
       await createGoalFeedback(goalId as string, { score });
-      update({ notice: "Feedback enregistré pour les évaluations futures." });
+      if (connection === connectionEpoch.current) update({ notice: "Feedback enregistré pour les évaluations futures." });
     } catch (cause) {
-      update({ error: `${messageFor(cause)} Le feedback incertain n’est pas renvoyé automatiquement.` });
+      if (connection === connectionEpoch.current) update({ error: `${messageFor(cause)} Le feedback incertain n’est pas renvoyé automatiquement.` });
     }
   }, [goalId, state]);
 
@@ -532,7 +548,7 @@ function Feedback({ disabled, locked, onScore }: {
   );
 }
 
-function GoalActions({ controller, navigation }: { controller: GoalDetailController; navigation: GoalDetailNavigation }) {
+function GoalActions({ controller, navigation, management = false }: { controller: GoalDetailController; navigation: GoalDetailNavigation; management?: boolean }) {
   const { busy, goal, online } = controller;
   if (!goal || !online) return null;
   const planningAction = PLANNING_PHASES[goal.current_phase]
@@ -540,7 +556,7 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
     : "Démarrer le but";
   return (
     <>
-      {navigation.openLocalPlan && goal.status === "planning" && !goal.started_at
+      {!management && navigation.openLocalPlan && goal.status === "planning" && !goal.started_at
         && goal.step_count === 0 && goal.replan_count === 0
         && controller.nodes.length === 0 && !controller.result ? (
           <ActionButton
@@ -549,7 +565,7 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
             onPress={() => navigation.openLocalPlan?.(goal.id)}
           />
         ) : null}
-      {canStartGoal(goal) ? (
+      {!management && canStartGoal(goal) ? (
         <ActionButton
           busy={busy === "start"}
           disabled={Boolean(busy)}
@@ -559,7 +575,7 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
           variant="accent"
         />
       ) : null}
-      {CANCELLABLE_GOAL_STATUSES.has(goal.status) ? (
+      {management && CANCELLABLE_GOAL_STATUSES.has(goal.status) ? (
         <ActionButton
           busy={busy === "cancel"}
           disabled={Boolean(busy)}
@@ -569,7 +585,7 @@ function GoalActions({ controller, navigation }: { controller: GoalDetailControl
           variant="danger"
         />
       ) : null}
-      {REPLANNABLE_GOAL_STATUSES.has(goal.status) ? (
+      {management && REPLANNABLE_GOAL_STATUSES.has(goal.status) ? (
         <ActionButton
           busy={busy === "replan"}
           disabled={Boolean(busy)}
@@ -645,6 +661,7 @@ function GoalOverview({ controller, navigation }: {
   controller: GoalDetailController;
   navigation: GoalDetailNavigation;
 }) {
+  const [options, setOptions] = useState(false);
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
   if (!goal) return null;
   const phaseNotice = goalPhaseNotice(goal);
@@ -652,57 +669,40 @@ function GoalOverview({ controller, navigation }: {
     ? COLORS.info : COLORS.warning;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
-    ? `Agents en cours : ${runningAgents.join(", ")}`
+    ? `Agents en cours : ${runningAgents.length}`
     : "Aucun agent en cours.";
   return (
     <>
-      <SectionTitle title="Avancement" />
       <Card>
-        {goalLabel(goal) !== phaseNotice?.label ? <Text style={{ color: phaseNotice ? phaseColor : COLORS.info, fontWeight: "800" }}>
-          {goalLabel(goal)}
-        </Text> : null}
-        <Text style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>
-          Phase : {phaseNotice?.label ?? goal.current_phase}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <Text style={{ color: phaseNotice ? phaseColor : COLORS.info, fontWeight: "700", flex: 1 }}>
+            {phaseNotice ? `Phase : ${phaseNotice.label}` : goalLabel(goal)}
+          </Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Options du projet" accessibilityState={{ expanded: options }}
+            onPress={() => setOptions(!options)} style={{ minHeight: 44, justifyContent: "center" }}>
+            <Text style={{ color: COLORS.accent, fontSize: 13 }}>Options {options ? "−" : "+"}</Text>
+          </Pressable>
+        </View>
         {phaseNotice ? (
           <Text accessibilityLiveRegion="polite" style={{ color: phaseColor, lineHeight: 20 }}>
             {phaseNotice.description}
           </Text>
         ) : null}
         <GoalProgress completed={completedCount} total={nodes.length} />
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
-          {completedCount}/{nodes.length} nœuds terminés · {blockedCount} bloqué{blockedSuffix}
-        </Text>
-        <Text style={{ color: COLORS.muted, lineHeight: 20 }}>{agentsSummary}</Text>
-        <GoalBudgets goal={goal} />
-        {goal.evaluator_summary ? (
-          <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
-            Évaluation : {goal.evaluator_summary}
-          </Text>
-        ) : null}
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Text style={{ color: COLORS.muted, fontSize: 13 }}>{completedCount}/{nodes.length} étapes terminées{blockedCount ? ` · ${blockedCount} bloqué${blockedSuffix}` : ""}</Text>
+          <Text style={{ color: COLORS.muted, fontSize: 13 }}>{agentsSummary}</Text>
+        </View>
         {goal.failure_reason && (!phaseNotice || goal.current_phase === "planner_invalid_response") ? (
           <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>Échec : {goal.failure_reason}</Text>
         ) : null}
-        <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
         <GoalActions controller={controller} navigation={navigation} />
+        {options ? <View style={{ gap: 10 }}>
+          <GoalBudgets goal={goal} />
+          <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
+          <GoalActions controller={controller} navigation={navigation} management />
+        </View> : null}
       </Card>
-    </>
-  );
-}
-
-function GoalPlan({ nodes, navigation, readOnly }: {
-  nodes: PlanNode[];
-  navigation: GoalDetailNavigation;
-  readOnly: boolean;
-}) {
-  return (
-    <>
-      <SectionTitle title="Plan" />
-      {nodes.length ? nodes.map((node) => (
-        <NodeCard key={node.id} node={node} navigation={navigation} readOnly={readOnly} />
-      )) : (
-        <Text style={{ color: COLORS.subtle }}>Aucun nœud autoritaire disponible.</Text>
-      )}
     </>
   );
 }
@@ -741,34 +741,73 @@ function GoalResultSection({ controller }: { controller: GoalDetailController })
   );
 }
 
-function GoalBody({ controller, navigation }: {
-  controller: GoalDetailController;
-  navigation: GoalDetailNavigation;
-}) {
-  if (controller.goal) {
-    return (
-      <>
-        <GoalOverview controller={controller} navigation={navigation} />
-        <GoalConversation
-          key={controller.goal.id}
-          goal={controller.goal}
-          disabled={!controller.online || Boolean(controller.busy)}
-          onOpenGoal={navigation.openGoal}
-          onOpenLocalPlan={navigation.openLocalPlan}
-          onUpdated={() => controller.refresh(false)}
-        />
-        {controller.nodes.some((node) => node.required_skill === "code.build_project") ? (
-          <GoalProjectReview key={`project:${controller.goal.id}`} goalId={controller.goal.id} disabled={!controller.online || Boolean(controller.busy)} onOpenTask={navigation.openTask} />
-        ) : null}
-        <GoalPlan
-          nodes={controller.nodes}
-          navigation={navigation}
-          readOnly={!controller.online || Boolean(controller.busy)}
-        />
-        <GoalResultSection controller={controller} />
-      </>
-    );
-  }
+const PROJECT_TABS = ["Plan", "Activité", "Résultats", "Échanges"] as const;
+type ProjectTab = typeof PROJECT_TABS[number];
+
+function GoalWorkspace({ controller, navigation }: { controller: GoalDetailController; navigation: GoalDetailNavigation }) {
+  const goal = controller.goal!;
+  const [tab, setTab] = useState<ProjectTab>("Plan");
+  const [selectedNodeId, selectNode] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const insets = useSafeAreaInsets();
+  const graph = useProjectGraph(goal.id, controller.source === "authoritative", goal.updated_at);
+  const nodes = graph.graph?.nodes ?? controller.nodes;
+  const selected = nodes.find((node) => node.id === selectedNodeId);
+  const readOnly = !controller.online || Boolean(controller.busy) || (graph.graph !== null && graph.stale);
+  const panel = (name: ProjectTab) => ({ display: tab === name ? "flex" as const : "none" as const, gap: 14 });
+  return <>
+    <GoalOverview controller={controller} navigation={navigation} />
+    <View accessibilityRole="tablist" style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, borderBottomWidth: 1, borderColor: COLORS.border }}>
+      {PROJECT_TABS.map((name) => <Pressable key={name} accessibilityRole="tab" accessibilityLabel={name}
+        accessibilityState={{ selected: tab === name }} onPress={() => setTab(name)}
+        style={{ flexGrow: 1, minHeight: 48, minWidth: 65, alignItems: "center", justifyContent: "center",
+          borderBottomWidth: 2, borderBottomColor: tab === name ? COLORS.accent : "transparent" }}>
+        <Text style={{ color: tab === name ? COLORS.accent : COLORS.muted, fontSize: 13, fontWeight: "600" }}>{name}</Text>
+      </Pressable>)}
+    </View>
+    <View style={panel("Plan")} accessibilityElementsHidden={tab !== "Plan"} importantForAccessibility={tab !== "Plan" ? "no-hide-descendants" : "auto"}>
+      <ProjectGraphPlan state={graph} fallbackNodes={controller.nodes} fallbackSummary={goal.evaluator_summary}
+        enabled={controller.source === "authoritative"} selectedNodeId={selectedNodeId} onSelectNode={(id) => { selectNode(id); setDetailsOpen(Boolean(id)); }} />
+    </View>
+    <View style={panel("Activité")} accessibilityElementsHidden={tab !== "Activité"} importantForAccessibility={tab !== "Activité" ? "no-hide-descendants" : "auto"}>
+      {selected ? <ActionButton label="Voir les opérations de tout le projet" onPress={() => selectNode(null)} /> : null}
+      <ActivityTimeline scope="goal" id={goal.id} enabled={controller.source === "authoritative"}
+        refreshKey={goal.updated_at} follow nodes={nodes} selectedNodeId={selected?.id ?? null} onOpenTask={navigation.openTask} />
+    </View>
+    <View style={panel("Résultats")} accessibilityElementsHidden={tab !== "Résultats"} importantForAccessibility={tab !== "Résultats" ? "no-hide-descendants" : "auto"}>
+      <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} />
+      {controller.nodes.some((node) => node.required_skill === "code.build_project") ? <GoalProjectReview
+        key={`project:${goal.id}`} goalId={goal.id} disabled={!controller.online || Boolean(controller.busy)} onOpenTask={navigation.openTask} /> : null}
+      <GoalResultSection controller={controller} />
+    </View>
+    <View style={panel("Échanges")} accessibilityElementsHidden={tab !== "Échanges"} importantForAccessibility={tab !== "Échanges" ? "no-hide-descendants" : "auto"}>
+      <GoalConversation key={goal.id} goal={goal} disabled={!controller.online || Boolean(controller.busy)}
+        onOpenGoal={navigation.openGoal} onOpenLocalPlan={navigation.openLocalPlan} onUpdated={() => controller.refresh(false)} />
+    </View>
+    <Modal visible={Boolean(selected) && detailsOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setDetailsOpen(false)}>
+      <View accessibilityViewIsModal style={{ flex: 1, backgroundColor: COLORS.background, paddingTop: Math.max(insets.top, 16), paddingBottom: insets.bottom }}>
+        <View style={{ width: "100%", maxWidth: 680, alignSelf: "center", flex: 1 }}>
+          <View style={{ paddingHorizontal: 20, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 18, fontWeight: "700", flex: 1 }}>Détails de l’étape</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Fermer les détails de l’étape" onPress={() => setDetailsOpen(false)} style={{ minHeight: 48, justifyContent: "center" }}>
+              <Text style={{ color: COLORS.accent, fontWeight: "600" }}>Fermer</Text>
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 20, gap: 14 }}>
+            {selected ? <NodeCard key={selected.id} node={selected} readOnly={readOnly} navigation={{ ...navigation,
+              openTask: (id) => { setDetailsOpen(false); navigation.openTask(id); },
+              openApprovals: () => { setDetailsOpen(false); navigation.openApprovals(); } }} /> : null}
+            <Text style={{ color: COLORS.subtle, fontSize: 12 }}>L’objectif est celui enregistré pour cette étape. Les explications du plan restent consultables dans l’onglet Plan.</Text>
+            <ActionButton label="Voir les opérations de cette étape" onPress={() => { setDetailsOpen(false); setTab("Activité"); }} />
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  </>;
+}
+
+function GoalBody({ controller, navigation }: { controller: GoalDetailController; navigation: GoalDetailNavigation }) {
+  if (controller.goal) return <GoalWorkspace key={controller.goal.id} controller={controller} navigation={navigation} />;
   if (!controller.initialLoading && !controller.refreshing && !controller.error) {
     return <EmptyState title="But introuvable" subtitle="Aucune preuve autoritaire ou locale n’est disponible." />;
   }
@@ -779,9 +818,7 @@ export function GoalDetailContent({ controller, navigation }: {
   controller: GoalDetailController;
   navigation: GoalDetailNavigation;
 }) {
-  const subtitle = controller.goal
-    ? goalLabel(controller.goal)
-    : "Preuves du control plane";
+  const subtitle = controller.goal ? undefined : "Preuves du control plane";
   return (
     <ScreenShell
       title={controller.goal?.objective ?? "But"}
@@ -799,14 +836,11 @@ export function GoalDetailContent({ controller, navigation }: {
       {controller.notice ? (
         <Text accessibilityLiveRegion="polite" style={{ color: COLORS.accent }}>{controller.notice}</Text>
       ) : null}
-      <ActionButton
-        busy={controller.refreshing}
-        disabled={Boolean(controller.busy)}
-        label="Actualiser les preuves"
-        onPress={() => void controller.refresh()}
-        testID="refresh-goal-button"
-      />
-      {controller.goal ? <ActivityTimeline scope="goal" id={controller.goal.id} enabled={controller.source === "authoritative"} refreshKey={controller.goal.updated_at} /> : null}
+      <Pressable accessibilityRole="button" accessibilityLabel="Actualiser les preuves" accessibilityState={{ disabled: Boolean(controller.busy) || controller.refreshing, busy: controller.refreshing }}
+        disabled={Boolean(controller.busy) || controller.refreshing} onPress={() => void controller.refresh()} testID="refresh-goal-button"
+        style={{ minHeight: 44, alignSelf: "flex-end", justifyContent: "center" }}>
+        <Text style={{ color: COLORS.accent, fontSize: 13 }}>{controller.refreshing ? "Actualisation…" : "Actualiser"}</Text>
+      </Pressable>
       <GoalBody controller={controller} navigation={navigation} />
     </ScreenShell>
   );

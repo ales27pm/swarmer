@@ -14,6 +14,7 @@ const types = {
   "app.status": "AppStatus", "connection.status": "ConnectionStatus", "sync.refresh": "SyncSummary",
   "connection.pair": "PairingSummary", "connection.origin": "string", "sync.status": "ApplicationSyncState",
   "goals.list": "GoalRecord[]", "goals.get": "GoalDetail", "goals.nodes": "PlanNode[]", "goals.result": "GoalResult|null",
+  "goals.graph": "ProjectGraph",
   "goals.writing-draft": "GoalWritingDraft",
   "tasks.activity": "ActivityPage", "goals.activity": "ActivityPage",
   "goals.create": "GoalDetail", "goals.start": "GoalDetail", "goals.replan": "GoalDetail", "goals.cancel": "GoalDetail",
@@ -36,7 +37,7 @@ const types = {
   "code.review": "CodeReviewHandle", "code.prepareApproval": "CodeProposalApplication", "project.review": "ProjectReviewHandle", "project.prepareApproval": "CodeProposalApplication",
 } as const;
 
-const parsed = new Set(["tasks.activity", "goals.activity", "project.swift.submit", "project.swift.status", "project.swift.cancel","activities.catalog", "goals.writing-draft", "goals.messages", "goals.conversation.open", "models.capabilities", "models.list", "models.status", "models.load", "models.download", "models.import", "inference.generate", "code.review", "project.review", "code.prepareApproval", "project.prepareApproval", "settings.local.read", "goals.plan.generate", "iphone.requests.list", "iphone.requests.get", "iphone.requests.decide", "iphone.requests.execute"]);
+const parsed = new Set(["goals.graph", "tasks.activity", "goals.activity", "project.swift.submit", "project.swift.status", "project.swift.cancel","activities.catalog", "goals.writing-draft", "goals.messages", "goals.conversation.open", "models.capabilities", "models.list", "models.status", "models.load", "models.download", "models.import", "inference.generate", "code.review", "project.review", "code.prepareApproval", "project.prepareApproval", "settings.local.read", "goals.plan.generate", "iphone.requests.list", "iphone.requests.get", "iphone.requests.decide", "iphone.requests.execute"]);
 export function outputDescriptor(command: string, available = true): CommandOutputDescriptor {
   return {
     contractVersion: "1.0", envelope: "ApplicationResult", dataType: Object.hasOwn(types, command) ? types[command as keyof typeof types] : "unavailable",
@@ -82,6 +83,7 @@ type OutputTypes = {
   ChatReceipt: ChatReceipt; FeedbackReceipt: FeedbackReceipt; OutboxSummary: OutboxSummary;
   "GoalRecord[]": import("@/lib/api/types").GoalRecord[];
   GoalDetail: import("@/lib/api/types").GoalDetail;
+  ProjectGraph: import("@/lib/api/project-graph").ProjectGraph;
   GoalWritingDraft: import("@/lib/api/writing-draft").GoalWritingDraft;
   "PlanNode[]": import("@/lib/api/types").PlanNode[];
   "GoalResult|null": import("@/lib/api/types").GoalResult | null;

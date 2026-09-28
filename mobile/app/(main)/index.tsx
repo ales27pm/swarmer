@@ -1,8 +1,9 @@
-import { type Dispatch, useCallback, useEffect, useReducer, useRef } from "react";
-import { AppState, Pressable, Text, View } from "react-native";
+import { type Dispatch, useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { AppState, Pressable, Text, View, useWindowDimensions } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { AssistantSuggestions, AssistantWelcome, IntentComposer } from "@/components/assistant-start";
+import { ConversationHistory, HistoryDrawer } from "@/components/conversation-history";
 import { ScreenShell } from "@/components/screen-shell";
 import {
   ActionButton,
@@ -42,6 +43,7 @@ type ChatState = {
 
 type ChatStatePatch = Partial<ChatState>;
 type ChatDispatch = Dispatch<ChatStatePatch>;
+type MessageReader = (id: string, isCurrent: () => boolean) => Promise<Message[] | undefined>;
 
 const INITIAL_CHAT_STATE: ChatState = {
   input: "",
@@ -123,12 +125,13 @@ async function refreshBootstrap(
 async function refreshConversation(
   conversationId: string | undefined,
   dispatch: ChatDispatch,
+  readMessages: MessageReader,
   isCurrent: () => boolean = () => true,
 ) {
   if (!conversationId || !isCurrent()) return;
   try {
-    const messages = await listMessages(conversationId, isCurrent);
-    if (isCurrent()) dispatch({ messages });
+    const messages = await readMessages(conversationId, isCurrent);
+    if (messages && isCurrent()) dispatch({ messages });
   } catch {
     // Keep the rendered conversation while preserving the primary error.
   }
@@ -138,6 +141,8 @@ async function submitChatIntent(
   state: ChatState,
   dispatch: ChatDispatch,
   refreshStatus: (updateError?: boolean) => Promise<void>,
+  readMessages: MessageReader,
+  accepted: () => void,
   isCurrent: () => boolean,
 ) {
   const content = state.input.trim();
@@ -161,6 +166,7 @@ async function submitChatIntent(
       isCurrent,
     );
     if (!isCurrent()) return;
+    accepted();
     createdTask = chat.task;
     activeConversation = chat.conversation_id;
     dispatch({
@@ -168,9 +174,9 @@ async function submitChatIntent(
       lastTask: chat.task ?? state.lastTask,
       input: "",
     });
-    const messages = await listMessages(chat.conversation_id, isCurrent);
+    const messages = await readMessages(chat.conversation_id, isCurrent);
     if (!isCurrent()) return;
-    dispatch({ messages });
+    if (messages) dispatch({ messages });
     if (chat.task) {
       dispatch({ notice: "L’équipe prépare un plan…" });
       const result = await planTask(chat.task.id, isCurrent);
@@ -183,7 +189,7 @@ async function submitChatIntent(
   } catch (cause) {
     if (isCurrent()) dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
   } finally {
-    if (isCurrent()) await refreshConversation(activeConversation, dispatch, isCurrent);
+    if (isCurrent()) await refreshConversation(activeConversation, dispatch, readMessages, isCurrent);
     if (isCurrent()) await refreshStatus(false);
     if (isCurrent()) dispatch({ busy: false });
   }
@@ -193,16 +199,30 @@ function useChatController() {
   const [state, dispatch] = useReducer(mergeChatState, INITIAL_CHAT_STATE);
   const refreshEpoch = useRef(0);
   const connectionEpoch = useRef(0);
+  const conversationEpoch = useRef(0);
+  const messageReadEpoch = useRef(0);
+  const drafts = useRef(new Map<string, string>());
+  const [openingConversation, setOpeningConversation] = useState(false);
   const activeSubmission = useRef<{ input: string } | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
   useAccessibilityAnnouncement(state.notice);
   const setInput = useCallback((input: string) => dispatch({ input }), []);
+  const readMessages = useCallback<MessageReader>(async (id, isCurrent) => {
+    const read = ++messageReadEpoch.current;
+    const applies = () => read === messageReadEpoch.current && isCurrent();
+    const messages = await listMessages(id, applies);
+    return applies() ? messages : undefined;
+  }, []);
 
   useEffect(() => {
     const unsubscribe = subscribeConnectionChanges(() => {
       refreshEpoch.current += 1;
       connectionEpoch.current += 1;
+      conversationEpoch.current += 1;
+      messageReadEpoch.current += 1;
+      drafts.current.clear();
+      setOpeningConversation(false);
       const pending = activeSubmission.current;
       activeSubmission.current = null;
       dispatch({
@@ -223,16 +243,43 @@ function useChatController() {
   }, []);
 
   const submit = async () => {
-    if (activeSubmission.current || state.busy || !state.bootstrap || !state.input.trim()) return;
+    if (openingConversation || activeSubmission.current || state.busy || !state.bootstrap || !state.input.trim()) return;
     const submission = { input: state.input };
     const connection = connectionEpoch.current;
     activeSubmission.current = submission;
+    ++refreshEpoch.current;
+    ++messageReadEpoch.current;
+    dispatch({ refreshing: false });
     const isCurrent = () => connectionEpoch.current === connection && activeSubmission.current === submission;
     try {
-      await submitChatIntent(state, dispatch, refreshStatus, isCurrent);
+      await submitChatIntent(state, dispatch, refreshStatus, readMessages, () => drafts.current.delete(state.conversationId ?? "new"), isCurrent);
     } finally {
       if (activeSubmission.current === submission) activeSubmission.current = null;
     }
+  };
+
+  const selectConversation = async (conversationId?: string) => {
+    if (activeSubmission.current || stateRef.current.busy) return;
+    const previous = stateRef.current;
+    if (conversationId === previous.conversationId && !previous.error) return;
+    if (conversationId && !previous.bootstrap?.conversations.some((item) => item.id === conversationId)) return;
+    drafts.current.set(previous.conversationId ?? "new", previous.input);
+    const version = ++conversationEpoch.current;
+    const connection = connectionEpoch.current;
+    ++refreshEpoch.current;
+    ++messageReadEpoch.current;
+    const isCurrent = () => version === conversationEpoch.current && connection === connectionEpoch.current;
+    setOpeningConversation(Boolean(conversationId));
+    dispatch({ conversationId, messages: [], lastTask: null, error: null, notice: "", refreshing: false,
+      interactionMode: "chat", input: drafts.current.get(conversationId ?? "new") ?? "" });
+    if (!conversationId) return;
+    try {
+      const messages = await readMessages(conversationId, isCurrent);
+      if (!isCurrent() || !messages) return;
+      dispatch({ messages, lastTask: previous.bootstrap?.tasks.find((item) => item.conversation_id === conversationId) ?? null });
+    } catch (cause) {
+      if (isCurrent()) dispatch({ error: errorMessage(cause), notice: "La discussion n’a pas pu être chargée. Réessaie depuis l’historique." });
+    } finally { if (isCurrent()) setOpeningConversation(false); }
   };
 
   const refreshStatus = useCallback(
@@ -262,13 +309,17 @@ function useChatController() {
   );
   useLiveRefresh(async () => {
     const requestEpoch = ++refreshEpoch.current;
-    const isCurrent = () => requestEpoch === refreshEpoch.current;
+    const conversation = conversationEpoch.current;
+    const id = stateRef.current.conversationId;
+    const isCurrent = () => requestEpoch === refreshEpoch.current && conversation === conversationEpoch.current;
     await refreshBootstrap(dispatch, false, isCurrent);
-    await refreshConversation(state.conversationId, dispatch, isCurrent);
+    if (!activeSubmission.current) await refreshConversation(id, dispatch, readMessages, isCurrent);
   });
 
   return {
     ...state,
+    openingConversation,
+    selectConversation,
     refreshStatus,
     setInteractionMode: (interactionMode: "chat" | "task") => dispatch({ interactionMode }),
     setInput,
@@ -277,7 +328,7 @@ function useChatController() {
 }
 
 function pendingAgreementLabel(pending: number): string {
-  return `${pending} accord${pending > 1 ? "s" : ""} en attente`;
+  return `${pending} autorisation${pending > 1 ? "s" : ""} en attente`;
 }
 
 type ConnectionPanelProps = {
@@ -403,6 +454,9 @@ function LastTaskLink({ lastTask, onOpen }: { lastTask: Task | null; onOpen: (id
 
 export default function ChatScreen() {
   const router = useRouter();
+  const { width, fontScale } = useWindowDimensions();
+  const wide = width >= 900 && fontScale < 1.6;
+  const [historyOpen, setHistoryOpen] = useState(false);
   const launchParameters = useLocalSearchParams<{ draft?: string; intentMode?: string }>();
   const chat = useChatController();
   const setChatInput = chat.setInput;
@@ -410,6 +464,12 @@ export default function ChatScreen() {
   const live = useLiveSync();
   const pending = chat.bootstrap?.counts.approvals_pending ?? 0;
   const handledDraft = useRef<string | null>(null);
+  const history = {
+    conversations: chat.bootstrap?.conversations ?? [], selectedId: chat.conversationId,
+    disabled: chat.busy, connected: Boolean(chat.bootstrap),
+    onSelect: (id: string) => { setHistoryOpen(false); void chat.selectConversation(id); },
+    onNew: () => { setHistoryOpen(false); void chat.selectConversation(); },
+  };
 
   useEffect(() => {
     const draft = Array.isArray(launchParameters.draft)
@@ -429,6 +489,20 @@ export default function ChatScreen() {
       onRefresh={() => void chat.refreshStatus()}
       refreshing={chat.refreshing}
     >
+      <View style={{ flexDirection: wide ? "row" : "column", gap: 24 }}>
+      {wide ? <View style={{ width: 260, borderRightWidth: 1, borderColor: COLORS.border, paddingRight: 20 }}><ConversationHistory {...history} /></View> : null}
+      <View style={{ flex: 1, minWidth: 0, gap: 16 }}>
+      {!wide ? <View style={{ flexDirection: "row", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        {!wide ? <Pressable accessibilityRole="button" onPress={() => setHistoryOpen(true)} testID="open-chat-history"
+          style={{ minHeight: 44, justifyContent: "center" }}>
+          <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "600" }}>Historique</Text>
+        </Pressable> : null}
+        <Pressable accessibilityRole="button" onPress={history.onNew} disabled={chat.busy || chat.openingConversation}
+          accessibilityState={{ disabled: chat.busy || chat.openingConversation }} testID="new-chat-button"
+          style={{ minHeight: 44, justifyContent: "center", opacity: chat.busy || chat.openingConversation ? 0.5 : 1 }}>
+          <Text style={{ color: COLORS.accent, fontSize: 14, fontWeight: "600" }}>Nouvelle discussion</Text>
+        </Pressable>
+      </View> : null}
       <ConnectionPanel
         bootstrap={chat.bootstrap}
         liveState={live.state}
@@ -437,10 +511,11 @@ export default function ChatScreen() {
         onOpenApprovals={() => router.push("/approvals")}
       />
       <ErrorBanner message={chat.error} />
+      {chat.openingConversation ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.muted }}>Chargement de la discussion…</Text> : null}
       {chat.messages.length ? <MessageList messages={chat.messages} /> : <AssistantWelcome />}
       <IntentComposer
         authenticated={Boolean(chat.bootstrap)}
-        busy={chat.busy}
+        busy={chat.busy || chat.openingConversation}
         input={chat.input}
         interactionMode={chat.interactionMode}
         notice={chat.notice}
@@ -449,11 +524,18 @@ export default function ChatScreen() {
         onOpenSettings={() => router.push("/settings")}
         onSubmit={() => void chat.submit()}
       />
+      <Pressable accessibilityRole="button" onPress={() => router.push({ pathname: "/swarm", params: { create: "1" } })}
+        style={{ minHeight: 48, justifyContent: "center", borderBottomColor: COLORS.border, borderBottomWidth: 0.5 }} testID="chat-new-project">
+        <Text style={{ color: COLORS.accent, fontSize: 15, fontWeight: "600" }}>Nouveau projet</Text>
+      </Pressable>
       {!chat.messages.length ? <AssistantSuggestions onSelect={chat.setInput} disabled={chat.busy} /> : null}
       <LastTaskLink
         lastTask={chat.lastTask}
         onOpen={(id) => router.push({ pathname: "/task/[id]", params: { id } })}
       />
+      </View>
+      </View>
+      {!wide ? <HistoryDrawer {...history} visible={historyOpen} onClose={() => setHistoryOpen(false)} /> : null}
     </ScreenShell>
   );
 }

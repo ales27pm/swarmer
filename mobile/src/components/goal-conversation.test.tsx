@@ -77,13 +77,13 @@ describe("GoalConversation", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
-  it("clears the old conversation and draft after pairing changes", async () => {
+  it("clears the old conversation but retains an unsent draft after pairing changes", async () => {
     await render(<GoalConversation {...props} />);
     await screen.findByText(question.content);
     await fireEvent.changeText(screen.getByLabelText("Réponse à la question du projet"), "Ancienne connexion");
     await act(async () => notifyConnectionChanged());
     expect(screen.queryByText(question.content)).not.toBeOnTheScreen();
-    expect(screen.getByLabelText("Message pour le projet")).toHaveProp("value", "");
+    expect(screen.getByLabelText("Message pour le projet")).toHaveProp("value", "Ancienne connexion");
     expect(screen.getByRole("button", { name: "Envoyer au projet" })).toBeDisabled();
   });
 
