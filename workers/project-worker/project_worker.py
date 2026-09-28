@@ -54,6 +54,22 @@ MAX_ADDRESS_BYTES = 8_000
 MAX_RECOVERY_PROMPT_BYTES = 10_000
 MAX_RECOVERY_OUTPUT_TOKENS = 512
 MAX_RECOVERY_EDIT_CHARACTERS = 800
+INCOMPLETE_RESPONSE_DIAGNOSTIC = (
+    "The model response was incomplete. No edits were accepted. "
+    "Return a smaller complete JSON file-edit batch in the next iteration."
+)
+PROJECT_STALLED_PREFIX = (
+    "Le projet est en pause après trois tentatives sans modification de fichier "
+    "ni nouveau contrôle réussi. Les lectures intermédiaires ne remettent pas "
+    "ce compteur à zéro. Les fichiers et les résultats de vérification sont conservés. "
+    "Envoyez un message au projet pour reprendre avec de nouvelles instructions.\n\n"
+)
+EXCLUSIVE_OPERATION_ERROR = "model batch combines operation families"
+REJECTED_BATCH_ERRORS = (
+    "model patch conflicts with a replacement or deletion",
+    "model both edits and deletes the same path",
+    EXCLUSIVE_OPERATION_ERROR,
+)
 NO_EFFECTIVE_OPERATION_DIAGNOSTIC = (
     "The model returned no effective project operation. No changes or checks were accepted. "
     "Return an effective file edit, patch or deletion, a focused read of an existing file, "
@@ -99,8 +115,8 @@ Build the complete useful multi-file project across several small iterations.
 Keep the entire response below 2000 tokens, including JSON, plan and messages.
 Return at most ONE complete file edit per iteration: a small cohesive module or
 file. Split the application into small modules instead of generating a monolithic
-file. Repairs may change up to 3 paths through short patches or deletions, with
-at most one full-file replacement. Choose a smaller complete batch instead of
+file. Use ONE of edits, patches, deletions, requested_checks; leave others empty.
+Repairs may change up to 3 paths. Prefer a smaller complete batch over
 truncating JSON or writing placeholder chunks. Use continue while work remains.
 Keep message to one sentence, the milestone plan concise, and run instructions brief.
 Keep the full concise milestone plan so later iterations finish the application,
@@ -207,6 +223,18 @@ No additional network requests or model calls are available in this iteration.
 
 IMPLEMENTATION_INSTRUCTION = """CURRENT PHASE: IMPLEMENT THE ANSWERED REQUEST NOW.
 Make actual file changes using the latest user reply and check receipts.
+"""
+
+REJECTED_BATCH_INSTRUCTION = """The previous model batch was rejected or incomplete.
+Return the normal JSON fields, but plan MUST be []; the worker preserves the accepted
+milestone plan automatically. Choose one operation, with at most one item in exactly
+one of edits, patches, deletions, requested_checks or focus_paths. Keep every other
+operation array empty. A clarification must have no operations; native complete
+with no operations requests separate validation. Preserve the latest user request.
+Return one small COMPLETE file or one short patch of at most 800 characters.
+Do not truncate source, create placeholders or combine a replacement with a patch.
+If more work remains, use continue and leave it to later charged iterations.
+Keep message below 160 characters and run_instructions below 240 characters.
 """
 
 REPAIR_RECOVERY_INSTRUCTION = """Repair one small part of the existing project after a timed-out iteration.
@@ -346,6 +374,64 @@ def repair_follows_model_timeout(payload: dict[str, Any]) -> bool:
             MODEL_REPEATED_TIMEOUT_DIAGNOSTIC,
         }
     return False
+
+
+def follows_model_rejection(payload: dict[str, Any]) -> bool:
+    """Match only the latest assistant diagnostic, including its known pause wrapper."""
+    for message in reversed(payload["conversation"]):
+        if message["role"] == "user":
+            continue
+        if message["role"] != "assistant":
+            return False
+        diagnostic = message["content"].removeprefix(PROJECT_STALLED_PREFIX)
+        return diagnostic == INCOMPLETE_RESPONSE_DIAGNOSTIC or diagnostic in {
+            "The model step was rejected: " + reason + ". No changes were accepted. "
+            "Correct that exact contract violation in the next complete batch."
+            for reason in REJECTED_BATCH_ERRORS
+        }
+    return False
+
+
+def bounded_rejection_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    bounded = copy.deepcopy(schema)
+    for branch in bounded["oneOf"]:
+        properties = branch["properties"]
+        properties["plan"] = {"const": []}
+        properties["message"] = {"type": "string", "maxLength": 160}
+        properties["run_instructions"] = {"type": "string", "maxLength": 240}
+        for field in ("edits", "patches", "deletions", "requested_checks", "focus_paths"):
+            properties[field]["maxItems"] = min(1, properties[field].get("maxItems", 1))
+        properties["edits"]["items"]["properties"]["content"] = {
+            "type": "string", "maxLength": MAX_RECOVERY_EDIT_CHARACTERS,
+        }
+        patch_items = properties["patches"]["items"]
+        for patch in patch_items.get("oneOf", [patch_items]):
+            patch["properties"]["new"] = {
+                "type": "string", "maxLength": MAX_RECOVERY_EDIT_CHARACTERS,
+            }
+    return bounded
+
+
+def validate_bounded_rejection(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    # Ollama's grammar is not the trust boundary. Recheck its bounds locally
+    # before resolving patches or allowing any runner / project mutation.
+    if not isinstance(value, dict) or value.get("plan") != []:
+        raise ProjectError("bounded recovery must preserve the accepted plan")
+    for field in ("edits", "patches", "deletions", "requested_checks", "focus_paths"):
+        if not isinstance(value.get(field), list) or len(value[field]) > 1:
+            raise ProjectError("bounded recovery requires at most one operation")
+    for field, content_field in (("edits", "content"), ("patches", "new")):
+        for item in value[field]:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get(content_field), str)
+                or len(item[content_field]) > MAX_RECOVERY_EDIT_CHARACTERS
+            ):
+                raise ProjectError("bounded recovery source exceeds its limit")
+    for field, limit in (("message", 160), ("run_instructions", 240)):
+        if not isinstance(value.get(field), str) or len(value[field]) > limit:
+            raise ProjectError("bounded recovery metadata exceeds its limit")
+    return {**value, "plan": copy.deepcopy(payload["plan"])}
 
 
 def compact_repair_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -982,8 +1068,7 @@ def constrained_step_schema(
                 properties[previous].get("minItems", 0) > 0 for previous in preceding
             ):
                 mode = copy.deepcopy(branch)
-                excluded = operation_fields if native_project(payload) else preceding
-                for other in excluded:
+                for other in operation_fields:
                     if other != field:
                         mode["properties"][other].pop("minItems", None)
                         mode["properties"][other]["maxItems"] = 0
@@ -1510,6 +1595,9 @@ class ProjectGenerator:
         compact_repair = (
             needs_repair and bool(payload["files"]) and repair_follows_model_timeout(payload)
         )
+        bounded_rejection = bool(payload["files"]) and follows_model_rejection(payload)
+        if bounded_rejection:
+            instruction += "\n" + REJECTED_BATCH_INSTRUCTION
         prompt_budget = MAX_RECOVERY_PROMPT_BYTES if compact_repair else MAX_PROMPT_BYTES
         if compact_repair:
             instruction = REPAIR_RECOVERY_INSTRUCTION
@@ -1624,6 +1712,8 @@ class ProjectGenerator:
         response_schema = constrained_step_schema(schema, context, payload, addresses)
         if compact_repair:
             response_schema = compact_repair_schema(response_schema)
+        elif bounded_rejection:
+            response_schema = bounded_rejection_schema(response_schema)
         body = {
             "model": self.model,
             "messages": messages,
@@ -1700,13 +1790,11 @@ class ProjectGenerator:
                         event = transport._parse_json(line)
                     except transport.GenerationError as exc:
                         raise ModelStepError(
-                            "The model response was incomplete. No edits were accepted. "
-                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                            INCOMPLETE_RESPONSE_DIAGNOSTIC
                         ) from exc
                     if not isinstance(event, dict):
                         raise ModelStepError(
-                            "The model response was incomplete. No edits were accepted. "
-                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                            INCOMPLETE_RESPONSE_DIAGNOSTIC
                         )
                     if "error" in event:
                         raise ModelTransportError("unavailable")
@@ -1714,8 +1802,7 @@ class ProjectGenerator:
                     content = message.get("content") if isinstance(message, dict) else None
                     if not isinstance(content, str):
                         raise ModelStepError(
-                            "The model response was incomplete. No edits were accepted. "
-                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                            INCOMPLETE_RESPONSE_DIAGNOSTIC
                         )
                     content_parts.append(content)
                     self.last_transport_metrics["chunks"] += 1
@@ -1730,13 +1817,11 @@ class ProjectGenerator:
                         break
                     if event.get("done") is not False:
                         raise ModelStepError(
-                            "The model response was incomplete. No edits were accepted. "
-                            "Return a smaller complete JSON file-edit batch in the next iteration."
+                            INCOMPLETE_RESPONSE_DIAGNOSTIC
                         )
                 if envelope is None:
                     raise ModelStepError(
-                        "The model response was incomplete. No edits were accepted. "
-                        "Return a smaller complete JSON file-edit batch in the next iteration."
+                        INCOMPLETE_RESPONSE_DIAGNOSTIC
                     )
                 content = "".join(content_parts)
         except (ModelTimeoutError, TimeoutError) as exc:
@@ -1779,12 +1864,13 @@ class ProjectGenerator:
                 or not isinstance(content, str)
             ):
                 raise ModelStepError(
-                    "The model response was incomplete. No edits were accepted. "
-                    "Return a smaller complete JSON file-edit batch in the next iteration."
+                    INCOMPLETE_RESPONSE_DIAGNOSTIC
                 )
             value = transport._parse_json(content)
             if compact_repair:
                 value = expand_compact_repair(value, payload)
+            elif bounded_rejection:
+                value = validate_bounded_rejection(value, payload)
             step = parse_step(resolve_model_patches(value, addresses))
             if any(path in self.last_visible_paths for path in step["focus_paths"]):
                 # Native model grammars are advisory: enforce the final-prompt
@@ -1816,6 +1902,10 @@ class ProjectGenerator:
                     "Return one small complete file or use short patches for repairs. "
                     "Continue remaining work in later charged iterations."
                 )
+            if sum(bool(step[field]) for field in (
+                "edits", "patches", "deletions", "requested_checks",
+            )) > 1:
+                raise ProjectError(EXCLUSIVE_OPERATION_ERROR)
             if (
                 payload["files"]
                 and step["action"] != "clarify"

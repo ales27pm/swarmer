@@ -348,7 +348,7 @@ def test_native_schema_disjoins_mutation_families(first: str, second: str) -> No
     assert validator.is_valid(ready)
 
 
-def test_python_schema_keeps_mixed_operations_on_distinct_paths() -> None:
+def test_python_wire_separates_operations_while_legacy_parser_accepts_distinct_paths() -> None:
     current = {**payload(), "files": [{"path": "app.py", "content": "VALUE = 1\n"}]}
     context = worker.model_context(current)
     addresses = worker.addressed_patch_spans(context, current)
@@ -363,7 +363,8 @@ def test_python_schema_keeps_mixed_operations_on_distinct_paths() -> None:
     schema = worker.constrained_step_schema(
         copy.deepcopy(worker.STEP_SCHEMA), context, current, addresses
     )
-    Draft202012Validator(schema).validate(response)
+    assert not Draft202012Validator(schema).is_valid(response)
+    # Older accepted batches remain readable under the stable stored contract.
     parsed = parse_step(worker.resolve_model_patches(response, addresses))
     assert parsed["edits"] and parsed["patches"]
 

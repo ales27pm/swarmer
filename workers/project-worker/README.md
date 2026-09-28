@@ -105,6 +105,21 @@ diagnostic, followed only by user replies. A later ordinary assistant response
 ends this recovery mode. User replies reset the consecutive-timeout pause
 counter; the latest reply remains intact in the compact model request.
 
+All new model batches use exactly one operation family: replacement, addressed
+patch, deletion, or explicit check. Reads and clarifications remain separate.
+The wire grammar and local response validation both enforce this; accepted
+historical batches retain their existing storage/merge contract.
+
+After an exact mixed-operation or incomplete-response diagnostic, the next
+separately charged batch is bounded to one operation and 800 source characters,
+with short metadata. The model returns an empty plan field; the worker restores
+the accepted plan. This also works after the recorded no-progress pause and a
+user resume. Native-ready validation requests, deletion, reading, checking and
+clarification remain possible. The 2,000-token ceiling and 240-second wall limit
+are unchanged. A smaller batch is not a guarantee that a model finishes: invalid
+or incomplete output still preserves every file/check and performs no hidden
+retry. The existing no-progress pause remains in force.
+
 `last_transport_metrics` records numeric request sizes, response bytes/chunks,
 time to headers/first chunk/first content, elapsed time and terminal receipt,
 including timed-out attempts. Timeout logs contain only these numbers, never

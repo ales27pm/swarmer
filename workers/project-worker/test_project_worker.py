@@ -1141,7 +1141,7 @@ def test_two_full_file_edits_are_rejected_wholesale_in_every_generation_phase(
     assert data == original
 
 
-def test_one_full_edit_patch_and_deletion_preserve_other_files_in_maximum_snapshot(
+def test_mixed_model_operations_preserve_snapshot_without_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     files = [
@@ -1183,7 +1183,7 @@ def test_one_full_edit_patch_and_deletion_preserve_other_files_in_maximum_snapsh
                 deletions=["obsolete.py"],
                 focus_paths=[],
             )
-            assert Draft202012Validator(body["format"]).is_valid(response)
+            assert not Draft202012Validator(body["format"]).is_valid(response)
             return Response(
                 json.dumps(
                     {
@@ -1198,15 +1198,12 @@ def test_one_full_edit_patch_and_deletion_preserve_other_files_in_maximum_snapsh
     generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
     runner = Runner()
     result = worker.run_iteration(data, generator, runner, lambda: None)
-    assert calls == runner.calls == 1 and result["action"] == "complete"
-    updated = {item["path"]: item["content"] for item in result["files"]}
-    assert len(files) == 80 and len(updated) == 79
-    assert updated["app.py"] == "APP = 2\n" and updated["models.py"] == "MODEL = 2\n"
-    assert "obsolete.py" not in updated
-    for item in original["files"]:
-        if item["path"] not in {"app.py", "models.py", "obsolete.py"}:
-            assert updated[item["path"]] == item["content"]
-    assert data == original and result["base_sha256"] == original["base_sha256"]
+    assert calls == 1 and runner.calls == 0
+    assert result["action"] == "continue"
+    assert "combines operation families" in result["message"]
+    for field in ("files", "checks", "plan", "base_revision_id", "base_sha256"):
+        assert result[field] == original[field]
+    assert data == original
 
 
 def test_wire_grammar_separates_mutation_read_and_clarification() -> None:
@@ -2095,7 +2092,7 @@ def test_mutation_schema_requires_an_operation_but_preserves_read_and_clarificat
         "new": "VALUE = 2\n",
     }
     assert validator.is_valid({**response, "patches": [patch]})
-    assert validator.is_valid(
+    assert not validator.is_valid(
         {
             **response,
             "patches": [patch],
