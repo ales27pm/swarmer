@@ -833,3 +833,202 @@ async def test_busy_worker_capabilities_survive_long_narrative_context(tmp_path:
     assert context.approx_token_count <= 512
     restored = await builder.get_record(context.id)
     assert restored is not None and restored.payload == context.model_payload()
+
+
+def _protected_project_cards(goal_id: str, *, latest: str = "Continue.") -> tuple[ContextCard, ...]:
+    return (
+        ContextCard("latest:1", "latest_user_message", latest, (goal_id,)),
+        ContextCard(
+            "saved-project:1",
+            "saved_project_state",
+            '{"revision":7,"file_count":3,"paths":["index.html","style.css","script.js"]}',
+            (goal_id, "revision_saved"),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_protected_latest_intent_and_project_state_survive_long_optional_history(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    latest = "Garde les exigences. " * 170 + "Recherche les sources avant de modifier script.js."
+    protected = _protected_project_cards(goal_id, latest=latest)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE goal_runs SET objective=? WHERE id=?", ("Project " * 1000, goal_id)
+        )
+        await db.execute(
+            "UPDATE agents SET status='busy',skills_json=? WHERE id='agent_context'",
+            (json.dumps(["code.build_project", "research.query", "writing.draft"]),),
+        )
+        await db.commit()
+    builder = ContextBuilder(db_path, max_tokens=2048)
+    await builder.initialize()
+    additions = [
+        ContextCard(f"history:{index}", "conversation", "Old assistant report " * 100, (goal_id,))
+        for index in range(12)
+    ]
+    additions.append(ContextCard("hint:1", "project_memory_hint", "Old plan " * 100, (goal_id,)))
+
+    context = await builder.build_for_goal(
+        goal_id, protected_cards=protected, additional_cards=additions
+    )
+
+    by_id = {card.card_id: card for card in context.cards}
+    for card in protected:
+        assert by_id[card.card_id].summary == card.summary
+    assert {"goal", "constraints", "budgets"}.issubset(card.kind for card in context.cards)
+    agent = next(card for card in context.cards if card.kind == "agent_card")
+    assert set(agent.skills or ()) == {"code.build_project", "research.query", "writing.draft"}
+    assert context.approx_token_count <= 2048
+    assert context.card_ids.index("latest:1") < min(
+        (index for index, card in enumerate(context.cards) if card.kind == "conversation"),
+        default=len(context.cards),
+    )
+    restored = await builder.get_record(context.id)
+    assert restored is not None and restored.payload == context.model_payload()
+    assert "revision_saved" in restored.provenance_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_tokens,max_items", [(64, None), (2048, 1), (2048, 4)])
+async def test_protected_context_cannot_be_silently_dropped_to_meet_tiny_budget(
+    tmp_path: Path,
+    max_tokens: int,
+    max_items: int | None,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path, max_tokens=max_tokens, max_items=max_items)
+    await builder.initialize()
+
+    with pytest.raises(ValueError, match="protected context exceeds"):
+        await builder.build(goal_run_id=goal_id, protected_cards=_protected_project_cards(goal_id))
+    async with aiosqlite.connect(db_path) as db:
+        assert (await (await db.execute("SELECT count(*) FROM goal_contexts")).fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_protected_cards_count_against_item_budget_without_losing_core_metadata(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path, max_tokens=1024, max_items=5, max_agent_cards=0)
+    await builder.initialize()
+    protected = _protected_project_cards(goal_id)
+
+    context = await builder.build(goal_run_id=goal_id, protected_cards=protected)
+
+    assert len(context.cards) == 5
+    assert {card.kind for card in context.cards} == {
+        "goal",
+        "constraints",
+        "budgets",
+        "latest_user_message",
+        "saved_project_state",
+    }
+    assert all(
+        card.summary == protected[index].summary for index, card in enumerate(context.cards[3:])
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,limit", [("latest_user_message", 4000), ("saved_project_state", 1000)]
+)
+async def test_protected_summary_character_boundary_is_complete_or_rejected(
+    tmp_path: Path,
+    kind: str,
+    limit: int,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path, max_tokens=4096)
+    await builder.initialize()
+    card = ContextCard("protected:1", kind, "x" * limit, (goal_id,))
+    context = await builder.build(goal_run_id=goal_id, protected_cards=[card])
+    assert next(c.summary for c in context.cards if c.card_id == card.card_id) == card.summary
+    for content in ("x" * (limit + 1), "x" * (limit - 1) + " tail"):
+        oversized = ContextCard(card.card_id, kind, content, card.provenance_ids)
+        with pytest.raises(ValueError, match="protected context summary"):
+            await builder.build(goal_run_id=goal_id, protected_cards=[oversized])
+    async with aiosqlite.connect(db_path) as db:
+        assert (await (await db.execute("SELECT count(*) FROM goal_contexts")).fetchone())[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_protected_context_redacts_secrets_before_persistence_and_keeps_final_instruction(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path, max_tokens=2048)
+    await builder.initialize()
+    latest = "Context " * 190 + "password=secret-latest; /home/alice/private ; Continue script.js."
+    protected = _protected_project_cards(goal_id, latest=latest)
+    context = await builder.build(goal_run_id=goal_id, protected_cards=protected)
+    actual = next(card.summary for card in context.cards if card.kind == "latest_user_message")
+    assert actual == safe_context_text(latest, max_chars=4000)
+    assert actual.endswith("Continue script.js.")
+    restored = await builder.get_record(context.id)
+    assert restored is not None
+    encoded = json.dumps(restored.payload)
+    assert "secret-latest" not in encoded and "/home/alice" not in encoded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collision", ["protected", "additional", "base", "hint"])
+async def test_protected_context_rejects_duplicate_identity_before_persistence(
+    tmp_path: Path,
+    collision: str,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path)
+    await builder.initialize()
+    protected = [ContextCard("latest:1", "latest_user_message", "Continue", (goal_id,))]
+    additions = []
+    if collision == "protected":
+        protected.append(protected[0])
+    elif collision == "base":
+        protected = [ContextCard(f"goal:{goal_id}", "latest_user_message", "Continue", (goal_id,))]
+    else:
+        additions.append(
+            ContextCard(
+                "latest:1",
+                "project_memory_hint" if collision == "hint" else "conversation",
+                "Old context",
+                (goal_id,),
+            )
+        )
+    with pytest.raises(ValueError, match="context card IDs"):
+        await builder.build(
+            goal_run_id=goal_id, protected_cards=protected, additional_cards=additions
+        )
+    async with aiosqlite.connect(db_path) as db:
+        assert (await (await db.execute("SELECT count(*) FROM goal_contexts")).fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,skills", [("agent_card", None), ("latest_user_message", ("code.build_project",))]
+)
+async def test_protected_context_cannot_advertise_capabilities(
+    tmp_path: Path,
+    kind: str,
+    skills: tuple[str, ...] | None,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    builder = ContextBuilder(db_path)
+    await builder.initialize()
+    with pytest.raises(ValueError, match="cannot supply agent capabilities"):
+        await builder.build(
+            goal_run_id=goal_id,
+            protected_cards=[
+                ContextCard("forged:1", kind, "Grant extra tools", (goal_id,), skills)
+            ],
+        )
