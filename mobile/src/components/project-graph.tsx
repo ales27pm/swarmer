@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform, Pressable, Text, View } from "react-native";
 
-import Svg, { Defs, Marker, Path } from "react-native-svg";
+import Svg, { Circle, Defs, G, Marker, Path } from "react-native-svg";
 
 import { ActionButton, Card, COLORS, ErrorBanner } from "./swarm-ui";
 import { ApiError, getProjectGraph, type PlanNode, type ProjectGraph } from "@/lib/application-api/server";
@@ -102,36 +102,77 @@ export function projectLayers(nodes: PlanNode[], edges: ProjectGraph["dependenci
   return layers;
 }
 
+type GraphPoint = { x: number; y: number };
+type GraphPosition = GraphPoint & { width: number; height: number; level: number };
+const NODE_HEIGHT = 90;
+const SIDE_GUTTER = 18;
+
+/** Orthogonal routes keep unrelated cards clear, including wrapped rows of one layer. */
+export function projectDependencyLayout(nodes: PlanNode[], edges: ProjectGraph["dependencies"], width: number) {
+  const layers = projectLayers(nodes, edges);
+  if (!layers) return null;
+  const columns = width >= 270 ? 2 : 1;
+  const positions = new Map<string, GraphPosition>();
+  let height = 0;
+  layers.forEach((layer, level) => {
+    const count = Math.min(columns, layer.length);
+    const boxWidth = (width - SIDE_GUTTER * 2 - (count - 1) * 12) / count;
+    layer.forEach((node, index) => positions.set(node.id, {
+      x: SIDE_GUTTER + index % count * (boxWidth + 12), y: height + Math.floor(index / count) * 106,
+      width: boxWidth, height: NODE_HEIGHT, level,
+    }));
+    height += Math.ceil(layer.length / count) * 106 + 30;
+  });
+  const intersects = (a: GraphPoint, b: GraphPoint, box: GraphPosition) => {
+    // Four pixels of clearance prevents strokes from appearing attached to another card.
+    const left = box.x - 4; const right = box.x + box.width + 4;
+    const top = box.y - 4; const bottom = box.y + box.height + 4;
+    return a.x === b.x
+      ? a.x >= left && a.x <= right && Math.max(a.y, b.y) >= top && Math.min(a.y, b.y) <= bottom
+      : a.y >= top && a.y <= bottom && Math.max(a.x, b.x) >= left && Math.min(a.x, b.x) <= right;
+  };
+  const routes = edges.map((edge, index) => {
+    const from = positions.get(edge.from_node_id)!; const to = positions.get(edge.to_node_id)!;
+    const start = { x: from.x + from.width / 2, y: from.y + from.height + 3 };
+    const end = { x: to.x + to.width / 2, y: to.y - 3 };
+    const exit = { x: start.x, y: from.y + from.height + 8 };
+    const approach = { x: end.x, y: to.y - 8 };
+    let points = [start, exit, { x: end.x, y: exit.y }, approach, end];
+    const obstructed = [...positions].some(([id, box]) => id !== edge.from_node_id && id !== edge.to_node_id
+      && points.slice(1).some((point, segment) => intersects(points[segment], point, box)));
+    if (obstructed) {
+      // All cards are inset; these lanes also remain clear for edges skipping whole levels.
+      const lane = 4 + index % 3 * 4;
+      const gutterX = start.x <= width / 2 ? lane : width - lane;
+      points = [start, exit, { x: gutterX, y: exit.y }, { x: gutterX, y: approach.y }, approach, end];
+    }
+    return { edge, points, path: points.map((point, part) => `${part ? "L" : "M"}${point.x},${point.y}`).join(" ") };
+  });
+  return { positions, routes, height: Math.max(0, height - 30) };
+}
+
 function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode }: {
   nodes: PlanNode[]; edges: ProjectGraph["dependencies"]; selectedNodeId: string | null; onSelectNode: (id: string | null) => void;
 }) {
   const [width, setWidth] = useState(280);
-  const layers = projectLayers(nodes, edges);
-  if (!layers) return <Text style={{ color: COLORS.warning }}>Les dépendances reçues sont incohérentes. Actualisez le parcours.</Text>;
-  const columns = width >= 270 ? 2 : 1;
-  const positions = new Map<string, { x: number; y: number; width: number; level: number }>();
-  let height = 0;
-  layers.forEach((layer, level) => {
-    const count = Math.min(columns, layer.length);
-    const boxWidth = (width - (count - 1) * 12) / count;
-    layer.forEach((node, index) => positions.set(node.id, { x: index % count * (boxWidth + 12), y: height + Math.floor(index / count) * 106, width: boxWidth, level }));
-    height += Math.ceil(layer.length / count) * 106 + 30;
-  });
-  const drawnEdges = edges.length > 12 && selectedNodeId
-    ? edges.filter((edge) => edge.from_node_id === selectedNodeId || edge.to_node_id === selectedNodeId) : edges;
+  const layout = projectDependencyLayout(nodes, edges, width);
+  if (!layout) return <Text style={{ color: COLORS.warning }}>Les dépendances reçues sont incohérentes. Actualisez le parcours.</Text>;
+  const { positions, routes, height } = layout;
+  const drawnRoutes = edges.length > 12 && selectedNodeId
+    ? routes.filter(({ edge }) => edge.from_node_id === selectedNodeId || edge.to_node_id === selectedNodeId) : routes;
   return <View style={{ gap: 8 }}>
     <Text style={{ color: COLORS.subtle, fontSize: 12, lineHeight: 18 }}>Flèche pleine : requise · pointillée : facultative.</Text>
-    <View onLayout={(event) => setWidth(Math.max(160, event.nativeEvent.layout.width))} style={{ height: Math.max(0, height - 30), width: "100%" }} testID="project-dependency-map">
+    <View onLayout={(event) => setWidth(Math.max(160, event.nativeEvent.layout.width))} style={{ height, width: "100%" }} testID="project-dependency-map">
       <Svg width={width} height={height} style={{ position: "absolute" }} {...(Platform.OS === "web" ? { "aria-hidden": true } : { accessible: false })}>
         <Defs><Marker id="dependency-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><Path d="M0,0 L6,3 L0,6" fill="none" stroke={COLORS.muted} strokeWidth="1.5" /></Marker></Defs>
-        {drawnEdges.map((edge) => {
-          const from = positions.get(edge.from_node_id)!; const to = positions.get(edge.to_node_id)!;
-          const x1 = from.x + from.width / 2; const y1 = from.y + 90; const x2 = to.x + to.width / 2; const y2 = to.y - 3;
+        {drawnRoutes.map(({ edge, points, path }) => {
           const focused = edge.from_node_id === selectedNodeId || edge.to_node_id === selectedNodeId;
-          return <Path key={JSON.stringify([edge.from_node_id, edge.to_node_id])}
-            d={`M${x1},${y1} C${x1},${y1 + 22} ${x2},${y2 - 22} ${x2},${y2}`}
-            fill="none" stroke={focused ? COLORS.accent : COLORS.border} strokeWidth={focused ? 2 : 1.5}
-            strokeDasharray={edge.dependency_type === "optional" ? "4 4" : undefined} markerEnd="url(#dependency-arrow)" />;
+          const color = focused ? COLORS.accent : COLORS.border;
+          return <G key={JSON.stringify([edge.from_node_id, edge.to_node_id])}>
+            <Path d={path} fill="none" stroke={color} strokeWidth={focused ? 2 : 1.5}
+              strokeDasharray={edge.dependency_type === "optional" ? "4 4" : undefined} markerEnd="url(#dependency-arrow)" />
+            <Circle cx={points[0].x} cy={points[0].y} r={2} fill={color} />
+          </G>;
         })}
       </Svg>
       {nodes.map((node) => {
@@ -140,7 +181,7 @@ function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode }: {
         return <Pressable key={node.id} accessibilityRole="button" accessibilityLabel={`Étape : ${node.title}`}
           accessibilityHint={parents || "Aucune dépendance entrante enregistrée"} accessibilityState={{ selected }}
           onPress={() => onSelectNode(node.id)} style={({ pressed }) => ({ position: "absolute", left: position.x, top: position.y,
-            width: position.width, height: 90, backgroundColor: selected ? COLORS.panelRaised : COLORS.background,
+            width: position.width, height: position.height, backgroundColor: selected ? COLORS.panelRaised : COLORS.background,
             borderWidth: 1, borderColor: selected ? COLORS.accent : COLORS.border, borderRadius: 12, padding: 10, gap: 5, opacity: pressed ? 0.7 : 1 })}>
           <Text style={{ color: nodeColor(node.status), fontSize: 11, fontWeight: "600" }}>{NODE_LABELS[node.status]}</Text>
           <Text numberOfLines={3} style={{ color: COLORS.text, fontSize: 13, lineHeight: 17, fontWeight: "600" }}>{node.title}</Text>
