@@ -539,3 +539,71 @@ def test_utf16_sitemap_entity_declaration_is_not_expanded() -> None:
     fetcher.pages[BASE + "/sitemap.xml"] = (200, "application/xml", xml.encode("utf-16"))
     dossier = capture_website(BASE + "/", fetcher=fetcher)
     assert any(issue.reason == "unsafe_sitemap" for issue in dossier.coverage.discovery_issues)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "<!DOCTYPE urlset>",
+        '<!DOCTYPE urlset [<!ENTITY first "abc"><!ENTITY expanded "&first;&first;&first;">]>',
+        '<!DOCTYPE urlset SYSTEM "https://company.example/external.dtd">',
+        '<!DOCTYPE urlset [<!ENTITY local SYSTEM "file:///etc/passwd">]>',
+        '<!DOCTYPE urlset [<!ENTITY remote SYSTEM "http://169.254.169.254/latest/meta-data/">]>',
+    ],
+)
+def test_sitemap_parser_refuses_dtd_and_entities_for_all_supported_encodings(
+    encoding: str,
+    declaration: str,
+) -> None:
+    fetcher = fixture_fetcher()
+    xml_encoding = "UTF-8" if encoding == "utf-8" else "UTF-16"
+    payload = (
+        f'<?xml version="1.0" encoding="{xml_encoding}"?>{declaration}'
+        "<urlset><url><loc>https://company.example/from-unsafe-sitemap</loc></url></urlset>"
+    ).encode(encoding)
+    fetcher.pages[BASE + "/sitemap.xml"] = (200, "application/xml", payload)
+    dossier = capture_website(BASE + "/", fetcher=fetcher)
+    assert any(issue.reason == "unsafe_sitemap" for issue in dossier.coverage.discovery_issues)
+    assert dossier.coverage.status == "partial"
+    assert not any(
+        "from-unsafe-sitemap" in call or "external.dtd" in call for call in fetcher.calls
+    )
+    assert {call for call in fetcher.calls} == {
+        BASE + "/robots.txt",
+        BASE + "/sitemap.xml",
+        BASE + "/",
+        BASE + "/services",
+    }
+
+
+def test_benign_xml_comments_and_predefined_entities_are_not_rejected_as_dtd() -> None:
+    fetcher = fixture_fetcher()
+    # A marker in a comment is not a declaration; &amp; is a predefined XML entity.
+    fetcher.pages[BASE + "/sitemap.xml"] = (
+        200,
+        "application/xml",
+        b"""
+        <urlset><!-- Example documentation: <!DOCTYPE and <!ENTITY are prohibited. -->
+        <url><loc>https://company.example/from-sitemap?a=1&amp;b=2</loc></url></urlset>
+    """,
+    )
+    fetcher.pages[BASE + "/from-sitemap?a=1&b=2"] = (200, "text/html", b"<p>Safe sitemap page</p>")
+    dossier = capture_website(BASE + "/", fetcher=fetcher)
+    assert not dossier.coverage.discovery_issues
+    assert any(page.final_url == BASE + "/from-sitemap?a=1&b=2" for page in dossier.pages)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'<?xml version="1.0" encoding="unknown-encoding"?><urlset/>',
+        b"<urlset><url></urlset>",
+    ],
+)
+def test_malformed_or_unsupported_xml_is_a_bounded_discovery_issue(payload: bytes) -> None:
+    fetcher = fixture_fetcher()
+    fetcher.pages[BASE + "/sitemap.xml"] = (200, "application/xml", payload)
+    dossier = capture_website(BASE + "/", fetcher=fetcher)
+    assert any(issue.reason == "sitemap_unavailable" for issue in dossier.coverage.discovery_issues)
+    assert dossier.coverage.extracted == 2

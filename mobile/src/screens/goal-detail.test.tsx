@@ -217,6 +217,18 @@ describe("GoalDetailScreen", () => {
     expect(mockStartGoal).not.toHaveBeenCalled();
   });
 
+  it("opens the existing Results evidence panel from the selected graph step", async () => {
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("button", { name: "Étape : Vérifier les invariants" }));
+    expect(screen.getByText("Exigences et preuves de cette étape")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Voir et modifier les preuves dans Résultats" }));
+    expect(screen.getByRole("tab", { name: "Résultats" })).toBeSelected();
+    expect(screen.queryByRole("button", { name: "Fermer les détails de l’étape" })).not.toBeOnTheScreen();
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
   it("keeps the draft but locks stale goal evidence after pairing changes until an explicit refresh", async () => {
     mockGetGoal.mockResolvedValue({ ...detail, goal: { ...detail.goal, status: "running" }, result: null });
     const user = userEvent.setup();

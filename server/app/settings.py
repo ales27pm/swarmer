@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     port: int = 8710
     db_path: Path = Path("./data/mongars.db")
     workspace_root: Path = Path("./workspace")
+    website_browser_enabled: bool = False
+    website_chromium_executable: str | None = None
+    website_browser_max_pages: int = Field(default=3, ge=1, le=30)
+    infographic_artist_endpoint: str | None = None
+    infographic_artist_token: SecretStr | None = None
+    website_publish_root: Path | None = None
+    website_public_base_url: str | None = None
+    website_attachment_headers_configured: bool = False
     message_board_backend: Literal["sqlite", "redis"] = "sqlite"
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     redis_stream_prefix: str = Field(default="mongars", min_length=1, max_length=100)

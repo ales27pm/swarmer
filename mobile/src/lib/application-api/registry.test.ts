@@ -60,24 +60,26 @@ describe("application API contract", () => {
   });
 
   it("exposes background status through the existing model status command without adding execution authority", async () => {
+    const commandsBefore = applicationApi.catalog().commands;
     const status: native.LocalInferenceStatus = { state: "ready", runtime: "mlx", modelId: "test/dolphin", revision: null,
       backgroundExecution: { supported: true, reason: "permission_unverified", osSupported: true, gpuSupported: true,
         entitlementGranted: null, executionDevice: null, active: false, operationId: null, outputBytes: 0, state: "idle" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(83);
+    expect(applicationApi.catalog().commands).toEqual(commandsBefore);
     expect(applicationApi.catalog().commands.find((command) => command.name === "models.status")).toMatchObject({ effect: "read", output: { dataType: "LocalInferenceStatus", validation: "existing_parser" } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(native.loadLocalModel).not.toHaveBeenCalled();
   });
 
   it("preserves an admitted CPU fallback in the same read-only models.status contract", async () => {
+    const commandsBefore = applicationApi.catalog().commands;
     const status: native.LocalInferenceStatus = { state: "generating", runtime: "mlx", modelId: "test/dolphin", revision: null,
       backgroundExecution: { supported: true, reason: "cpu_fallback", osSupported: true, gpuSupported: false,
         entitlementGranted: null, executionDevice: "cpu", active: true, operationId: "cpu-operation", outputBytes: 42, state: "active" } };
     jest.mocked(native.getLocalInferenceStatus).mockResolvedValue(status);
     expect((await applicationApi.execute("models.status", {})).data).toEqual(status);
-    expect(applicationApi.catalog().commands).toHaveLength(83);
+    expect(applicationApi.catalog().commands).toEqual(commandsBefore);
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
   });
 

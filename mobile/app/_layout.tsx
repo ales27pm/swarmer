@@ -22,6 +22,7 @@ export default function RootLayout() {
           options={{ headerBackTitle: "Réglages", title: "Modèle local" }}
         />
         <Stack.Screen name="goal/[id]" options={{ headerBackTitle: "Retour", title: "Projet" }} />
+        <Stack.Screen name="website" options={{ headerBackTitle: "Projets", title: "Sites et identité" }} />
         <Stack.Screen
           name="task/[id]"
           options={{ headerBackTitle: "Retour", title: "Tâche" }}

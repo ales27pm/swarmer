@@ -125,6 +125,7 @@ from app.services.project_compaction import (
 )
 from app.services.project_context import ProjectContextConflict, ProjectContextService
 from app.services.project_contracts import ProjectApplication, ProjectApplyRequest, ProjectPreview
+from app.services.project_evidence_routes import install_evidence_routes
 from app.services.project_graph import ProjectGraphEvidenceError, read_project_graph
 from app.services.project_graph_contracts import ProjectGraph
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
@@ -158,6 +159,11 @@ from app.services.swift_project_validation import (
 )
 from app.services.task_execution import read_task_goal_execution
 from app.services.vector_index import FaissVectorIndex, VectorIndexError
+from app.services.website_branding import InfographicArtistClient
+from app.services.website_browser import BrowserRuntimeConfig
+from app.services.website_publisher import StaticDirectoryPublisher
+from app.services.website_workflow import WebsiteWorkflow
+from app.services.website_workflow_routes import install_website_routes
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.services.writing_drafts import WritingDraftPreview, read_writing_draft
 from app.settings import Settings, get_settings
@@ -259,15 +265,54 @@ def _validate_runtime_boundaries(settings: Settings) -> None:
         "db_path": settings.db_path,
         "permissions_path": settings.permissions_path,
         "vector_index_path": settings.vector_index_path,
+        "website_storage": settings.db_path.resolve().parent
+        / (settings.db_path.stem + "-website-projects"),
     }.items():
         resolved = protected.resolve()
         if resolved == workspace or workspace in resolved.parents:
             raise RuntimeError(f"{name} must be outside workspace_root")
+    if settings.website_publish_root is not None:
+        public_root = settings.website_publish_root.resolve()
+        private_paths = [
+            settings.db_path.resolve(),
+            settings.permissions_path.resolve(),
+            settings.vector_index_path.resolve(),
+            workspace,
+            settings.db_path.resolve().parent / (settings.db_path.stem + "-website-projects"),
+        ]
+        if any(
+            public_root == private
+            or public_root in private.parents
+            or private in public_root.parents
+            for private in private_paths
+        ):
+            raise RuntimeError(
+                "website_publish_root must not overlap private state or workspace_root"
+            )
 
 
 def create_app(config: Settings | None = None) -> FastAPI:
     settings = config or get_settings()
     _validate_runtime_boundaries(settings)
+    website_workflow = WebsiteWorkflow(
+        settings.db_path.resolve().parent / (settings.db_path.stem + "-website-projects"),
+        brand_client=InfographicArtistClient(
+            settings.infographic_artist_endpoint,
+            settings.infographic_artist_token.get_secret_value()
+            if settings.infographic_artist_token
+            else None,
+        ),
+        publisher=StaticDirectoryPublisher(
+            settings.website_publish_root,
+            settings.website_public_base_url,
+            attachment_headers_configured=settings.website_attachment_headers_configured,
+        ),
+        browser_config=BrowserRuntimeConfig(
+            enabled=settings.website_browser_enabled,
+            chromium_executable=settings.website_chromium_executable,
+        ),
+        browser_max_pages=settings.website_browser_max_pages,
+    )
     embedding_service = (
         HttpEmbeddingService(settings.embedding_base_url, settings.embedding_model)
         if settings.embedding_base_url and settings.embedding_model
@@ -588,6 +633,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         instance_started = False
         try:
             await state_service.initialize()
+            website_workflow.initialize()
             await project_memory.initialize()
             await goal_manager.initialize()
             await consumer_checkpoints.initialize()
@@ -644,6 +690,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             )
             yield
         finally:
+            await website_workflow.close()
             if websocket_notification_pump is not None:
                 websocket_notification_pump.cancel()
                 with suppress(asyncio.CancelledError):
@@ -661,6 +708,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
     app.state.settings = settings
+    app.state.website_workflow = website_workflow
     app.state.state_service = state_service
     app.state.auth_service = auth_service
     app.state.approval_gateway = approval_gateway
@@ -716,6 +764,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if not principal:
             raise HTTPException(status_code=401, detail="invalid device token")
         return principal
+
+    install_evidence_routes(app, settings.db_path, require_device)
+    install_website_routes(app, website_workflow, require_device)
 
     async def require_bootstrap_principal(
         request: Request,
@@ -1426,7 +1477,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 settings.db_path, scope_type, scope_id, limit=limit, cursor=cursor
             )
         except ActivityCursorStale as exc:
-            raise HTTPException(status_code=409, detail="activity history changed; refresh") from exc
+            raise HTTPException(
+                status_code=409, detail="activity history changed; refresh"
+            ) from exc
         except ActivityCursorError as exc:
             raise HTTPException(status_code=400, detail="invalid activity cursor") from exc
         except (ActivityEvidenceError, sqlite3.Error) as exc:
@@ -1458,7 +1511,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
         try:
             graph = await read_project_graph(settings.db_path, goal_id)
         except (ProjectGraphEvidenceError, sqlite3.Error) as exc:
-            raise HTTPException(status_code=503, detail="project graph evidence unavailable") from exc
+            raise HTTPException(
+                status_code=503, detail="project graph evidence unavailable"
+            ) from exc
         if graph is None:
             raise HTTPException(status_code=404, detail="goal not found")
         return graph

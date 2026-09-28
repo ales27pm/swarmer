@@ -33,9 +33,11 @@ is exposed, and no explanation is reconstructed for older records that lack one.
 
 Files and checks are attached only to the exact durable project revision that produced
 them, with hashes and producer IDs. A check attached to a revision does not establish
-that it is fresh for every current file. Criterion-to-evidence mapping is not yet
-recorded, so the graph reports `not_mapped` instead of inventing completion coverage.
-The graph cannot, by itself, guarantee absence of requirement drift.
+that it is fresh for every current file. The graph's original schema retains its
+legacy `not_mapped` fields for compatibility. Current clients use the separate
+[explicit requirement evidence projection](requirement-evidence.md) for persisted
+associations and human review. The Results tab distinguishes linked, reviewed and
+stale evidence; node completion never implies criterion coverage.
 
 ## Live operation view
 

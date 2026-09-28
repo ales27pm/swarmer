@@ -109,7 +109,30 @@ register("sync.refresh", noInput, (_, context) => server.bootstrapSync(context.s
 register("goals.list", noInput, (_, context) => context.shouldAccept ? server.listGoals(context.shouldAccept) : server.listGoals());
 register<{ id: string }>("goals.get", idInput, ({ id }, context) => context.shouldAccept ? server.getGoal(id, context.shouldAccept) : server.getGoal(id));
 register<{ id: string }>("goals.graph", idInput, ({ id }, context) => server.getProjectGraph(id, context.shouldAccept));
+register<{ id: string }>("goals.evidence", idInput, ({ id }, context) => server.getProjectEvidence(id, context.shouldAccept));
+const evidenceId = { ...text(200), pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" };
+const evidenceDigest = { ...text(64), pattern: "^[0-9a-f]{64}$" };
+register<{ id: string; criterionIndex: number; input: import("@/lib/api/project-evidence").ProjectEvidenceWrite }>("goals.evidence.record", object({
+  id: identifier, criterionIndex: integer(0, 19), input: object({
+    request_id: evidenceId, expected_version: integer(0, 2147483647), context_sha256: evidenceDigest,
+    conversation_revision: integer(0, Number.MAX_SAFE_INTEGER), criterion_sha256: evidenceDigest,
+    project_id: evidenceId, node_id: evidenceId, revision_id: evidenceId, revision_sha256: evidenceDigest,
+    file_ids: list(evidenceId, 80), check_ids: list(evidenceId, 12), review_status: choice("linked", "reviewed"), public_explanation: text(2000, 0),
+  }),
+}), ({ id, criterionIndex, input }, context) => server.putProjectEvidence(id, criterionIndex, input, context.shouldAccept), { ...mutation, requiresForeground: true });
 const activityInput = object({ id: { ...text(200), pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }, cursor: { ...text(4096), pattern: "^[A-Za-z0-9_-]+$" } }, ["id"]);
+const websiteReview = object({ expected_version: integer(1, Number.MAX_SAFE_INTEGER), build_digest: evidenceDigest });
+register("websites.capabilities", noInput, (_, context) => server.getWebsiteCapabilities(context.shouldAccept));
+register("websites.list", noInput, (_, context) => server.listWebsiteProjects(context.shouldAccept));
+register<{ id: string }>("websites.get", idInput, ({ id }, context) => server.getWebsiteProject(id, context.shouldAccept));
+register<import("@/lib/api/website-projects").WebsiteCreate>("websites.create", object({ request_id: text(100, 8), source_url: text(2048, 8), objective: text(4000) }), (input, context) => server.createWebsiteProject(input, context.shouldAccept), mutation);
+register<{ id: string; input: import("@/lib/api/website-projects").WebsiteCommand }>("websites.command", object({ id: identifier, input: object({
+  request_id: text(100, 8), expected_version: integer(1, Number.MAX_SAFE_INTEGER), action: choice("capture", "branding", "build"), palette_id: text(40), direction_id: choice("editorial", "studio", "catalog"),
+}, ["request_id", "expected_version", "action"]) }), ({ id, input }, context) => server.commandWebsiteProject(id, input, context.shouldAccept), mutation);
+register<{ id: string; input: import("@/lib/api/website-projects").WebsiteReview }>("websites.preview", object({ id: identifier, input: websiteReview }), ({ id, input }, context) => server.previewWebsiteProject(id, input, context.shouldAccept));
+register<{ id: string; sha256: string }>("websites.screenshot", object({ id: identifier, sha256: evidenceDigest }), ({ id, sha256 }, context) => server.previewWebsiteScreenshot(id, sha256, context.shouldAccept));
+register<{ id: string; input: import("@/lib/api/website-projects").WebsiteReview }>("websites.prepare-publication", object({ id: identifier, input: websiteReview }), ({ id, input }, context) => server.prepareWebsitePublication(id, input, context.shouldAccept), { ...mutation, requiresForeground: true, readiness: "review_required" });
+register<{ id: string; input: import("@/lib/api/website-projects").WebsitePublish }>("websites.publish", object({ id: identifier, input: object({ expected_version: integer(1, Number.MAX_SAFE_INTEGER), build_digest: evidenceDigest, approval_token: text(100, 32), confirm_publication: { type: "boolean", enum: [true] } }) }), ({ id, input }, context) => server.publishWebsiteProject(id, input, context.shouldAccept), { ...mutation, requiresForeground: true, readiness: "review_required" });
 register<{ id: string; cursor?: string }>("tasks.activity", activityInput, ({ id, cursor }, context) => server.getActivity("task", id, cursor, context.shouldAccept));
 register<{ id: string; cursor?: string }>("goals.activity", activityInput, ({ id, cursor }, context) => server.getActivity("goal", id, cursor, context.shouldAccept));
 register<{ id: string }>("goals.nodes", idInput, ({ id }, context) => context.shouldAccept ? server.listGoalNodes(id, context.shouldAccept) : server.listGoalNodes(id));
