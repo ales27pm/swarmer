@@ -321,12 +321,12 @@ class WebsiteBuilder:
         asset_bytes = 0
         known_asset_urls = {i.original_url for i in inventory if i.kind in {"image", "document"}}
         for asset in assets or []:
+            if asset.source_url not in known_asset_urls:
+                continue
             asset_content = asset.bytes()
             asset_bytes += len(asset_content)
             if asset_bytes > MAX_BUILD_BYTES:
                 raise ValueError("build_byte_limit")
-            if asset.source_url not in known_asset_urls:
-                raise ValueError("asset_not_in_source_inventory")
             path = f"assets/{asset.sha256}.{ASSET_TYPES[asset.media_type]}"
             if asset.source_url in asset_paths and asset_paths[asset.source_url] != path:
                 raise ValueError("conflicting_asset_capture")

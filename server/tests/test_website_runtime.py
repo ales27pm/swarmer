@@ -207,6 +207,50 @@ def test_real_http_binary_download_has_hash_provenance_and_inert_pdf(
     assert requests == ["/robots.txt", "/small.png", "/document.pdf"]
 
 
+@pytest.mark.parametrize("include_third_unique", [False, True])
+def test_asset_quota_counts_unique_urls_and_keeps_first_provenance(
+    website_fixture: Any,
+    tmp_path: Path,
+    include_third_unique: bool,
+) -> None:
+    transport, pages, requests = website_fixture
+    png = raster_bytes()
+    for path in ("/shared.png", "/second.png", "/third.png"):
+        pages[path] = (200, {"content-type": "image/png"}, png)
+    first = reference("/shared.png").model_copy(
+        update={"source_url": BASE + "/first-page", "source_locator": "img@3:5"}
+    )
+    duplicate = first.model_copy(
+        update={
+            "source_url": BASE + "/later-page",
+            "page_sha256": "b" * 64,
+            "source_locator": "rendered_dom:mobile:img@8:2",
+        }
+    )
+    references = [first, duplicate, first, reference("/second.png")]
+    if include_third_unique:
+        references.append(reference("/third.png"))
+    result = download_website_assets(
+        references,
+        source_url=BASE + "/",
+        output_dir=tmp_path,
+        fetcher=transport,
+        limits=AssetLimits(max_assets=2),
+    )
+    assert [asset.source_url for asset in result.assets] == [
+        BASE + "/shared.png",
+        BASE + "/second.png",
+    ]
+    assert requests == ["/robots.txt", "/shared.png", "/second.png"]
+    assert result.assets[0].page_source_url == first.source_url
+    assert result.assets[0].page_sha256 == first.page_sha256
+    assert result.assets[0].source_locator == first.source_locator
+    assert result.status == ("partial" if include_third_unique else "completed")
+    assert [issue.reason for issue in result.issues] == (
+        ["asset_limit"] if include_third_unique else []
+    )
+
+
 @pytest.mark.parametrize(
     "path, reason",
     [

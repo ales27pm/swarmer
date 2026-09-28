@@ -331,7 +331,10 @@ def download_website_assets(
     session = PublicResourceSession(source_url, limits=limits, fetcher=fetcher)
     assets: list[DownloadedAsset] = []
     issues: list[ResourceIssue] = []
-    for reference in references[: limits.max_assets]:
+    unique_references: dict[str, AssetReference] = {}
+    for reference in references:
+        unique_references.setdefault(reference.url, reference)
+    for reference in list(unique_references.values())[: limits.max_assets]:
         try:
             session._scope(reference.source_url, source_url)
             response = session.get(reference.url, origin=reference.source_url)
@@ -373,7 +376,7 @@ def download_website_assets(
         except (CaptureError, ValueError, OSError) as exc:
             reason = str(exc) if isinstance(exc, CaptureError) else "asset_unavailable"
             issues.append(ResourceIssue(url=reference.url, reason=reason))
-    if len(references) > limits.max_assets:
+    if len(unique_references) > limits.max_assets:
         issues.append(ResourceIssue(url=source_url, reason="asset_limit"))
     return AssetDownloadResult(
         status="partial" if issues else "completed",

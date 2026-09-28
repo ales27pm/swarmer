@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.services.website_builder import WebsiteBuild
 from app.services.website_dossier import FetchResponse
 from app.services.website_publisher import StaticDirectoryPublisher
 
@@ -98,6 +102,99 @@ def command(
             return result
         time.sleep(0.01)
     raise AssertionError("fixture workflow did not finish")
+
+
+@pytest.fixture
+def website_preview(
+    client: TestClient, paired_headers: dict[str, str]
+) -> tuple[dict[str, Any], str]:
+    project = command(client, paired_headers, create(client, paired_headers), "capture")
+    project = command(client, paired_headers, project, "build", palette_id="paper-ink")
+    response = client.post(
+        f"/website-projects/{project['id']}/preview",
+        headers=paired_headers,
+        json={"expected_version": project["version"], "build_digest": project["build"]["digest"]},
+    )
+    assert response.status_code == 200, response.text
+    return project, response.json()["path"]
+
+
+@pytest.mark.parametrize("report", ["migration.json", "strategy.json", "readiness.json"])
+def test_preview_token_cannot_read_private_reports(
+    client: TestClient, website_preview: tuple[dict[str, Any], str], report: str
+) -> None:
+    _, preview_path = website_preview
+    assert client.get(preview_path).status_code == 200
+    assert client.get(preview_path.replace("index.html", "styles.css")).status_code == 200
+    response = client.get(preview_path.replace("index.html", "reports/" + report))
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Fichier absent de l’aperçu."
+    assert client.get(preview_path.replace("index.html", "missing.html")).status_code == 404
+
+
+def test_preview_revalidates_the_build_after_an_earlier_request(
+    client: TestClient, website_preview: tuple[dict[str, Any], str]
+) -> None:
+    project, preview_path = website_preview
+    assert client.get(preview_path).status_code == 200
+    service = client.app.state.website_workflow  # type: ignore[union-attr]
+    data = service.store.get(project["id"])
+    build = service._read(data["build_file"])
+    build["digest"] = "0" * 64
+    service._write(data["build_file"], build)
+    with pytest.raises(ValueError, match="build_manifest_mismatch"):
+        client.get(preview_path)
+
+
+@pytest.mark.parametrize(
+    ("stage", "replace_capture"), [("load", False), ("verify", False), ("verify", True)]
+)
+def test_preview_work_does_not_block_other_requests(
+    client: TestClient,
+    paired_headers: dict[str, str],
+    website_preview: tuple[dict[str, Any], str],
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    replace_capture: bool,
+) -> None:
+    project, preview_path = website_preview
+    service = client.app.state.website_workflow  # type: ignore[union-attr]
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        entered.set()
+        assert release.wait(10), "test did not release preview work"
+
+    if stage == "load":
+        original_read = service._read
+
+        def held_read(relative: str) -> Any:
+            hold()
+            return original_read(relative)
+
+        monkeypatch.setattr(service, "_read", held_read)
+    else:
+        original_verify = WebsiteBuild.verify
+
+        def held_verify(build: WebsiteBuild) -> None:
+            hold()
+            original_verify(build)
+
+        monkeypatch.setattr(WebsiteBuild, "verify", held_verify)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(client.get, preview_path)
+        try:
+            assert entered.wait(5), "preview work did not start"
+            health = pool.submit(client.get, "/health")
+            assert health.result(timeout=2).status_code == 200
+            if replace_capture:
+                command(client, paired_headers, project, "capture")
+        finally:
+            release.set()
+        response = pending.result(timeout=5)
+    assert response.status_code == (404 if replace_capture else 200)
 
 
 def test_website_auth_caps_and_private_create(

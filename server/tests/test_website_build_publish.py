@@ -92,6 +92,29 @@ def test_downloaded_media_are_content_addressed_and_not_hotlinked() -> None:
     )
 
 
+@pytest.mark.parametrize("unrelated_content", [PNG, b"not an image"])
+def test_downloaded_assets_outside_content_inventory_are_ignored(
+    unrelated_content: bytes,
+) -> None:
+    dossier = capture_website(BASE + "/", fetcher=SourceFixture())
+    retained = BuildAsset(
+        source_url=BASE + "/logo.png",
+        content_base64=base64.b64encode(PNG).decode(),
+        media_type="image/png",
+        sha256=hashlib.sha256(PNG).hexdigest(),
+    )
+    unrelated = BuildAsset(
+        source_url=BASE + "/background.png",
+        content_base64=base64.b64encode(unrelated_content).decode(),
+        media_type="image/png",
+        sha256=hashlib.sha256(unrelated_content).hexdigest(),
+    )
+    expected = WebsiteBuilder().build(dossier, palette=PALETTES[0], assets=[retained])
+    actual = WebsiteBuilder().build(dossier, palette=PALETTES[0], assets=[unrelated, retained])
+    actual.verify()
+    assert actual.model_dump() == expected.model_dump()
+
+
 def test_build_is_deterministic_for_frozen_capture_and_changes_with_palette() -> None:
     dossier = capture_website(BASE + "/", fetcher=SourceFixture())
     first = WebsiteBuilder().build(dossier, palette=PALETTES[0])

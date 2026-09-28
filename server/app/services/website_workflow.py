@@ -474,8 +474,20 @@ class WebsiteWorkflow:
 
     async def _build(self, data: dict[str, Any], palette_id: str, direction_id: str) -> None:
         dossier = WebsiteDossier.model_validate(self._read(f"{data['capture_dir']}/dossier.json"))
+        renders = [
+            RenderedPage.model_validate(r)
+            for r in self._read(f"{data['capture_dir']}/rendered.json")
+        ]
+        rendered_inventory = extract_rendered_inventory(renders)
+        known_asset_urls = {
+            item.original_url
+            for item in [*dossier.inventory, *rendered_inventory]
+            if item.kind in {"image", "document"}
+        }
         assets = []
         for asset in self._read(f"{data['capture_dir']}/assets.json")["assets"]:
+            if asset["source_url"] not in known_asset_urls:
+                continue
             preview = asset.get("preview_local_path")
             path = Path(preview or asset["local_path"]).resolve()
             if not path.is_relative_to((self.root / data["capture_dir"]).resolve()):
@@ -490,11 +502,6 @@ class WebsiteWorkflow:
                     sha256=asset["preview_sha256"] if preview else asset["sha256"],
                 )
             )
-        renders = [
-            RenderedPage.model_validate(r)
-            for r in self._read(f"{data['capture_dir']}/rendered.json")
-        ]
-        rendered_inventory = extract_rendered_inventory(renders)
         brand = data["branding"]["result"]["directions"] if data.get("branding") else None
         direction = BrandDirection(
             id=direction_id,

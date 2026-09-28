@@ -1,5 +1,6 @@
 """Paired-device website API and short-lived, script-free previews."""
 
+import asyncio
 import hashlib
 import json
 import re
@@ -216,8 +217,7 @@ def install_website_routes(
 
     app.include_router(router)
 
-    @app.get("/website-previews/{token}/{file_path:path}", include_in_schema=False)
-    async def preview_file(token: str, file_path: str) -> Response:
+    def preview_response(token: str, file_path: str) -> Response:
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,100}", token):
             raise HTTPException(404, "Aperçu introuvable ou expiré.")
         with service.store.transaction() as connection:
@@ -244,7 +244,18 @@ def install_website_routes(
             raise HTTPException(404, "Cet aperçu a été remplacé.")
         build = WebsiteBuild.model_validate(service._read(data["build_file"]))
         build.verify()
-        item = next((f for f in build.files if f.path == file_path), None)
+        # Loading can overlap a new capture/build once it runs off the event loop.
+        current = service.store.get(row["project_id"])
+        if (
+            not current.get("build")
+            or current["build"]["digest"] != row["build_digest"]
+            or build.digest != row["build_digest"]
+        ):
+            raise HTTPException(404, "Cet aperçu a été remplacé.")
+        item = next(
+            (f for f in build.files if f.path == file_path and not f.path.startswith("reports/")),
+            None,
+        )
         if item is None:
             raise HTTPException(404, "Fichier absent de l’aperçu.")
         headers = {**HEADERS, "Content-Security-Policy": PREVIEW_CSP}
@@ -252,3 +263,7 @@ def install_website_routes(
             headers["Content-Disposition"] = 'attachment; filename="document.pdf"'
             return Response(item.bytes(), media_type="application/octet-stream", headers=headers)
         return Response(item.bytes(), media_type=item.media_type, headers=headers)
+
+    @app.get("/website-previews/{token}/{file_path:path}", include_in_schema=False)
+    async def preview_file(token: str, file_path: str) -> Response:
+        return await asyncio.to_thread(preview_response, token, file_path)

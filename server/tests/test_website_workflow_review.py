@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import threading
@@ -253,6 +254,95 @@ async def built_project(workflow: WebsiteWorkflow) -> dict[str, Any]:
     data = await run_command(workflow, data, "build")
     assert data["status"] == "preview_ready", data
     return data
+
+
+async def test_build_ignores_uninventoried_downloads_before_reading_their_files(
+    tmp_path: Path,
+    real_source_and_mcp: Any,
+) -> None:
+    workflow = make_workflow(tmp_path, real_source_and_mcp)
+    try:
+        data = await run_command(workflow, create_project(workflow), "capture")
+        assert data["status"] == "captured"
+        capture_dir = workflow.root / data["capture_dir"]
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg=="
+        )
+        image_path = capture_dir / "rendered-image.png"
+        image_path.write_bytes(png)
+        image_digest = hashlib.sha256(png).hexdigest()
+        dom = b'<html><img src="/rendered-image.png" alt="Rendered content"></html>'
+        dom_path = capture_dir / "rendered.html"
+        dom_path.write_bytes(dom)
+        dom_digest = hashlib.sha256(dom).hexdigest()
+        workflow._write(
+            f"{data['capture_dir']}/rendered.json",
+            [
+                {
+                    "source_url": BASE,
+                    "status": "captured",
+                    "viewports": [
+                        {
+                            "viewport": "mobile",
+                            "source_url": BASE,
+                            "dom_sha256": dom_digest,
+                            "dom_local_path": str(dom_path),
+                            "dom_size_bytes": len(dom),
+                            "title": "",
+                            "text": "",
+                            "text_truncated": False,
+                            "asset_references": [],
+                            "screenshot": {
+                                "source_url": BASE,
+                                "source_html_sha256": "0" * 64,
+                                "dom_sha256": dom_digest,
+                                "viewport": "mobile",
+                                "width": 390,
+                                "height": 844,
+                                "sha256": image_digest,
+                                "local_path": str(image_path),
+                                "size_bytes": len(png),
+                                "captured_at": "2026-09-27T00:00:00Z",
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+        workflow._write(
+            f"{data['capture_dir']}/assets.json",
+            {
+                "assets": [
+                    {
+                        # Browser-only decorations need not be part of the content inventory.
+                        "source_url": BASE + "background.png",
+                        "preview_local_path": str(tmp_path / "outside-capture.png"),
+                    },
+                    {
+                        # A contact URL in the dossier is not an image/document source.
+                        "source_url": "mailto:test@example.org",
+                        "preview_local_path": str(capture_dir / "missing-file.png"),
+                    },
+                    {
+                        "source_url": BASE + "rendered-image.png",
+                        "preview_local_path": str(image_path),
+                        "preview_sha256": image_digest,
+                    },
+                ]
+            },
+        )
+        data = await run_command(workflow, data, "build")
+        assert data["status"] == "preview_ready", data["error"]
+        build = WebsiteBuild.model_validate(workflow._read(data["build_file"]))
+        build.verify()
+        assert [
+            (file.path, file.bytes()) for file in build.files if file.path.startswith("assets/")
+        ] == [(f"assets/{image_digest}.png", png)]
+        item = next(item for item in build.migration["items"] if item["kind"] == "image")
+        assert item["disposition"] == "retained"
+        assert item["extraction"] == "rendered_dom"
+    finally:
+        await workflow.close()
 
 
 async def test_real_mcp_branding_receipt_reaches_builder_with_valid_provenance(
