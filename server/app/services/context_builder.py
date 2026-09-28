@@ -215,12 +215,14 @@ class ContextBuilder:
         node_id: str | None = None,
         purpose: str = "planner",
         additional_cards: Sequence[ContextCard] = (),
+        protected_cards: Sequence[ContextCard] = (),
         allowed_skills: Sequence[str] | None = None,
     ) -> GoalContext:
         goal_run_id = _validated_identifier(goal_run_id, "goal_run_id")
         node_id = _validated_optional_identifier(node_id, "node_id")
         purpose = _validated_identifier(purpose, "purpose")
         normalized_additional = _normalized_additional_cards(additional_cards)
+        normalized_protected = _normalized_protected_cards(protected_cards)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA query_only=ON")
@@ -302,39 +304,22 @@ class ContextBuilder:
         candidates.extend(_memory_card(row) for row in memories)
         max_non_agent_cards = self.max_items if self.max_items is not None else len(candidates)
         agent_candidates = [_agent_card(row, allowed_skills=allowed_skills) for row in agents]
-        minimum_context = tuple(_minimum_card(card) for card in candidates[:max_non_agent_cards])
-        reserved_agents: list[ContextCard] = []
-        for agent in agent_candidates:
-            if (
-                _payload_tokens(
-                    _card_model_payload(purpose, (*minimum_context, *reserved_agents, agent))
-                )
-                > self.max_tokens
-            ):
-                break
-            reserved_agents.append(agent)
-        # Reserve complete capability descriptions before expanding narrative
-        # summaries. A truncated agent name alone cannot establish its skills.
-        # Tiny budgets retain the existing mandatory goal-card priority.
-        non_agent_cards = self._bounded_cards(
-            candidates,
-            max_cards=max_non_agent_cards,
-            purpose=purpose,
-            reserved_cards=tuple(reserved_agents),
-        )
-        cards = self._append_with_token_budget(
-            non_agent_cards,
-            agent_candidates,
-            purpose=purpose,
-        )
-        # Historical project hints may use remaining room only. Reserving even
-        # their minimum cards above would displace current failure/evidence.
-        hint_slots = (
-            len(project_hints)
-            if self.max_items is None
-            else max(0, self.max_items - len(non_agent_cards))
-        )
-        cards = self._append_with_token_budget(cards, project_hints[:hint_slots], purpose=purpose)
+        if normalized_protected:
+            cards = self._with_protected_cards(
+                candidates,
+                normalized_protected,
+                agent_candidates,
+                project_hints,
+                purpose=purpose,
+            )
+        else:
+            cards = self._ordinary_cards(
+                candidates,
+                agent_candidates,
+                project_hints,
+                max_non_agent_cards=max_non_agent_cards,
+                purpose=purpose,
+            )
         provenance_ids = _stable_unique(
             provenance for card in cards for provenance in card.provenance_ids
         )
@@ -389,6 +374,107 @@ class ContextBuilder:
             created_at=timestamp,
         )
 
+    def _ordinary_cards(
+        self,
+        candidates: Sequence[ContextCard],
+        agent_candidates: Sequence[ContextCard],
+        project_hints: Sequence[ContextCard],
+        *,
+        max_non_agent_cards: int,
+        purpose: str,
+    ) -> tuple[ContextCard, ...]:
+        """Retain the existing budget behavior for callers without protected input."""
+        minimum_context = tuple(_minimum_card(card) for card in candidates[:max_non_agent_cards])
+        reserved_agents: list[ContextCard] = []
+        for agent in agent_candidates:
+            if (
+                _payload_tokens(
+                    _card_model_payload(purpose, (*minimum_context, *reserved_agents, agent))
+                )
+                > self.max_tokens
+            ):
+                break
+            reserved_agents.append(agent)
+        # Reserve complete capability descriptions before expanding narrative
+        # summaries. A truncated agent name alone cannot establish its skills.
+        # Tiny budgets retain the existing mandatory goal-card priority.
+        non_agent_cards = self._bounded_cards(
+            candidates,
+            max_cards=max_non_agent_cards,
+            purpose=purpose,
+            reserved_cards=tuple(reserved_agents),
+        )
+        cards = self._append_with_token_budget(
+            non_agent_cards,
+            agent_candidates,
+            purpose=purpose,
+        )
+        # Historical project hints may use remaining room only. Reserving even
+        # their minimum cards above would displace current failure/evidence.
+        hint_slots = (
+            len(project_hints)
+            if self.max_items is None
+            else max(0, self.max_items - len(non_agent_cards))
+        )
+        cards = self._append_with_token_budget(cards, project_hints[:hint_slots], purpose=purpose)
+        return cards
+
+    def _with_protected_cards(
+        self,
+        candidates: Sequence[ContextCard],
+        protected: tuple[ContextCard, ...],
+        agents: Sequence[ContextCard],
+        project_hints: Sequence[ContextCard],
+        *,
+        purpose: str,
+    ) -> tuple[ContextCard, ...]:
+        """Keep current intent and saved state whole before spending on optional history."""
+        all_cards = (*candidates, *protected, *agents, *project_hints)
+        if len({card.card_id for card in all_cards}) != len(all_cards):
+            raise ValueError("protected context card IDs collide with another context source")
+        mandatory_kinds = {"goal", "constraints", "budgets"}
+        mandatory = tuple(card for card in candidates if card.kind in mandatory_kinds)
+        if len(mandatory) != len(mandatory_kinds):
+            raise ValueError("protected context requires one goal, constraints and budgets card")
+        optional = tuple(card for card in candidates if card.kind not in mandatory_kinds)
+        max_cards = (
+            self.max_items - len(protected) if self.max_items is not None else len(candidates)
+        )
+        if max_cards < len(mandatory):
+            raise ValueError("protected context exceeds the item budget")
+        minimum = (*(_minimum_card(card) for card in mandatory), *protected)
+        if _payload_tokens(_card_model_payload(purpose, minimum)) > self.max_tokens:
+            raise ValueError("protected context exceeds the token budget")
+        reserved_agents: list[ContextCard] = []
+        for agent in agents:
+            if (
+                _payload_tokens(_card_model_payload(purpose, (*minimum, *reserved_agents, agent)))
+                > self.max_tokens
+            ):
+                break
+            reserved_agents.append(agent)
+        bounded = self._bounded_cards(
+            (*mandatory, *optional),
+            max_cards=max_cards,
+            purpose=purpose,
+            reserved_cards=(*protected, *reserved_agents),
+        )
+        if not {card.card_id for card in mandatory}.issubset(card.card_id for card in bounded):
+            raise ValueError("protected context lost mandatory goal metadata")
+        # Reordering does not change the measured canonical JSON byte count.
+        cards = (
+            *bounded[: len(mandatory)],
+            *protected,
+            *bounded[len(mandatory) :],
+            *reserved_agents,
+        )
+        hint_slots = (
+            len(project_hints)
+            if self.max_items is None
+            else max(0, self.max_items - len(bounded) - len(protected))
+        )
+        return self._append_with_token_budget(cards, project_hints[:hint_slots], purpose=purpose)
+
     async def build_for_goal(
         self,
         goal_run_id: str,
@@ -396,6 +482,7 @@ class ContextBuilder:
         node_id: str | None = None,
         purpose: str = "planner",
         additional_cards: Sequence[ContextCard] = (),
+        protected_cards: Sequence[ContextCard] = (),
         allowed_skills: Sequence[str] | None = None,
     ) -> GoalContext:
         return await self.build(
@@ -403,6 +490,7 @@ class ContextBuilder:
             node_id=node_id,
             purpose=purpose,
             additional_cards=additional_cards,
+            protected_cards=protected_cards,
             allowed_skills=allowed_skills,
         )
 
@@ -859,6 +947,16 @@ def safe_context_text(value: str | None, *, max_chars: int = _MAX_SAFE_TEXT_CHAR
 
     if value is None or max_chars <= 0:
         return ""
+    redacted = _redacted_context_text(value)
+    if len(redacted) <= max_chars:
+        return redacted
+    if max_chars <= 1:
+        return "…"[:max_chars]
+    return redacted[: max_chars - 1].rstrip() + "…"
+
+
+def _redacted_context_text(value: str) -> str:
+    """Normalize text before either complete-card admission or optional truncation."""
     if not isinstance(value, str):
         raise TypeError("context text must be a string")
     redacted = redact_dataset_text(value) or ""
@@ -867,12 +965,7 @@ def safe_context_text(value: str | None, *, max_chars: int = _MAX_SAFE_TEXT_CHAR
     redacted = _ADDITIONAL_PATH.sub("<protected-path>", redacted)
     redacted = _GENERIC_ABSOLUTE_PATH.sub("<protected-path>", redacted)
     redacted = "".join(max(character, " ") for character in redacted)
-    redacted = _WHITESPACE.sub(" ", redacted).strip()
-    if len(redacted) <= max_chars:
-        return redacted
-    if max_chars <= 1:
-        return "…"[:max_chars]
-    return redacted[: max_chars - 1].rstrip() + "…"
+    return _WHITESPACE.sub(" ", redacted).strip()
 
 
 def _goal_card(row: aiosqlite.Row) -> ContextCard:
@@ -1095,6 +1188,40 @@ def _bounded_node_result(
     if max_chars == 0:
         return "omitted by context budget"
     return safe_context_text(str(value), max_chars=max_chars) or unavailable
+
+
+def _normalized_protected_cards(cards: Sequence[ContextCard]) -> tuple[ContextCard, ...]:
+    """Redact complete mandatory cards; oversized input must not silently lose its tail."""
+    normalized: list[ContextCard] = []
+    seen: set[str] = set()
+    for card in cards:
+        if not isinstance(card, ContextCard):
+            raise TypeError("protected context cards must be ContextCard values")
+        card_id = _validated_identifier(card.card_id, "card_id")
+        kind = _validated_identifier(card.kind, "kind")
+        if kind == "agent_card" or card.skills is not None:
+            raise ValueError("protected cards cannot supply agent capabilities")
+        if card_id in seen:
+            raise ValueError("protected context card IDs must be unique")
+        seen.add(card_id)
+        limit = 4_000 if kind == "latest_user_message" else 1_000
+        # Redact without truncating: optional-card ellipses and whitespace
+        # trimming must never make an oversized mandatory card look complete.
+        summary = _redacted_context_text(card.summary)
+        if not summary or len(summary) > limit:
+            raise ValueError("protected context summary is empty or exceeds its character limit")
+        provenance = _stable_unique(
+            _validated_identifier(item, "source_id") for item in card.provenance_ids
+        )
+        normalized.append(
+            ContextCard(
+                card_id=card_id,
+                kind=kind,
+                summary=summary,
+                provenance_ids=provenance,
+            )
+        )
+    return tuple(normalized)
 
 
 def _normalized_additional_cards(cards: Sequence[ContextCard]) -> tuple[ContextCard, ...]:

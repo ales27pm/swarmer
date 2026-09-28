@@ -51,6 +51,7 @@ from app.services.plan_validation import (
     validate_swarm_plan,
     validate_worker_capabilities,
 )
+from app.services.planner_continuation_context import continuation_cards
 from app.services.planner_diagnostics import (
     DIAGNOSTICS,
     known_diagnostic,
@@ -586,7 +587,8 @@ class GoalManager:
             user_guidance=(
                 "Route the latest user request using available worker skills, even when this goal "
                 "already has a code project. Preserve its saved files. Include code.build_project "
-                "only if implementation is requested; it resumes the existing snapshot. Connect "
+                "for implementation, including continuing unfinished saved work; it resumes the "
+                "existing snapshot. Connect "
                 "workers to the dependencies they need. Independent work may run in parallel "
                 "within the goal limits. Do not repeat completed work."
             )
@@ -1297,6 +1299,10 @@ class GoalManager:
             return request.plan_proposal, PlannerSource(request.planner_source), None
         goal_id = str(goal["id"])
         goal, project_memory = await self._shared_project_memory(goal, "planner")
+        try:
+            protected_cards = await continuation_cards(self.db_path, goal_id)
+        except ValueError as exc:
+            raise GoalManagerConflict("planner context could not preserve required input") from exc
         additional_cards: list[ContextCard] = []
         recent = [
             message
@@ -1310,7 +1316,7 @@ class GoalManager:
             # Reserve room for capabilities and budgets; workers receive the full 40-message window.
             summary = "\n".join(
                 f"{message['role']}: {safe_context_text(message['content'], max_chars=500)}"
-                for message in recent[-6:]
+                for message in reversed(recent[-6:])
             )
             additional_cards.append(
                 ContextCard(
@@ -1377,16 +1383,24 @@ class GoalManager:
                 remaining_chars -= len(summary)
         context_id: str | None = None
         if self.context_builder is not None:
-            built = await self.context_builder.build_for_goal(
-                goal_id,
-                purpose="planner",
-                additional_cards=tuple(additional_cards),
-                **(
-                    {"allowed_skills": await self._available_worker_skills() or []}
-                    if self.require_execution_workers
-                    else {}
-                ),
-            )
+            try:
+                built = await self.context_builder.build_for_goal(
+                    goal_id,
+                    purpose="planner",
+                    additional_cards=tuple(additional_cards),
+                    protected_cards=protected_cards,
+                    **(
+                        {"allowed_skills": await self._available_worker_skills() or []}
+                        if self.require_execution_workers
+                        else {}
+                    ),
+                )
+            except ValueError as exc:
+                # Do not spend a planner call on context missing the instruction
+                # or saved-project state needed to choose the correct worker.
+                raise GoalManagerConflict(
+                    "planner context could not preserve required input"
+                ) from exc
             context_id = str(built.id)
             context_payload = built.model_payload()
         else:
@@ -1417,6 +1431,7 @@ class GoalManager:
                     provenance_ids=(goal_id,),
                 ),
                 *additional_cards,
+                *protected_cards,
             ]
             context_payload = {
                 "schema_version": "1.0",
