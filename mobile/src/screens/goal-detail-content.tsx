@@ -669,8 +669,8 @@ function GoalOverview({ controller, navigation }: {
     ? COLORS.info : COLORS.warning;
   const blockedSuffix = blockedCount === 1 ? "" : "s";
   const agentsSummary = runningAgents.length
-    ? `Agents en cours : ${runningAgents.length}`
-    : "Aucun agent en cours.";
+    ? `Agents en cours au dernier relevé : ${runningAgents.length}`
+    : "Aucun agent en cours au dernier relevé.";
   return (
     <>
       <Card>

@@ -240,7 +240,7 @@ export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enable
         <Text style={{ color: COLORS.subtle, fontSize: 12, lineHeight: 18 }}>Explication enregistrée du modèle, distincte des fichiers et contrôles vérifiés.</Text>
       </> : fallbackSummary ? <>
         <Text selectable style={{ color: COLORS.text, lineHeight: 21 }}>{fallbackSummary}</Text>
-        <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Résumé public de l’évaluateur ; attribution et détails indisponibles dans ce relevé.</Text>
+        <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Résumé enregistré du projet ; origine et détails indisponibles dans ce relevé.</Text>
       </> : <Text style={{ color: COLORS.muted, lineHeight: 20 }}>Aucune explication d’évaluation enregistrée pour l’instant.</Text>}
       {(graph?.evaluations.length ?? 0) > 1 ? <>
         <ActionButton label={history ? "Masquer les décisions précédentes" : "Décisions précédentes"} onPress={() => setHistory((value) => !value)} />
