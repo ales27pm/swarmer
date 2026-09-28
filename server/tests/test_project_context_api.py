@@ -13,6 +13,22 @@ def test_context_routes_require_pairing(client: TestClient) -> None:
         assert client.request(method, path).status_code == 401
 
 
+def test_memory_status_is_current_and_not_cacheable(
+    client: TestClient, paired_headers: dict[str, str]
+) -> None:
+    settings = client.app.state.settings
+    response = client.get("/memory/status", headers=paired_headers)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["context_enabled"] is False
+
+    settings.project_context_enabled = True
+    refreshed = client.get("/memory/status", headers=paired_headers)
+    assert refreshed.status_code == 200
+    assert refreshed.headers["cache-control"] == "no-store"
+    assert refreshed.json()["context_enabled"] is True
+
+
 def test_durable_context_api_versions_sources_and_disabled_compaction(
     client: TestClient, paired_headers: dict[str, str]
 ) -> None:

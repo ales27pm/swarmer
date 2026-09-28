@@ -1588,9 +1588,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     @app.get("/memory/status")
     async def memory_provider_status(
+        response: Response,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
         del principal
+        response.headers["Cache-Control"] = "no-store"
         return {
             "context_enabled": settings.project_context_enabled,
             "compaction_enabled": settings.project_compaction_enabled,
