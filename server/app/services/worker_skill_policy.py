@@ -14,6 +14,7 @@ import aiosqlite
 from app.services.agent_card import (
     CODE_GENERATION_SKILLS,
     PROJECT_BUILD_SKILLS,
+    SPECIALIST_SKILLS,
     SUPPORTED_AGENT_SKILLS,
     WRITING_SKILLS,
 )
@@ -121,7 +122,12 @@ class WorkerSkillPolicyStore:
         # Absent new skills are denied by is_allowed; only an explicit policy
         # reload can enable them. Missing original skills still fail closed.
         if (
-            missing - CODE_GENERATION_SKILLS - PROJECT_BUILD_SKILLS - WRITING_SKILLS - SWIFT_SKILLS
+            missing
+            - CODE_GENERATION_SKILLS
+            - PROJECT_BUILD_SKILLS
+            - WRITING_SKILLS
+            - SWIFT_SKILLS
+            - SPECIALIST_SKILLS
             or extra
         ):
             raise WorkerSkillPolicyStateError(

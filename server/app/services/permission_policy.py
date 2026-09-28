@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import yaml
 
-from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.agent_card import SPECIALIST_SKILLS, SUPPORTED_AGENT_SKILLS
 from app.services.swift_contracts import SWIFT_SKILLS
 
 
@@ -73,17 +73,21 @@ class PermissionPolicy:
             "process.run",
         }
     )
-    SUPPORTED_IPHONE_CAPABILITIES = frozenset(
+    OPTIONAL_AGENDA_CAPABILITIES = frozenset(
         {
-            "iphone.location.current",
-            "iphone.contacts.lookup",
-            "iphone.calendar.events",
             "iphone.calendar.calendars",
             "iphone.calendar.reminders",
             "iphone.calendar.event.create",
             "iphone.calendar.event.update",
             "iphone.calendar.reminder.create",
             "iphone.calendar.reminder.update",
+        }
+    )
+    SUPPORTED_IPHONE_CAPABILITIES = OPTIONAL_AGENDA_CAPABILITIES | frozenset(
+        {
+            "iphone.location.current",
+            "iphone.contacts.lookup",
+            "iphone.calendar.events",
             "iphone.photos.pick",
             "iphone.mail.compose",
             "iphone.sms.compose",
@@ -127,7 +131,9 @@ class PermissionPolicy:
         }
         missing_capabilities = self.SUPPORTED_IPHONE_CAPABILITIES - set(effective_capability_rules)
         extra_capabilities = set(effective_capability_rules) - self.SUPPORTED_IPHONE_CAPABILITIES
-        if missing_capabilities or extra_capabilities:
+        # Older operator policies keep newly introduced capabilities unavailable.
+        # Do not synthesize rules or change their persisted authorization projection.
+        if missing_capabilities - self.OPTIONAL_AGENDA_CAPABILITIES or extra_capabilities:
             raise PermissionPolicyError(
                 "capability_rules must define exactly the supported iPhone capabilities; "
                 f"missing={sorted(missing_capabilities)}, extra={sorted(extra_capabilities)}"
@@ -170,7 +176,7 @@ class PermissionPolicy:
             }
         missing_worker_skills = SUPPORTED_AGENT_SKILLS - set(effective_worker_rules)
         extra_worker_skills = set(effective_worker_rules) - SUPPORTED_AGENT_SKILLS
-        if missing_worker_skills or extra_worker_skills:
+        if missing_worker_skills - SPECIALIST_SKILLS or extra_worker_skills:
             raise PermissionPolicyError(
                 "worker_skill_rules must define exactly the supported remote skills; "
                 f"missing={sorted(missing_worker_skills)}, extra={sorted(extra_worker_skills)}"
