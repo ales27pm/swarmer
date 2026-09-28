@@ -12,7 +12,8 @@
     "./_layout.tsx",
     "./goal/[id].tsx",
     "./local-model.tsx",
-    "./task/[id].tsx"
+    "./task/[id].tsx",
+    "./website.tsx"
   ],
   "native_strings": [
     "SwarmerLocalInference",

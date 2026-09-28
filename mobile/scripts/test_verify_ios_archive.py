@@ -218,6 +218,7 @@ class ApplicationBundleTests(unittest.TestCase):
         "./goal/[id].tsx",
         "./local-model.tsx",
         "./task/[id].tsx",
+        "./website.tsx",
     )
     NATIVE = (
         "SwarmerLocalInference",
@@ -292,6 +293,7 @@ class ApplicationBundleTests(unittest.TestCase):
         markers = self.ROUTES + self.NATIVE
         for omitted in (
             "./goal/[id].tsx",
+            "./website.tsx",
             "SwarmerLocalInference",
             "automationRequest",
         ):
