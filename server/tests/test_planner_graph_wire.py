@@ -45,31 +45,36 @@ def _body(skill: str | None = "research.query") -> dict[str, Any]:
 
 
 def _wire(*bodies: dict[str, Any]) -> dict[str, Any]:
-    next_node: dict[str, Any] | None = None
-    for index, body in reversed(list(enumerate(bodies, start=1))):
-        next_node = {
+    steps = {
+        f"step_{index:02d}": {
             "00_temporary_id": f"step_{index}",
             "01_node": deepcopy(body),
             "02_dependencies": [],
             "03_optional_dependencies": [],
-            "04_next": next_node,
         }
+        for index, body in enumerate(bodies, start=1)
+    }
     return {
         "schema_version": "1.0",
         "objective": "Produce a sourced summary.",
         "rationale_summary": "Search first, then draft from the evidence.",
         "completion_criteria": ["A summary cites its sources."],
         "max_parallelism": 2,
-        "nodes": next_node,
+        "nodes": {"00_node_count": len(bodies), "01_steps": steps},
     }
 
 
 def _step(wire: dict[str, Any], number: int) -> dict[str, Any]:
-    node = wire["nodes"]
-    for _ in range(number - 1):
-        node = node["04_next"]
-    assert isinstance(node, dict)
-    return node
+    return wire["nodes"]["01_steps"][f"step_{number:02d}"]
+
+
+def _legacy_chain(wire: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(wire)
+    following = None
+    for step in reversed(list(result["nodes"]["01_steps"].values())):
+        following = {**step, "04_next": following}
+    result["nodes"] = following
+    return result
 
 
 def _public(wire: dict[str, Any]) -> SwarmPlanProposal:
@@ -94,7 +99,7 @@ def test_research_then_writer_preserves_edges_and_original_schema() -> None:
     assert plan.nodes[0].dependencies == []
     assert plan.nodes[1].dependencies == ["step_1"]
     assert plan.nodes[0].required_skill == "research.query"
-    assert plan.nodes[0].objective == before["nodes"]["01_node"]["search_query"]
+    assert plan.nodes[0].objective == _step(before, 1)["01_node"]["search_query"]
     assert source == original
     assert wire == before
 
@@ -112,8 +117,9 @@ def test_parallel_sources_and_optional_edges_are_not_serialized_into_a_chain() -
 
 def test_prompt_example_is_a_valid_complete_plan_with_independent_deliverables() -> None:
     example_line = next(
-        line for line in UbuntuSwarmPlannerProvider.SYSTEM_PROMPT.splitlines()
-        if line.startswith('{"00_temporary_id"')
+        line
+        for line in UbuntuSwarmPlannerProvider.SYSTEM_PROMPT.splitlines()
+        if line.startswith('{"00_node_count"')
     )
     wire = _wire(_body("writing.draft"))
     wire["nodes"] = json.loads(example_line)
@@ -227,7 +233,7 @@ def test_node_body_cannot_shadow_identity_or_dependencies(shadow: str) -> None:
 
 @pytest.mark.parametrize(
     "field",
-    ["00_temporary_id", "01_node", "02_dependencies", "03_optional_dependencies", "04_next"],
+    ["00_temporary_id", "01_node", "02_dependencies", "03_optional_dependencies"],
 )
 def test_each_wrapper_field_is_required(field: str) -> None:
     wire = _wire(_body())
@@ -266,7 +272,7 @@ def test_every_step_id_is_position_bound_and_in_memory_cycles_are_rejected() -> 
         decode_planner_graph(wire)
     assert raised.value.diagnostic_code == "invalid_fields"
     # Defensive for callers supplying Python mappings; cyclic objects cannot arise from JSON.
-    wire = _wire(_body())
+    wire = _legacy_chain(_wire(_body()))
     wire["nodes"]["04_next"] = wire["nodes"]
     with pytest.raises(PlanValidationError) as raised:
         decode_planner_graph(wire)
@@ -292,11 +298,11 @@ def test_unavailable_capabilities_and_body_constraints_stay_in_the_schema() -> N
     validator = Draft202012Validator(schema)
     assert not validator.is_valid(_wire(_body("workspace.list_dir")))
     invalid_query = _wire(_body())
-    body = invalid_query["nodes"]["01_node"]
+    body = _step(invalid_query, 1)["01_node"]
     body["objective"] = body.pop("search_query")
     assert not validator.is_valid(invalid_query)
     invalid_priority = _wire(_body())
-    invalid_priority["nodes"]["01_node"]["priority"] = 101
+    _step(invalid_priority, 1)["01_node"]["priority"] = 101
     assert not validator.is_valid(invalid_priority)
 
 
@@ -304,7 +310,7 @@ def test_unavailable_capabilities_and_body_constraints_stay_in_the_schema() -> N
     "mutation",
     [
         "extra_key",
-        "missing_next",
+        "missing_count",
         "id_gap",
         "node_array",
         "dependencies_string",
@@ -320,8 +326,8 @@ def test_malformed_wrapper_is_rejected_by_schema_and_decoder(mutation: str) -> N
     node = _step(wire, 1)
     if mutation == "extra_key":
         node["extra"] = 1
-    elif mutation == "missing_next":
-        del node["04_next"]
+    elif mutation == "missing_count":
+        del wire["nodes"]["00_node_count"]
     elif mutation == "id_gap":
         node["00_temporary_id"] = "step_2"
     elif mutation == "node_array":
@@ -362,7 +368,60 @@ def test_shared_definitions_keep_all_capability_schema_growth_bounded() -> None:
     Draft202012Validator.check_schema(schema)
     definitions = schema["$defs"]
     assert {f"Step{index}" for index in range(1, MAX_PLAN_NODES + 1)} <= definitions.keys()
-    assert schema["properties"]["nodes"] == {"$ref": "#/$defs/Step1"}
+    assert len(schema["properties"]["nodes"]["anyOf"]) == MAX_PLAN_NODES
     assert len(json.dumps(schema).encode()) < 100_000
     # Specialist schemas must be shared rather than copied into every position.
     assert json.dumps(schema).count('"const": "database.sqlite.query"') == 1
+
+
+@pytest.mark.parametrize("count", [0, 21, True, 3.0, "3", None])
+def test_count_must_be_a_bounded_exact_integer(count: object) -> None:
+    wire = _wire(_body(), _body(), _body("writing.draft"))
+    wire["nodes"]["00_node_count"] = count
+    with pytest.raises(PlanValidationError) as raised:
+        decode_planner_graph(wire)
+    assert raised.value.diagnostic_code == "invalid_fields"
+
+
+@pytest.mark.parametrize("mutation", ["extra_step", "missing_step", "extra_field", "wrong_slot"])
+def test_declared_count_prevents_runaway_continuation_or_early_end(mutation: str) -> None:
+    wire = _wire(_body(), _body("writing.draft"), _body("workspace.list_dir"))
+    _step(wire, 2)["02_dependencies"] = ["step_1"]
+    steps = wire["nodes"]["01_steps"]
+    if mutation == "extra_step":
+        steps["step_04"] = {**deepcopy(steps["step_03"]), "00_temporary_id": "step_4"}
+    elif mutation == "missing_step":
+        del steps["step_03"]
+    elif mutation == "wrong_slot":
+        steps["step_4"] = steps.pop("step_03")
+    else:
+        wire["nodes"]["extra"] = None
+    validator = Draft202012Validator(
+        constrain_planner_graph(
+            _source_schema(["research.query", "writing.draft", "workspace.list_dir"])
+        )
+    )
+    assert not validator.is_valid(wire)
+    with pytest.raises(PlanValidationError) as raised:
+        decode_planner_graph(wire)
+    assert raised.value.diagnostic_code == "invalid_fields"
+
+
+def test_counted_slot_mapping_order_does_not_change_dependencies() -> None:
+    wire = _wire(_body(), _body(), _body("writing.draft"))
+    _step(wire, 3)["02_dependencies"] = ["step_2", "step_1"]
+    wire["nodes"]["01_steps"] = dict(reversed(list(wire["nodes"]["01_steps"].items())))
+    assert [node.temporary_id for node in _public(wire).nodes] == ["step_1", "step_2", "step_3"]
+    assert _public(wire).nodes[2].dependencies == ["step_2", "step_1"]
+
+
+@pytest.mark.parametrize("count", [1, 3, 20, 21])
+def test_legacy_chains_keep_validation_without_rewriting(count: int) -> None:
+    wire = _legacy_chain(_wire(*[_body() for _ in range(count)]))
+    before = deepcopy(wire)
+    if count <= MAX_PLAN_NODES:
+        assert len(_public(wire).nodes) == count
+    else:
+        with pytest.raises(PlanValidationError):
+            decode_planner_graph(wire)
+    assert wire == before
