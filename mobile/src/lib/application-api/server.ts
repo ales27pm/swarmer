@@ -12,6 +12,8 @@ export type {
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
 export type { ActivityPage, ActivityItem, ActivityScopeType } from "@/lib/api/activity";
 export type { ProjectGraph } from "@/lib/api/project-graph";
+export type { ProjectEvidenceView, ProjectEvidenceWrite } from "@/lib/api/project-evidence";
+export type { WebsiteProject, WebsiteCapabilities, WebsiteCreate, WebsiteCommand, WebsiteReview, WebsitePublish, WebsiteApproval } from "@/lib/api/website-projects";
 export type { GoalWritingDraft } from "@/lib/api/writing-draft";
 export type { GoalConversationSession, GoalReplyAttempt, ProjectReview, ProjectPreview } from "@/lib/api/project";
 export type { ApprovalDecisionReceipt, PairingResult } from "@/lib/api/client";
@@ -55,6 +57,17 @@ export const reviewGoalProject: typeof adapter.reviewGoalProject = (id) => call(
 export const listGoals: typeof adapter.listGoals = (shouldAccept) => invokeApplicationCommand("goals.list", {}, { shouldAccept });
 export const getGoal: typeof adapter.getGoal = (id, shouldAccept) => invokeApplicationCommand("goals.get", { id }, { shouldAccept });
 export const getProjectGraph: typeof adapter.getProjectGraph = (id, shouldAccept) => invokeApplicationCommand("goals.graph", { id }, { shouldAccept });
+export const getProjectEvidence: typeof adapter.getProjectEvidence = (id, shouldAccept) => invokeApplicationCommand("goals.evidence", { id }, { shouldAccept });
+export const putProjectEvidence: typeof adapter.putProjectEvidence = (id, criterionIndex, input, shouldAccept) => invokeApplicationCommand("goals.evidence.record", { id, criterionIndex, input }, { shouldAccept });
+export const getWebsiteCapabilities: typeof adapter.getWebsiteCapabilities = (shouldAccept) => invokeApplicationCommand("websites.capabilities", {}, { shouldAccept });
+export const listWebsiteProjects: typeof adapter.listWebsiteProjects = (shouldAccept) => invokeApplicationCommand("websites.list", {}, { shouldAccept });
+export const getWebsiteProject: typeof adapter.getWebsiteProject = (id, shouldAccept) => invokeApplicationCommand("websites.get", { id }, { shouldAccept });
+export const createWebsiteProject: typeof adapter.createWebsiteProject = (input, shouldAccept) => invokeApplicationCommand("websites.create", input, { shouldAccept });
+export const commandWebsiteProject: typeof adapter.commandWebsiteProject = (id, input, shouldAccept) => invokeApplicationCommand("websites.command", { id, input }, { shouldAccept });
+export const previewWebsiteProject: typeof adapter.previewWebsiteProject = (id, input, shouldAccept) => invokeApplicationCommand("websites.preview", { id, input }, { shouldAccept });
+export const previewWebsiteScreenshot: typeof adapter.previewWebsiteScreenshot = (id, sha256, shouldAccept) => invokeApplicationCommand("websites.screenshot", { id, sha256 }, { shouldAccept });
+export const prepareWebsitePublication: typeof adapter.prepareWebsitePublication = (id, input, shouldAccept) => invokeApplicationCommand("websites.prepare-publication", { id, input }, { shouldAccept });
+export const publishWebsiteProject: typeof adapter.publishWebsiteProject = (id, input, shouldAccept) => invokeApplicationCommand("websites.publish", { id, input }, { shouldAccept });
 export const listGoalNodes: typeof adapter.listGoalNodes = (id, shouldAccept) => invokeApplicationCommand("goals.nodes", { id }, { shouldAccept });
 export const getGoalResult: typeof adapter.getGoalResult = (id, shouldAccept) => invokeApplicationCommand("goals.result", { id }, { shouldAccept });
 export const getGoalWritingDraft: typeof adapter.getGoalWritingDraft = (goalId, nodeId, workerJobId, shouldAccept) => invokeApplicationCommand("goals.writing-draft", { goalId, nodeId, workerJobId }, { shouldAccept });

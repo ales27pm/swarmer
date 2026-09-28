@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     port: int = 8710
     db_path: Path = Path("./data/mongars.db")
     workspace_root: Path = Path("./workspace")
+    website_browser_enabled: bool = False
+    website_chromium_executable: str | None = None
+    website_browser_max_pages: int = Field(default=3, ge=1, le=30)
+    infographic_artist_endpoint: str | None = None
+    infographic_artist_token: SecretStr | None = None
+    website_publish_root: Path | None = None
+    website_public_base_url: str | None = None
+    website_attachment_headers_configured: bool = False
     message_board_backend: Literal["sqlite", "redis"] = "sqlite"
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     redis_stream_prefix: str = Field(default="mongars", min_length=1, max_length=100)
@@ -81,6 +89,11 @@ class Settings(BaseSettings):
     agent_job_max_attempts: int = Field(default=3, ge=1, le=20)
     agent_score_refresh_seconds: int = Field(default=60, ge=10, le=3600)
     iphone_capability_grant_ttl_seconds: int = Field(default=90, ge=30, le=300)
+
+    @field_validator("website_publish_root", mode="before")
+    @classmethod
+    def unset_blank_website_publish_root(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator(
         "planner_model",

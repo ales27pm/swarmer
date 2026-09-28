@@ -46,9 +46,10 @@ from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.project_compaction import COMPACTION_SCHEMA
+from app.services.project_evidence_schema import migrate_project_evidence
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -895,6 +896,7 @@ class StateService:
             await db.executescript(SCHEMA)
             await db.execute("BEGIN IMMEDIATE")
             await self._migrate_legacy_schema(db)
+            await migrate_project_evidence(db)
             if version < 22:
                 await db.execute("""UPDATE goal_runs SET paused_at=updated_at
                     WHERE status='waiting_permission' AND current_phase IN

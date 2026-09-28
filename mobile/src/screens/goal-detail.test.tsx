@@ -1,6 +1,6 @@
 import { act, fireEvent, render, renderHook, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { Alert } from "react-native";
+import { Alert, AppState } from "react-native";
 
 import GoalDetailScreen from "@/../app/goal/[id]";
 import {
@@ -9,6 +9,8 @@ import {
   getGoal,
   getGoalConversation,
   getGoalWritingDraft,
+  getProjectGraph,
+  getProjectEvidence,
   getServerUrl,
   replanGoal,
   startGoal,
@@ -17,6 +19,7 @@ import {
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { localGoalDetail } from "@/lib/state/replica";
 import { useGoalDetailController } from "@/screens/goal-detail-content";
+import { projectGraphFixture } from "@/testing/project-graph-fixtures";
 
 const mockPush = jest.fn();
 const mockStackScreen = jest.fn();
@@ -41,10 +44,12 @@ jest.mock("expo-router", () => {
   };
 });
 jest.mock("@/lib/api/client", () => ({
+  ApiError: class extends Error { status = 500; },
   cancelGoal: jest.fn(),
   createGoalFeedback: jest.fn(),
   getGoal: jest.fn(),
   getProjectGraph: jest.fn(async () => { throw new Error("Graph unavailable"); }),
+  getProjectEvidence: jest.fn(async () => { throw new Error("Evidence unavailable"); }),
   getActivity: jest.fn(async () => { throw new Error("Activity unavailable"); }),
   getGoalConversation: jest.fn(),
   getGoalWritingDraft: jest.fn(),
@@ -199,6 +204,24 @@ describe("GoalDetailScreen", () => {
     mockStartGoal.mockReset().mockResolvedValue(detail);
     mockReplanGoal.mockResolvedValue(detail);
     mockCreateFeedback.mockResolvedValue({ accepted: true });
+    jest.mocked(getProjectGraph).mockReset().mockRejectedValue(new Error("Graph unavailable"));
+    jest.mocked(getProjectEvidence).mockReset().mockRejectedValue(new Error("Evidence unavailable"));
+  });
+
+  it.each([404, 503])("keeps graph criteria visible when the evidence endpoint returns %i", async (status) => {
+    const graph = projectGraphFixture();
+    graph.goal.id = "goal_1"; graph.nodes = detail.nodes; graph.dependencies = [];
+    graph.criteria = [{ id: "criterion:goal_1:0", index: 0, text: "Exigence lisible sans service de preuves", coverage: "not_mapped" }];
+    jest.mocked(getProjectGraph).mockResolvedValue(graph);
+    jest.mocked(getProjectEvidence).mockRejectedValue(Object.assign(new Error("Evidence unavailable"), { status }));
+    const previousState = AppState.currentState; AppState.currentState = "active";
+    try {
+      await render(<GoalDetailScreen />);
+      await screen.findByTestId("project-dependency-map");
+      await userEvent.setup().press(screen.getByRole("tab", { name: "Résultats" }));
+      expect(await screen.findByText("1. Exigence lisible sans service de preuves")).toBeOnTheScreen();
+      expect(screen.queryByText(/Revues explicitement : 0/)).not.toBeOnTheScreen();
+    } finally { AppState.currentState = previousState; }
   });
 
   it("preserves an unsent project draft and selected step across tabs", async () => {
@@ -214,6 +237,18 @@ describe("GoalDetailScreen", () => {
     expect(screen.getByRole("button", { name: "Étape : Vérifier les invariants" })).toBeSelected();
     await user.press(screen.getByRole("tab", { name: "Échanges" }));
     expect(screen.getByDisplayValue("Ma précision non envoyée")).toBeOnTheScreen();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
+  it("opens the existing Results evidence panel from the selected graph step", async () => {
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("button", { name: "Étape : Vérifier les invariants" }));
+    expect(screen.getByText("Exigences et preuves de cette étape")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Voir et modifier les preuves dans Résultats" }));
+    expect(screen.getByRole("tab", { name: "Résultats" })).toBeSelected();
+    expect(screen.queryByRole("button", { name: "Fermer les détails de l’étape" })).not.toBeOnTheScreen();
+    expect(mockPush).not.toHaveBeenCalled();
     expect(mockStartGoal).not.toHaveBeenCalled();
   });
 

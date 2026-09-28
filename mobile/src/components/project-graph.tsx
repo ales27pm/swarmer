@@ -5,6 +5,7 @@ import Svg, { Circle, Defs, G, Marker, Path } from "react-native-svg";
 
 import { ActionButton, Card, COLORS, ErrorBanner } from "./swarm-ui";
 import { ApiError, getProjectGraph, type PlanNode, type ProjectGraph } from "@/lib/application-api/server";
+import { evidenceStaleReasons, type EvidenceMapping, type ProjectEvidenceView } from "@/lib/api/project-evidence";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
 
@@ -107,8 +108,70 @@ type GraphPosition = GraphPoint & { width: number; height: number; level: number
 const NODE_HEIGHT = 90;
 const SIDE_GUTTER = 18;
 
+type NodeEvidenceLink = { mapping: EvidenceMapping; historical: boolean; status: "linked" | "reviewed" | "stale" };
+
+function revisionEvidenceSnapshot(revision: ProjectGraph["latest_revision"]) {
+  return revision ? JSON.stringify([revision.id, revision.project_id, revision.goal_run_id, revision.node_id, revision.worker_job_id,
+    revision.revision, revision.sha256, revision.created_at,
+    revision.files.map((file) => [file.id, file.path, file.sha256, file.bytes]),
+    revision.checks.map((check) => [check.id, check.index, check.command, check.status, check.exit_code, check.duration_ms, check.provenance])]) : null;
+}
+
+/** Join only persisted producer IDs. A completed node is never an evidence link. */
+function nodeEvidenceLinks(graph: ProjectGraph | null, evidence: ProjectEvidenceView | null, stale: boolean) {
+  const links = new Map<string, NodeEvidenceLink[]>();
+  if (!graph || !evidence || evidence.goal_run_id !== graph.goal.id || evidence.project_id !== graph.project_id) return links;
+  const unconfirmed = stale || graph.conversation_revision !== evidence.conversation_revision;
+  // These endpoints refresh independently; equal source digests alone do not bind receipts or producers.
+  const revisionChanged = revisionEvidenceSnapshot(graph.latest_revision) !== revisionEvidenceSnapshot(evidence.current_revision);
+  const append = (mapping: EvidenceMapping, historical: boolean) => {
+    if (mapping.goal_run_id !== graph.goal.id) return;
+    historical ||= !graph.nodes.some((node) => node.id === mapping.node_id)
+      || revisionChanged || mapping.revision_id !== graph.latest_revision?.id || mapping.revision_sha256 !== graph.latest_revision?.sha256
+      || !graph.criteria.some((criterion) => criterion.index === mapping.criterion_index && criterion.text === mapping.criterion_text);
+    const item: NodeEvidenceLink = { mapping, historical, status: historical || unconfirmed ? "stale" : mapping.review_status };
+    links.set(mapping.node_id, [...(links.get(mapping.node_id) ?? []), item]);
+  };
+  for (const criterion of evidence.criteria) {
+    if (criterion.mapping) append(criterion.mapping, criterion.status === "stale" || evidenceStaleReasons(criterion.mapping, evidence, criterion).length > 0);
+  }
+  for (const mapping of evidence.unmatched_mappings) append(mapping, true);
+  return links;
+}
+
+function evidenceNodeLabel(links: NodeEvidenceLink[]) {
+  const numbers = links.slice(0, 3).map(({ mapping }) => mapping.criterion_index + 1).join(", ");
+  const suffix = links.length > 3 ? ` +${links.length - 3}` : "";
+  return `Exigences ${numbers}${suffix}${links.every((link) => link.historical) ? " · historique" : ""}`;
+}
+
+export function ProjectGraphNodeEvidence({ graph, nodeId, evidence = null, stale = false, onOpenEvidence }: {
+  graph: ProjectGraph | null; nodeId: string; evidence?: ProjectEvidenceView | null; stale?: boolean; onOpenEvidence?: () => void;
+}) {
+  const links = nodeEvidenceLinks(graph, evidence, stale).get(nodeId) ?? [];
+  const scopeConfirmed = graph && evidence && !stale && evidence.goal_run_id === graph.goal.id
+    && evidence.project_id === graph.project_id && evidence.conversation_revision === graph.conversation_revision;
+  return <View testID="project-node-evidence" style={{ gap: 8, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 12 }}>
+    <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 16, fontWeight: "700" }}>Exigences et preuves de cette étape</Text>
+    {links.length ? <>
+      <Text style={{ color: COLORS.muted }}>Liées : {links.filter((link) => link.status === "linked").length} · Revues explicitement : {links.filter((link) => link.status === "reviewed").length} · À revoir : {links.filter((link) => link.status === "stale").length}</Text>
+      {links.map(({ mapping, historical, status }) => <View key={mapping.id} style={{ gap: 4 }}>
+        <Text selectable style={{ color: status === "stale" ? COLORS.warning : COLORS.text, lineHeight: 20 }}>
+          Exigence {mapping.criterion_index + 1} : {mapping.criterion_text}
+        </Text>
+        <Text style={{ color: status === "stale" ? COLORS.warning : COLORS.muted, fontSize: 12 }}>
+          {historical ? "Lien historique — à revoir" : status === "stale" ? "État du lien non confirmé" : status === "reviewed" ? "Revue explicite enregistrée" : "Preuves liées, sans revue explicite"}
+        </Text>
+        <Text selectable style={{ color: COLORS.subtle, fontSize: 12 }}>Révision liée : {mapping.revision_id} · {mapping.files.length} fichier(s) · {mapping.checks.length} contrôle(s)</Text>
+      </View>)}
+      <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Ces liens ne sont pas déduits du statut de l’étape et ne certifient pas la réussite du projet.</Text>
+    </> : <Text style={{ color: COLORS.muted }}>{scopeConfirmed ? "Aucune exigence explicitement reliée à cette étape." : "Les associations actuelles ne sont pas confirmées dans ce relevé."}</Text>}
+    {onOpenEvidence ? <ActionButton label="Voir et modifier les preuves dans Résultats" onPress={onOpenEvidence} /> : null}
+  </View>;
+}
+
 /** Orthogonal routes keep unrelated cards clear, including wrapped rows of one layer. */
-export function projectDependencyLayout(nodes: PlanNode[], edges: ProjectGraph["dependencies"], width: number) {
+export function projectDependencyLayout(nodes: PlanNode[], edges: ProjectGraph["dependencies"], width: number, nodeHeight = NODE_HEIGHT) {
   const layers = projectLayers(nodes, edges);
   if (!layers) return null;
   const columns = width >= 270 ? 2 : 1;
@@ -118,10 +181,10 @@ export function projectDependencyLayout(nodes: PlanNode[], edges: ProjectGraph["
     const count = Math.min(columns, layer.length);
     const boxWidth = (width - SIDE_GUTTER * 2 - (count - 1) * 12) / count;
     layer.forEach((node, index) => positions.set(node.id, {
-      x: SIDE_GUTTER + index % count * (boxWidth + 12), y: height + Math.floor(index / count) * 106,
-      width: boxWidth, height: NODE_HEIGHT, level,
+      x: SIDE_GUTTER + index % count * (boxWidth + 12), y: height + Math.floor(index / count) * (nodeHeight + 16),
+      width: boxWidth, height: nodeHeight, level,
     }));
-    height += Math.ceil(layer.length / count) * 106 + 30;
+    height += Math.ceil(layer.length / count) * (nodeHeight + 16) + 30;
   });
   const intersects = (a: GraphPoint, b: GraphPoint, box: GraphPosition) => {
     // Four pixels of clearance prevents strokes from appearing attached to another card.
@@ -151,11 +214,12 @@ export function projectDependencyLayout(nodes: PlanNode[], edges: ProjectGraph["
   return { positions, routes, height: Math.max(0, height - 30) };
 }
 
-function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode }: {
+function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode, evidenceLinks }: {
   nodes: PlanNode[]; edges: ProjectGraph["dependencies"]; selectedNodeId: string | null; onSelectNode: (id: string | null) => void;
+  evidenceLinks: Map<string, NodeEvidenceLink[]>;
 }) {
   const [width, setWidth] = useState(280);
-  const layout = projectDependencyLayout(nodes, edges, width);
+  const layout = projectDependencyLayout(nodes, edges, width, nodes.some((node) => evidenceLinks.has(node.id)) ? 116 : NODE_HEIGHT);
   if (!layout) return <Text style={{ color: COLORS.warning }}>Les dépendances reçues sont incohérentes. Actualisez le parcours.</Text>;
   const { positions, routes, height } = layout;
   const drawnRoutes = edges.length > 12 && selectedNodeId
@@ -177,14 +241,17 @@ function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode }: {
       </Svg>
       {nodes.map((node) => {
         const position = positions.get(node.id)!; const selected = selectedNodeId === node.id;
+        const links = evidenceLinks.get(node.id) ?? [];
+        const evidenceLabel = links.length ? evidenceNodeLabel(links) : null;
         const parents = edges.filter((edge) => edge.to_node_id === node.id).map((edge) => `${edge.dependency_type === "optional" ? "apport facultatif" : "après"} ${nodes.find((item) => item.id === edge.from_node_id)?.title}`).join(" ; ");
         return <Pressable key={node.id} accessibilityRole="button" accessibilityLabel={`Étape : ${node.title}`}
-          accessibilityHint={parents || "Aucune dépendance entrante enregistrée"} accessibilityState={{ selected }}
+          accessibilityHint={[parents || "Aucune dépendance entrante enregistrée", evidenceLabel, links.some((link) => link.status === "stale") ? "Liens à revoir" : null].filter(Boolean).join(". ")} accessibilityState={{ selected }}
           onPress={() => onSelectNode(node.id)} style={({ pressed }) => ({ position: "absolute", left: position.x, top: position.y,
             width: position.width, height: position.height, backgroundColor: selected ? COLORS.panelRaised : COLORS.background,
             borderWidth: 1, borderColor: selected ? COLORS.accent : COLORS.border, borderRadius: 12, padding: 10, gap: 5, opacity: pressed ? 0.7 : 1 })}>
           <Text style={{ color: nodeColor(node.status), fontSize: 11, fontWeight: "600" }}>{NODE_LABELS[node.status]}</Text>
           <Text numberOfLines={3} style={{ color: COLORS.text, fontSize: 13, lineHeight: 17, fontWeight: "600" }}>{node.title}</Text>
+          {evidenceLabel ? <Text numberOfLines={1} style={{ color: links.some((link) => link.status === "stale") ? COLORS.warning : COLORS.muted, fontSize: 11 }}>{evidenceLabel}</Text> : null}
         </Pressable>;
       })}
     </View>
@@ -193,9 +260,11 @@ function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode }: {
   </View>;
 }
 
-export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enabled, selectedNodeId, onSelectNode }: {
+export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enabled, selectedNodeId, onSelectNode, evidence = null, evidenceStale = false, onOpenEvidence }: {
   state: ProjectGraphState; fallbackNodes: PlanNode[]; fallbackSummary?: string | null; enabled: boolean;
   selectedNodeId: string | null; onSelectNode: (id: string | null) => void;
+  evidence?: ProjectEvidenceView | null; evidenceStale?: boolean;
+  onOpenEvidence?: () => void;
 }) {
   const [history, setHistory] = useState(false);
   const { graph, stale, busy, error } = state;
@@ -205,13 +274,16 @@ export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enable
   const [attribution, setAttribution] = useState(false);
   const [fullExplanation, setFullExplanation] = useState(false);
   const [showEvaluation, setShowEvaluation] = useState(false);
+  const [showRetiredEvidence, setShowRetiredEvidence] = useState(false);
+  const evidenceLinks = nodeEvidenceLinks(graph, evidence, stale || evidenceStale);
+  const retiredNodes = [...evidenceLinks.keys()].filter((id) => !nodes.some((node) => node.id === id));
   return (
     <Card testID="project-graph-plan">
       <View style={{ gap: 10 }}>
         <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>Parcours du projet</Text>
         <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>Choisissez une étape pour voir son objectif et ses résultats.</Text>
         {nodes.length === 0 ? <Text style={{ color: COLORS.muted }}>Aucune étape enregistrée pour l’instant.</Text> :
-          graph ? <DependencyMap nodes={nodes} edges={graph.dependencies} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode} /> : <View style={{ gap: 8 }}>
+          graph ? <DependencyMap nodes={nodes} edges={graph.dependencies} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode} evidenceLinks={evidenceLinks} /> : <View style={{ gap: 8 }}>
             <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Le type des dépendances n’est pas disponible dans ce relevé. Seules les étapes sont présentées.</Text>
             {nodes.map((node) => <Pressable key={node.id} accessibilityRole="button" accessibilityLabel={`Étape : ${node.title}`} accessibilityState={{ selected: selectedNodeId === node.id }}
               onPress={() => onSelectNode(node.id)} style={{ minHeight: 52, padding: 12, borderLeftWidth: 3, borderColor: nodeColor(node.status), backgroundColor: COLORS.background, borderRadius: 10, gap: 4 }}>
@@ -222,6 +294,15 @@ export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enable
           {edge.dependency_type === "optional" ? "Apport facultatif" : "Après"} : {nodes.find((node) => node.id === edge.from_node_id)?.title}
         </Text>) : null}
       </View>
+      {retiredNodes.length ? <View style={{ gap: 8 }}>
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: showRetiredEvidence }} onPress={() => setShowRetiredEvidence(!showRetiredEvidence)} style={{ minHeight: 44, justifyContent: "center" }}>
+          <Text style={{ color: COLORS.accent }}>Liens historiques hors du plan ({retiredNodes.length})</Text>
+        </Pressable>
+        {showRetiredEvidence ? retiredNodes.map((id) => <View key={id} style={{ gap: 4 }}>
+          <Text selectable style={{ color: COLORS.warning }}>Étape retirée du plan : {id}</Text>
+          <ProjectGraphNodeEvidence graph={graph} nodeId={id} evidence={evidence} stale={stale || evidenceStale} onOpenEvidence={onOpenEvidence} />
+        </View>) : null}
+      </View> : null}
       <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>Comprendre les décisions</Text>
       {planning ? <View style={{ gap: 8 }}>
         <Text style={{ color: COLORS.text, fontWeight: "600" }}>Pourquoi ce plan a été proposé</Text>
@@ -256,7 +337,7 @@ export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enable
   );
 }
 
-export function ProjectGraphEvidence({ graph, stale }: { graph: ProjectGraph | null; stale: boolean }) {
+export function ProjectGraphEvidence({ graph, stale, showCriteria = true }: { graph: ProjectGraph | null; stale: boolean; showCriteria?: boolean }) {
   const [details, setDetails] = useState(false);
   if (!graph) return <Text style={{ color: COLORS.muted }}>Aucun relevé détaillé de résultats chargé.</Text>;
   const revision = graph.latest_revision;
@@ -267,7 +348,7 @@ export function ProjectGraphEvidence({ graph, stale }: { graph: ProjectGraph | n
       {revision ? <>
         <Text style={{ color: COLORS.text }}>Révision {revision.revision} · {revision.files.length} fichiers · {revision.checks.length} contrôles</Text>
         {revision.goal_run_id !== graph.goal.id ? <Text style={{ color: COLORS.warning, lineHeight: 20 }}>Cette révision vient d’une étape antérieure du projet ; elle n’a pas été produite par ce but.</Text> : null}
-        <Text style={{ color: COLORS.subtle, fontSize: 12, lineHeight: 18 }}>Les contrôles sont rattachés à cette révision. Leur actualité et la couverture des exigences ne sont pas établies.</Text>
+        <Text style={{ color: COLORS.subtle, fontSize: 12, lineHeight: 18 }}>Les contrôles sont rattachés à cette révision. Leur actualité et la couverture des exigences ne sont pas établies par le seul état des étapes.</Text>
         {revision.checks.map((check) => <View key={check.id} style={{ gap: 4, paddingVertical: 6 }}>
           <Text style={{ color: check.status === "passed" ? COLORS.accent : check.status === "failed" ? COLORS.danger : COLORS.muted }}>
             Contrôle {check.index + 1} · {check.status === "passed" ? "Réussi" : check.status === "failed" ? "Échoué" : "Ignoré"}
@@ -281,9 +362,9 @@ export function ProjectGraphEvidence({ graph, stale }: { graph: ProjectGraph | n
           {revision.files.map((file) => <Text key={file.id} selectable style={{ color: COLORS.muted, fontSize: 13 }}>{file.path} · {file.bytes} octets</Text>)}
         </View> : null}
       </> : <Text style={{ color: COLORS.muted }}>Aucune révision de fichiers enregistrée pour ce projet.</Text>}
-      {graph.criteria.length ? <View style={{ gap: 8, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 12 }}>
+      {showCriteria && graph.criteria.length ? <View style={{ gap: 8, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 12 }}>
         <Text style={{ color: COLORS.text, fontWeight: "600" }}>Exigences du projet</Text>
-        <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Aucun lien de validation entre ces exigences et les contrôles n’est enregistré.</Text>
+        <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Consultez « Exigences et preuves » pour les liens enregistrés et les revues explicites.</Text>
         {graph.criteria.map((criterion) => <Text key={criterion.id} selectable style={{ color: COLORS.muted }}>{criterion.index + 1}. {criterion.text}</Text>)}
       </View> : null}
     </Card>

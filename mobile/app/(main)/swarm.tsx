@@ -395,6 +395,7 @@ export default function SwarmScreen() {
       testID="swarm-screen"
     >
       <ErrorBanner message={error} />
+      <ActionButton label="Sites web et identité visuelle" onPress={() => creation.router.push("/website")} testID="swarm-open-website" />
       <OfflineNotice source={source} />
       {source !== "authoritative" ? <View style={{ gap: 8 }}>
         <Text style={{ color: COLORS.muted }}>{refreshing ? "Projets non vérifiés" : "Connecte le serveur pour vérifier les projets."}</Text>

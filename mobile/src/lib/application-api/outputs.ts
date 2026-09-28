@@ -15,6 +15,11 @@ const types = {
   "connection.pair": "PairingSummary", "connection.origin": "string", "sync.status": "ApplicationSyncState",
   "goals.list": "GoalRecord[]", "goals.get": "GoalDetail", "goals.nodes": "PlanNode[]", "goals.result": "GoalResult|null",
   "goals.graph": "ProjectGraph",
+  "goals.evidence": "ProjectEvidenceView", "goals.evidence.record": "ProjectEvidenceView",
+  "websites.capabilities": "WebsiteCapabilities", "websites.list": "WebsiteProject[]", "websites.get": "WebsiteProject",
+  "websites.create": "WebsiteProject", "websites.command": "WebsiteProject", "websites.preview": "WebsitePreview",
+  "websites.prepare-publication": "WebsiteApproval", "websites.publish": "WebsiteProject",
+  "websites.screenshot": "WebsiteScreenshot",
   "goals.writing-draft": "GoalWritingDraft",
   "tasks.activity": "ActivityPage", "goals.activity": "ActivityPage",
   "goals.create": "GoalDetail", "goals.start": "GoalDetail", "goals.replan": "GoalDetail", "goals.cancel": "GoalDetail",
@@ -37,7 +42,7 @@ const types = {
   "code.review": "CodeReviewHandle", "code.prepareApproval": "CodeProposalApplication", "project.review": "ProjectReviewHandle", "project.prepareApproval": "CodeProposalApplication",
 } as const;
 
-const parsed = new Set(["goals.graph", "tasks.activity", "goals.activity", "project.swift.submit", "project.swift.status", "project.swift.cancel","activities.catalog", "goals.writing-draft", "goals.messages", "goals.conversation.open", "models.capabilities", "models.list", "models.status", "models.load", "models.download", "models.import", "inference.generate", "code.review", "project.review", "code.prepareApproval", "project.prepareApproval", "settings.local.read", "goals.plan.generate", "iphone.requests.list", "iphone.requests.get", "iphone.requests.decide", "iphone.requests.execute"]);
+const parsed = new Set(["goals.evidence", "goals.evidence.record", "websites.capabilities", "websites.list", "websites.get", "websites.create", "websites.command", "websites.preview", "websites.prepare-publication", "websites.publish", "websites.screenshot", "goals.graph", "tasks.activity", "goals.activity", "project.swift.submit", "project.swift.status", "project.swift.cancel","activities.catalog", "goals.writing-draft", "goals.messages", "goals.conversation.open", "models.capabilities", "models.list", "models.status", "models.load", "models.download", "models.import", "inference.generate", "code.review", "project.review", "code.prepareApproval", "project.prepareApproval", "settings.local.read", "goals.plan.generate", "iphone.requests.list", "iphone.requests.get", "iphone.requests.decide", "iphone.requests.execute"]);
 export function outputDescriptor(command: string, available = true): CommandOutputDescriptor {
   return {
     contractVersion: "1.0", envelope: "ApplicationResult", dataType: Object.hasOwn(types, command) ? types[command as keyof typeof types] : "unavailable",
@@ -71,6 +76,13 @@ export type FeedbackReceipt = { id: string };
 export type OutboxSummary = { pending: number };
 
 type OutputTypes = {
+  WebsiteCapabilities: import("@/lib/api/website-projects").WebsiteCapabilities;
+  WebsiteProject: import("@/lib/api/website-projects").WebsiteProject;
+  "WebsiteProject[]": import("@/lib/api/website-projects").WebsiteProject[];
+  WebsiteApproval: import("@/lib/api/website-projects").WebsiteApproval;
+  WebsitePreview: Awaited<ReturnType<typeof import("@/lib/api/client").previewWebsiteProject>>;
+  WebsiteScreenshot: Awaited<ReturnType<typeof import("@/lib/api/client").previewWebsiteScreenshot>>;
+  ProjectEvidenceView: import("@/lib/api/project-evidence").ProjectEvidenceView;
   SwiftValidationHandle: { handle: string; idempotencyKey: string };
   SwiftValidation: import("@/lib/api/project").SwiftValidation;
   "SwiftValidation|null": import("@/lib/api/project").SwiftValidation | null;

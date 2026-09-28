@@ -20,8 +20,9 @@ from html.parser import HTMLParser
 from typing import Any, Protocol, cast
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
-from xml.etree import ElementTree
 
+from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 from pydantic import JsonValue
 
 from app.services.website_dossier_contracts import (
@@ -665,11 +666,11 @@ def capture_website(
                 if response.status != 200:
                     discovery_issues.append(DiscoveryIssue(url=sitemap, reason="http_status"))
                     continue
-                xml_markers = response.body.replace(b"\0", b"").upper()
-                if b"<!DOCTYPE" in xml_markers or b"<!ENTITY" in xml_markers:
-                    discovery_issues.append(DiscoveryIssue(url=sitemap, reason="unsafe_sitemap"))
-                    continue
-                root = ElementTree.fromstring(response.body)
+                # Reject declarations in the parser, independent of XML encoding.
+                # Never resolve local/remote DTDs or expand attacker-defined entities.
+                root = ElementTree.fromstring(
+                    response.body, forbid_dtd=True, forbid_entities=True, forbid_external=True
+                )
                 is_index = root.tag.rsplit("}", 1)[-1] == "sitemapindex"
                 for element in root.iter():
                     if element.tag.rsplit("}", 1)[-1] == "loc" and element.text:
@@ -680,7 +681,10 @@ def capture_website(
                                 discovery_limited = True
                         else:
                             discover(element.text.strip(), response.url)
-            except (CaptureError, ValueError, ElementTree.ParseError):
+            except DefusedXmlException:
+                discovery_issues.append(DiscoveryIssue(url=sitemap, reason="unsafe_sitemap"))
+                continue
+            except (CaptureError, ValueError, LookupError, ElementTree.ParseError):
                 discovery_issues.append(DiscoveryIssue(url=sitemap, reason="sitemap_unavailable"))
                 continue
         if sitemaps:

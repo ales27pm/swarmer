@@ -1,6 +1,8 @@
 import { fetch } from "expo/fetch";
 import { parseProjectContext } from "./project-context";
 import { parseProjectGraph, type ProjectGraph } from "./project-graph";
+import { parseProjectEvidence, type ProjectEvidenceView, type ProjectEvidenceWrite } from "./project-evidence";
+import { parseWebsiteCapabilities, parseWebsiteProject, parseWebsiteProjects, parseWebsiteApproval, parseWebsitePreview, type WebsiteCreate, type WebsiteCommand, type WebsiteReview, type WebsitePublish } from "./website-projects";
 import { activityCursor, activityIdentifier, parseActivityPage, type ActivityPage, type ActivityScopeType } from "@/lib/api/activity";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -927,6 +929,56 @@ export function getGoal(
 export async function getProjectGraph(goalId: string, shouldAccept: () => boolean = () => true): Promise<ProjectGraph> {
   activityIdentifier(goalId);
   return parseProjectGraph(await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/graph`, undefined, shouldAccept), goalId);
+}
+
+export async function getProjectEvidence(goalId: string, shouldAccept: () => boolean = () => true): Promise<ProjectEvidenceView> {
+  activityIdentifier(goalId);
+  return parseProjectEvidence(await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/evidence`, undefined, shouldAccept), goalId);
+}
+
+export async function putProjectEvidence(goalId: string, criterionIndex: number, input: ProjectEvidenceWrite, shouldAccept: () => boolean = () => true): Promise<ProjectEvidenceView> {
+  activityIdentifier(goalId);
+  if (!Number.isInteger(criterionIndex) || criterionIndex < 0 || criterionIndex > 19) throw new Error("Exigence invalide.");
+  return parseProjectEvidence(await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/evidence/${criterionIndex}`, { method: "PUT", body: JSON.stringify(input) }, shouldAccept), goalId);
+}
+
+export async function getWebsiteCapabilities(shouldAccept: () => boolean = () => true) {
+  return parseWebsiteCapabilities(await fencedRequest<unknown>("/website-projects/capabilities", undefined, shouldAccept));
+}
+export async function listWebsiteProjects(shouldAccept: () => boolean = () => true) {
+  return parseWebsiteProjects(await fencedRequest<unknown>("/website-projects", undefined, shouldAccept));
+}
+export async function getWebsiteProject(id: string, shouldAccept: () => boolean = () => true) {
+  return parseWebsiteProject(await fencedRequest<unknown>(`/website-projects/${resourceId(id)}`, undefined, shouldAccept), id);
+}
+export async function createWebsiteProject(input: WebsiteCreate, shouldAccept: () => boolean = () => true) {
+  return parseWebsiteProject(await fencedRequest<unknown>("/website-projects", { method: "POST", body: JSON.stringify(input) }, shouldAccept));
+}
+export async function commandWebsiteProject(id: string, input: WebsiteCommand, shouldAccept: () => boolean = () => true) {
+  return parseWebsiteProject(await fencedRequest<unknown>(`/website-projects/${resourceId(id)}/commands`, { method: "POST", body: JSON.stringify(input) }, shouldAccept), id);
+}
+export async function previewWebsiteProject(id: string, input: WebsiteReview, shouldAccept: () => boolean = () => true) {
+  const origin = await getServerUrl();
+  const result = parseWebsitePreview(await fencedRequest<unknown>(`/website-projects/${resourceId(id)}/preview`, { method: "POST", body: JSON.stringify(input) }, shouldAccept));
+  if (!shouldAccept() || await getServerUrl() !== origin || result.build_digest !== input.build_digest) throw new Error("La connexion ou l’aperçu a changé.");
+  return { ...result, url: origin.replace(/\/$/, "") + result.path };
+}
+export async function prepareWebsitePublication(id: string, input: WebsiteReview, shouldAccept: () => boolean = () => true) {
+  const approval = parseWebsiteApproval(await fencedRequest<unknown>(`/website-projects/${resourceId(id)}/publication-review`, { method: "POST", body: JSON.stringify(input) }, shouldAccept));
+  if (approval.build_digest !== input.build_digest || approval.expected_version !== input.expected_version + 1) throw new Error("La confirmation ne correspond pas à cette version.");
+  return approval;
+}
+export async function previewWebsiteScreenshot(id: string, sha256: string, shouldAccept: () => boolean = () => true) {
+  if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Capture invalide.");
+  const origin = await getServerUrl();
+  const raw = await fencedRequest<{ path: string; sha256: string }>(`/website-projects/${resourceId(id)}/screenshots/${sha256}/preview`, { method: "POST" }, shouldAccept);
+  if (!raw || raw.sha256 !== sha256 || typeof raw.path !== "string" || !/^\/website-previews\/[A-Za-z0-9_-]{32,100}\/screenshot\.png$/.test(raw.path) || !shouldAccept() || await getServerUrl() !== origin) throw new Error("La capture ou la connexion a changé.");
+  return { url: origin.replace(/\/$/, "") + raw.path, sha256 };
+}
+export async function publishWebsiteProject(id: string, input: WebsitePublish, shouldAccept: () => boolean = () => true) {
+  const project = parseWebsiteProject(await fencedRequest<unknown>(`/website-projects/${resourceId(id)}/publish`, { method: "POST", body: JSON.stringify(input) }, shouldAccept), id);
+  if (project.status === "published" && project.publication?.digest !== input.build_digest) throw new Error("Le reçu de publication ne correspond pas à la version confirmée.");
+  return project;
 }
 
 function goalStartBody(input?: GoalStartInput): string {

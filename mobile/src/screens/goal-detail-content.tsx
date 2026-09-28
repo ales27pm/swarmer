@@ -1,4 +1,5 @@
-import { ProjectGraphEvidence, ProjectGraphPlan, useProjectGraph } from "@/components/project-graph";
+import { ProjectGraphEvidence, ProjectGraphNodeEvidence, ProjectGraphPlan, useProjectGraph } from "@/components/project-graph";
+import { ProjectRequirementEvidence, useProjectEvidence } from "@/components/project-requirement-evidence";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Alert, Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -751,6 +752,7 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
   const [detailsOpen, setDetailsOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const graph = useProjectGraph(goal.id, controller.source === "authoritative", goal.updated_at);
+  const evidence = useProjectEvidence(goal.id, controller.source === "authoritative" && controller.online, goal.updated_at);
   const nodes = graph.graph?.nodes ?? controller.nodes;
   const selected = nodes.find((node) => node.id === selectedNodeId);
   const readOnly = !controller.online || Boolean(controller.busy) || (graph.graph !== null && graph.stale);
@@ -767,7 +769,8 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
     </View>
     <View style={panel("Plan")} accessibilityElementsHidden={tab !== "Plan"} importantForAccessibility={tab !== "Plan" ? "no-hide-descendants" : "auto"}>
       <ProjectGraphPlan state={graph} fallbackNodes={controller.nodes} fallbackSummary={goal.evaluator_summary}
-        enabled={controller.source === "authoritative"} selectedNodeId={selectedNodeId} onSelectNode={(id) => { selectNode(id); setDetailsOpen(Boolean(id)); }} />
+        enabled={controller.source === "authoritative"} selectedNodeId={selectedNodeId} onSelectNode={(id) => { selectNode(id); setDetailsOpen(Boolean(id)); }}
+        evidence={evidence.view} evidenceStale={evidence.stale} onOpenEvidence={() => setTab("Résultats")} />
     </View>
     <View style={panel("Activité")} accessibilityElementsHidden={tab !== "Activité"} importantForAccessibility={tab !== "Activité" ? "no-hide-descendants" : "auto"}>
       {selected ? <ActionButton label="Voir les opérations de tout le projet" onPress={() => selectNode(null)} /> : null}
@@ -775,7 +778,8 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
         refreshKey={goal.updated_at} follow nodes={nodes} selectedNodeId={selected?.id ?? null} onOpenTask={navigation.openTask} />
     </View>
     <View style={panel("Résultats")} accessibilityElementsHidden={tab !== "Résultats"} importantForAccessibility={tab !== "Résultats" ? "no-hide-descendants" : "auto"}>
-      <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} />
+      <ProjectRequirementEvidence state={evidence} disabled={!controller.online || Boolean(controller.busy)} />
+      <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} showCriteria={evidence.view === null} />
       {controller.nodes.some((node) => node.required_skill === "code.build_project") ? <GoalProjectReview
         key={`project:${goal.id}`} goalId={goal.id} disabled={!controller.online || Boolean(controller.busy)} onOpenTask={navigation.openTask} /> : null}
       <GoalResultSection controller={controller} />
@@ -797,6 +801,8 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
             {selected ? <NodeCard key={selected.id} node={selected} readOnly={readOnly} navigation={{ ...navigation,
               openTask: (id) => { setDetailsOpen(false); navigation.openTask(id); },
               openApprovals: () => { setDetailsOpen(false); navigation.openApprovals(); } }} /> : null}
+            {selected ? <ProjectGraphNodeEvidence graph={graph.graph} nodeId={selected.id} evidence={evidence.view}
+              stale={graph.stale || evidence.stale} onOpenEvidence={() => { setDetailsOpen(false); setTab("Résultats"); }} /> : null}
             <Text style={{ color: COLORS.subtle, fontSize: 12 }}>L’objectif est celui enregistré pour cette étape. Les explications du plan restent consultables dans l’onglet Plan.</Text>
             <ActionButton label="Voir les opérations de cette étape" onPress={() => { setDetailsOpen(false); setTab("Activité"); }} />
           </ScrollView>
