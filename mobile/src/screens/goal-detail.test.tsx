@@ -191,11 +191,12 @@ describe("GoalDetailScreen", () => {
     });
     jest.clearAllMocks();
     mockLiveRefreshListeners.clear();
-    mockGetGoal.mockResolvedValue(detail);
+    // Clear queued one-shot replies too, including deferred calls left by a failed assertion.
+    mockGetGoal.mockReset().mockResolvedValue(detail);
     mockGetServerUrl.mockResolvedValue("https://control.example");
     mockLocalGoal.mockResolvedValue(null);
     mockCancelGoal.mockResolvedValue(detail);
-    mockStartGoal.mockResolvedValue(detail);
+    mockStartGoal.mockReset().mockResolvedValue(detail);
     mockReplanGoal.mockResolvedValue(detail);
     mockCreateFeedback.mockResolvedValue({ accepted: true });
   });
@@ -328,7 +329,7 @@ describe("GoalDetailScreen", () => {
     expect(screen.getByText("Le runtime respecte les invariants observés.")).toBeOnTheScreen();
     await user.press(screen.getByRole("tab", { name: "Plan" }));
     await user.press(screen.getByRole("button", { name: "Étape : Vérifier les invariants" }));
-    expect(screen.getByText("Aucun agent en cours.")).toBeOnTheScreen();
+    expect(screen.getByText("Aucun agent en cours au dernier relevé.")).toBeOnTheScreen();
     expect(screen.queryByText("PRIVATE GOAL REASONING")).not.toBeOnTheScreen();
     expect(screen.queryByText("PRIVATE NODE REASONING")).not.toBeOnTheScreen();
 
@@ -397,7 +398,7 @@ describe("GoalDetailScreen", () => {
     expect(await screen.findByText("Phase : En attente d’un agent")).toBeOnTheScreen();
     expect(screen.getByText(/Connectez un agent d’exécution, puis réessayez/)).toBeOnTheScreen();
     expect(screen.getByText(/Aucun appel modèle n’est lancé pendant cette attente/)).toBeOnTheScreen();
-    expect(screen.getByText("Aucun agent en cours.")).toBeOnTheScreen();
+    expect(screen.getByText("Aucun agent en cours au dernier relevé.")).toBeOnTheScreen();
     expect(screen.queryByText("En cours")).not.toBeOnTheScreen();
     expect(screen.queryByText(/waiting_for_workers|no online workers/)).not.toBeOnTheScreen();
     expect(screen.queryByRole("button", { name: "Démarrer le but" })).not.toBeOnTheScreen();
