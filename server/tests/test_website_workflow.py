@@ -48,6 +48,11 @@ def test_screenshot_ticket_is_hash_scoped_and_expires(
         [{"viewports": [{"screenshot": {"sha256": sha, "local_path": str(path)}}]}],
     )
     endpoint = f"/website-projects/{project['id']}/screenshots/{sha}/preview"
+    authenticated_path = endpoint.removesuffix("/preview")
+    assert client.get(authenticated_path).status_code == 401
+    authenticated = client.get(authenticated_path, headers=paired_headers)
+    assert authenticated.status_code == 200
+    assert authenticated.content == content
     assert client.post(endpoint).status_code == 401
     response = client.post(endpoint, headers=paired_headers)
     assert response.status_code == 200, response.text
@@ -59,6 +64,7 @@ def test_screenshot_ticket_is_hash_scoped_and_expires(
     assert client.get(ticket["path"].replace("screenshot.png", "index.html")).status_code == 404
     path.write_bytes(b"changed")
     assert client.get(ticket["path"]).status_code == 404
+    assert client.get(authenticated_path, headers=paired_headers).status_code == 404
     path.write_bytes(content)
     with service.store.transaction() as connection:
         connection.execute("UPDATE website_preview_tokens SET expires=0")

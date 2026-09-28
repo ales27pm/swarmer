@@ -97,10 +97,13 @@ execution yields `failed`. No static HTML image is substituted for a browser res
 ## Media and safe preview
 
 `discover_asset_references` reads `img src`, `img/source srcset` HTTP(S) candidates
-and PDF links, preserving source page/digest/locator. It skips inline data and
-private URLs, and reports truncation. Links are references until their own binary
-download succeeds. Downloads obey the same public/robots/redirect/request/time/byte
-policy. Only PNG, JPEG, GIF, WebP and signature-checked PDF are accepted.
+and PDF links, preserving source page/digest/locator. Discovery checks URL syntax,
+rejects literal nonpublic IP addresses and localhost names, and reports truncation.
+It does not resolve hostnames: a discovered hostname may still resolve to a private
+address. Links remain unverified references until binary acquisition. Downloads
+validate every DNS answer and pin the connection to the validated public peer,
+including each redirect, under the same robots/request/time/byte policy. Only PNG,
+JPEG, GIF, WebP and signature-checked PDF are accepted.
 
 Original bytes are stored content-addressed with a `.bin` suffix and SHA256.
 Pillow must successfully decode the declared raster format, verify its integrity,
@@ -116,7 +119,7 @@ must remain downloads (`application/octet-stream`, `Content-Disposition: attachm
 DOM `.dom.bin`, or PDF bytes in an HTML iframe/object/embed. Serve only validated
 preview PNGs inline from the evidence store.
 
-Asset defaults: 30 attempted references, 8 million pixels, 8 MiB per encoded preview.
+Asset defaults: 30 attempted unique URLs, 8 million pixels, 8 MiB per encoded preview.
 Every accepted record includes original/final asset URLs, source page URL/digest,
 locator, fetch time, local paths, MIME types, byte counts and hashes. It retains
 `disposition=unverified_source_asset`; a successful download is not a license grant

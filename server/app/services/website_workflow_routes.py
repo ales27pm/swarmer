@@ -197,21 +197,7 @@ def install_website_routes(
     ) -> Response:
         try:
             data = service.store.get(project_id, owner(principal))
-            if not data.get("capture_dir") or not re.fullmatch(r"[0-9a-f]{64}", sha256):
-                raise KeyError(sha256)
-            for render in service._read(f"{data['capture_dir']}/rendered.json"):
-                for viewport in render["viewports"]:
-                    shot = viewport["screenshot"]
-                    if shot["sha256"] != sha256:
-                        continue
-                    path = Path(shot["local_path"]).resolve()
-                    if not path.is_relative_to((service.root / data["capture_dir"]).resolve()):
-                        raise KeyError(sha256)
-                    content = path.read_bytes()
-                    if hashlib.sha256(content).hexdigest() != sha256:
-                        raise KeyError(sha256)
-                    return Response(content, media_type="image/png", headers=HEADERS)
-            raise KeyError(sha256)
+            return Response(screenshot_bytes(data, sha256), media_type="image/png", headers=HEADERS)
         except KeyError as exc:
             raise failure(exc) from None
 

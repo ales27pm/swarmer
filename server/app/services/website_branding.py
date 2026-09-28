@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
+import time
+from socket import getaddrinfo
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from app.services.website_dossier import CaptureError, _resolve, normalize_public_url
 
 ToolName = Literal["search_design_systems", "generate_brand_directions", "critique_brand_image"]
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -89,6 +92,7 @@ class InfographicArtistClient:
         }
         if self.bearer_token:
             headers["Authorization"] = "Bearer " + self.bearer_token
+        deadline = time.monotonic() + self.timeout_seconds
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 async with httpx.AsyncClient(
@@ -109,7 +113,7 @@ class InfographicArtistClient:
                         1,
                     )
                     version = initialized.get("protocolVersion")
-                    if version not in {"2025-03-26", "2025-06-18", "2024-11-05"}:
+                    if version not in {"2025-03-26", "2025-06-18"}:
                         raise BrandingError("unsupported_mcp_protocol")
                     headers["MCP-Protocol-Version"] = version
                     await self._request(client, headers, "notifications/initialized", {}, None)
@@ -144,6 +148,8 @@ class InfographicArtistClient:
                     if discovered is None:
                         raise BrandingError("branding_tool_not_available")
                     self._check_advertised_contract(tool_name, validated, discovered)
+                    if tool_name == "critique_brand_image":
+                        await self._check_public_media(validated, deadline)
                     result = await self._request(
                         client,
                         headers,
@@ -206,25 +212,31 @@ class InfographicArtistClient:
                 prop = properties.get(key)
                 if not isinstance(prop, dict) or prop.get("format") not in {"uri", "uri-reference"}:
                     raise BrandingError("branding_media_transport_unavailable")
-                try:
-                    parsed = urlsplit(arguments[key])
-                    if (
-                        parsed.scheme != "https"
-                        or not parsed.hostname
-                        or parsed.username is not None
-                        or parsed.password is not None
-                        or parsed.hostname == "localhost"
-                        or parsed.hostname.endswith((".local", ".localhost"))
-                    ):
-                        raise ValueError
-                    try:
-                        address = ipaddress.ip_address(parsed.hostname)
-                    except ValueError:
-                        address = None
-                    if address is not None and not address.is_global:
-                        raise ValueError
-                except ValueError as exc:
-                    raise BrandingError("branding_requires_public_media_url") from exc
+
+    @staticmethod
+    async def _check_public_media(arguments: dict[str, Any], deadline: float) -> None:
+        # This checks current local DNS only. The remote provider must independently
+        # constrain its own resolution, redirects and connection peer.
+        hosts: set[str] = set()
+        try:
+            for key in ("image", "reference"):
+                if key not in arguments:
+                    continue
+                parsed = urlsplit(normalize_public_url(arguments[key]))
+                if parsed.scheme != "https" or not parsed.hostname:
+                    raise ValueError
+                hosts.add(parsed.hostname)
+        except ValueError as exc:
+            raise BrandingError("branding_requires_public_media_url") from exc
+        for host in sorted(hosts):
+            try:
+                # Reuse the bounded DNS worker and reject every nonglobal/malformed
+                # answer; never run a blocking resolver on the event loop.
+                await asyncio.to_thread(_resolve, host, 443, deadline, getaddrinfo)
+            except CaptureError as exc:
+                if str(exc) in {"dns_timeout", "duration_limit"}:
+                    raise BrandingError("branding_timeout") from exc
+                raise BrandingError("branding_requires_public_media_url") from exc
 
     async def _request(
         self,

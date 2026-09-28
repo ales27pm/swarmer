@@ -7,8 +7,10 @@ separately frozen iOS release or publish anything during tests.
 
 `InfographicArtistClient(endpoint, bearer_token=None).call(tool_name, arguments)`
 uses real MCP HTTP requests: initialize, initialized notification, tool discovery,
-then a supported tool call. JSON and SSE replies, server session IDs and protocol
-versions are supported. Requests have a wall deadline, a 1 MiB response limit,
+then a supported tool call. Streamable HTTP JSON/SSE replies, server session IDs,
+and protocol versions `2025-03-26` and `2025-06-18` are supported. The legacy
+`2024-11-05` HTTP+SSE transport is not implemented and is rejected during
+initialization. Requests have a wall deadline, a 1 MiB response limit,
 bounded catalog pagination, no redirects and no environment proxies. Errors use
 stable codes; third-party response text and credentials are never copied to them.
 
@@ -23,6 +25,16 @@ The native client checks the provider's advertised schema before each call. The
 ChatGPT connector's local-file upload bridge is **not** assumed to exist here.
 Critique is unavailable unless the provider explicitly advertises URI image
 inputs; those inputs must be public HTTPS media references supplied by the caller.
+The client checks URL syntax and every locally resolved DNS address before
+forwarding either `image` or `reference`. Resolution runs off the event loop,
+shares the request deadline and the collector's bounded DNS worker, and occurs
+only after the provider's media contract is accepted. Duplicate hostnames are
+resolved once per call. Unresolved hosts and any nonglobal DNS answer are rejected.
+This is a local preflight, not a download or a guarantee about the remote provider's
+connection: the provider resolves the URL again and may follow redirects. Its own
+public-network enforcement, DNS rebinding protection and redirect policy must be
+qualified before enabling remote image critique. This client neither pins that
+remote connection nor uploads a verified local image as a substitute.
 Local server paths are never sent as remote images. Merely configuring an endpoint
 does not upload screenshots or publish them. A missing provider returns
 `infographic_artist_not_configured`, never a fabricated brand direction.
@@ -87,7 +99,12 @@ Both the existing local hosting root and HTTPS public URL are administrator
 configuration, not request-controlled destinations. The adapter snapshots and
 verifies all bytes/reports, rejects path traversal and symlink roots, uses
 descriptor-relative no-follow writes, serializes publishers with a nonblocking
-file lock, and atomically renames its private staging directory. Reusing a release
+file lock, and atomically renames its private staging directory. Parent-directory
+segments in the configured root are normalized only after checking the original
+path for symlinks. Published directories and files have explicit `0755`/`0644`
+modes even under a private service umask; the operator still owns traversal/access
+to the configured hosting root and its parents. The lock and staging root remain
+private until the completed tree is ready. Reusing a release
 is rejected. Publication containing attachments is blocked until the hosting
 header configuration is explicitly declared. A receipt records the URL and exact
 digest; HTTP reachability or DNS configuration is not inferred from a file write.
@@ -95,7 +112,8 @@ digest; HTTP reachability or DNS configuration is not inferred from a file write
 `recover(build, expected_digest=..., release_id=...)` reconciles a process crash
 after the atomic rename. It returns the same receipt only after a read-only walk
 verifies the exact public file set, every deployed file's bytes and the safe public manifest, without following
-symlinks. Missing releases return `None`; changed, injected or symlinked files fail
+symlinks. It also verifies host readability/traversal for every file and directory,
+without repairing permissions. Missing releases return `None`; changed, injected or symlinked files fail
 verification. Normal publication still rejects replay.
 
 ## Local evidence

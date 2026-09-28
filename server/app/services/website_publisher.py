@@ -48,8 +48,8 @@ class StaticDirectoryPublisher:
                 or not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
-                or parsed.query
-                or parsed.fragment
+                or "?" in self.public_base_url
+                or "#" in self.public_base_url
                 or "\\" in self.public_base_url
                 or any(ord(c) < 32 for c in self.public_base_url)
             ):
@@ -67,8 +67,14 @@ class StaticDirectoryPublisher:
             and not self.attachment_headers_configured
         ):
             raise PublicationError("hosting_attachment_headers_not_configured")
-        root = self.root.absolute()
-        if root.resolve() != root or not root.is_dir():
+        configured_root = self.root.absolute()
+        # Inspect before lexical normalization: a symlink in `link/..` must not disappear.
+        if not configured_root.is_dir() or any(
+            path.is_symlink() for path in (configured_root, *configured_root.parents)
+        ):
+            raise PublicationError("hosting_root_missing_or_symlinked")
+        root = Path(os.path.abspath(configured_root))
+        if root.resolve() != root:
             raise PublicationError("hosting_root_missing_or_symlinked")
         release = release_id + "-" + expected_digest[:16]
         return snapshot, root, release
@@ -160,8 +166,6 @@ class StaticDirectoryPublisher:
             expected = {file.path: file.bytes() for file in self._public_files(snapshot)}
             expected["build-manifest.json"] = canonical_json(self._public_manifest(snapshot))
             self._verify_tree(release_fd, expected)
-            if os.fstat(release_fd).st_mode & 0o055 != 0o055:
-                raise PublicationError("release_not_readable_by_host")
             return self._receipt(snapshot, release)
         except OSError as exc:
             raise PublicationError("release_verification_failed") from exc
@@ -175,6 +179,8 @@ class StaticDirectoryPublisher:
     @staticmethod
     def _verify_tree(directory_fd: int, expected: dict[str, bytes]) -> None:
         before = os.fstat(directory_fd)
+        if before.st_mode & 0o055 != 0o055:
+            raise PublicationError("release_not_readable_by_host")
         children = {path.split("/", 1)[0] for path in expected}
         if set(os.listdir(directory_fd)) != children:
             raise PublicationError("release_file_set_mismatch")
@@ -187,6 +193,8 @@ class StaticDirectoryPublisher:
                     details = os.fstat(source.fileno())
                     if not stat.S_ISREG(details.st_mode) or details.st_size != len(expected[name]):
                         raise PublicationError("release_file_mismatch")
+                    if details.st_mode & 0o044 != 0o044:
+                        raise PublicationError("release_not_readable_by_host")
                     if source.read(len(expected[name]) + 1) != expected[name]:
                         raise PublicationError("release_file_mismatch")
                     after = os.fstat(source.fileno())
@@ -268,6 +276,7 @@ class StaticDirectoryPublisher:
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
                 os.close(current)
                 current = child
+                os.fchmod(current, 0o755)  # nosec B103 - public subtree inside private stage
             file_fd = os.open(
                 parts[-1],
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -277,6 +286,7 @@ class StaticDirectoryPublisher:
             with os.fdopen(file_fd, "wb") as file:
                 file.write(content)
                 file.flush()
+                os.fchmod(file.fileno(), 0o644)
                 os.fsync(file.fileno())
         finally:
             os.close(current)

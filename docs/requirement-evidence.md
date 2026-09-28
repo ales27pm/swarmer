@@ -10,8 +10,10 @@ The existing Plan graph joins those explicit mappings to their recorded producer
 nodes. Only mapped nodes display criterion numbers. Selecting a node opens the
 same inspector with linked/reviewed/to-review counts, the original criterion text,
 the exact associated revision and file/check counts, and an action to open Results
-for inspection or editing. Removed or superseded associations stay labelled as
-historical. A stale or disconnected evidence snapshot, or a graph/evidence revision
+for inspection or editing. The latest association remains labelled as historical
+when its criterion, producer, context or revision is no longer current. A removed
+producer remains accessible in the Plan's collapsed historical-links section;
+it is not drawn as a current node. A stale or disconnected evidence snapshot, or a graph/evidence revision
 or conversation mismatch, cannot show a current reviewed count. The join compares
 the public producer, file and check receipts across both snapshots, even when their
 revision ID and source digest have not changed. Nodes without a
@@ -38,7 +40,9 @@ are not returned. Public planner explanations remain in the separate graph view.
 
 The context hash binds the objective, complete ordered criterion list, conversation
 revision, replan count, plan steps/dependencies, active successor and full check
-receipt snapshot. A changed receipt between reading and submitting is rejected
+receipt snapshot. Plan objectives are hashed before display redaction, so changes
+to private targets also invalidate a mapping without exposing their raw text.
+A changed receipt between reading and submitting is rejected
 even if the source digest and revision ID stay the same. Routine node
 status changes do not stale a mapping. Criteria removed from a goal keep their
 latest immutable association in `unmatched_mappings`. A successor goal does not
@@ -49,7 +53,10 @@ create evidence mappings for a successor before it produces its own revision.
 
 `GET /goals/{goal_id}/evidence` reads one consistent, read-only SQLite snapshot and
 returns `RequirementEvidenceView` schema `1.0`, including current criteria, mappings
-and the current revision's selectable file/check metadata.
+and the current revision's selectable file/check metadata. It exposes only the
+latest mapping version per criterion, including stale mappings and those in
+`unmatched_mappings` for removed criteria. Earlier versions replaced by a new
+mapping remain immutable in storage but are not exposed by this API or its UI.
 
 `PUT /goals/{goal_id}/evidence/{criterion_index}` accepts `EvidenceMappingRequest`:
 `request_id`, `expected_version` (zero for a first mapping), `context_sha256`,
@@ -72,6 +79,8 @@ legacy `not_mapped`/`not_recorded` fields describe that endpoint's lack of mappi
 information; new clients obtain current coverage from `/evidence`. New UI does not
 reuse those legacy fields as coverage and handles an older server's 404 as an
 unavailable feature, not zero verified requirements.
+When no evidence view is available, including a 404 or outage, the Results tab
+continues to show the criteria from the graph without inventing coverage.
 
 ## Storage and migration
 

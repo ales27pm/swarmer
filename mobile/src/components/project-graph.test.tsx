@@ -58,6 +58,22 @@ function linkedGraph() {
 }
 
 describe("recorded requirement connections", () => {
+  it("keeps a removed producer's mapping accessible as history without drawing a current node", async () => {
+    const { graph, evidence } = linkedGraph();
+    graph.nodes = graph.nodes.filter((node) => node.id !== "node_plan");
+    graph.dependencies = graph.dependencies.filter((edge) => edge.from_node_id !== "node_plan" && edge.to_node_id !== "node_plan");
+    const open = jest.fn();
+    await render(<ProjectGraphPlan state={{ graph, busy: false, stale: false, error: null, refresh: jest.fn(async () => {}) }}
+      fallbackNodes={[]} enabled selectedNodeId={null} onSelectNode={jest.fn()} evidence={evidence} onOpenEvidence={open} />);
+    expect(screen.queryByRole("button", { name: "Étape : Préparer le planning" })).not.toBeOnTheScreen();
+    await userEvent.setup().press(screen.getByRole("button", { name: "Liens historiques hors du plan (1)" }));
+    expect(screen.getByText("Étape retirée du plan : node_plan")).toBeOnTheScreen();
+    expect(screen.getByText("Lien historique — à revoir")).toBeOnTheScreen();
+    expect(screen.getByText(/Révision liée : revision_1/)).toBeOnTheScreen();
+    expect(screen.getByText("Liées : 0 · Revues explicitement : 0 · À revoir : 1")).toBeOnTheScreen();
+    await userEvent.setup().press(screen.getByRole("button", { name: "Voir et modifier les preuves dans Résultats" }));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
   it("adds numbered evidence only to the recorded producer, never other completed nodes", async () => {
     const { graph, evidence } = linkedGraph();
     await render(<ProjectGraphPlan state={{ graph, busy: false, stale: false, error: null, refresh: jest.fn(async () => {}) }}

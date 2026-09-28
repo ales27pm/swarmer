@@ -13,6 +13,7 @@ from app.services.project_evidence import (
     save_project_evidence,
 )
 from app.services.project_evidence_contracts import EvidenceMappingRequest, RequirementEvidenceView
+from app.services.project_graph import read_project_graph
 from app.services.state_service import StateService
 from app.services.swarm_contracts import GoalCreateRequest
 from tests.test_project_graph import graph_evidence
@@ -163,6 +164,68 @@ async def test_context_or_receipt_changes_never_reuse_positive_coverage(tmp_path
     assert stale.criteria[0].status == "stale"
     assert expected in stale.criteria[0].mapping.stale_reasons
     assert stale.criteria[0].mapping.criterion_text == "Conserver les clients"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "first_objective,second_objective",
+    [
+        ("Exporter vers /private/client-a", "Exporter vers /private/client-b"),
+        ("Exporter avec token=synthetic-first", "Exporter avec token=synthetic-second"),
+    ],
+)
+async def test_raw_plan_change_invalidates_review_even_when_public_objectives_match(
+    tmp_path, first_objective, second_objective
+):
+    path = tmp_path / "state.db"
+    _, goal, _ = await graph_evidence(path)
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "UPDATE plan_nodes SET objective=? WHERE id='node_00'",
+            (first_objective,),
+        )
+        await db.commit()
+    graph_before = await read_project_graph(path, goal["id"])
+    view = await read_project_evidence(path, goal["id"])
+    reviewed = await save_project_evidence(
+        path, goal["id"], 0, mapping_request(view, review_status="reviewed"), "phone"
+    )
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "UPDATE plan_nodes SET objective=? WHERE id='node_00'",
+            (second_objective,),
+        )
+        await db.commit()
+    graph_after = await read_project_graph(path, goal["id"])
+    # The public projection is deliberately identical despite a different execution target.
+    assert graph_before.nodes[0].objective == graph_after.nodes[0].objective
+    fresh = await read_project_evidence(path, goal["id"])
+    assert fresh.criteria[0].status == "stale"
+    assert fresh.criteria[0].mapping.stale_reasons == ["goal_changed"]
+    assert fresh.context_sha256 != reviewed.context_sha256
+    with pytest.raises(EvidenceMappingConflict, match="changed"):
+        await save_project_evidence(
+            path,
+            goal["id"],
+            0,
+            mapping_request(
+                reviewed,
+                request_id="after_hidden_plan_change",
+                expected_version=1,
+                review_status="reviewed",
+            ),
+            "phone",
+        )
+    payload = fresh.model_dump_json() + graph_after.model_dump_json()
+    private_values = [value.rsplit(" ", 1)[-1] for value in (first_objective, second_objective)]
+    assert all(value not in payload for value in private_values)
+    async with aiosqlite.connect(path) as db:
+        rows = await (
+            await db.execute("SELECT goal_sha256,mapping_json FROM project_requirement_evidence")
+        ).fetchall()
+    assert len(rows) == 1  # A stale write never creates another immutable review version.
+    assert len(rows[0][0]) == 64 and all(char in "0123456789abcdef" for char in rows[0][0])
+    assert all(value not in rows[0][1] for value in private_values)
 
 
 @pytest.mark.asyncio

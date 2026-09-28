@@ -19,6 +19,6 @@ export function evidenceMappingFixture(view = evidenceFixture()): EvidenceMappin
     goal_run_id: view.goal_run_id, project_id: revision.project_id, node_id: revision.node_id, worker_job_id: revision.worker_job_id,
     revision_id: revision.id, revision_sha256: revision.sha256, context_sha256: view.context_sha256, conversation_revision: view.conversation_revision,
     file_ids: [revision.files[0].id], check_ids: [revision.checks[0].id],
-    files: revision.files.map((file) => ({ ...file })), checks: [{ ...revision.checks[0] }],
+    files: [{ ...revision.files[0] }], checks: [{ ...revision.checks[0] }],
     review_status: "linked", public_explanation: "", recorded_at: view.observed_at, reviewed_at: null, stale_reasons: [] };
 }

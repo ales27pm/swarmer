@@ -396,6 +396,15 @@ async def test_real_browser_executes_js_fetches_data_and_captures_both_viewports
 ) -> None:
     transport, pages, _ = website_fixture
     pages["/small.png"] = pages["/large.png"] = (200, {"content-type": "image/png"}, raster_bytes())
+    status, headers, script = pages["/app.js"]
+    pages["/app.js"] = (
+        status,
+        headers,
+        script
+        + b"document.body.insertAdjacentHTML('beforeend', "
+        + b'\'<nav><a href="/contact">Contact</a></nav>'
+        + b'<footer><a href="/contact">Contact</a></footer>\');',
+    )
     result = await capture_rendered_page(
         BASE,
         output_dir=tmp_path,
@@ -423,6 +432,10 @@ async def test_real_browser_executes_js_fetches_data_and_captures_both_viewports
     inventory = extract_rendered_inventory([result])
     assert any(item.text == "Rendered by JavaScript" for item in inventory)
     assert all(item.source_locator.startswith("rendered_dom:") for item in inventory)
+    repeated_links = [item for item in inventory if item.original_url == BASE + "/contact"]
+    assert len(repeated_links) == 2
+    assert len({item.source_locator for item in repeated_links}) == 2
+    assert len({item.id for item in repeated_links}) == 2
     Path(result.viewports[0].dom_local_path).write_bytes(b"tampered")
     with pytest.raises(CaptureError, match="invalid_dom_evidence"):
         extract_rendered_inventory([result])

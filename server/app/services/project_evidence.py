@@ -74,6 +74,23 @@ async def _context(db: aiosqlite.Connection, goal_id: str) -> _Context | None:
     _goal(row)  # Validate the same bounded requirement/goal contract as the public graph.
     criteria = json.loads(row["completion_criteria_json"])
     nodes = await _read_nodes(db, goal_id)
+    # _read_nodes validates before redacting. Bind the stored objectives from this
+    # same transaction too: different private targets can share one public label.
+    raw_objectives = {
+        item["id"]: item["objective"]
+        for item in await (
+            await db.execute(
+                "SELECT id,objective FROM plan_nodes WHERE goal_run_id=? "
+                "ORDER BY created_at,id LIMIT 21",
+                (goal_id,),
+            )
+        ).fetchall()
+    }
+    if set(raw_objectives) != {node.id for node in nodes} or any(
+        not isinstance(objective, str) or not 1 <= len(objective) <= 4_000
+        for objective in raw_objectives.values()
+    ):
+        raise ProjectGraphEvidenceError("stored plan objectives are invalid")
     revision = await _read_revision(db, row["project_id"])
     evidence_sha = None
     if revision is not None:
@@ -104,7 +121,11 @@ async def _context(db: aiosqlite.Connection, goal_id: str) -> _Context | None:
             "replan_count": row["replan_count"],
             "active_goal_id": row["active_goal_id"],
             "plan": [
-                {"id": node.id, "objective": node.objective, "depends_on": node.depends_on}
+                {
+                    "id": node.id,
+                    "objective": raw_objectives[node.id],
+                    "depends_on": node.depends_on,
+                }
                 for node in nodes
             ],
         }

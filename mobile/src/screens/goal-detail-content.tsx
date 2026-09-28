@@ -770,7 +770,7 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
     <View style={panel("Plan")} accessibilityElementsHidden={tab !== "Plan"} importantForAccessibility={tab !== "Plan" ? "no-hide-descendants" : "auto"}>
       <ProjectGraphPlan state={graph} fallbackNodes={controller.nodes} fallbackSummary={goal.evaluator_summary}
         enabled={controller.source === "authoritative"} selectedNodeId={selectedNodeId} onSelectNode={(id) => { selectNode(id); setDetailsOpen(Boolean(id)); }}
-        evidence={evidence.view} evidenceStale={evidence.stale} />
+        evidence={evidence.view} evidenceStale={evidence.stale} onOpenEvidence={() => setTab("Résultats")} />
     </View>
     <View style={panel("Activité")} accessibilityElementsHidden={tab !== "Activité"} importantForAccessibility={tab !== "Activité" ? "no-hide-descendants" : "auto"}>
       {selected ? <ActionButton label="Voir les opérations de tout le projet" onPress={() => selectNode(null)} /> : null}
@@ -779,7 +779,7 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
     </View>
     <View style={panel("Résultats")} accessibilityElementsHidden={tab !== "Résultats"} importantForAccessibility={tab !== "Résultats" ? "no-hide-descendants" : "auto"}>
       <ProjectRequirementEvidence state={evidence} disabled={!controller.online || Boolean(controller.busy)} />
-      <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} showCriteria={false} />
+      <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} showCriteria={evidence.view === null} />
       {controller.nodes.some((node) => node.required_skill === "code.build_project") ? <GoalProjectReview
         key={`project:${goal.id}`} goalId={goal.id} disabled={!controller.online || Boolean(controller.busy)} onOpenTask={navigation.openTask} /> : null}
       <GoalResultSection controller={controller} />

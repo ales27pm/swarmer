@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     agent_score_refresh_seconds: int = Field(default=60, ge=10, le=3600)
     iphone_capability_grant_ttl_seconds: int = Field(default=90, ge=30, le=300)
 
+    @field_validator("website_publish_root", mode="before")
+    @classmethod
+    def unset_blank_website_publish_root(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator(
         "planner_model",
         "evaluator_model",

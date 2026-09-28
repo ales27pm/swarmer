@@ -128,7 +128,10 @@ register<{ id: string }>("websites.get", idInput, ({ id }, context) => server.ge
 register<import("@/lib/api/website-projects").WebsiteCreate>("websites.create", object({ request_id: text(100, 8), source_url: text(2048, 8), objective: text(4000) }), (input, context) => server.createWebsiteProject(input, context.shouldAccept), mutation);
 register<{ id: string; input: import("@/lib/api/website-projects").WebsiteCommand }>("websites.command", object({ id: identifier, input: object({
   request_id: text(100, 8), expected_version: integer(1, Number.MAX_SAFE_INTEGER), action: choice("capture", "branding", "build"), palette_id: text(40), direction_id: choice("editorial", "studio", "catalog"),
-}, ["request_id", "expected_version", "action"]) }), ({ id, input }, context) => server.commandWebsiteProject(id, input, context.shouldAccept), mutation);
+}, ["request_id", "expected_version", "action"]) }), ({ id, input }, context) => {
+  if (input.action === "build" && !input.palette_id?.trim()) throw new ApplicationApiError("invalid_arguments", "Choisis une palette avant de construire l’aperçu.");
+  return server.commandWebsiteProject(id, input, context.shouldAccept);
+}, mutation);
 register<{ id: string; input: import("@/lib/api/website-projects").WebsiteReview }>("websites.preview", object({ id: identifier, input: websiteReview }), ({ id, input }, context) => server.previewWebsiteProject(id, input, context.shouldAccept));
 register<{ id: string; sha256: string }>("websites.screenshot", object({ id: identifier, sha256: evidenceDigest }), ({ id, sha256 }, context) => server.previewWebsiteScreenshot(id, sha256, context.shouldAccept));
 register<{ id: string; input: import("@/lib/api/website-projects").WebsiteReview }>("websites.prepare-publication", object({ id: identifier, input: websiteReview }), ({ id, input }, context) => server.prepareWebsitePublication(id, input, context.shouldAccept), { ...mutation, requiresForeground: true, readiness: "review_required" });

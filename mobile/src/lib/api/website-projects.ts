@@ -23,7 +23,7 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 function str(value: unknown, max = 4000): string { if (typeof value !== "string" || value.length > max) return invalid(); return value; }
-function count(value: unknown): number { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return invalid(); return value; }
+function count(value: unknown, minimum = 0): number { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) return invalid(); return value; }
 function list(value: unknown, max = 100): unknown[] { if (!Array.isArray(value) || value.length > max) return invalid(); return value; }
 function bool(value: unknown): boolean { if (typeof value !== "boolean") return invalid(); return value; }
 function sha(value: unknown): string { const v = str(value, 64); if (!/^[a-f0-9]{64}$/.test(v)) return invalid(); return v; }
@@ -66,7 +66,7 @@ export function parseWebsiteProject(value: unknown, expectedId?: string): Websit
   }
   const brand = v.branding === null ? null : object(v.branding), publication = v.publication === null ? null : object(v.publication);
   if (status === "published" && (!build || !publication || publication.status !== "published" || publication.digest !== build.digest)) return invalid();
-  return { schema_version: "1.0", id, version: count(v.version), source_url: url(v.source_url), objective: str(v.objective), status: status as WebsiteProject["status"], error: v.error === null ? null : str(v.error), capture, build,
+  return { schema_version: "1.0", id, version: count(v.version, 1), source_url: url(v.source_url), objective: str(v.objective), status: status as WebsiteProject["status"], error: v.error === null ? null : str(v.error), capture, build,
     branding: brand && { provider: str(brand.provider), source_digest: sha(brand.source_digest), summary: str(brand.summary, 8000), review_required: bool(brand.review_required) },
     publication: publication && { status: str(publication.status), digest: sha(publication.digest), url: url(publication.url), file_count: count(publication.file_count) },
     events: list(v.events).map((e) => { const x = object(e); if (typeof x.at !== "number" || !Number.isFinite(x.at)) return invalid(); return { at: x.at, stage: str(x.stage), message: str(x.message) }; }),
@@ -76,10 +76,10 @@ export function parseWebsiteProjects(value: unknown): WebsiteProject[] { return 
 export function parseWebsiteApproval(value: unknown): WebsiteApproval {
   const v = object(value), token = str(v.approval_token, 100);
   if (!/^[A-Za-z0-9_-]{32,100}$/.test(token)) return invalid();
-  return { approval_token: token, build_digest: sha(v.build_digest), expected_version: count(v.expected_version), target: url(v.target), expires_in_seconds: count(v.expires_in_seconds) };
+  return { approval_token: token, build_digest: sha(v.build_digest), expected_version: count(v.expected_version, 1), target: url(v.target), expires_in_seconds: count(v.expires_in_seconds, 1) };
 }
 export function parseWebsitePreview(value: unknown): { path: string; build_digest: string; expires_in_seconds: number } {
   const v = object(value), path = str(v.path, 200);
   if (!/^\/website-previews\/[A-Za-z0-9_-]{32,100}\/index\.html$/.test(path)) return invalid();
-  return { path, build_digest: sha(v.build_digest), expires_in_seconds: count(v.expires_in_seconds) };
+  return { path, build_digest: sha(v.build_digest), expires_in_seconds: count(v.expires_in_seconds, 1) };
 }

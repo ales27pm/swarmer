@@ -259,14 +259,16 @@ def _is_loopback(host: str) -> bool:
 
 def _validate_runtime_boundaries(settings: Settings) -> None:
     workspace = settings.workspace_root.resolve()
+    website_storage = (
+        settings.db_path.resolve().parent / (settings.db_path.stem + "-website-projects")
+    ).resolve()
     if workspace in {Path("/"), Path.home().resolve()}:
         raise RuntimeError("workspace_root must be a dedicated project directory")
     for name, protected in {
         "db_path": settings.db_path,
         "permissions_path": settings.permissions_path,
         "vector_index_path": settings.vector_index_path,
-        "website_storage": settings.db_path.resolve().parent
-        / (settings.db_path.stem + "-website-projects"),
+        "website_storage": website_storage,
     }.items():
         resolved = protected.resolve()
         if resolved == workspace or workspace in resolved.parents:
@@ -278,7 +280,7 @@ def _validate_runtime_boundaries(settings: Settings) -> None:
             settings.permissions_path.resolve(),
             settings.vector_index_path.resolve(),
             workspace,
-            settings.db_path.resolve().parent / (settings.db_path.stem + "-website-projects"),
+            website_storage,
         ]
         if any(
             public_root == private

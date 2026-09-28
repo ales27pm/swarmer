@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import posixpath
+import stat
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -52,9 +54,9 @@ def test_reconstruction_accounts_for_every_item_preserves_content_and_blocks_for
     dossier = capture_website(BASE + "/", fetcher=SourceFixture())
     build = WebsiteBuilder().build(dossier, palette=PALETTES[0])
     build.verify()
-    assert {i["source_item_id"] for i in build.migration["items"]} == {
+    assert Counter(i["source_item_id"] for i in build.migration["items"]) == Counter(
         i.id for i in dossier.inventory
-    }
+    )
     assert build.migration["unassigned_count"] == 0
     pages = [file.text or "" for file in build.files if file.media_type == "text/html"]
     assert len(pages) == 2
@@ -217,6 +219,64 @@ def test_unconfigured_publication_does_not_claim_success() -> None:
         StaticDirectoryPublisher(None, None).publish(
             build, expected_digest=build.digest, release_id="r1"
         )
+
+
+@pytest.mark.parametrize("suffix", ["?", "#", "?query=1", "#fragment"])
+def test_publication_rejects_url_delimiters_before_writes(tmp_path: Path, suffix: str) -> None:
+    build = build_site()
+    publisher = StaticDirectoryPublisher(tmp_path, "https://preview.example/releases" + suffix)
+    with pytest.raises(PublicationError, match="invalid_hosting_public_url"):
+        publisher.publish(build, expected_digest=build.digest, release_id="r1")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_publication_normalizes_parent_segments_without_following_symlinks(tmp_path: Path) -> None:
+    root = tmp_path / "public"
+    root.mkdir()
+    (root / "nested").mkdir()
+    build = build_site()
+    publisher = StaticDirectoryPublisher(root / "nested" / "..", "https://preview.example")
+    receipt = publisher.publish(build, expected_digest=build.digest, release_id="r1")
+    assert (root / receipt["release_id"] / "index.html").is_file()
+    assert publisher.recover(build, expected_digest=build.digest, release_id="r1") == receipt
+
+    (root / "linked").symlink_to(root / "nested", target_is_directory=True)
+    unsafe = StaticDirectoryPublisher(root / "linked" / "..", "https://preview.example")
+    with pytest.raises(PublicationError, match="hosting_root_missing_or_symlinked"):
+        unsafe.publish(build, expected_digest=build.digest, release_id="r2")
+    assert not any(path.name.startswith("r2-") for path in root.iterdir())
+
+
+def test_publication_is_readable_by_other_host_identity_under_private_umask(tmp_path: Path) -> None:
+    build = build_site()
+    publisher = StaticDirectoryPublisher(tmp_path, "https://preview.example")
+    previous_umask = os.umask(0o077)
+    try:
+        receipt = publisher.publish(build, expected_digest=build.digest, release_id="r1")
+    finally:
+        os.umask(previous_umask)
+    release = tmp_path / receipt["release_id"]
+    assert any(path.is_dir() for path in release.iterdir())
+    for path in [release, *release.rglob("*")]:
+        # The hosting user may have neither the publisher's UID nor GID.
+        assert stat.S_IMODE(path.stat().st_mode) == (0o755 if path.is_dir() else 0o644), path
+    assert stat.S_IMODE((tmp_path / ".publish.lock").stat().st_mode) == 0o600
+    assert publisher.recover(build, expected_digest=build.digest, release_id="r1") == receipt
+
+
+@pytest.mark.parametrize("relative_path", ["index.html", "pages"])
+def test_recovery_rejects_private_children_without_changing_permissions(
+    tmp_path: Path, relative_path: str
+) -> None:
+    build = build_site()
+    publisher = StaticDirectoryPublisher(tmp_path, "https://preview.example")
+    receipt = publisher.publish(build, expected_digest=build.digest, release_id="r1")
+    path = tmp_path / receipt["release_id"] / relative_path
+    private_mode = 0o700 if path.is_dir() else 0o600
+    path.chmod(private_mode)
+    with pytest.raises(PublicationError, match="release_not_readable_by_host"):
+        publisher.recover(build, expected_digest=build.digest, release_id="r1")
+    assert stat.S_IMODE(path.stat().st_mode) == private_mode
 
 
 def test_tampered_build_report_and_traversal_rejected(tmp_path: Path) -> None:

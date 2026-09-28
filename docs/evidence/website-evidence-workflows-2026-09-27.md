@@ -9,7 +9,9 @@ The project graph now shows explicit requirement associations on the nodes that
 produced their selected revision, files and validation receipts. Results provides
 the authenticated mapping/review interface. Changed requirements, conversation
 context, producers, revisions or receipts invalidate current review coverage;
-previous associations remain historical. Completion alone never claims validation.
+the latest stale or removed association remains historical. Earlier replaced
+versions remain in storage but are not exposed in the API or UI. Completion alone
+never claims validation.
 This adds transactional central database schema 27; rollback requires the
 pre-migration backup rather than lowering the schema version.
 
@@ -35,7 +37,8 @@ Private previews and screenshot links expire and contain no device credential.
 
 ## Verification
 
-Final scoped results:
+Initial implementation scoped results (see the [review follow-up](website-review-followup-2026-09-27.md)
+for subsequent fixes and fresh validation):
 
 - **194 backend tests passed** across 13 files: requirement evidence, graph,
   migrations (including v0.10/v0.12), website dossier/runtime/branding/build/

@@ -71,7 +71,7 @@ describe("website workflow response contracts", () => {
   it.each([
     { approval_token: "short" }, { approval_token: `${token}/escape` },
     { build_digest: "not-a-digest" }, { build_digest: "a".repeat(63) },
-    { expected_version: -1 }, { expected_version: 1.5 }, { expires_in_seconds: Infinity },
+    { expected_version: -1 }, { expected_version: 0 }, { expected_version: 1.5 }, { expires_in_seconds: Infinity }, { expires_in_seconds: 0 },
     { target: "javascript:alert(1)" }, { target: "https://user:secret@example.org/" },
   ])("rejects invalid publication authority %j", (patch) => {
     expect(() => parseWebsiteApproval({ ...approval, ...patch })).toThrow();
@@ -82,6 +82,14 @@ describe("website workflow response contracts", () => {
     expect(() => parseWebsiteProject({ ...project(), status: "automatically_approved" })).toThrow();
     expect(() => parseWebsiteProject({ ...published(), publication: { ...published().publication, digest: "forged" } })).toThrow();
     expect(() => parseWebsiteProject({ ...project(), version: -1 })).toThrow();
+    expect(() => parseWebsiteProject({ ...project(), version: 0 })).toThrow();
+  });
+
+  it("requires positive preview lifetimes while preserving valid zero content counts", () => {
+    expect(() => parseWebsitePreview({ ...preview, expires_in_seconds: 0 })).toThrow();
+    expect(parseWebsitePreview({ ...preview, expires_in_seconds: 1 }).expires_in_seconds).toBe(1);
+    expect(parseWebsiteApproval({ ...approval, expected_version: 1, expires_in_seconds: 1 }).expected_version).toBe(1);
+    expect(parseWebsiteProject({ ...project(), version: 1 }).build?.migration.unassigned_count).toBe(0);
   });
 
   it("distinguishes unavailable integrations and rejects non-color palette input", () => {

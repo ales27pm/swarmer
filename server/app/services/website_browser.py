@@ -497,7 +497,7 @@ def extract_rendered_inventory(rendered_pages: Sequence[RenderedPage]) -> list[S
     if len(rendered_pages) > 30:
         raise ValueError("rendered_page_limit")
     items: list[SourceInventoryItem] = []
-    seen: set[tuple[str, str, str, str | None]] = set()
+    seen: set[tuple[str, str, str, str, str | None]] = set()
     for rendered in rendered_pages:
         for viewport in rendered.viewports:
             path = Path(viewport.dom_local_path)
@@ -517,7 +517,13 @@ def extract_rendered_inventory(rendered_pages: Sequence[RenderedPage]) -> list[S
                 CaptureLimits(),
             )
             for item in inventory:
-                key = (item.source_url, item.kind, item.text, item.original_url)
+                key = (
+                    item.source_url,
+                    item.kind,
+                    item.source_locator,
+                    item.text,
+                    item.original_url,
+                )
                 if key in seen:
                     continue
                 seen.add(key)

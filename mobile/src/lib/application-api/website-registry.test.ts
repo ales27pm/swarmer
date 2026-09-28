@@ -10,7 +10,7 @@ jest.mock("@/lib/state/mutation-outbox", () => ({ mutationOutbox: { pendingCount
 jest.mock("@/lib/state/replica", () => ({ applyBootstrap: jest.fn(), upsertEvent: jest.fn(), localSwarmSnapshot: jest.fn() }));
 jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
-  getWebsiteCapabilities: jest.fn(), prepareWebsitePublication: jest.fn(), publishWebsiteProject: jest.fn(),
+  getWebsiteCapabilities: jest.fn(), commandWebsiteProject: jest.fn(), prepareWebsitePublication: jest.fn(), publishWebsiteProject: jest.fn(),
 }));
 
 describe("website commands in the application API", () => {
@@ -43,6 +43,18 @@ describe("website commands in the application API", () => {
     expect(result.data).toEqual(capabilities);
     expect(server.getWebsiteCapabilities).toHaveBeenCalledTimes(1);
     expect(server.publishWebsiteProject).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "", "   "])("rejects a build without a chosen palette before dispatch: %j", async (paletteId) => {
+    const input = { request_id: "website-build-01", expected_version: 1, action: "build", ...(paletteId === undefined ? {} : { palette_id: paletteId }) };
+    await expect(applicationApi.execute("websites.command", { id: "web-project-1", input })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(server.commandWebsiteProject).not.toHaveBeenCalled();
+  });
+
+  it.each(["capture", "branding", "build"])("dispatches %s with its applicable palette requirement", async (action) => {
+    const input = { request_id: "website-command-01", expected_version: 1, action, ...(action === "build" ? { palette_id: "paper-ink" } : {}) };
+    await applicationApi.execute("websites.command", { id: "web-project-1", input });
+    expect(server.commandWebsiteProject).toHaveBeenCalledWith("web-project-1", input, undefined);
   });
 
   it.each([

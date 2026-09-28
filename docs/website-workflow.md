@@ -39,6 +39,7 @@ campaigns, change DNS, modify the Infographic Artist plugin or deploy itself.
 Install the optional runtime in the server environment:
 
 ```sh
+cd server
 python -m pip install -e '.[website]'
 python -m playwright install chromium
 ```

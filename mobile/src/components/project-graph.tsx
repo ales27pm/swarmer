@@ -125,8 +125,9 @@ function nodeEvidenceLinks(graph: ProjectGraph | null, evidence: ProjectEvidence
   // These endpoints refresh independently; equal source digests alone do not bind receipts or producers.
   const revisionChanged = revisionEvidenceSnapshot(graph.latest_revision) !== revisionEvidenceSnapshot(evidence.current_revision);
   const append = (mapping: EvidenceMapping, historical: boolean) => {
-    if (mapping.goal_run_id !== graph.goal.id || !graph.nodes.some((node) => node.id === mapping.node_id)) return;
-    historical ||= revisionChanged || mapping.revision_id !== graph.latest_revision?.id || mapping.revision_sha256 !== graph.latest_revision?.sha256
+    if (mapping.goal_run_id !== graph.goal.id) return;
+    historical ||= !graph.nodes.some((node) => node.id === mapping.node_id)
+      || revisionChanged || mapping.revision_id !== graph.latest_revision?.id || mapping.revision_sha256 !== graph.latest_revision?.sha256
       || !graph.criteria.some((criterion) => criterion.index === mapping.criterion_index && criterion.text === mapping.criterion_text);
     const item: NodeEvidenceLink = { mapping, historical, status: historical || unconfirmed ? "stale" : mapping.review_status };
     links.set(mapping.node_id, [...(links.get(mapping.node_id) ?? []), item]);
@@ -145,7 +146,7 @@ function evidenceNodeLabel(links: NodeEvidenceLink[]) {
 }
 
 export function ProjectGraphNodeEvidence({ graph, nodeId, evidence = null, stale = false, onOpenEvidence }: {
-  graph: ProjectGraph | null; nodeId: string; evidence?: ProjectEvidenceView | null; stale?: boolean; onOpenEvidence: () => void;
+  graph: ProjectGraph | null; nodeId: string; evidence?: ProjectEvidenceView | null; stale?: boolean; onOpenEvidence?: () => void;
 }) {
   const links = nodeEvidenceLinks(graph, evidence, stale).get(nodeId) ?? [];
   const scopeConfirmed = graph && evidence && !stale && evidence.goal_run_id === graph.goal.id
@@ -165,7 +166,7 @@ export function ProjectGraphNodeEvidence({ graph, nodeId, evidence = null, stale
       </View>)}
       <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Ces liens ne sont pas déduits du statut de l’étape et ne certifient pas la réussite du projet.</Text>
     </> : <Text style={{ color: COLORS.muted }}>{scopeConfirmed ? "Aucune exigence explicitement reliée à cette étape." : "Les associations actuelles ne sont pas confirmées dans ce relevé."}</Text>}
-    <ActionButton label="Voir et modifier les preuves dans Résultats" onPress={onOpenEvidence} />
+    {onOpenEvidence ? <ActionButton label="Voir et modifier les preuves dans Résultats" onPress={onOpenEvidence} /> : null}
   </View>;
 }
 
@@ -218,7 +219,7 @@ function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode, evidenceLin
   evidenceLinks: Map<string, NodeEvidenceLink[]>;
 }) {
   const [width, setWidth] = useState(280);
-  const layout = projectDependencyLayout(nodes, edges, width, evidenceLinks.size ? 116 : NODE_HEIGHT);
+  const layout = projectDependencyLayout(nodes, edges, width, nodes.some((node) => evidenceLinks.has(node.id)) ? 116 : NODE_HEIGHT);
   if (!layout) return <Text style={{ color: COLORS.warning }}>Les dépendances reçues sont incohérentes. Actualisez le parcours.</Text>;
   const { positions, routes, height } = layout;
   const drawnRoutes = edges.length > 12 && selectedNodeId
@@ -259,10 +260,11 @@ function DependencyMap({ nodes, edges, selectedNodeId, onSelectNode, evidenceLin
   </View>;
 }
 
-export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enabled, selectedNodeId, onSelectNode, evidence = null, evidenceStale = false }: {
+export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enabled, selectedNodeId, onSelectNode, evidence = null, evidenceStale = false, onOpenEvidence }: {
   state: ProjectGraphState; fallbackNodes: PlanNode[]; fallbackSummary?: string | null; enabled: boolean;
   selectedNodeId: string | null; onSelectNode: (id: string | null) => void;
   evidence?: ProjectEvidenceView | null; evidenceStale?: boolean;
+  onOpenEvidence?: () => void;
 }) {
   const [history, setHistory] = useState(false);
   const { graph, stale, busy, error } = state;
@@ -272,7 +274,9 @@ export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enable
   const [attribution, setAttribution] = useState(false);
   const [fullExplanation, setFullExplanation] = useState(false);
   const [showEvaluation, setShowEvaluation] = useState(false);
+  const [showRetiredEvidence, setShowRetiredEvidence] = useState(false);
   const evidenceLinks = nodeEvidenceLinks(graph, evidence, stale || evidenceStale);
+  const retiredNodes = [...evidenceLinks.keys()].filter((id) => !nodes.some((node) => node.id === id));
   return (
     <Card testID="project-graph-plan">
       <View style={{ gap: 10 }}>
@@ -290,6 +294,15 @@ export function ProjectGraphPlan({ state, fallbackNodes, fallbackSummary, enable
           {edge.dependency_type === "optional" ? "Apport facultatif" : "Après"} : {nodes.find((node) => node.id === edge.from_node_id)?.title}
         </Text>) : null}
       </View>
+      {retiredNodes.length ? <View style={{ gap: 8 }}>
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: showRetiredEvidence }} onPress={() => setShowRetiredEvidence(!showRetiredEvidence)} style={{ minHeight: 44, justifyContent: "center" }}>
+          <Text style={{ color: COLORS.accent }}>Liens historiques hors du plan ({retiredNodes.length})</Text>
+        </Pressable>
+        {showRetiredEvidence ? retiredNodes.map((id) => <View key={id} style={{ gap: 4 }}>
+          <Text selectable style={{ color: COLORS.warning }}>Étape retirée du plan : {id}</Text>
+          <ProjectGraphNodeEvidence graph={graph} nodeId={id} evidence={evidence} stale={stale || evidenceStale} onOpenEvidence={onOpenEvidence} />
+        </View>) : null}
+      </View> : null}
       <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>Comprendre les décisions</Text>
       {planning ? <View style={{ gap: 8 }}>
         <Text style={{ color: COLORS.text, fontWeight: "600" }}>Pourquoi ce plan a été proposé</Text>

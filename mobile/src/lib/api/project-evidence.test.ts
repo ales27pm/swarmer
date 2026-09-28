@@ -3,6 +3,16 @@ import { parseProjectEvidence } from "./project-evidence";
 import { evidenceFixture, evidenceMappingFixture } from "@/testing/project-evidence-fixtures";
 
 describe("requirement evidence public contract", () => {
+  it("keeps a fixture mapping valid when its revision contains several selectable files", () => {
+    const view = evidenceFixture();
+    view.current_revision!.files.push({ id: "file_2", path: "notes.md", sha256: "e".repeat(64), bytes: 30 });
+    const mapping = evidenceMappingFixture(view);
+    view.criteria[0].mapping = mapping; view.criteria[0].status = "linked";
+    expect(mapping.files.map((file) => file.id)).toEqual(mapping.file_ids);
+    expect(parseProjectEvidence(view, view.goal_run_id).criteria[0].status).toBe("linked");
+    view.current_revision!.files[0].path = "renamed.md";
+    expect(mapping.files[0].path).toBe("planning.md");
+  });
   it("accepts unmapped requirements and strips arbitrary fields", () => {
     const raw = { ...evidenceFixture(), private_payload: "not public" };
     expect(parseProjectEvidence(raw, "goal_preview")).toEqual(evidenceFixture());

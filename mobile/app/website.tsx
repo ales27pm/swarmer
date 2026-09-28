@@ -8,6 +8,7 @@ import { subscribeConnectionChanges } from "@/lib/connection-events";
 const LABELS: Record<WebsiteProject["status"], string> = { draft: "Prêt à explorer", capturing: "Exploration en cours", captured: "Source capturée", branding: "Recherche visuelle en cours", awaiting_direction: "Direction à choisir", building: "Reconstruction en cours", preview_ready: "Aperçu prêt", publishing: "Publication en cours", published: "Publication enregistrée", failed: "Étape à reprendre", interrupted: "Étape interrompue" };
 const BLOCKERS: Record<string, string> = { source_capture_partial: "Certaines pages restent à explorer.", source_extraction_truncated: "Du contenu dépasse les limites de capture.", source_forms_require_implementation: "Les formulaires nécessitent un raccordement avant utilisation.", migration_items_need_confirmation: "Des contenus ou médias restent à confirmer.", palette_contrast_below_4_5: "Certains contrastes doivent être ajustés." };
 const working = (p: WebsiteProject | null) => p && ["capturing", "branding", "building", "publishing"].includes(p.status);
+const screenshotIdentity = (p: WebsiteProject | null) => JSON.stringify(p?.capture?.screenshots.map((shot) => JSON.stringify([shot.url, shot.viewport, shot.sha256, shot.path])).sort() ?? []);
 const requestId = () => `website-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 const fieldStyle = { borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, color: COLORS.text, padding: 14, fontSize: 16 };
 
@@ -38,18 +39,22 @@ export default function WebsiteScreen() {
   const [objective, setObjective] = useState("");
   const [palette, setPalette] = useState<string | null>(null);
   const [direction, setDirection] = useState<"editorial" | "studio" | "catalog">("editorial");
-  const [details, setDetails] = useState(false);
+  const [brandingDetails, setBrandingDetails] = useState(false);
+  const [strategyDetails, setStrategyDetails] = useState(false);
   const [showCaptures, setShowCaptures] = useState(false);
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [approval, setApproval] = useState<WebsiteApproval | null>(null);
   const [reviewed, setReviewed] = useState<string | null>(null);
   const [previewOpened, setPreviewOpened] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scope = useRef(0), refreshSerial = useRef(0), active = useRef(AppState.currentState === "active");
   const operationSerial = useRef(0), operationBusy = useRef(false);
+  const previewAttempt = useRef(0);
   const creationId = useRef(requestId());
   const project = projects.find((p) => p.id === selected) ?? null;
+  const captureIdentity = screenshotIdentity(project);
   const latestProject = useRef(project);
   latestProject.current = project;
   const current = useCallback(() => { const epoch = scope.current; return () => epoch === scope.current && active.current; }, []);
@@ -57,8 +62,9 @@ export default function WebsiteScreen() {
     if (items.some((item) => item.id === data.id && item.version > data.version)) return items;
     return [data, ...items.filter((item) => item.id !== data.id)];
   }), []);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (showProgress = false) => {
     const accept = current(), serial = ++refreshSerial.current;
+    if (showProgress) setRefreshing(true);
     try {
       const [next, caps] = await Promise.all([listWebsiteProjects(accept), getWebsiteCapabilities(accept)]);
       if (!accept() || serial !== refreshSerial.current) return;
@@ -67,30 +73,33 @@ export default function WebsiteScreen() {
         return currentItem && currentItem.version > item.version ? currentItem : item;
       })); setCapabilities(caps); setError(null);
     } catch (cause) { if (accept() && serial === refreshSerial.current) setError(cause instanceof Error ? cause.message : "Impossible de lire les projets web."); }
+    finally { if (accept() && serial === refreshSerial.current) setRefreshing(false); }
   }, [current]);
   useEffect(() => {
     const unsubscribe = subscribeConnectionChanges(() => {
       scope.current += 1; refreshSerial.current += 1;
+      previewAttempt.current += 1;
       operationSerial.current += 1; operationBusy.current = false;
-      setProjects([]); setCapabilities(null); setSelected(null); setApproval(null); setReviewed(null); setBusy(false);
+      setProjects([]); setCapabilities(null); setSelected(null); setApproval(null); setReviewed(null); setBusy(false); setRefreshing(false);
       setPreviewOpened(null);
       setScreenshot(null);
       setError("La connexion a changé. Ton brouillon est conservé ; actualise les projets de ce serveur.");
     });
     const listener = AppState.addEventListener("change", (state) => {
       active.current = state === "active";
-      if (!active.current) { scope.current += 1; operationSerial.current += 1; operationBusy.current = false; setApproval(null); setBusy(false); }
+      if (!active.current) { scope.current += 1; operationSerial.current += 1; operationBusy.current = false; setApproval(null); setBusy(false); setRefreshing(false); }
       else void refresh();
     });
     void refresh();
-    return () => { unsubscribe(); listener.remove(); scope.current += 1; };
+    return () => { unsubscribe(); listener.remove(); scope.current += 1; previewAttempt.current += 1; };
   }, [refresh]);
   useEffect(() => {
     setApproval((ticket) => ticket && project?.build?.digest === ticket.build_digest && project.version === ticket.expected_version ? ticket : null);
     setReviewed((value) => value === project?.build?.digest ? value : null);
     setPreviewOpened((value) => value === project?.build?.digest ? value : null);
   }, [project?.id, project?.version, project?.build?.digest, approval?.expected_version, approval?.build_digest]);
-  useEffect(() => { setScreenshot(null); setShowCaptures(false); }, [project?.id, project?.capture]);
+  useEffect(() => { setScreenshot(null); setShowCaptures(false); }, [project?.id, captureIdentity]);
+  useEffect(() => { setBrandingDetails(false); setStrategyDetails(false); }, [project?.id]);
   useEffect(() => {
     if (!working(project) || busy) return;
     const timer = setInterval(() => { if (active.current) void refresh(); }, 3000);
@@ -101,14 +110,14 @@ export default function WebsiteScreen() {
     if (busy || operationBusy.current || !active.current) return;
     const operationId = ++operationSerial.current;
     operationBusy.current = true;
-    const accept = current(); refreshSerial.current += 1; setBusy(true); setError(null);
+    const accept = current(); refreshSerial.current += 1; setBusy(true); setRefreshing(false); setError(null);
     try { await operation(accept); }
     catch (cause) { if (accept()) setError(cause instanceof Error ? cause.message : "Cette étape n’a pas pu être confirmée."); }
     finally {
       if (operationId === operationSerial.current) {
         operationBusy.current = false;
         refreshSerial.current += 1;
-        if (accept()) setBusy(false);
+        if (accept()) { setBusy(false); setRefreshing(false); }
       }
     }
   }
@@ -123,11 +132,13 @@ export default function WebsiteScreen() {
   });
   const openPreview = () => perform(async (accept) => {
     if (!project?.build) return;
+    const attempt = ++previewAttempt.current;
     const preview = await previewWebsiteProject(project.id, { expected_version: project.version, build_digest: project.build.digest }, accept);
     if (accept()) {
-      setPreviewOpened(preview.build_digest);
-      try { await Linking.openURL(preview.url); }
-      catch (cause) { if (accept()) setPreviewOpened(null); throw cause; }
+      setPreviewOpened(null); setReviewed(null); setApproval(null);
+      await Linking.openURL(preview.url);
+      // A successful browser handoff can background the app before it resolves.
+      if (attempt === previewAttempt.current && latestProject.current?.id === project.id && latestProject.current?.build?.digest === preview.build_digest) setPreviewOpened(preview.build_digest);
     }
   });
   const prepare = () => perform(async (accept) => {
@@ -141,7 +152,7 @@ export default function WebsiteScreen() {
     if (accept()) { update(result); setApproval(null); }
   });
 
-  return <ScreenShell title="Sites et identité" subtitle="Du site existant à une refonte que tu peux vérifier." onRefresh={() => void refresh()} refreshing={false} testID="website-screen">
+  return <ScreenShell title="Sites et identité" subtitle="Du site existant à une refonte que tu peux vérifier." onRefresh={() => void refresh(true)} refreshing={refreshing} testID="website-screen">
     <ErrorBanner message={error} />
     {project ? <>
       <ActionButton label="Tous les projets web" disabled={busy} onPress={() => { setSelected(null); setApproval(null); setReviewed(null); }} />
@@ -160,7 +171,7 @@ export default function WebsiteScreen() {
           <Text style={{ color: COLORS.muted }}>{project.capture.rendered_pages} pages observées dans le navigateur · {project.capture.screenshots.length} captures d’écran</Text>
           {project.capture.screenshots.length ? <ActionButton label={showCaptures ? "Masquer les captures" : "Voir les captures d’écran"} onPress={() => setShowCaptures(!showCaptures)} /> : null}
           {showCaptures ? project.capture.screenshots.map((shot) => <ActionButton key={shot.sha256 + shot.viewport} label={`${shot.viewport === "mobile" ? "Téléphone" : "Ordinateur"} · ${shot.url}`} disabled={busy} onPress={() => void perform(async (accept) => {
-            const acceptsShot = () => accept() && latestProject.current?.id === project.id && latestProject.current?.version === project.version;
+            const acceptsShot = () => accept() && latestProject.current?.id === project.id && screenshotIdentity(latestProject.current) === captureIdentity;
             const result = await previewWebsiteScreenshot(project.id, shot.sha256, acceptsShot);
             if (acceptsShot()) setScreenshot(result.url);
           })} />) : null}
@@ -173,7 +184,7 @@ export default function WebsiteScreen() {
         <Text style={{ color: COLORS.muted, lineHeight: 21 }}>Infographic Artist recherche des références et propose une direction à partir du contenu source. Tu choisis ensuite la composition et la palette.</Text>
         <ActionButton label="Consulter Infographic Artist" disabled={!capabilities?.branding_configured || Boolean(working(project)) || busy} onPress={() => void command("branding")} />
         {!capabilities?.branding_configured ? <Text style={{ color: COLORS.warning }}>Le service Infographic Artist doit être connecté au serveur pour cette consultation.</Text> : null}
-        {project.branding ? <><Text style={{ color: COLORS.text }}>Retour d’Infographic Artist disponible</Text><Pressable accessibilityRole="button" onPress={() => setDetails(!details)}><Text style={{ color: COLORS.accent }}>{details ? "Masquer" : "Lire les recommandations"}</Text></Pressable>{details ? <Text selectable style={{ color: COLORS.muted }}>{project.branding.summary}</Text> : null}</> : null}
+        {project.branding ? <><Text style={{ color: COLORS.text }}>Retour d’Infographic Artist disponible</Text><Pressable accessibilityRole="button" onPress={() => setBrandingDetails(!brandingDetails)}><Text style={{ color: COLORS.accent }}>{brandingDetails ? "Masquer les recommandations" : "Lire les recommandations"}</Text></Pressable>{brandingDetails ? <Text selectable style={{ color: COLORS.muted }}>{project.branding.summary}</Text> : null}</> : null}
         <Text style={{ color: COLORS.text, fontWeight: "600" }}>Composition</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {([ ["editorial", "Éditoriale"], ["studio", "Studio"], ["catalog", "Catalogue"] ] as const).map(([id, label]) => <Pressable key={id} accessibilityRole="radio" accessibilityState={{ checked: direction === id }} onPress={() => setDirection(id)} style={{ padding: 12, borderRadius: 12, borderWidth: 1, borderColor: direction === id ? COLORS.accent : COLORS.border }}><Text style={{ color: COLORS.text }}>{label}</Text></Pressable>)}
@@ -192,8 +203,8 @@ export default function WebsiteScreen() {
         <Pressable testID="website-preview-reviewed" accessibilityRole="checkbox" accessibilityLabel="J’ai vérifié cet aperçu et les points à confirmer." accessibilityState={{ checked: reviewed === project.build.digest, disabled: previewOpened !== project.build.digest || busy }} disabled={previewOpened !== project.build.digest || busy} onPress={() => setReviewed(reviewed === project.build?.digest ? null : project.build?.digest ?? null)} style={{ paddingVertical: 14 }}>
           <Text style={{ color: previewOpened === project.build.digest ? COLORS.text : COLORS.subtle }}>{reviewed === project.build.digest ? "☑" : "☐"} J’ai vérifié cet aperçu et les points à confirmer.</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => setDetails(!details)}><Text style={{ color: COLORS.accent }}>{details ? "Masquer les détails" : "Stratégie et traçabilité"}</Text></Pressable>
-        {details ? <StrategyDetails analysis={project.build.strategy.marketing_analysis} /> : null}
+        <Pressable accessibilityRole="button" onPress={() => setStrategyDetails(!strategyDetails)}><Text style={{ color: COLORS.accent }}>{strategyDetails ? "Masquer les détails" : "Stratégie et traçabilité"}</Text></Pressable>
+        {strategyDetails ? <StrategyDetails analysis={project.build.strategy.marketing_analysis} /> : null}
         <SectionTitle title="4. Publier la version vérifiée" />
         {!capabilities?.publication_configured ? <Text style={{ color: COLORS.warning }}>Une destination de publication doit être configurée sur le serveur.</Text> : <Text style={{ color: COLORS.muted }}>Destination : {capabilities.publication_target}</Text>}
         {!approval ? <ActionButton label="Préparer la publication" disabled={!capabilities?.publication_configured || reviewed !== project.build.digest || busy || Boolean(working(project))} onPress={() => void prepare()} /> : <>
@@ -213,7 +224,7 @@ export default function WebsiteScreen() {
         <ActionButton label="Créer le projet web" disabled={!capabilities || !source.trim() || !objective.trim() || busy} busy={busy} onPress={() => void create()} />
       </Card>
       <SectionTitle title="Reprendre un projet web" />
-      {!projects.length ? <Text style={{ color: COLORS.muted }}>Tes projets web apparaîtront ici.</Text> : projects.map((p) => <Pressable key={p.id} accessibilityRole="button" onPress={() => { setSelected(p.id); setPalette(p.build?.palette.id ?? null); setDirection(p.build?.strategy.selected_direction?.layout ?? "editorial"); setApproval(null); setReviewed(null); }}><Card><Text style={{ color: COLORS.text, fontWeight: "700", fontSize: 17 }}>{p.objective}</Text><Text style={{ color: COLORS.muted }}>{p.source_url}</Text><Text style={{ color: COLORS.accent }}>{LABELS[p.status]}</Text></Card></Pressable>)}
+      {!projects.length ? <Text style={{ color: COLORS.muted }}>Tes projets web apparaîtront ici.</Text> : projects.map((p) => <Pressable key={p.id} accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy} onPress={() => { setSelected(p.id); setPalette(p.build?.palette.id ?? null); setDirection(p.build?.strategy.selected_direction?.layout ?? "editorial"); setApproval(null); setReviewed(null); }}><Card><Text style={{ color: COLORS.text, fontWeight: "700", fontSize: 17 }}>{p.objective}</Text><Text style={{ color: COLORS.muted }}>{p.source_url}</Text><Text style={{ color: COLORS.accent }}>{LABELS[p.status]}</Text></Card></Pressable>)}
     </>}
   </ScreenShell>;
 }

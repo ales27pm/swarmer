@@ -39,6 +39,96 @@ from app.services.website_workflow_contracts import (
 )
 from app.services.website_workflow_store import WebsiteConflict, WebsiteStore
 
+# Only stable internal codes may cross the durable job boundary. Never persist
+# arbitrary exception text, even if a provider raises ValueError or a subclass.
+_SAFE_FAILURE_REASONS = frozenset(
+    [
+        "no_source_pages",
+        "website_has_no_captured_pages",
+        "invalid_artifact_path",
+        "invalid_asset_path",
+        "invalid_public_url",
+        "non_public_address",
+        "outside_origin",
+        "robots_disallowed",
+        "robots_unavailable",
+        "duration_limit",
+        "dns_timeout",
+        "dns_unavailable",
+        "peer_mismatch",
+        "http_unavailable",
+        "http_status",
+        "unsupported_encoding",
+        "response_byte_limit",
+        "total_byte_limit",
+        "request_limit",
+        "redirect_limit",
+        "redirect_loop",
+        "unsafe_redirect",
+        "tls_downgrade",
+        "invalid_transport_response",
+        "not_html",
+        "invalid_dom_evidence",
+        "rendered_page_limit",
+        "rendered_inventory_limit",
+        "invalid_rendered_inventory",
+        "dom_byte_limit",
+        "screenshot_byte_limit",
+        "reference_input_limit",
+        "artifact_path_conflict",
+        "image_decoder_unavailable",
+        "media_signature_mismatch",
+        "image_pixel_limit",
+        "preview_byte_limit",
+        "invalid_raster_image",
+        "unsupported_media_type",
+        "non_get_blocked",
+        "navigation_blocked",
+        "resource_type_blocked",
+        "unsupported_resource_media_type",
+        "invalid_asset_encoding",
+        "unsupported_asset_type",
+        "asset_type_mismatch",
+        "asset_digest_mismatch",
+        "asset_count_limit",
+        "invalid_build_file",
+        "build_file_digest_mismatch",
+        "duplicate_build_path",
+        "build_byte_limit",
+        "build_manifest_mismatch",
+        "build_report_mismatch",
+        "duplicate_source_inventory_id",
+        "business_objective_length_limit",
+        "brand_brief_byte_limit",
+        "brand_direction_provenance_mismatch",
+        "duplicate_source_page",
+        "conflicting_asset_capture",
+        "infographic_artist_not_configured",
+        "unsupported_branding_tool",
+        "invalid_branding_arguments",
+        "branding_request_byte_limit",
+        "unsupported_mcp_protocol",
+        "invalid_mcp_tool_catalog",
+        "branding_tool_not_available",
+        "branding_tool_failed",
+        "invalid_branding_result",
+        "branding_timeout",
+        "branding_transport_failed",
+        "invalid_branding_endpoint",
+        "unsupported_branding_contract",
+        "branding_contract_mismatch",
+        "branding_media_transport_unavailable",
+        "branding_requires_public_media_url",
+        "branding_http_error",
+        "invalid_mcp_session",
+        "branding_response_byte_limit",
+        "missing_mcp_response",
+        "invalid_mcp_response",
+        "branding_rpc_error",
+        "invalid_mcp_result",
+    ]
+)
+
 
 def digest(value: Any) -> str:
     return hashlib.sha256(
@@ -133,6 +223,7 @@ class WebsiteWorkflow:
 
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.root.chmod(0o700)
         lock = (self.root / ".instance.lock").open("a+")
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -193,8 +284,8 @@ class WebsiteWorkflow:
                 or not parsed.hostname
                 or parsed.username
                 or parsed.password
-                or parsed.query
-                or parsed.fragment
+                or "?" in (target or "")
+                or "#" in (target or "")
                 or "\\" in (target or "")
                 or any(ord(c) < 32 for c in (target or ""))
             ):
@@ -340,11 +431,14 @@ class WebsiteWorkflow:
         except asyncio.CancelledError:
             data.update(status="interrupted", error="Opération interrompue. Tu peux la reprendre.")
             raise
-        except Exception:  # noqa: BLE001 - durable job boundary; sanitize provider failures
+        except Exception as exc:  # noqa: BLE001 - durable job boundary; sanitize provider failures
             # Provider responses and paths may contain credentials or captured private text.
+            reason = str(exc) if isinstance(exc, ValueError) else None
+            suffix = f" Motif : {reason}." if reason in _SAFE_FAILURE_REASONS else ""
             data.update(
                 status="failed",
-                error="L’étape a échoué. Les résultats précédents sont conservés ; réessaie ou vérifie la configuration du serveur.",
+                error="L’étape a échoué. Les résultats précédents sont conservés ; réessaie ou vérifie la configuration du serveur."
+                + suffix,
             )
         finally:
             try:

@@ -69,8 +69,9 @@ const published: WebsiteProject = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
-  return { promise, resolve };
+  let reject!: (cause: Error) => void;
+  const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail; });
+  return { promise, resolve, reject };
 }
 function press(label: string) { return fireEvent.press(screen.getByRole("button", { name: label })); }
 async function selectProject(project: WebsiteProject = built) {
@@ -204,9 +205,105 @@ describe("WebsiteScreen workflow", () => {
     await selectProject();
     await press("Ouvrir l’aperçu du site");
     await waitFor(() => expect(screen.getByText("Le navigateur ne s’est pas ouvert")).toBeTruthy());
+    expect(screen.getByRole("checkbox")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Préparer la publication" })).toBeDisabled();
     expect(prepareWebsitePublication).not.toHaveBeenCalled();
     expect(publishWebsiteProject).not.toHaveBeenCalled();
+  });
+
+  it("does not unlock review when the browser fails after backgrounding", async () => {
+    const opened = deferred<void>();
+    openURL.mockImplementationOnce(() => {
+      mockAppStateListener?.("background");
+      return opened.promise;
+    });
+    await selectProject();
+    await press("Ouvrir l’aperçu du site");
+    await waitFor(() => expect(openURL).toHaveBeenCalled());
+    await act(async () => { opened.reject(new Error("Browser unavailable")); });
+    await state("active");
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Préparer la publication" })).toBeDisabled();
+  });
+
+  it("does not restore preview authority from an old server's delayed browser handoff", async () => {
+    const opened = deferred<void>();
+    openURL.mockReturnValueOnce(opened.promise);
+    await selectProject();
+    await press("Ouvrir l’aperçu du site");
+    await waitFor(() => expect(openURL).toHaveBeenCalled());
+    await act(async () => { notifyConnectionChanged(); });
+    await act(async () => { screen.getByTestId("website-screen").props.refreshControl.props.onRefresh(); });
+    await fireEvent.press(screen.getByText(built.objective));
+    await act(async () => { opened.resolve(); });
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+  });
+
+  it("shows refresh progress until the current refresh settles", async () => {
+    await selectProject();
+    const pending = deferred<WebsiteProject[]>();
+    jest.mocked(listWebsiteProjects).mockReturnValueOnce(pending.promise);
+    await act(async () => { screen.getByTestId("website-screen").props.refreshControl.props.onRefresh(); });
+    expect(screen.getByTestId("website-screen").props.refreshControl.props.refreshing).toBe(true);
+    await act(async () => { pending.resolve([built]); });
+    expect(screen.getByTestId("website-screen").props.refreshControl.props.refreshing).toBe(false);
+  });
+
+  it("expands branding recommendations and strategy independently", async () => {
+    await selectProject({ ...built, branding: { provider: "infographic_artist", source_digest: digest, summary: "Une composition calme", review_required: true } });
+    await press("Lire les recommandations");
+    expect(screen.getByText("Une composition calme")).toBeTruthy();
+    expect(screen.queryByText("Propositions à valider avec l’entreprise")).toBeNull();
+    await press("Stratégie et traçabilité");
+    expect(screen.getByText("Propositions à valider avec l’entreprise")).toBeTruthy();
+    await press("Masquer les détails");
+    expect(screen.getByText("Une composition calme")).toBeTruthy();
+  });
+
+  it("disables existing project rows while creation is pending", async () => {
+    const pending = deferred<WebsiteProject>();
+    jest.mocked(createWebsiteProject).mockReturnValueOnce(pending.promise);
+    jest.mocked(listWebsiteProjects).mockResolvedValue([built]);
+    await render(<WebsiteScreen />);
+    await waitFor(() => expect(screen.getByText(built.objective)).toBeTruthy());
+    await fireEvent.changeText(screen.getByTestId("website-source"), "https://new.example/");
+    await fireEvent.changeText(screen.getByTestId("website-objective"), "Nouveau site");
+    await press("Créer le projet web");
+    expect(screen.getByRole("button", { name: new RegExp(built.objective) })).toBeDisabled();
+    await fireEvent.press(screen.getByText(built.objective));
+    expect(screen.getByTestId("website-objective")).toHaveProp("value", "Nouveau site");
+    await act(async () => { pending.resolve({ ...draft, id: "new-project", objective: "Nouveau site" }); });
+    expect(screen.getByText("1. Explorer le site d’origine")).toBeTruthy();
+  });
+
+  it("keeps the screenshot viewer open when refreshing returns unchanged evidence", async () => {
+    const sha256 = "c".repeat(64);
+    const shot = { url: draft.source_url, viewport: "mobile", sha256, path: `/website-projects/${draft.id}/screenshots/${sha256}` };
+    const source = { ...captured, capture: { ...captured.capture!, screenshots: [shot] } };
+    await selectProject(source);
+    await press("Voir les captures d’écran");
+    await press(`Téléphone · ${draft.source_url}`);
+    await waitFor(() => expect(screen.getByLabelText("Capture du site source")).toBeTruthy());
+    jest.mocked(listWebsiteProjects).mockResolvedValue(JSON.parse(JSON.stringify([{ ...source, version: 3 }])));
+    await act(async () => { screen.getByTestId("website-screen").props.refreshControl.props.onRefresh(); });
+    await waitFor(() => expect(listWebsiteProjects).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Masquer les captures" })).toBeTruthy();
+    expect(screen.getByLabelText("Capture du site source")).toBeTruthy();
+  });
+
+  it("accepts an in-flight screenshot when only unrelated project state changes", async () => {
+    const pending = deferred<{ url: string; sha256: string }>();
+    jest.mocked(previewWebsiteScreenshot).mockReturnValueOnce(pending.promise);
+    const sha256 = "c".repeat(64);
+    const shot = { url: draft.source_url, viewport: "mobile", sha256, path: `/website-projects/${draft.id}/screenshots/${sha256}` };
+    const source = { ...captured, capture: { ...captured.capture!, screenshots: [shot] } };
+    await selectProject(source);
+    await press("Voir les captures d’écran");
+    await press(`Téléphone · ${draft.source_url}`);
+    jest.mocked(listWebsiteProjects).mockResolvedValue([{ ...source, version: 4, status: "awaiting_direction" }]);
+    await act(async () => { screen.getByTestId("website-screen").props.refreshControl.props.onRefresh(); });
+    await act(async () => { pending.resolve({ url: "https://control.example/current.png", sha256 }); });
+    expect(screen.getByLabelText("Capture du site source")).toHaveProp("source", { uri: "https://control.example/current.png" });
   });
 
   it("requires an explicit review after returning from the external browser", async () => {
@@ -272,8 +369,10 @@ describe("WebsiteScreen workflow", () => {
     await act(async () => { refreshControl.props.onRefresh(); });
     await act(async () => { commandReply.resolve(captured); });
     await waitFor(() => expect(screen.getByText("2. Choisir une direction")).toBeTruthy());
+    expect(screen.getByTestId("website-screen").props.refreshControl.props.refreshing).toBe(false);
     await act(async () => { staleRead.resolve([draft]); });
     expect(screen.getByText("2. Choisir une direction")).toBeTruthy();
+    expect(screen.getByTestId("website-screen").props.refreshControl.props.refreshing).toBe(false);
   });
 
   it("discards a screenshot reply after pairing changes", async () => {
