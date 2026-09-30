@@ -292,8 +292,7 @@ class StrategyRetrieval:
     async def _canonical_memory_hints(
         self, query: str, *, goal_run_id: str | None
     ) -> tuple[StrategyHint, ...]:
-        assert self.canonical_memory is not None
-        if self.canonical_memory.canonical_language != "en":
+        if self.canonical_memory is None or self.canonical_memory.canonical_language != "en":
             raise MemoryNormalizationError("unavailable", "canonical_memory_not_enabled")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA query_only=ON")

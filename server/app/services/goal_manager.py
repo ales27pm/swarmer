@@ -4122,6 +4122,7 @@ class GoalManager:
                     (goal_run_id,),
                 )
             ).fetchall()
+        rows = list(rows)
         return len(rows) == 3 and all(
             status == "budget_exhausted" and int(completed) == 0 for status, completed in rows
         )
@@ -4170,6 +4171,9 @@ class GoalManager:
                 )
             ).fetchall()
             await db.rollback()
+        instructions = list(instructions)
+        completed_nodes = list(completed_nodes)
+        unfinished_nodes = list(unfinished_nodes)
         if len(instructions) > 100:
             return None
         lines = [

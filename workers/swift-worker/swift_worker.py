@@ -413,13 +413,29 @@ class ProjectSnapshotWorkspace:
             timeout=timeout,
         )
 
-    def execute_job(self, operation, payload, *, source_request, ensure_active):
-        return self.snapshots.execute_job(
-            operation, payload, source_request=source_request, ensure_active=ensure_active
+    def execute_job(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        *,
+        source_request: Callable[[], Any],
+        ensure_active: Callable[[], None],
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            self.snapshots.execute_job(
+                operation, payload, source_request=source_request, ensure_active=ensure_active
+            ),
         )
 
 
-def _project_source_http_request(base_url, path, token, method, body):
+def _project_source_http_request(
+    base_url: str,
+    path: str,
+    token: str,
+    method: str,
+    body: dict[str, Any] | None,
+) -> Any:
     protocol = _protocol()
     origin = protocol.validate_control_plane_origin(base_url)
     call = urllib.request.Request(
@@ -435,7 +451,13 @@ def _project_source_http_request(base_url, path, token, method, body):
         )
 
 
-def _project_source_request(protocol, client, job_id, lease, request_fn):
+def _project_source_request(
+    protocol: Any,
+    client: Any,
+    job_id: str,
+    lease: Any,
+    request_fn: Any | None,
+) -> Any:
     """Only this consent-bound source endpoint permits a larger bounded JSON response."""
     source_client = protocol.ControlPlaneClient(
         client.base_url,
@@ -572,6 +594,7 @@ def main() -> None:
     )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    workspace: SwiftWorkspace | ProjectSnapshotWorkspace
     try:
         if not 0 < args.timeout <= MAX_REMOTE_SECONDS:
             raise SwiftWorkerError("remote Swift timeout must be between 0 and 120 seconds")

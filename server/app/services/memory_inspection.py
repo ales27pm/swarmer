@@ -435,16 +435,17 @@ async def _fences(
                 AND n.task_id=agent_jobs.task_id AND n.node_type='worker'
                 AND n.required_skill=agent_jobs.required_skill AND n.goal_run_id=?)"""
         )
+        # Identifiers come from _TABLES; predicates are local literals. Values are bound.
         if known is None:
             row = await _one(
                 db,
-                f"SELECT rowid,id,created_at FROM {table} WHERE {condition} ORDER BY rowid DESC LIMIT 1",
+                f"SELECT rowid,id,created_at FROM {table} WHERE {condition} ORDER BY rowid DESC LIMIT 1",  # nosec B608
                 (goal,),
             )
         else:
             row = await _one(
                 db,
-                f"SELECT rowid,id,created_at FROM {table} WHERE {condition} AND rowid=?",
+                f"SELECT rowid,id,created_at FROM {table} WHERE {condition} AND rowid=?",  # nosec B608
                 (goal, known[index]),
             )
         fences.append(int(row[0]) if row else 0)
@@ -493,10 +494,11 @@ async def read_memory_usage(
         if decoded:
             boundary = "WHERE (created_at,id)<(:date,:identity)"
             parameters.update(date=decoded[3][0], identity=decoded[3][1])
+        # _QUERIES and boundary contain only local SQL literals; all values are bound.
         rows = list(
             await (
                 await db.execute(
-                    "SELECT * FROM ("
+                    "SELECT * FROM ("  # nosec B608
                     + " UNION ALL ".join(_QUERIES)
                     + f") {boundary} ORDER BY created_at DESC,id DESC LIMIT :count",
                     parameters,

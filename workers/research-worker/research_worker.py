@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import importlib.util
 import ipaddress
 import json
 import logging
@@ -12,6 +13,7 @@ import os
 import queue
 import socket
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -19,18 +21,42 @@ import urllib.request
 import zlib
 from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Any, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
-from research_collect import (
-    COLLECT_SKILL,
-    MAX_COLLECTION_SECONDS,
-    MAX_PAGE_BYTES,
-    CollectionError,
-    RawPage,
-    collect,
-    public_page_url,
-)
+if TYPE_CHECKING:
+    from research_collect import (
+        COLLECT_SKILL,
+        MAX_COLLECTION_SECONDS,
+        MAX_PAGE_BYTES,
+        CollectionError,
+        RawPage,
+        collect,
+        public_page_url,
+    )
+else:
+    # Production launches Python with -I. Load only the release's adjacent module;
+    # never enable imports from the working directory, PYTHONPATH, or user site.
+    _COLLECT_PATH = Path(__file__).resolve().with_name("research_collect.py")
+    _COLLECT_SPEC = importlib.util.spec_from_file_location("research_collect", _COLLECT_PATH)
+    if _COLLECT_SPEC is None or _COLLECT_SPEC.loader is None or not _COLLECT_PATH.is_file():
+        raise RuntimeError("the adjacent research_collect module is required")
+    _COLLECT_MODULE = sys.modules.get("research_collect")
+    if (
+        _COLLECT_MODULE is None
+        or Path(getattr(_COLLECT_MODULE, "__file__", "")).resolve() != _COLLECT_PATH
+    ):
+        _COLLECT_MODULE = importlib.util.module_from_spec(_COLLECT_SPEC)
+        _COLLECT_SPEC.loader.exec_module(_COLLECT_MODULE)
+        sys.modules["research_collect"] = _COLLECT_MODULE
+    COLLECT_SKILL = _COLLECT_MODULE.COLLECT_SKILL
+    MAX_COLLECTION_SECONDS = _COLLECT_MODULE.MAX_COLLECTION_SECONDS
+    MAX_PAGE_BYTES = _COLLECT_MODULE.MAX_PAGE_BYTES
+    CollectionError = _COLLECT_MODULE.CollectionError
+    RawPage = _COLLECT_MODULE.RawPage
+    collect = _COLLECT_MODULE.collect
+    public_page_url = _COLLECT_MODULE.public_page_url
 
 LOGGER = logging.getLogger("mongars.research_worker")
 HEARTBEAT_JOIN_TIMEOUT_SECONDS = 1.0

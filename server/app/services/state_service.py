@@ -2467,7 +2467,8 @@ class StateService:
     async def create_memory(self, request: MemoryCreate, actor_id: str) -> dict[str, Any]:
         if self.canonical_language == "en":
             outcome = await self._canonical_store().write(request, actor_id)
-            assert outcome is not None
+            if outcome is None:
+                raise MemoryNormalizationError("source_conflict", "memory_changed")
             memory_id, changed = outcome
             if changed and self.embedding_service is not None:
                 try:

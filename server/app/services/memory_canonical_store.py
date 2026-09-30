@@ -198,7 +198,8 @@ class MemoryCanonicalStore:
             attributes = request.model_dump(exclude={"content", "summary"})
             content, summary = request.content, request.summary
         else:
-            assert existing is not None
+            if existing is None:
+                raise MemoryNormalizationError("source_conflict", "memory_changed")
             attributes = {
                 key: existing[key]
                 for key in ("scope", "kind", "sensitivity", "confidence", "pinned")
@@ -401,7 +402,8 @@ class MemoryCanonicalStore:
 
         try:
             results: list[MemoryNormalizationResult] = []
-            assert self.provider is not None
+            if self.provider is None:
+                raise MemoryNormalizationError("source_conflict", "normalizer_changed")
             for unit in units:
                 result = await self.provider.normalize(unit, recheck_source=recheck)
                 self._validate_result(unit, result)
