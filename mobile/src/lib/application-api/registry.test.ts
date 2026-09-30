@@ -342,12 +342,22 @@ describe("application API contract", () => {
     expect(session.startGoal).not.toHaveBeenCalled();
     const generated = (await applicationApi.execute("goals.plan.generate", { handle: prepared.handle, runtime: "mlx", modelId: "test/model" })).data as unknown as GeneratedLocalPlan;
     expect(generated.plan).toEqual(plan);
-    expect(native.generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 512, prompt: expect.stringContaining(plan.objective) }));
+    expect(native.generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 1024, prompt: expect.stringContaining(plan.objective) }));
     expect(session.startGoal).not.toHaveBeenCalled();
     await applicationApi.execute("goals.plan.start", { handle: prepared.handle, confirm: true });
     expect(session.startGoal).toHaveBeenCalledWith("goal_1", { plan_proposal: plan, planner_source: "iphone_local", memory_context_fingerprint: "b".repeat(64) });
     await expect(applicationApi.execute("goals.plan.start", { handle: prepared.handle, confirm: true })).rejects.toMatchObject({ code: "invalid_state" });
     expect(session.startGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a caller-selected goal-plan output limit up to the native ceiling", async () => {
+    const { plan } = setupPlan();
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: "goal_1" })).data as { handle: string };
+    const generated = (await applicationApi.execute("goals.plan.generate", {
+      handle, runtime: "mlx", modelId: "test/model", maxTokens: 768,
+    })).data as unknown as GeneratedLocalPlan;
+    expect(generated.plan).toEqual(plan);
+    expect(native.generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 768 }));
   });
 
   it.each(["length", "cancelled"] as const)("never turns a %s generation into a startable plan", async (finishReason) => {
@@ -387,7 +397,8 @@ describe("application API contract", () => {
     ["shell.run", {}], ["models.import", { uri: "file:///private/secret" }],
     ["goals.create", { objective: "Test", autonomy_profile: "assisted", max_parallelism: 4 }],
     ["goals.get", { id: "../secret" }], ["memory.delete", { id: "mem_one", arbitrary: true }],
-    ["inference.generate", { prompt: "Test", maxTokens: 513 }],
+    ["inference.generate", { prompt: "Test", maxTokens: 1025 }],
+    ["goals.plan.generate", { handle: "plan_handle", runtime: "mlx", modelId: "test/model", maxTokens: 1025 }],
     ["inference.generate", { prompt: "Test", temperature: NaN }],
     ["goals.create", { objective: "Test", autonomy_profile: "assisted", completion_criteria: [null] }],
   ])("refuses %s before calling a service", async (name, input) => {

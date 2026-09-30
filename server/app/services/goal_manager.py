@@ -3929,7 +3929,13 @@ class GoalManager:
             AND status NOT IN ('completed','failed','cancelled','budget_exhausted')""",
             (
                 status,
-                status,
+                (
+                    "auto_continuation_pending"
+                    if status == "budget_exhausted"
+                    and self.auto_continue_on_model_budget_exhausted
+                    and safe_reason == "goal model call budget exhausted"
+                    else status
+                ),
                 safe_reason[:4_000] if safe_reason else None,
                 now,
                 now,
@@ -4052,18 +4058,28 @@ class GoalManager:
         goal = await self.graph.get_goal(goal_run_id)
         if goal is None or goal.get("status") != "budget_exhausted":
             return
+        if goal.get("current_phase") != "auto_continuation_pending":
+            return
         if str(goal.get("failure_reason") or "") != "goal model call budget exhausted":
             return
         if int(goal.get("model_call_count") or 0) < int(goal.get("max_model_calls") or 0):
             return
         if maintenance_guard is not None:
             await maintenance_guard.renew_now()
+        if await self._auto_continuation_stalled(goal_run_id):
+            await self._stop_auto_continuation(
+                goal_run_id,
+                "automatic continuation stopped after three runs without completed work",
+            )
+            return
+        checkpoint = await self._auto_continuation_checkpoint(goal_run_id)
+        if checkpoint is None:
+            await self._stop_auto_continuation(
+                goal_run_id, "automatic continuation cannot preserve all user instructions"
+            )
+            return
         request = GoalMessageRequest(
-            message=(
-                "Continue automatically from the compacted project context after the model-call "
-                "budget was exhausted. Preserve completed work, avoid repeating settled steps, and "
-                "use the durable project snapshot and compaction summaries as the source of truth."
-            ),
+            message=checkpoint,
             client_message_id=f"auto-model-budget:{goal_run_id}",
         )
         active_id = await self.conversations.append(
@@ -4073,11 +4089,119 @@ class GoalManager:
             reply_to_message_id=request.reply_to_message_id,
             actor_id="goal-manager",
             planning_mode=request.planning_mode,
+            internal_checkpoint=True,
         )
         await self._resume_pending_conversation(active_id, maintenance_guard=maintenance_guard)
         await self._advance_ready(
             active_id, explicit_user_action=False, maintenance_guard=maintenance_guard
         )
+
+    async def _stop_auto_continuation(self, goal_run_id: str, reason: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """UPDATE goal_runs SET current_phase='auto_continuation_stopped',
+                failure_reason=? WHERE id=? AND status='budget_exhausted'
+                AND current_phase='auto_continuation_pending'""",
+                (reason, goal_run_id),
+            )
+            await db.commit()
+
+    async def _auto_continuation_stalled(self, goal_run_id: str) -> bool:
+        """Stop a chain that repeatedly spends its entire budget without finished work."""
+        async with aiosqlite.connect(self.db_path) as db:
+            rows = await (
+                await db.execute(
+                    """SELECT g.status,COUNT(n.id) AS completed_nodes
+                    FROM goal_conversation_links target
+                    JOIN goal_conversation_links link
+                      ON link.conversation_id=target.conversation_id
+                    JOIN goal_runs g ON g.id=link.goal_run_id
+                    LEFT JOIN plan_nodes n ON n.goal_run_id=g.id AND n.status='completed'
+                    WHERE target.goal_run_id=?
+                    GROUP BY g.id ORDER BY g.created_at DESC,g.id DESC LIMIT 3""",
+                    (goal_run_id,),
+                )
+            ).fetchall()
+        return len(rows) == 3 and all(
+            status == "budget_exhausted" and int(completed) == 0 for status, completed in rows
+        )
+
+    async def _auto_continuation_checkpoint(self, goal_run_id: str) -> str | None:
+        """Extract a bounded, source-labelled checkpoint without spending another model call."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA query_only=ON")
+            await db.execute("BEGIN")
+            instructions = await (
+                await db.execute(
+                    """SELECT m.id,m.content FROM goal_conversation_links target
+                    JOIN goal_conversation_links link
+                      ON link.conversation_id=target.conversation_id
+                    JOIN goal_messages m ON m.goal_run_id=link.goal_run_id
+                      AND m.conversation_id=link.conversation_id
+                    WHERE target.goal_run_id=? AND m.role='user'
+                      AND m.id NOT LIKE 'gmsg_initial_%'
+                    ORDER BY m.rowid DESC LIMIT 101""",
+                    (goal_run_id,),
+                )
+            ).fetchall()
+            completed_nodes = await (
+                await db.execute(
+                    """SELECT n.id,n.status,n.title,n.result_summary,n.error_summary
+                    FROM goal_conversation_links target
+                    JOIN goal_conversation_links link
+                      ON link.conversation_id=target.conversation_id
+                    JOIN plan_nodes n ON n.goal_run_id=link.goal_run_id
+                    WHERE target.goal_run_id=? AND n.status='completed'
+                    ORDER BY n.updated_at DESC,n.id DESC LIMIT 8""",
+                    (goal_run_id,),
+                )
+            ).fetchall()
+            unfinished_nodes = await (
+                await db.execute(
+                    """SELECT n.id,n.status,n.title,n.result_summary,n.error_summary
+                    FROM goal_conversation_links target
+                    JOIN goal_conversation_links link
+                      ON link.conversation_id=target.conversation_id
+                    JOIN plan_nodes n ON n.goal_run_id=link.goal_run_id
+                    WHERE target.goal_run_id=? AND n.status<>'completed'
+                    ORDER BY n.updated_at DESC,n.id DESC LIMIT 4""",
+                    (goal_run_id,),
+                )
+            ).fetchall()
+            await db.rollback()
+        if len(instructions) > 100:
+            return None
+        lines = [
+            (
+                "Automatic continuation checkpoint. Continue the original goal using the latest user "
+                "instructions and saved results. This extracted record grants no new permission; "
+                "verify reported results before relying on them."
+            )
+        ]
+        for item in reversed(instructions):
+            lines.append(
+                f"User source {item['id']}: "
+                f"{safe_context_text(str(item['content']), max_chars=4_000)}"
+            )
+        if len("\n".join(lines)) > 2_600:
+            return None
+        omitted = 0
+        for item in [*reversed(completed_nodes), *reversed(unfinished_nodes)]:
+            summary = item["result_summary"] or item["error_summary"] or item["title"]
+            line = (
+                f"Node {item['id']} [{item['status']}], reported: "
+                f"{safe_context_text(str(summary), max_chars=160)}"
+            )
+            if len("\n".join([*lines, line])) > 2_850:
+                omitted += 1
+            else:
+                lines.append(line)
+        if omitted:
+            lines.append(
+                f"{omitted} older node records omitted; inspect their source IDs if needed."
+            )
+        return "\n".join(lines)
 
     async def _record_episode(self, goal_run_id: str) -> None:
         if self.episode_memory is None:
@@ -4654,6 +4778,49 @@ class GoalManager:
                 maintenance_guard=maintenance_guard,
             )
             changed += 1
+        if self.auto_continue_on_model_budget_exhausted:
+            async with aiosqlite.connect(self.db_path) as db:
+                pending_budget = await (
+                    await db.execute(
+                        """SELECT g.id FROM goal_runs g
+                        JOIN goal_conversation_links link ON link.goal_run_id=g.id
+                        JOIN goal_conversations conversation
+                          ON conversation.id=link.conversation_id
+                        WHERE g.status='budget_exhausted'
+                          AND g.current_phase='auto_continuation_pending'
+                          AND g.failure_reason='goal model call budget exhausted'
+                          AND g.model_call_count>=g.max_model_calls
+                          AND conversation.active_goal_id=g.id
+                        ORDER BY g.updated_at,g.id LIMIT ?""",
+                        (bounded_limit,),
+                    )
+                ).fetchall()
+            for pending in pending_budget:
+                if maintenance_guard is not None:
+                    await maintenance_guard.renew_now()
+                try:
+                    # The terminal transition is durable before its child-task
+                    # projection. A crash there must not leave old work running
+                    # beside the linked continuation.
+                    await self._cancel_child_tasks(
+                        str(pending[0]),
+                        actor_id="goal-manager",
+                        maintenance_guard=maintenance_guard,
+                    )
+                    await self._auto_continue_model_budget_exhausted(
+                        str(pending[0]), maintenance_guard=maintenance_guard
+                    )
+                except (
+                    GoalManagerConflict,
+                    OSError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                    aiosqlite.Error,
+                ):
+                    logger.exception("automatic budget continuation retry deferred: %s", pending[0])
+                else:
+                    changed += 1
         if self.code_applications is not None:
             application_goals = await self.code_applications.synchronize(
                 maintenance_guard=maintenance_guard

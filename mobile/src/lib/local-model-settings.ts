@@ -1,6 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 
 import type { LocalInferenceRuntime } from "@/lib/local-inference";
+import { MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 
 const SETTINGS_KEY = "swarmer.local-model-settings.v1";
 
@@ -17,8 +18,8 @@ export const DEFAULT_GENERATION_SETTINGS = { maxTokens: 256, temperature: 0.1 } 
 export function parseGenerationSettings(maxTokens: string, temperature: string) {
   const tokens = Number(maxTokens.trim());
   const heat = Number(temperature.trim().replace(",", "."));
-  if (!maxTokens.trim() || !Number.isInteger(tokens) || tokens < 1 || tokens > 512) {
-    throw new Error("La limite de sortie doit être un entier entre 1 et 512 jetons.");
+  if (!maxTokens.trim() || !Number.isInteger(tokens) || tokens < 1 || tokens > MAX_LOCAL_GENERATION_TOKENS) {
+    throw new Error(`La limite de sortie doit être un entier entre 1 et ${MAX_LOCAL_GENERATION_TOKENS} jetons.`);
   }
   if (!temperature.trim() || !Number.isFinite(heat) || heat < 0 || heat > 2) {
     throw new Error("La température doit être comprise entre 0 et 2.");

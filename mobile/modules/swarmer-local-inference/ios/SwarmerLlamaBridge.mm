@@ -307,7 +307,7 @@ void FillBatch(llama_batch &batch, const llama_token *tokens, int32_t count, int
     std::vector<llama_token> promptTokens;
     if (!Tokenize(model, vocab, prompt, promptTokens, &localError)) { return; }
 
-    const int32_t boundedMaxTokens = static_cast<int32_t>(std::clamp<NSInteger>(maxTokens, 1, 512));
+    const int32_t boundedMaxTokens = static_cast<int32_t>(std::clamp<NSInteger>(maxTokens, 1, 1024));
     const uint32_t contextCapacity = llama_n_ctx(context);
     if (promptTokens.size() + static_cast<size_t>(boundedMaxTokens) > contextCapacity) {
       localError = LlamaError(14, @"The prompt and requested output exceed the GGUF context window.");

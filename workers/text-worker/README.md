@@ -38,17 +38,20 @@ For a nonempty source list, the private model request replaces URLs with `S1`
 through `S6` (up to5without page evidence), keeping the title, snippet, source hostname
 and any actually read passage. URLs inside excerpts are omitted in the model projection;
 the original evidence digests remain in the canonical job, not attached to transformed text. The objective and conversation remain verbatim,
-including any user-authored URLs. The model
-must return an additional private `source_ids` array containing only distinct
-supplied IDs. A delivered text must contain a `[S1]` marker for every selected source.
-Markers in text or summary must refer to a selected ID. A non-delivery must have
-an empty array and no source markers; it never receives a generated bibliography. The dynamic native
-JSON schema constrains the choices, and the worker independently validates them.
+including any user-authored URLs. The model cites each supported claim using a
+supplied marker such as `[S1]` in the delivered text. These markers are the source
+selection; the generation schema does not ask for a second `source_ids` list.
+The worker independently checks every marker against the admitted sources.
+Markers only in a summary do not count. A non-delivery must have no source
+markers and never receives a generated bibliography.
 
 The worker rejects all model-emitted HTTP(S) URLs in sourced text/summary, unknown
-or duplicate IDs, duplicate JSON fields, and missing or extra private fields.
-It then appends `[S1] <original URL>` references to the text deterministically and
-removes `source_ids`. The final text, including these exact URLs, must still fit
+IDs, duplicate JSON fields, and missing or extra private fields. Repeated citations
+to one source are allowed and produce just one reference, ordered by first citation.
+It appends `[S1] <original URL>` references only for markers the model put in text.
+Legacy responses carrying `source_ids` remain accepted only if that distinct list
+exactly matches the markers; the list is removed from the canonical result.
+The final text, including these exact URLs, must still fit
 the unchanged byte limit and pass the existing citation guard. The server receives
 the canonical delivered result below, whose shape is unchanged. Unsourced model
 requests and historical canonical results retain their existing format. Selecting
@@ -103,9 +106,16 @@ model cannot supply provenance). Clarification also requires a bounded specific
 `question`. Non-deliveries are submitted as failed jobs with distinct fixed
 codes; the server decides whether the goal waits for the user or stops. They do
 not have to meet delivery word/citation requirements. No automatic retry occurs.
+The generation schema has a separate closed branch for each outcome: only
+`needs_clarification` admits and requires `question`. No branch generates a
+redundant source selection. The decoder still independently checks the
+response, citation use and the meaning of a clarification question.
 
 Inference uses one native Ollama `/api/chat` request and an absolute wall budget
-of 1–120 seconds. The output allowance adapts to explicit word bounds with a
+of 1–120 seconds. `think: false` requests final structured content for every
+operator alias; reasoning support is not guessed from a model's name. No internal
+reasoning stream is stored as the delivered draft. The output allowance adapts
+to explicit word bounds with a
 512-token JSON/summary reserve, between 1,024 and 8,192 tokens. With no explicit
 length, 600 words size the allowance without imposing a word-count target. The
 prompt permits requested tables and plans instead of forcing 100–140 words of
@@ -118,9 +128,15 @@ Deploy the server's additive requirements and non-delivery support before sendin
 new-contract jobs or activating this worker. Older persisted delivered results
 retain their wire shape; no historical records are rewritten.
 
-CPU inference (`num_gpu: 0`) limits the writer's GPU use. When roles share the
-same alias, Ollama may reuse its CPU placement for later planner/evaluator calls;
-their deadlines must account for CPU latency (see `docs/33-writing-drafts.md`).
+CPU inference remains the default (`MONGARS_TEXT_GPU_LAYERS=0`). Operators may
+request 1–128 GPU layers through that environment variable, mapped to Ollama's
+`num_gpu` option. Invalid values fail at startup before claiming a job. Jobs and
+model output cannot change this setting. The integer bound is an input limit,
+not a VRAM reservation or a guarantee that Ollama can offload the layers.
+Qualify the requested document lengths, actual placement, memory and contention
+with the other roles before enabling it; no deadline, retry or acceptance rule
+changes with the setting. When roles share the same alias, placement and loading
+can affect later planner/evaluator calls (see `docs/33-writing-drafts.md`).
 The worker sends no download or unload requests. Set an existing small local model alias through
 `MONGARS_TEXT_MODEL_ID`; there is deliberately no invented default alias.
 

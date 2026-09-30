@@ -10,7 +10,7 @@ profiles:
     default_context_tokens: 4096
     default_output_tokens: 256
     default_temperature: 0.1
-    max_output_tokens: 512
+    max_output_tokens: 1024
     notes: "Dolphin3.0 3B is the compact iteration preset; Core ML has a 2048-token context. Device memory, latency, and quality still require an iPhone test."
 
 models:

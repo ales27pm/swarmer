@@ -28,14 +28,14 @@ describe("local model settings", () => {
     },
   );
 
-  it.each([["0", "0.1"], ["513", "0.1"], ["1.5", "0.1"], ["256", ""], ["256", "Infinity"], ["256", "2.1"]])(
+  it.each([["0", "0.1"], ["1025", "0.1"], ["1.5", "0.1"], ["256", ""], ["256", "Infinity"], ["256", "2.1"]])(
     "rejects generation settings outside the native contract: %s / %s", (tokens, temperature) => {
       expect(() => parseGenerationSettings(tokens, temperature)).toThrow();
     },
   );
 
   it("accepts deterministic sampling and a French decimal separator", () => {
-    expect(parseGenerationSettings("512", "0")).toEqual({ maxTokens: 512, temperature: 0 });
+    expect(parseGenerationSettings("1024", "0")).toEqual({ maxTokens: 1024, temperature: 0 });
     expect(parseGenerationSettings("128", "0,25")).toEqual({ maxTokens: 128, temperature: 0.25 });
   });
 });

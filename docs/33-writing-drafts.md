@@ -33,7 +33,12 @@ complete page coverage or supports every possible claim. A source-free draft
 does not fulfill a request for live research.
 
 The new worker in `workers/text-worker` uses a configured local Ollama model. It
-makes one streamed CPU request with a maximum 120-second absolute timeout.
+makes one streamed request with a maximum 120-second absolute timeout.
+CPU is the default; the operator can request a bounded number of GPU layers with
+`MONGARS_TEXT_GPU_LAYERS` after qualification of the host and shared model roles.
+This setting grants neither a memory reservation nor extra time or retries.
+The request sets `think: false` independently of the alias so a thinking-capable
+model does not implicitly consume the draft allowance before producing text.
 The output allowance follows explicit word bounds, reserves 512 tokens for JSON
 and the summary, and stays between 1,024 and 8,192 tokens. Tables and plans are
 allowed. Without a word bound, 600 words size the allowance without imposing a
@@ -52,8 +57,10 @@ the worker; that contract is included in the private model input without changin
 the original job. Explicit requirements remain authoritative.
 
 Citation appendices, URLs and source markers do not pad the word count. Sourced
-generation uses private source IDs; the worker resolves only selected, actually
-referenced IDs to admitted URLs. Delivery failing measurable constraints is
+generation uses private source markers beside the claims. The worker resolves
+only IDs cited in text to admitted URLs, once each in order of first citation.
+No second selection array is generated. Legacy private responses with that array
+retain the exact selection-to-marker check. Delivery failing measurable constraints is
 rejected. These checks do not establish semantic completeness or factual truth.
 A minimum above 1,800 words fails before inference with `writing_budget_exceeded`.
 Long documents still require separately orchestrated stages; this worker does not
@@ -64,6 +71,10 @@ The model distinguishes `delivered`, `declined`, `needs_clarification` and
 and submitted as a failed job with a distinct reason, never as completed writing.
 A clarification must identify a specific missing user decision. Historical
 delivered results retain their four-field wire shape.
+The model-facing schema separates those outcomes before generation: a question
+is required only for clarification and forbidden for the other outcomes.
+Non-deliveries cannot select citation IDs. These structural constraints do not
+establish whether the model correctly judged the evidence sufficient.
 
 Planner and evaluator HTTP calls default to 60 seconds. Operators running slow
 CPU models can set `MONGARS_GOAL_MODEL_TIMEOUT_SECONDS` up to 120 seconds and

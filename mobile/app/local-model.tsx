@@ -40,6 +40,7 @@ import {
   type LocalToolProposal,
 } from "@/lib/application-api/local-inference";
 import { LOCAL_MODEL_PRESETS, preferredLocalRuntime } from "@/lib/local-model-presets";
+import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import {
   DEFAULT_GENERATION_SETTINGS,
   parseGenerationSettings,
@@ -331,7 +332,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const [modelId, setModelId] = useState("");
   const [revision, setRevision] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [maxTokens, setMaxTokens] = useState(goalMode ? "512" : String(DEFAULT_GENERATION_SETTINGS.maxTokens));
+  const [maxTokens, setMaxTokens] = useState(String(goalMode ? DEFAULT_GOAL_PLAN_MAX_TOKENS : DEFAULT_GENERATION_SETTINGS.maxTokens));
   const [temperature, setTemperature] = useState(String(DEFAULT_GENERATION_SETTINGS.temperature));
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<BusyAction | null>(nativeAvailable ? "initial" : null);
@@ -476,7 +477,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
           setRevision(restore ? saved.revision : nextRuntime === "mlx" ? preset.revision : "");
         }
         if (saved) {
-          setMaxTokens(goalMode ? "512" : String(saved.maxTokens));
+          setMaxTokens(String(goalMode ? DEFAULT_GOAL_PLAN_MAX_TOKENS : saved.maxTokens));
           setTemperature(String(saved.temperature));
         }
         observeNativeStatus(status);
@@ -700,7 +701,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       if (!session || !expectedModel) throw new Error("Le modèle chargé n’a pas été confirmé. Actualisez son état.");
       const result = await session.generate({
         prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent),
-        ...parseGenerationSettings(goalMode ? "512" : maxTokens, temperature),
+        ...parseGenerationSettings(maxTokens, temperature),
       }, expectedModel);
       if (!mounted.current || generationVersion.current !== version) return;
       setRawText(result.text);
@@ -1007,14 +1008,14 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       <Card>
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
           {goalMode
-            ? "Le plan utilise 512 jetons de sortie, la limite native actuelle. Une sortie tronquée est rejetée. La température reste réglable."
+            ? `Le plan utilise ${DEFAULT_GOAL_PLAN_MAX_TOKENS} jetons de sortie par défaut. Tu peux ajuster cette limite selon le contexte du modèle. Une sortie tronquée est rejetée.`
             : "256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime."}
         </Text>
         <KeyboardInputGroup dismissKeyboard testID="local-model-generation-settings">
-          <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–512)</Text>
+          <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–{MAX_LOCAL_GENERATION_TOKENS})</Text>
           <KeyboardTextInput
             accessibilityLabel="Limite de jetons de sortie"
-            editable={!locked && !goalMode}
+            editable={!locked}
             keyboardType="number-pad"
             value={maxTokens}
             onChangeText={(value) => { invalidateProposal(); setMaxTokens(value); }}

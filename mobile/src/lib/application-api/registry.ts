@@ -5,6 +5,7 @@ import { AppState, Platform } from "react-native";
 import type { GoalCreateInput, GoalFeedbackInput, TaskMode, TaskStatus } from "@/lib/api/types";
 import * as inference from "@/lib/local-inference";
 import * as embeddings from "@/lib/local-embeddings";
+import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import * as settings from "@/lib/local-model-settings";
 import { applicationSessions } from "./sessions";
@@ -63,7 +64,7 @@ function register<T extends object>(
 const device = { source: "device", readiness: "device" } as const;
 const mutation = { effect: "mutation", execution: "job" } as const;
 const runtime = choice("coreml", "mlx", "llama.cpp");
-const generationProperties = { maxTokens: integer(1, 512), temperature: number(0, 2) };
+const generationProperties = { maxTokens: integer(1, MAX_LOCAL_GENERATION_TOKENS), temperature: number(0, 2) };
 const taskMode = choice("normal", "commandant", "review", "autonome");
 const taskStatus = choice("created", "planned", "queued", "running", "blocked", "waiting_permission", "completed", "failed", "cancelled");
 const idInput = object({ id: identifier });
@@ -393,9 +394,9 @@ register<{ id: string; decision: "approve" | "deny"; confirm: true }>("iphone.re
 } });
 register<{ id: string; confirm: true }>("iphone.requests.execute", object({ id: identifier, confirm: { type: "boolean", enum: [true] } }),
   async ({ id }) => (await capabilityTransport()).execute(id), { ...device, ...mutation, readiness: "review_required", requiresForeground: true, osInteraction: true });
-register<{ handle: string; runtime: inference.LocalInferenceRuntime; modelId: string; revision?: string; temperature?: number }>(
-  "goals.plan.generate", object({ handle: identifier, runtime, modelId: text(200), revision: text(40), temperature: number(0, 2) }, ["handle", "runtime", "modelId"]),
-  async ({ handle, runtime: selectedRuntime, modelId, revision, temperature }) => {
+register<{ handle: string; runtime: inference.LocalInferenceRuntime; modelId: string; revision?: string; maxTokens?: number; temperature?: number }>(
+  "goals.plan.generate", object({ handle: identifier, runtime, modelId: text(200), revision: text(40), ...generationProperties }, ["handle", "runtime", "modelId"]),
+  async ({ handle, runtime: selectedRuntime, modelId, revision, maxTokens, temperature }) => {
     const review = applicationSessions.get<PlanReview>(handle, "plan");
     const assertReview = () => {
       if (applicationSessions.get<PlanReview>(handle, "plan") !== review) throw new ApplicationApiError("session_expired", "Cette session de planification n’est plus actuelle.");
@@ -422,7 +423,7 @@ register<{ handle: string; runtime: inference.LocalInferenceRuntime; modelId: st
         await review.session.assertCurrent();
         assertActive();
         assertReview();
-        const result = await inference.generateLocalProposal({ prompt: buildLocalGoalPlanPrompt(snapshot), maxTokens: 512, temperature: temperature ?? 0.1 });
+        const result = await inference.generateLocalProposal({ prompt: buildLocalGoalPlanPrompt(snapshot), maxTokens: maxTokens ?? DEFAULT_GOAL_PLAN_MAX_TOKENS, temperature: temperature ?? 0.1 });
         assertActive();
         assertReview();
         const plan = parseCompletedLocalGoalPlan(result, snapshot);

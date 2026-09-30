@@ -118,7 +118,7 @@ describe("initial local goal plan", () => {
     await render(<LocalModelScreen />);
     expect(await screen.findByText(detail.goal.objective)).toBeOnTheScreen();
     expect(screen.queryByLabelText("Intention pour le modèle local")).not.toBeOnTheScreen();
-    expect(screen.getByLabelText("Limite de jetons de sortie")).toHaveDisplayValue("512");
+    expect(screen.getByLabelText("Limite de jetons de sortie")).toHaveDisplayValue("1024");
     expect(screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" })).toBeDisabled();
     expect(loadLocalModel).not.toHaveBeenCalled();
     expect(generateLocalProposal).not.toHaveBeenCalled();
@@ -195,7 +195,7 @@ describe("initial local goal plan", () => {
     expect(bootstrapSync).toHaveBeenCalledTimes(2);
     expect(memoryContext).toHaveBeenCalledTimes(2);
     expect(memoryContext).toHaveBeenCalledWith("goal_crm", detail.goal.updated_at);
-    expect(generateLocalProposal).toHaveBeenCalledWith({ prompt: buildLocalSwarmPlanPrompt({ goal: promptGoal, agents: [agent], memory }), maxTokens: 512, temperature: 0.1 });
+    expect(generateLocalProposal).toHaveBeenCalledWith({ prompt: buildLocalSwarmPlanPrompt({ goal: promptGoal, agents: [agent], memory }), maxTokens: 1024, temperature: 0.1 });
     expect(screen.getByText("1. Construire le CRM Python")).toBeOnTheScreen();
     expect(startGoal).not.toHaveBeenCalled();
     expect(sendChat).not.toHaveBeenCalled();
@@ -206,6 +206,16 @@ describe("initial local goal plan", () => {
     expect(memoryContext).toHaveBeenCalledTimes(3);
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_crm" } });
     expect(submitToolProposal).not.toHaveBeenCalled();
+  });
+
+  it("lets the user choose a smaller goal-plan output budget", async () => {
+    const user = await loadedScreen();
+    const outputLimit = screen.getByLabelText("Limite de jetons de sortie");
+    await user.clear(outputLimit);
+    await user.type(outputLimit, "768");
+    await user.press(screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" }));
+    await screen.findByText("Plan initial à relire");
+    expect(generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 768 }));
   });
 
   it("rejects a started goal before invoking local inference", async () => {

@@ -39,6 +39,7 @@ MAX_TEXT_BYTES = 24_000
 MAX_RESPONSE_BYTES = 512_000
 MAX_OUTPUT_TOKENS = 8_192
 MAX_SINGLE_DRAFT_WORDS = 1_800
+MAX_GPU_LAYERS = 128
 JSON_TOKEN_RESERVE = 512
 _JOB_LOCK = threading.Lock()
 _MODEL_LOCK = threading.Lock()
@@ -103,23 +104,30 @@ RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["schema_version", "content_trust", "text", "summary"],
 }
 
-MODEL_RESPONSE_SCHEMA: dict[str, Any] = {
-    **RESPONSE_SCHEMA,
-    "properties": {
-        **RESPONSE_SCHEMA["properties"],
-        "outcome": {
-            "type": "string",
-            "enum": [
-                "delivered",
-                "declined",
-                "needs_clarification",
-                "insufficient_sources",
-            ],
-        },
-        "question": {"type": "string", "minLength": 12, "maxLength": 800},
-    },
-    "required": [*RESPONSE_SCHEMA["required"], "outcome"],
-}
+
+def _model_response_schema() -> dict[str, Any]:
+    """Constrain generation to the same outcome shapes accepted by the decoder."""
+    branches = []
+    for outcome in ("delivered", "declined", "needs_clarification", "insufficient_sources"):
+        properties = {
+            "outcome": {"type": "string", "const": outcome},
+            **RESPONSE_SCHEMA["properties"],
+        }
+        required = ["outcome", *RESPONSE_SCHEMA["required"]]
+        if outcome == "needs_clarification":
+            properties["question"] = {"type": "string", "minLength": 12, "maxLength": 800}
+            required.append("question")
+        branches.append(
+            {
+                **RESPONSE_SCHEMA,
+                "properties": properties,
+                "required": required,
+            }
+        )
+    return {"oneOf": branches}
+
+
+MODEL_RESPONSE_SCHEMA = _model_response_schema()
 
 SOURCED_SYSTEM_PROMPT = (
     SYSTEM_PROMPT.replace(
@@ -127,13 +135,11 @@ SOURCED_SYSTEM_PROMPT = (
         "Use relevant snippets and supplied page excerpts as limited evidence. Cite their source IDs, never URLs.",
     )
     + """
-For this sourced request, also return source_ids: an array of distinct supplied IDs
-such as S1. A source selection is NOT a citation by itself. Cite each supported claim
-inside the text string, immediately after that claim, using a bracketed marker such
-as [S1]. The source_ids array contains the matching bare ID, such as "S1".
-Every selected ID must have a marker in text, and every marker must be selected in
-source_ids. Markers appearing only in summary do not satisfy this rule. Do not add
-a list of unused markers or decorative references at the end to satisfy a count.
+For this sourced request, cite each supported claim inside the text string,
+immediately after that claim, using its supplied bracketed source ID, such as [S1].
+Do not return a separate source_ids array: the citations in text identify the sources.
+Markers appearing only in summary are not citations. Do not add a list of unused
+markers or decorative references at the end to satisfy a count.
 Select only sources whose supplied snippets or page excerpts actually support the associated claims;
 a relevant title or hostname alone does not establish those claims. If a requested
 comparison is not supported by this supplied evidence, identify the evidence gap rather than
@@ -142,14 +148,14 @@ exactly for the sources cited in text. Do not emit any URL in text or summary.
 Hostnames identify provenance, not a URL to construct.
 
 Two-source JSON format example (not factual evidence and not text to copy):
-{"schema_version":"1.0","content_trust":"untrusted","outcome":"delivered","text":"Première information étayée [S1]. Seconde information étayée [S2].","summary":"Comparaison des informations étayées.","source_ids":["S1","S2"]}
+{"schema_version":"1.0","content_trust":"untrusted","outcome":"delivered","text":"Première information étayée [S1]. Seconde information étayée [S2].","summary":"Comparaison des informations étayées."}
 Use only IDs actually supplied for this request; the example does not make S2
 available. Write the user's requested deliverable and respect its requirements.
-Before emitting the JSON, check that its text cites every ID in source_ids beside
-the supported claim, that no other ID occurs, and that the complete JSON fits.
+Before emitting the JSON, check that each marker identifies a supplied source
+supporting its adjacent claim, and that the complete JSON fits.
 If the evidence is insufficient, choose outcome "insufficient_sources", explain
-the missing evidence briefly, and return source_ids: [] instead of a delivered draft.
-For every non-delivery, source_ids must be [] and no source markers may appear.
+the missing evidence briefly instead of returning a delivered draft.
+For every non-delivery, no source markers may appear.
 """
 )
 
@@ -914,20 +920,7 @@ def _model_input(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
             else {}
         ),
     }
-    schema = {
-        **MODEL_RESPONSE_SCHEMA,
-        "properties": {
-            **MODEL_RESPONSE_SCHEMA["properties"],
-            "source_ids": {
-                "type": "array",
-                "items": {"type": "string", "enum": ids},
-                "uniqueItems": True,
-                "maxItems": len(ids),
-            },
-        },
-        "required": [*MODEL_RESPONSE_SCHEMA["required"], "source_ids"],
-    }
-    return _bounded_model_payload(projected), schema
+    return _bounded_model_payload(projected), MODEL_RESPONSE_SCHEMA
 
 
 def _decode_model_result(
@@ -952,7 +945,7 @@ def _decode_model_result(
             raise GenerationError("delivery may not include a clarification question")
         return _decode_draft_content(content, payload)
     if payload.get("research_sources"):
-        if content.get("source_ids") != []:
+        if content.get("source_ids", []) != []:
             raise GenerationError("non-delivery cannot select citation sources")
         content = {key: item for key, item in content.items() if key != "source_ids"}
         if any(
@@ -970,12 +963,16 @@ def _decode_draft_content(value: object, payload: dict[str, Any]) -> dict[str, s
     sources = payload.get("research_sources", [])
     if not sources:
         return validate_result(value, payload)
-    if not isinstance(value, dict) or set(value) != {
-        *RESPONSE_SCHEMA["required"],
-        "source_ids",
-    }:
+    # Current generation names sources once, beside claims. Legacy responses
+    # with an explicit selection remain strictly checked against their markers.
+    if not isinstance(value, dict) or set(value) not in (
+        set(RESPONSE_SCHEMA["required"]),
+        {*RESPONSE_SCHEMA["required"], "source_ids"},
+    ):
         raise GenerationError("sourced draft fields are invalid")
-    ids = value["source_ids"]
+    ids = value.get("source_ids")
+    if "source_ids" not in value:
+        ids = list(dict.fromkeys(re.findall(r"\[(S\d+)\]", _text(value["text"]))))
     by_id = {f"S{index}": source for index, source in enumerate(sources, 1)}
     if (
         not isinstance(ids, list)
@@ -1012,13 +1009,24 @@ def _abort_connection(connection: http.client.HTTPConnection) -> None:
 
 
 class TextGenerator:
-    def __init__(self, base_url: str, model: str, *, timeout_seconds: float = 120) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        *,
+        timeout_seconds: float = 120,
+        gpu_layers: int = 0,
+    ) -> None:
+        # Operator configuration only; jobs cannot alter compute placement.
+        if type(gpu_layers) is not int or not 0 <= gpu_layers <= MAX_GPU_LAYERS:
+            raise ValueError(f"GPU layers must be an integer from 0 to {MAX_GPU_LAYERS}")
         # Reuse the strict numeric-loopback URL and local-model identifier rules.
         validated = transport.CodeGenerator(base_url, model, timeout_seconds=timeout_seconds)
         parsed = urlsplit(validated.url)
         self.url = f"{parsed.scheme}://{parsed.netloc}/api/chat"
         self.model = validated.model
         self.timeout_seconds = validated.timeout_seconds
+        self.gpu_layers = gpu_layers
 
     def _connection(self) -> http.client.HTTPConnection:
         parsed = urlsplit(self.url)
@@ -1059,15 +1067,16 @@ class TextGenerator:
                 },
             ],
             "stream": True,
+            # This bounded writer needs the final structured draft, not a separate
+            # thinking stream. An operator's alias does not identify capabilities.
+            "think": False,
             "format": response_schema,
             "options": {
                 "temperature": 0,
                 "num_predict": budget,
-                "num_gpu": 0,
+                "num_gpu": self.gpu_layers,
             },
         }
-        if "qwen3" in self.model.casefold():
-            body["think"] = False
         check()
         connection.connect()
         # HTTPConnection may clear .sock after Connection: close headers while
@@ -1329,6 +1338,7 @@ def main() -> None:
         os.environ.get("MONGARS_TEXT_MODEL_URL", "http://127.0.0.1:11434"),
         os.environ["MONGARS_TEXT_MODEL_ID"],
         timeout_seconds=float(os.environ.get("MONGARS_TEXT_TIMEOUT_SECONDS", "120")),
+        gpu_layers=int(os.environ.get("MONGARS_TEXT_GPU_LAYERS", "0")),
     )
     while True:
         worked = run_once(

@@ -117,6 +117,29 @@ def test_unsourced_writing_remains_compatible(text_worker: ModuleType) -> None:
         assert text_worker.validate_result(value, source_payload) == value
 
 
+def test_inline_model_citations_reach_the_unchanged_server_contract(
+    text_worker: ModuleType,
+) -> None:
+    source_payload = {
+        **payload(),
+        "requirements": {"min_citations": 2, "required_source_domains": ["example.org"]},
+    }
+    private = {
+        **result("Services annoncés [S1]. Autre bibliothèque [S2]. Même référence [S1]."),
+        "outcome": "delivered",
+    }
+    resolved = text_worker._decode_model_result(private, source_payload)
+    assert set(resolved) == {"schema_version", "content_trust", "text", "summary"}
+    assert resolved["text"] == private["text"] + f"\n\n[S1] <{LIBRARY_URL}>\n[S2] <{QUERY_URL}>"
+    assert validate_writing_result(resolved, payload=source_payload) == resolved
+    # The server revalidates the canonical URLs; private IDs grant no authority.
+    with pytest.raises(UnsupportedCitationError):
+        validate_writing_result(
+            {**resolved, "text": resolved["text"].replace(QUERY_URL, "https://invented.example/")},
+            payload=source_payload,
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["text", "summary"])
 async def test_direct_submission_checks_persisted_sources_before_accepting_any_draft(

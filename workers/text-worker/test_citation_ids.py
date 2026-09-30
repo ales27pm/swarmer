@@ -70,11 +70,12 @@ def test_native_source_ids_project_evidence_and_resolve_exact_urls(
     assert body["options"] == {"temperature": 0, "num_predict": 2912, "num_gpu": 0}
     assert body["think"] is False
     schema = Draft202012Validator(body["format"])
-    schema.validate(private)
-    schema.validate({**private, "source_ids": []})
+    schema.validate({key: value for key, value in private.items() if key != "source_ids"})
+    with pytest.raises(ValidationError):
+        schema.validate(private)
     for invalid in (["S2"], ["S1", "S1"], [1], None):
-        with pytest.raises(ValidationError):
-            schema.validate({**private, "source_ids": invalid})
+        with pytest.raises(worker.GenerationError):
+            worker._decode_model_result({**private, "source_ids": invalid}, value)
     assert "source_ids" not in worker.RESPONSE_SCHEMA["properties"]
 
 
@@ -107,7 +108,7 @@ def test_transmitted_citation_example_matches_the_sourced_contract(
         "[S2] <https://www.sqlite.org/whentouse.html>"
     )
     assert "not factual evidence and not text to copy" in system
-    assert "Markers appearing only in summary do not satisfy" in system
+    assert "Markers appearing only in summary are not citations" in system
 
 
 @pytest.mark.parametrize(
@@ -166,9 +167,9 @@ def test_unknown_or_unselected_markers_are_rejected_in_both_text_fields(
 
 
 @pytest.mark.parametrize(
-    "change", [{}, {"citations": []}, {"source_ids": [], "url": "https://example.org"}]
+    "change", [{"citations": []}, {"source_ids": [], "url": "https://example.org"}]
 )
-def test_sourced_native_response_cannot_mix_or_omit_private_fields(
+def test_sourced_native_response_cannot_add_unknown_private_fields(
     worker: ModuleType, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any]
 ) -> None:
     generator, _ = generator_for(worker, monkeypatch, stream({**draft(), **change}))
@@ -248,7 +249,15 @@ def test_all_five_sources_and_empty_selection_are_bounded(
     result = generator.generate(sourced_payload(*sources), ensure_active=lambda: None)
     assert result["text"].endswith("[S5] <https://example.org/4>\n[S1] <https://example.org/0>")
     body = next(call[2] for call in connection.calls if call[0] == "POST")
-    assert body["format"]["properties"]["source_ids"]["maxItems"] == 5
+    schema = Draft202012Validator(body["format"])
+    all_sources = {**draft(), "outcome": "delivered", "text": "Sources [S1] [S2] [S3] [S4] [S5]."}
+    schema.validate(all_sources)
+    resolved = worker._decode_model_result(all_sources, sourced_payload(*sources))
+    assert resolved["text"].endswith("[S5] <https://example.org/4>")
+    with pytest.raises(worker.GenerationError):
+        worker._decode_model_result(
+            {**all_sources, "text": all_sources["text"] + " [S6]"}, sourced_payload(*sources)
+        )
     private = {
         **draft(),
         "text": "Les extraits sont insuffisants pour répondre.",

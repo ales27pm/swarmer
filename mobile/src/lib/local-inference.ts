@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
 
 import type { ToolProposalInput } from "@/lib/api/types";
+import { MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import type { GgufDownload } from "@/lib/local-model-presets";
 
 export const LOCAL_INFERENCE_MODULE_NAME = "SwarmerLocalInference";
@@ -540,7 +541,7 @@ function parseGeneration(value: unknown): LocalGenerationResult {
     !["stop", "length", "cancelled"].includes(value.finishReason) ||
     !Number.isSafeInteger(value.tokenCount) ||
     Number(value.tokenCount) < 0 ||
-    Number(value.tokenCount) > 512
+    Number(value.tokenCount) > MAX_LOCAL_GENERATION_TOKENS
   ) {
     throw new Error("La génération native a retourné un résultat invalide.");
   }

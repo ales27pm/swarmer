@@ -234,7 +234,7 @@ enum LocalInferenceError: LocalizedError, Sendable {
     case .promptTooLarge:
       return "The local prompt is too large."
     case .invalidMaxTokens:
-      return "maxTokens must be between 1 and 512."
+      return "maxTokens must be between 1 and 1024."
     case .invalidTemperature:
       return "temperature must be finite and between 0 and 2."
     case .unsupportedCoreMLContract(let detail):
@@ -257,7 +257,7 @@ enum LocalInferenceValidation {
 
   static func maxTokens(_ value: Int?) throws -> Int {
     let resolved = value ?? 256
-    guard (1...512).contains(resolved) else { throw LocalInferenceError.invalidMaxTokens }
+    guard (1...1024).contains(resolved) else { throw LocalInferenceError.invalidMaxTokens }
     return resolved
   }
 

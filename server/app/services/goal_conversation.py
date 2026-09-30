@@ -156,7 +156,7 @@ class GoalConversationService:
                 raise GoalConversationConflict("goal not found")
             replay = await (
                 await db.execute(
-                """SELECT id,goal_run_id,role,content,reply_to_message_id FROM goal_messages
+                    """SELECT id,goal_run_id,role,content,reply_to_message_id FROM goal_messages
                     WHERE conversation_id=? AND actor_id=? AND client_message_id=?""",
                     (link["id"], actor_id, client_message_id),
                 )

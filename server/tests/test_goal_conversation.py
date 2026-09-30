@@ -7,9 +7,12 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from app.services.context_builder import safe_context_text
 from app.services.goal_conversation import GoalConversationService
 from app.services.goal_limits import active_runtime_seconds, runtime_expired
 from app.services.goal_manager import GoalManagerConflict
+from app.services.planner_continuation_context import continuation_cards
+from app.services.project_context import ProjectContextService
 from app.services.state_service import StateService
 from app.services.swarm_contracts import GoalCreateRequest, GoalMessageRequest, GoalStartRequest
 from tests.test_goal_runtime_recovery import _manager, _worker_plan
@@ -253,8 +256,27 @@ async def test_model_budget_exhaustion_auto_continues_linked_run(tmp_path: Path)
     history = await manager.conversation_messages(goal["id"])
     new_id = history["active_goal_id"]
     assert new_id != goal["id"]
-    assert [message["role"] for message in history["messages"]] == ["user", "user"]
-    assert "Continue automatically" in history["messages"][-1]["content"]
+    assert [message["role"] for message in history["messages"]] == ["user", "assistant"]
+    checkpoint = history["messages"][-1]
+    assert checkpoint["goal_run_id"] == new_id
+    assert checkpoint["content"]
+
+    project_context = ProjectContextService(manager.db_path)
+    snapshot = await project_context.refresh(new_id)
+    assert [item["text"] for item in snapshot["requirements"]] == ["Inspect the repository"]
+    assert {item["source_id"] for item in snapshot["proposals"]} == {checkpoint["id"]}
+    source = await project_context.source(new_id, checkpoint["id"])
+    assert source["role"] == "assistant"
+    assert source["content"] == safe_context_text(
+        checkpoint["content"], max_chars=max(4_000, len(checkpoint["content"]))
+    )
+    cards = await continuation_cards(manager.db_path, new_id)
+    assert any(
+        card.kind == "continuation_checkpoint"
+        and card.provenance_ids == (checkpoint["id"],)
+        and card.summary == safe_context_text(checkpoint["content"], max_chars=4_000)
+        for card in cards
+    )
 
     old = await manager.graph.get_goal(goal["id"])
     assert old is not None and old["status"] == "budget_exhausted"
@@ -270,3 +292,214 @@ async def test_model_budget_exhaustion_auto_continues_linked_run(tmp_path: Path)
                 "SELECT parent_goal_id FROM goal_conversation_links WHERE goal_run_id=?", (new_id,)
             )
         ).fetchone() == (goal["id"],)
+
+
+@pytest.mark.asyncio
+async def test_auto_continuation_reconciles_after_crash_between_append_and_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = await _manager(
+        tmp_path / "state.db", _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=1), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+
+    async def crash_after_append(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated restart after durable continuation")
+
+    monkeypatch.setattr(manager, "_resume_pending_conversation", crash_after_append)
+    await manager._terminate_goal(
+        goal["id"], status="budget_exhausted", reason="goal model call budget exhausted"
+    )
+    history = await manager.conversation_messages(goal["id"])
+    new_id = history["active_goal_id"]
+    assert new_id != goal["id"]
+    pending = await manager.graph.get_goal(new_id)
+    assert pending is not None and pending["status"] == "planning"
+    assert pending["pending_message_revision"] > 0
+
+    restarted = await _manager(
+        manager.db_path, _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    assert await restarted.reconcile() >= 1
+    continued = await restarted.get_goal(new_id)
+    assert continued is not None and continued["goal"]["status"] == "running"
+    assert continued["nodes"]
+    assert (await restarted.conversation_messages(goal["id"]))["active_goal_id"] == new_id
+
+
+@pytest.mark.asyncio
+async def test_auto_continuation_reconciles_after_crash_before_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = await _manager(
+        tmp_path / "state.db", _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=1), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+
+    async def crash_before_append(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated restart before durable continuation")
+
+    monkeypatch.setattr(manager.conversations, "append", crash_before_append)
+    await manager._terminate_goal(
+        goal["id"], status="budget_exhausted", reason="goal model call budget exhausted"
+    )
+    pending = await manager.graph.get_goal(goal["id"])
+    assert pending is not None and pending["current_phase"] == "auto_continuation_pending"
+    assert (await manager.conversation_messages(goal["id"]))["active_goal_id"] == goal["id"]
+
+    restarted = await _manager(
+        manager.db_path, _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    assert await restarted.reconcile() >= 1
+    new_id = (await restarted.conversation_messages(goal["id"]))["active_goal_id"]
+    assert new_id != goal["id"]
+    await restarted.reconcile()
+    assert (await restarted.conversation_messages(goal["id"]))["active_goal_id"] == new_id
+    async with aiosqlite.connect(manager.db_path) as db:
+        assert await (
+            await db.execute(
+                "SELECT COUNT(*) FROM goal_conversation_links WHERE parent_goal_id=?",
+                (goal["id"],),
+            )
+        ).fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_auto_continuation_recovery_cancels_old_child_after_terminal_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = await _manager(
+        tmp_path / "state.db", _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=1), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+    nodes = await manager.graph.list_nodes(goal["id"])
+    child_id = nodes[0]["task_id"]
+    assert child_id
+
+    async def crash_before_projection(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated crash before terminal projection")
+
+    monkeypatch.setattr(manager, "_finalize_terminal_goal", crash_before_projection)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await manager._terminate_goal(
+            goal["id"], status="budget_exhausted", reason="goal model call budget exhausted"
+        )
+    before = await manager.state_service.get_task(child_id)
+    assert before is not None and before.status.value != "cancelled"
+
+    restarted = await _manager(
+        manager.db_path, _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    assert await restarted.reconcile() >= 1
+    child = await restarted.state_service.get_task(child_id)
+    assert child is not None and child.status.value == "cancelled"
+    history = await restarted.conversation_messages(goal["id"])
+    assert history["active_goal_id"] != goal["id"]
+
+
+@pytest.mark.asyncio
+async def test_auto_continuation_stops_after_repeated_model_budgets_without_progress(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(
+        tmp_path / "state.db", _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    first = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=1), actor_id="phone"
+    )
+    await manager.start_goal(first["id"], GoalStartRequest())
+
+    run_id = first["id"]
+    for _ in range(3):
+        await manager._terminate_goal(
+            run_id, status="budget_exhausted", reason="goal model call budget exhausted"
+        )
+        run_id = (await manager.conversation_messages(first["id"]))["active_goal_id"]
+
+    assert run_id != first["id"]
+    last = await manager.graph.get_goal(run_id)
+    assert last is not None and last["status"] == "budget_exhausted"
+    assert last["current_phase"] == "auto_continuation_stopped"
+    history = await manager.conversation_messages(first["id"])
+    assert [message["role"] for message in history["messages"]] == [
+        "user",
+        "assistant",
+        "assistant",
+    ]
+    assert await manager.reconcile() == 0
+    assert (await manager.conversation_messages(first["id"]))["active_goal_id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_auto_checkpoint_keeps_completed_work_when_recent_nodes_were_cancelled(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(tmp_path / "state.db", _worker_plan())
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository"), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+    async with aiosqlite.connect(manager.db_path) as db:
+        completed = await (
+            await db.execute("SELECT id FROM plan_nodes WHERE goal_run_id=? LIMIT 1", (goal["id"],))
+        ).fetchone()
+        assert completed is not None
+        await db.execute(
+            "UPDATE plan_nodes SET status='completed',result_summary='README inspected' WHERE id=?",
+            (completed[0],),
+        )
+        for index in range(12):
+            await db.execute(
+                """INSERT INTO plan_nodes(id,goal_run_id,node_type,title,objective,status,
+                priority,depends_on_json,expected_output,created_at,updated_at)
+                SELECT ?,goal_run_id,node_type,'Cancelled task','Unfinished task','cancelled',
+                priority,depends_on_json,expected_output,created_at,?
+                FROM plan_nodes WHERE id=?""",
+                (f"cancelled_{index}", f"2099-01-01T00:00:{index:02d}+00:00", completed[0]),
+            )
+        await db.commit()
+    checkpoint = await manager._auto_continuation_checkpoint(goal["id"])
+    assert checkpoint is not None
+    assert f"Node {completed[0]} [completed], reported: README inspected" in checkpoint
+
+
+@pytest.mark.asyncio
+async def test_auto_continuation_preserves_long_user_instructions_when_checkpoint_cannot_fit(
+    tmp_path: Path,
+) -> None:
+    manager = await _manager(
+        tmp_path / "state.db", _worker_plan(), auto_continue_on_model_budget_exhausted=True
+    )
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=1), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+    instructions = [f"Instruction {index}: " + chr(65 + index) * 1_000 for index in range(3)]
+    for index, instruction in enumerate(instructions):
+        await manager.reply_goal(
+            goal["id"],
+            GoalMessageRequest(message=instruction, client_message_id=f"long-{index}"),
+            actor_id="phone",
+        )
+    before = await manager.conversation_messages(goal["id"])
+    assert [message["content"] for message in before["messages"]][1:] == instructions
+
+    await manager._terminate_goal(
+        goal["id"], status="budget_exhausted", reason="goal model call budget exhausted"
+    )
+    stopped = await manager.graph.get_goal(goal["id"])
+    assert stopped is not None and stopped["status"] == "budget_exhausted"
+    assert stopped["current_phase"] == "auto_continuation_stopped"
+    assert "cannot preserve all user instructions" in stopped["failure_reason"]
+    after = await manager.conversation_messages(goal["id"])
+    assert after["active_goal_id"] == goal["id"]
+    assert after["messages"] == before["messages"]
