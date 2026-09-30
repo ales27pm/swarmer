@@ -5,7 +5,8 @@ draft, plan, instructions, or analysis. It uses the user's language, incorporate
 conversation replies, and labels genuinely unknown details as assumptions or
 open issues. It does not ask the user to supply the deliverable it was asked to
 write. Generated text remains an untrusted proposal: validation checks the
-envelope and limits, not factual accuracy or compliance with every instruction.
+envelope, explicit word bounds, distinct supplied citations and required source
+domains. It does not establish factual accuracy or compliance with every instruction.
 
 The exact job payload is:
 
@@ -25,15 +26,23 @@ each with `content_trust: "untrusted"`, `worker_job_id`, `title`, `url`, and
 `snippet`. Their compact UTF-8 JSON is limited to 8,000 bytes within the payload
 budget. Titles contain at most 240 characters, snippets 700, and public HTTP(S)
 URLs 1,000. These are quoted search snippets, not instructions or proof that a
-full page was visited.
+full page was visited. Sources from `research.collect` may additionally carry strict
+`evidence` with `kind: page_excerpt`, requested/final URLs, fetch timestamp, body,
+extracted-content and excerpt SHA-256 digests, exact excerpt text (up to4,000characters),
+and a truncation flag. The citation must match the final URL; the excerpt hash is checked.
+When such passages are present, up to6sources/24,000bytes are accepted, still inside
+the unchanged32,000-byte payload. The server selects whole sources under that budget
+and reserves room for the latest user guidance. A read receipt is not semantic validation.
 
 For a nonempty source list, the private model request replaces URLs with `S1`
-through `S5`, keeping the title, snippet, and source hostname. Links inside source
-titles/snippets are omitted. The objective and conversation remain verbatim,
+through `S6` (up to5without page evidence), keeping the title, snippet, source hostname
+and any actually read passage. URLs inside excerpts are omitted in the model projection;
+the original evidence digests remain in the canonical job, not attached to transformed text. The objective and conversation remain verbatim,
 including any user-authored URLs. The model
 must return an additional private `source_ids` array containing only distinct
-supplied IDs. An empty array is valid when the evidence is insufficient. Optional
-`[S1]` markers in text or summary must refer to a selected ID. The dynamic native
+supplied IDs. A delivered text must contain a `[S1]` marker for every selected source.
+Markers in text or summary must refer to a selected ID. A non-delivery must have
+an empty array and no source markers; it never receives a generated bibliography. The dynamic native
 JSON schema constrains the choices, and the worker independently validates them.
 
 The worker rejects all model-emitted HTTP(S) URLs in sourced text/summary, unknown
@@ -41,7 +50,7 @@ or duplicate IDs, duplicate JSON fields, and missing or extra private fields.
 It then appends `[S1] <original URL>` references to the text deterministically and
 removes `source_ids`. The final text, including these exact URLs, must still fit
 the unchanged byte limit and pass the existing citation guard. The server receives
-the canonical result below; its API and validation are unchanged. Unsourced model
+the canonical delivered result below, whose shape is unchanged. Unsourced model
 requests and historical canonical results retain their existing format. Selecting
 a real source does not prove that its snippet supports a claim; factual relevance
 still needs evaluation.
@@ -64,12 +73,51 @@ Failed generation logs only fixed reason codes, such as `token_limit`,
 bodies, user inputs, credentials, and exception messages are never logged.
 The control-plane failure response remains fixed and contains no partial draft.
 
-Inference uses one native Ollama `/api/chat` request, at most 512 output tokens,
-and an absolute wall budget of 1–120 seconds. The prompt requests a complete
-100–140-word plain-prose draft (5 concise steps for a plan and one short line for
-assumptions, dependencies, and limits) with a summary within 80 characters,
-including JSON overhead within the token budget. The result contract retains its
-larger byte and character bounds; the generation budget does not relax validation.
+The optional `requirements` object has strict integer `min_words`/`max_words`
+(1–100,000), `min_citations` (0–5), and up to five distinct lowercase public
+`required_source_domains`. Nulls, unknown fields and reversed bounds are rejected.
+When absent, explicit FR/EN constraints are extracted from the original objective
+and user messages; later user word bounds replace earlier bounds. Assistant and
+planner text cannot impose these constraints. This conservative parser covers
+common numeric requests, not arbitrary natural-language semantics. The server
+stores the extracted contract with the job and independently validates results.
+
+For older callers that omit `requirements`, the worker includes the extracted
+contract in the private model input as well as using it for output allocation and
+acceptance. This projection does not mutate the original job or conversation.
+Explicit requirements are preserved; a request without measurable constraints
+keeps its existing input shape. The projected input, including these constraints,
+must fit the 32,000-byte UTF-8 payload limit or fail before any model call.
+
+For example, 150–200 words, two citations and domains `docs.python.org` and
+`sqlite.org` require that length and two distinct exact supplied URLs covering
+those domains. Subdomains match only on a dot boundary. Citation appendices,
+source markers and URLs do not pad the word count. Links in a summary do not
+satisfy citations required in the delivered document. Selecting an allowed URL
+still does not prove relevance or that its page was read.
+
+The model declares `delivered`, `declined`, `needs_clarification`, or
+`insufficient_sources`. Delivery retains the four-field legacy result. Every
+non-delivery contains its `outcome` and the worker-configured `model_id` (the
+model cannot supply provenance). Clarification also requires a bounded specific
+`question`. Non-deliveries are submitted as failed jobs with distinct fixed
+codes; the server decides whether the goal waits for the user or stops. They do
+not have to meet delivery word/citation requirements. No automatic retry occurs.
+
+Inference uses one native Ollama `/api/chat` request and an absolute wall budget
+of 1–120 seconds. The output allowance adapts to explicit word bounds with a
+512-token JSON/summary reserve, between 1,024 and 8,192 tokens. With no explicit
+length, 600 words size the allowance without imposing a word-count target. The
+prompt permits requested tables and plans instead of forcing 100–140 words of
+prose. The envelope remains capped at 24,000 UTF-8 text bytes; incomplete streams
+and token-limit finishes are still rejected. A minimum above 1,800 words returns
+`writing_budget_exceeded` before calling the model: splitting long documents into
+stages belongs to goal orchestration, not hidden retries in this worker.
+
+Deploy the server's additive requirements and non-delivery support before sending
+new-contract jobs or activating this worker. Older persisted delivered results
+retain their wire shape; no historical records are rewritten.
+
 CPU inference (`num_gpu: 0`) limits the writer's GPU use. When roles share the
 same alias, Ollama may reuse its CPU placement for later planner/evaluator calls;
 their deadlines must account for CPU latency (see `docs/33-writing-drafts.md`).

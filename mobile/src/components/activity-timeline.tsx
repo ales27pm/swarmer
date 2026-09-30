@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
 import { ActionButton, Card, COLORS, ErrorBanner } from "@/components/swarm-ui";
-import { ApiError, getActivity, type ActivityItem, type ActivityPage, type ActivityScopeType, type PlanNode } from "@/lib/application-api/server";
+import { ApiError, getActivity, type ActivityItem, type ActivityPage, type ActivityScopeType, type PlanNode, type ProjectGraph } from "@/lib/application-api/server";
 import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 
@@ -13,6 +13,12 @@ type Props = {
   nodes?: PlanNode[];
   selectedNodeId?: string | null;
   onOpenTask?: (taskId: string) => void;
+  intent?: string;
+  planningDecisions?: ProjectGraph["planning_decisions"];
+  contextStale?: boolean;
+  onOpenResults?: () => void;
+  onOpenPlan?: () => void;
+  onOpenGoal?: (goalId: string) => void;
 };
 const KIND_LABELS = { model_call: "Modèle", worker_job: "Agent", tool_call: "Outil", project_revision: "Révision", project_check: "Vérification" };
 const STATUS_LABELS = { queued: "En file", running: "En cours au dernier relevé", waiting: "En attente", completed: "Terminée", failed: "Échouée", cancelled: "Annulée", skipped: "Ignorée", recorded: "Enregistrée" };
@@ -50,6 +56,48 @@ function dateLabel(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("fr-CA");
 }
 
+function durationLabel(milliseconds: number | null): string {
+  if (milliseconds === null) return "Durée non enregistrée";
+  if (milliseconds === 0) return "Durée enregistrée : 0 s";
+  if (milliseconds < 1000) return "Durée enregistrée : moins de 1 s";
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `Durée enregistrée : ${(milliseconds / 1000).toLocaleString("fr-CA", { maximumFractionDigits: 1 })} s`;
+  if (seconds < 3600) return `Durée enregistrée : ${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+  return `Durée enregistrée : ${Math.floor(seconds / 3600)} h ${Math.floor(seconds % 3600 / 60)} min`;
+}
+
+/** These joins identify recorded producers, never nearby timestamps or similar titles. */
+function linkedNode(item: ActivityItem, nodes: PlanNode[]): PlanNode | undefined {
+  return nodes.find((node) => node.id === item.node_id && node.goal_run_id === item.goal_run_id
+    && (!node.task_id || node.task_id === item.task_id));
+}
+
+function ActivityPurpose({ item, node, decisions = [], stale }: {
+  item: ActivityItem; node?: PlanNode; decisions?: Props["planningDecisions"]; stale?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const decision = decisions.find((candidate) => candidate.goal_run_id === item.goal_run_id
+    && (node ? candidate.node_ids.includes(node.id)
+      : item.kind === "model_call" && candidate.model_call_id !== null && item.id === `model_call:${candidate.model_call_id}`));
+  const result = node?.worker_job_id && item.kind === "worker_job" && item.id === `worker_job:${node.worker_job_id}`
+    && item.status === "completed" && node.status === "completed" ? node.result_summary : null;
+  if (!node && !decision) return null;
+  return <View style={{ gap: 6 }}>
+    {node ? <Text selectable style={{ color: COLORS.text, lineHeight: 20 }}>Objectif de l’étape : {node.objective}</Text> : null}
+    {node?.expected_output ? <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>Résultat attendu : {node.expected_output}</Text> : null}
+    {decision ? <>
+      <Text style={{ color: COLORS.text, fontWeight: "600", fontSize: 13 }}>Pourquoi ce plan a été proposé</Text>
+      <Text selectable numberOfLines={expanded ? undefined : 3} style={{ color: COLORS.text, lineHeight: 20 }}>{decision.rationale_summary}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Explication du plan pour ${item.title}`} accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)} style={{ minHeight: 44, justifyContent: "center" }}>
+        <Text style={{ color: COLORS.accent, fontSize: 13 }}>{expanded ? "Réduire l’explication" : "Lire l’explication complète"}</Text>
+      </Pressable>
+      <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Explication publique du planificateur · {dateLabel(decision.created_at)}. Elle décrit le plan, pas une preuve d’exécution.</Text>
+    </> : <Text style={{ color: COLORS.subtle, fontSize: 12 }}>Aucune explication publique liée à cette étape dans le relevé chargé.</Text>}
+    {result ? <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>Résultat déclaré par l’agent : {result}</Text> : null}
+    {stale ? <Text style={{ color: COLORS.warning, fontSize: 12 }}>Contexte de l’étape conservé ; son état actuel n’est pas confirmé.</Text> : null}
+  </View>;
+}
+
 function ActivityAttribution({ item, node, onOpenTask, technical = true }: {
   item: ActivityItem; node?: PlanNode; onOpenTask?: Props["onOpenTask"]; technical?: boolean;
 }) {
@@ -69,14 +117,14 @@ function ActivityAttribution({ item, node, onOpenTask, technical = true }: {
   );
 }
 
-function ActivityRow({ item, node, onOpenTask, showAttribution }: {
-  item: ActivityItem; node?: PlanNode; onOpenTask?: Props["onOpenTask"]; showAttribution?: boolean;
+function ActivityRow({ item, node, onOpenTask, decisions, contextStale }: {
+  item: ActivityItem; node?: PlanNode; onOpenTask?: Props["onOpenTask"]; decisions?: Props["planningDecisions"]; contextStale?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const color = item.status === "failed" ? COLORS.danger : item.status === "completed" ? COLORS.accent : item.status === "running" ? COLORS.info : COLORS.muted;
-  const durationLabel = item.duration_ms === null ? "Durée non enregistrée" : `Durée enregistrée : ${item.duration_ms.toLocaleString("fr-CA")} ms`;
+  const duration = durationLabel(item.duration_ms);
   const details = [
-    ...(!showAttribution ? [["Agent", item.agent_id], ["Modèle", item.model_id], ["Outil", item.tool_name]] : []),
+    ["Agent", item.agent_id], ["Modèle", item.model_id], ["Outil / compétence", item.tool_name],
     ["Opération", item.id], ["Projet", item.goal_run_id], ["Tâche", item.task_id], ["Étape", item.node_id],
     ["Révision", item.detail.revision_id],
     ["Vérification", item.detail.check_index === null ? null : String(item.detail.check_index + 1)],
@@ -93,23 +141,25 @@ function ActivityRow({ item, node, onOpenTask, showAttribution }: {
         </View>
       </View>
       <Text selectable numberOfLines={expanded ? undefined : 2} style={{ color: COLORS.text, fontSize: 15, fontWeight: "600", lineHeight: 21 }}>{item.title}</Text>
-      {showAttribution ? <ActivityAttribution item={item} node={node} onOpenTask={onOpenTask} /> : null}
+      <ActivityAttribution technical={false} item={item} node={node} onOpenTask={onOpenTask} />
+      <ActivityPurpose item={item} node={node} decisions={decisions} stale={contextStale} />
       <Text style={{ color: COLORS.muted, fontSize: 12 }}>{dateLabel(item.recorded_at)}</Text>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Détails de ${item.title}`}
-        accessibilityHint={durationLabel}
+        accessibilityHint={duration}
         accessibilityState={{ expanded }}
         onPress={() => setExpanded((value) => !value)}
         style={({ pressed }) => ({ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "space-between", minHeight: 44, opacity: pressed ? 0.6 : 1 })}
       >
         <Text style={{ color: COLORS.muted, fontSize: 12 }}>
-          {durationLabel}
+          {duration}
         </Text>
-        <Text style={{ color: COLORS.accent, fontSize: 13, fontWeight: "600" }}>{expanded ? "Réduire −" : "Détails +"}</Text>
+        <Text style={{ color: COLORS.accent, fontSize: 13, fontWeight: "600" }}>{expanded ? "Réduire −" : "Diagnostic +"}</Text>
       </Pressable>
       {expanded ? (
         <View style={{ backgroundColor: COLORS.background, borderRadius: 12, gap: 8, padding: 12 }}>
+          {item.duration_ms !== null ? <Text style={{ color: COLORS.muted, fontSize: 12 }}>Durée enregistrée : {item.duration_ms.toLocaleString("fr-CA")} ms</Text> : null}
           {item.detail.command !== null ? (
             <View style={{ gap: 3 }}>
               <Text style={{ color: COLORS.muted, fontSize: 12 }}>Commande enregistrée</Text>
@@ -126,9 +176,9 @@ function ActivityRow({ item, node, onOpenTask, showAttribution }: {
 }
 
 /** Presentation-only filters never fetch, alter, or infer records outside the loaded pages. */
-function ActivityRecords({ page, nodes = [], selectedNodeId, onOpenTask, follow }: {
+function ActivityRecords({ page, nodes = [], selectedNodeId, onOpenTask, planningDecisions, contextStale }: {
   page: ActivityPage;
-} & Pick<Props, "nodes" | "selectedNodeId" | "onOpenTask" | "follow">) {
+} & Pick<Props, "nodes" | "selectedNodeId" | "onOpenTask" | "planningDecisions" | "contextStale">) {
   const [filter, setFilter] = useState<ActivityItem["kind"] | "all">("all");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const scopedItems = selectedNodeId ? page.items.filter((item) => item.node_id === selectedNodeId) : page.items;
@@ -183,7 +233,7 @@ function ActivityRecords({ page, nodes = [], selectedNodeId, onOpenTask, follow 
       <Text style={{ color: COLORS.muted, fontSize: 12 }}>Les plus récentes d’abord</Text>
       {page.items.length === 0 ? <Text style={{ color: COLORS.muted }}>Aucune opération enregistrée dans ce relevé.</Text>
         : visibleItems.length === 0 ? <Text style={{ color: COLORS.muted, lineHeight: 19 }}>Aucune opération de ce type parmi celles déjà chargées.</Text>
-          : visibleItems.map((item) => <ActivityRow key={item.id} item={item} node={nodes.find((node) => node.id === item.node_id && node.goal_run_id === item.goal_run_id)} onOpenTask={onOpenTask} showAttribution={follow} />)}
+          : visibleItems.map((item) => <ActivityRow key={item.id} item={item} node={linkedNode(item, nodes)} onOpenTask={onOpenTask} decisions={planningDecisions} contextStale={contextStale} />)}
     </View>
   );
 }
@@ -193,7 +243,7 @@ export function ActivityTimeline(props: Props) {
   return <ActivitySession key={`${props.scope}:${props.id}`} {...props} />;
 }
 
-function ActivitySession({ scope, id, enabled, refreshKey, follow = false, nodes = [], selectedNodeId, onOpenTask }: Props) {
+function ActivitySession({ scope, id, enabled, refreshKey, follow = false, nodes = [], selectedNodeId, onOpenTask, intent, planningDecisions, contextStale, onOpenPlan, onOpenResults, onOpenGoal }: Props) {
   const [expanded, setExpanded] = useState(false);
   const { state: liveState } = useLiveSync();
   const [page, setPage] = useState<ActivityPage | null>(null);
@@ -272,6 +322,10 @@ function ActivitySession({ scope, id, enabled, refreshKey, follow = false, nodes
 
   return (
     <Card style={{ gap: 0 }}>
+      {watching && intent ? <View style={{ gap: 6, paddingBottom: 12 }}>
+        <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 15, fontWeight: "700" }}>Votre demande</Text>
+        <Text selectable style={{ color: COLORS.muted, lineHeight: 21 }}>{intent}</Text>
+      </View> : null}
       {follow ? (
         <View style={{ gap: 10, paddingBottom: 12 }} testID="activity-live-summary">
           <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 17, fontWeight: "700" }}>Suivi des opérations</Text>
@@ -292,7 +346,9 @@ function ActivitySession({ scope, id, enabled, refreshKey, follow = false, nodes
               <View key={item.id} style={{ borderLeftWidth: 3, borderLeftColor: item.status === "failed" ? COLORS.danger : COLORS.info, paddingLeft: 10, gap: 6 }}>
                 <Text style={{ color: COLORS.muted, fontSize: 12 }}>{KIND_LABELS[item.kind]}{item.role ? ` · ${ROLE_LABELS[item.role]}` : ""} · {STATUS_LABELS[item.status]}</Text>
                 <Text selectable style={{ color: COLORS.text, fontSize: 14, fontWeight: "600" }}>{item.title}</Text>
-                <ActivityAttribution technical={false} item={item} node={nodes.find((node) => node.id === item.node_id && node.goal_run_id === item.goal_run_id)} onOpenTask={onOpenTask} />
+                <ActivityAttribution technical={false} item={item} node={linkedNode(item, nodes)} onOpenTask={onOpenTask} />
+                <ActivityPurpose item={item} node={linkedNode(item, nodes)} decisions={planningDecisions} stale={contextStale} />
+                <Text style={{ color: COLORS.muted, fontSize: 12 }}>{durationLabel(item.duration_ms)}</Text>
               </View>
             )) : null}
             {!expanded && activeItems.length > 3 ? <Text style={{ color: COLORS.muted, fontSize: 12 }}>{activeItems.length - 3} autres opérations dans les détails.</Text> : null}
@@ -313,6 +369,11 @@ function ActivitySession({ scope, id, enabled, refreshKey, follow = false, nodes
       </Pressable>
       {watching ? (
         <View style={{ gap: 12, paddingTop: 10 }}>
+          {onOpenResults || onOpenPlan ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {onOpenResults ? <ActionButton label="Voir les résultats du projet" onPress={onOpenResults} /> : null}
+            {onOpenPlan ? <ActionButton label="Comprendre le plan" onPress={onOpenPlan} /> : null}
+          </View> : null}
+          {scope === "task" && page?.scope.goal_run_id && onOpenGoal ? <ActionButton label="Ouvrir le projet lié" onPress={() => onOpenGoal(page.scope.goal_run_id!)} /> : null}
           {expanded ? <Text style={{ color: COLORS.muted, fontSize: 12, lineHeight: 18 }}>{COVERAGE}</Text> : null}
           {!enabled ? <Text accessibilityRole="alert" style={{ color: COLORS.muted }}>Connexion requise pour actualiser les opérations.</Text> : null}
           {page && isUnconfirmed ? <Text style={{ color: COLORS.warning, fontSize: 12 }}>Dernier relevé conservé ; son état n’est pas confirmé actuellement.</Text> : null}
@@ -320,7 +381,7 @@ function ActivitySession({ scope, id, enabled, refreshKey, follow = false, nodes
           <ErrorBanner message={error} />
           {!page && busy ? <Text style={{ color: COLORS.muted }}>Chargement des preuves enregistrées…</Text> : null}
           {page && expanded ? <>
-            <ActivityRecords page={page} nodes={nodes} selectedNodeId={selectedNodeId} onOpenTask={onOpenTask} follow={follow} />
+            <ActivityRecords page={page} nodes={nodes} selectedNodeId={selectedNodeId} onOpenTask={onOpenTask} planningDecisions={planningDecisions} contextStale={contextStale} />
             {page.has_more ? <ActionButton label="Voir les opérations précédentes" disabled={!enabled || busy || resetRequired} onPress={() => void load(page.next_cursor ?? undefined)} testID="activity-timeline-more" /> : null}
           </> : null}
         </View>

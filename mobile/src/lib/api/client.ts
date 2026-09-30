@@ -1,9 +1,11 @@
 import { fetch } from "expo/fetch";
+import { validateMemoryPresentations } from "./memory-presentation";
 import { parseProjectContext } from "./project-context";
 import { parseProjectGraph, type ProjectGraph } from "./project-graph";
 import { parseProjectEvidence, type ProjectEvidenceView, type ProjectEvidenceWrite } from "./project-evidence";
 import { parseWebsiteCapabilities, parseWebsiteProject, parseWebsiteProjects, parseWebsiteApproval, parseWebsitePreview, type WebsiteCreate, type WebsiteCommand, type WebsiteReview, type WebsitePublish } from "./website-projects";
 import { activityCursor, activityIdentifier, parseActivityPage, type ActivityPage, type ActivityScopeType } from "@/lib/api/activity";
+import { memoryUsageCursor, memoryUsageIdentifier, parseMemoryUsagePage, type MemoryUsagePage } from "@/lib/api/memory-usage";
 import * as SecureStore from "expo-secure-store";
 import {
   newGoalMessageId,
@@ -1084,6 +1086,15 @@ export function listGoalNodes(
   );
 }
 
+export async function getGoalMemoryUsage(
+  goalId: string, cursor?: string, shouldAccept: () => boolean = () => true,
+): Promise<MemoryUsagePage> {
+  memoryUsageIdentifier(goalId);
+  const query = cursor === undefined ? "" : `?cursor=${encodeURIComponent(memoryUsageCursor(cursor))}`;
+  const value = await fencedRequest<unknown>(`/goals/${resourceId(goalId)}/memory-usage${query}`, undefined, shouldAccept);
+  return parseMemoryUsagePage(value, goalId);
+}
+
 export async function getActivity(
   scope: ActivityScopeType,
   id: string,
@@ -1432,11 +1443,12 @@ export function listMemory(): Promise<MemoryItem[]> {
   return request<MemoryItem[]>("/memory");
 }
 
-export function searchMemory(query: string): Promise<MemoryItem[]> {
-  return request<MemoryItem[]>("/memory/search", {
+export async function searchMemory(query: string): Promise<MemoryItem[]> {
+  const items = await request<MemoryItem[]>("/memory/search", {
     method: "POST",
     body: JSON.stringify({ query }),
   });
+  return validateMemoryPresentations(items);
 }
 
 export function rememberMemory(input: {

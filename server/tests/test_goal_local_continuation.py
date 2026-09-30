@@ -10,7 +10,7 @@ import pytest
 from app.services.goal_manager import GoalManager, GoalManagerConflict
 from app.services.project_memory import ProjectMemoryService
 from app.services.swarm_contracts import GoalCreateRequest, GoalMessageRequest, GoalStartRequest
-from tests.test_goal_project_runtime import _project
+from tests.test_goal_project_runtime import _project, _result
 from tests.test_goal_runtime_recovery import _manager, _worker_plan
 from tests.test_project_memory import SemanticProvider
 
@@ -18,6 +18,8 @@ from tests.test_project_memory import SemanticProvider
 async def _terminal_project(tmp_path: Path) -> tuple[GoalManager, str, str]:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
     parent = detail["goal"]["id"]
+    # A durable identity alone is not a file artifact. Capture an inert worker revision.
+    await _result(manager, agent, action="continue")
     await manager.reply_goal(
         parent,
         GoalMessageRequest(

@@ -224,6 +224,12 @@ worker_skill_rules:
     decision: allow
     risk: low
     auto_redistribute: false
+  research.collect:
+    id: allow-worker-bounded-source-collection
+    description: A research worker may run bounded configured-adapter queries and read public HTTPS result pages with validated destinations and no credentials.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   code_review.git_status:
     id: allow-worker-git-status
     description: A review worker may inspect repository status without writes.

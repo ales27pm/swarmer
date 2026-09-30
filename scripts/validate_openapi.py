@@ -104,6 +104,24 @@ def effective_security(
     return value
 
 
+def validate_success_media(path: str, method: str, code: str, response: dict[str, Any]) -> None:
+    # A raw Response has an empty JSON placeholder in FastAPI's generated schema.
+    # Keep this explicit binary boundary tied to the real screenshot route; all
+    # other successful payloads still require the published JSON schema.
+    if (path, method) == ("/website-projects/{project_id}/screenshots/{sha256}", "get"):
+        content = response.get("content", {})
+        if not isinstance(content, dict) or set(content) != {"image/png"}:
+            raise ValueError(f"screenshot response must declare only image/png for {path}")
+        media = content["image/png"]
+        if not isinstance(media, dict) or media.get("schema") != {
+            "type": "string",
+            "format": "binary",
+        }:
+            raise ValueError(f"screenshot response must declare a binary schema for {path}")
+    elif code != "204" and media_schema(response) is None:
+        raise ValueError(f"missing JSON response schema for {method.upper()} {path}")
+
+
 def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]) -> None:
     for path, method in sorted(operations(spec)):
         declared = operation(spec, path, method)
@@ -123,8 +141,7 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
                 f"undocumented FastAPI statuses for {method.upper()} {path}: "
                 f"{sorted(actual_statuses - declared_statuses)}"
             )
-        if declared_code != "204" and media_schema(declared_response) is None:
-            raise ValueError(f"missing JSON response schema for {method.upper()} {path}")
+        validate_success_media(path, method, declared_code, declared_response)
 
         declared_request = declared.get("requestBody")
         actual_request = actual.get("requestBody")
@@ -164,6 +181,7 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
             "/agents/{agent_id}/jobs",
             "/agents/{agent_id}/jobs/{job_id}/heartbeat",
             "/agents/{agent_id}/jobs/{job_id}/result",
+            "/agents/{agent_id}/jobs/{job_id}/project-source",
             "/agents/{agent_id}/jobs/{job_id}/capability-requests",
             "/agents/{agent_id}/jobs/{job_id}/capability-requests/{request_id}/poll",
         }:

@@ -14,19 +14,17 @@ import {
 } from "@/components/swarm-ui";
 import {
   bootstrapSync,
+  createGoal,
   listMessages,
-  planTask,
   sendChat,
   type Bootstrap,
   type Message,
   type Task,
-  type ToolCall,
 } from "@/lib/application-api/server";
+import { newGoalMessageId } from "@/lib/api/project";
 import { useLiveRefresh, useLiveSync } from "@/lib/sync/live-sync-context";
 import type { LiveSyncState } from "@/lib/sync/live-sync";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
-
-type PlanningResult = ToolCall | { task_id: string; proposal: unknown; task: Task | null };
 
 type ChatState = {
   input: string;
@@ -34,6 +32,7 @@ type ChatState = {
   conversationId: string | undefined;
   messages: Message[];
   lastTask: Task | null;
+  lastGoalId: string | null;
   bootstrap: Bootstrap | null;
   notice: string;
   error: string | null;
@@ -51,6 +50,7 @@ const INITIAL_CHAT_STATE: ChatState = {
   conversationId: undefined,
   messages: [],
   lastTask: null,
+  lastGoalId: null,
   bootstrap: null,
   notice: "",
   error: null,
@@ -64,39 +64,6 @@ function mergeChatState(state: ChatState, patch: ChatStatePatch): ChatState {
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-function planningStatus(result: PlanningResult): string {
-  if ("tool_name" in result) {
-    if (result.status === "waiting_permission") {
-      return "Une autorisation unique est requise avant l’exécution.";
-    }
-    if (result.status === "completed") {
-      const publicResult: unknown = result.result;
-      if (
-        publicResult === null ||
-        typeof publicResult !== "object" ||
-        Array.isArray(publicResult)
-      ) {
-        return "L’appel signale une fin sans résultat d’exécution vérifié; aucune réussite n’est confirmée.";
-      }
-      return "L’exécuteur local a terminé et enregistré un résultat vérifié.";
-    }
-    if (result.status === "failed") return "L’exécution a échoué. Consulte la tâche.";
-    return `Appel ${result.tool_name}: ${result.status}.`;
-  }
-  return "Le modèle a produit une proposition, sans prétendre l’avoir exécutée.";
-}
-
-function taskAfterPlanning(result: PlanningResult, fallback: Task): Task {
-  if ("task" in result && result.task) return result.task;
-  return fallback;
-}
-
-function failedAttemptNotice(createdTask: Task | null): string {
-  return createdTask
-    ? "La tâche a été créée, mais aucune planification ou exécution réussie n’a été confirmée."
-    : "Aucune création de tâche n’a été confirmée pour cette tentative.";
 }
 
 async function refreshBootstrap(
@@ -151,23 +118,19 @@ async function submitChatIntent(
   dispatch({
     busy: true,
     error: null,
-    notice: state.interactionMode === "task"
-      ? "Création de la tâche authentifiée…"
-      : "L’assistant prépare une réponse…",
+    notice: "L’assistant prépare une réponse…",
   });
   let activeConversation = state.conversationId;
-  let createdTask: Task | null = null;
   try {
     const chat = await sendChat(
       content,
       state.conversationId,
       "normal",
-      state.interactionMode === "task",
+      false,
       isCurrent,
     );
     if (!isCurrent()) return;
     accepted();
-    createdTask = chat.task;
     activeConversation = chat.conversation_id;
     dispatch({
       conversationId: chat.conversation_id,
@@ -178,16 +141,12 @@ async function submitChatIntent(
     if (!isCurrent()) return;
     if (messages) dispatch({ messages });
     if (chat.task) {
-      dispatch({ notice: "L’équipe prépare un plan…" });
-      const result = await planTask(chat.task.id, isCurrent);
-      if (!isCurrent()) return;
-      dispatch({ notice: planningStatus(result) });
-      dispatch({ lastTask: taskAfterPlanning(result, chat.task) });
+      dispatch({ notice: "Le serveur a lié une tâche à cette réponse. Aucun démarrage n’a été demandé depuis Discuter." });
     } else {
       dispatch({ notice: "Réponse conversationnelle reçue. Aucune tâche n’a été créée." });
     }
   } catch (cause) {
-    if (isCurrent()) dispatch({ error: errorMessage(cause), notice: failedAttemptNotice(createdTask) });
+    if (isCurrent()) dispatch({ error: errorMessage(cause), notice: "La réponse n’a pas pu être confirmée. Aucun démarrage de tâche n’a été demandé." });
   } finally {
     if (isCurrent()) await refreshConversation(activeConversation, dispatch, readMessages, isCurrent);
     if (isCurrent()) await refreshStatus(false);
@@ -195,19 +154,23 @@ async function submitChatIntent(
   }
 }
 
-function useChatController() {
+function useChatController(onOpenGoal: (id: string) => void) {
   const [state, dispatch] = useReducer(mergeChatState, INITIAL_CHAT_STATE);
   const refreshEpoch = useRef(0);
   const connectionEpoch = useRef(0);
   const conversationEpoch = useRef(0);
   const messageReadEpoch = useRef(0);
   const drafts = useRef(new Map<string, string>());
+  const goalAttempt = useRef<{ key: string; id: string } | null>(null);
   const [openingConversation, setOpeningConversation] = useState(false);
   const activeSubmission = useRef<{ input: string } | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
   useAccessibilityAnnouncement(state.notice);
-  const setInput = useCallback((input: string) => dispatch({ input }), []);
+  const setInput = useCallback((input: string) => {
+    if (input !== stateRef.current.input) goalAttempt.current = null;
+    dispatch({ input });
+  }, []);
   const readMessages = useCallback<MessageReader>(async (id, isCurrent) => {
     const read = ++messageReadEpoch.current;
     const applies = () => read === messageReadEpoch.current && isCurrent();
@@ -222,11 +185,12 @@ function useChatController() {
       conversationEpoch.current += 1;
       messageReadEpoch.current += 1;
       drafts.current.clear();
+      goalAttempt.current = null;
       setOpeningConversation(false);
       const pending = activeSubmission.current;
       activeSubmission.current = null;
       dispatch({
-        bootstrap: null, conversationId: undefined, messages: [], lastTask: null,
+        bootstrap: null, conversationId: undefined, messages: [], lastTask: null, lastGoalId: null,
         input: stateRef.current.input || pending?.input || "",
         busy: false, refreshing: false, error: null,
         notice: pending
@@ -252,6 +216,31 @@ function useChatController() {
     dispatch({ refreshing: false });
     const isCurrent = () => connectionEpoch.current === connection && activeSubmission.current === submission;
     try {
+      if (state.interactionMode === "task") {
+        const objective = state.input.trim();
+        if ([...objective].length > 4000) {
+          dispatch({ error: "La demande de projet est limitée à 4 000 caractères. Raccourcis-la avant de l’envoyer ; ton brouillon est conservé." });
+          return;
+        }
+        const key = JSON.stringify([state.conversationId, objective]);
+        if (goalAttempt.current?.key !== key) goalAttempt.current = { key, id: newGoalMessageId() };
+        dispatch({ busy: true, error: null, notice: "Création du projet authentifié…" });
+        try {
+          const detail = await createGoal({ objective, autonomy_profile: "autonomous",
+            conversation_id: state.conversationId, client_request_id: goalAttempt.current.id }, isCurrent);
+          if (!isCurrent()) return;
+          goalAttempt.current = null;
+          drafts.current.delete(state.conversationId ?? "new");
+          dispatch({ input: "", lastGoalId: detail.goal.id, notice: "Projet créé. Vérifie la demande, puis démarre le projet depuis sa fiche." });
+          onOpenGoal(detail.goal.id);
+        } catch (cause) {
+          if (isCurrent()) dispatch({ error: errorMessage(cause), notice: "La création n’a pas été confirmée. Ton brouillon est conservé ; une nouvelle tentative identique retrouvera le même projet si le serveur l’a reçu." });
+        } finally {
+          if (isCurrent()) await refreshStatus(false);
+          if (isCurrent()) dispatch({ busy: false });
+        }
+        return;
+      }
       await submitChatIntent(state, dispatch, refreshStatus, readMessages, () => drafts.current.delete(state.conversationId ?? "new"), isCurrent);
     } finally {
       if (activeSubmission.current === submission) activeSubmission.current = null;
@@ -264,13 +253,14 @@ function useChatController() {
     if (conversationId === previous.conversationId && !previous.error) return;
     if (conversationId && !previous.bootstrap?.conversations.some((item) => item.id === conversationId)) return;
     drafts.current.set(previous.conversationId ?? "new", previous.input);
+    goalAttempt.current = null;
     const version = ++conversationEpoch.current;
     const connection = connectionEpoch.current;
     ++refreshEpoch.current;
     ++messageReadEpoch.current;
     const isCurrent = () => version === conversationEpoch.current && connection === connectionEpoch.current;
     setOpeningConversation(Boolean(conversationId));
-    dispatch({ conversationId, messages: [], lastTask: null, error: null, notice: "", refreshing: false,
+    dispatch({ conversationId, messages: [], lastTask: null, lastGoalId: null, error: null, notice: "", refreshing: false,
       interactionMode: "chat", input: drafts.current.get(conversationId ?? "new") ?? "" });
     if (!conversationId) return;
     try {
@@ -321,7 +311,10 @@ function useChatController() {
     openingConversation,
     selectConversation,
     refreshStatus,
-    setInteractionMode: (interactionMode: "chat" | "task") => dispatch({ interactionMode }),
+    setInteractionMode: (interactionMode: "chat" | "task") => {
+      if (interactionMode !== stateRef.current.interactionMode) goalAttempt.current = null;
+      dispatch({ interactionMode });
+    },
     setInput,
     submit,
   };
@@ -458,7 +451,7 @@ export default function ChatScreen() {
   const wide = width >= 900 && fontScale < 1.6;
   const [historyOpen, setHistoryOpen] = useState(false);
   const launchParameters = useLocalSearchParams<{ draft?: string; intentMode?: string }>();
-  const chat = useChatController();
+  const chat = useChatController((id) => router.push({ pathname: "/goal/[id]", params: { id } }));
   const setChatInput = chat.setInput;
   const setInteractionMode = chat.setInteractionMode;
   const live = useLiveSync();
@@ -533,6 +526,7 @@ export default function ChatScreen() {
         lastTask={chat.lastTask}
         onOpen={(id) => router.push({ pathname: "/task/[id]", params: { id } })}
       />
+      {chat.lastGoalId ? <ActionButton label="Voir le projet et ses résultats" onPress={() => router.push({ pathname: "/goal/[id]", params: { id: chat.lastGoalId! } })} /> : null}
       </View>
       </View>
       {!wide ? <HistoryDrawer {...history} visible={historyOpen} onClose={() => setHistoryOpen(false)} /> : null}

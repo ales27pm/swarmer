@@ -240,6 +240,32 @@ describe("GoalDetailScreen", () => {
     expect(mockStartGoal).not.toHaveBeenCalled();
   });
 
+  it("opens project results and public plan from activity without starting any work", async () => {
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    await user.press(await screen.findByRole("tab", { name: "Activité" }));
+    expect(screen.getByText("Votre demande")).toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Voir les résultats du projet" }));
+    expect(screen.getByRole("tab", { name: "Résultats" })).toBeSelected();
+    await user.press(screen.getByRole("tab", { name: "Activité" }));
+    await user.press(screen.getByRole("button", { name: "Comprendre le plan" }));
+    expect(screen.getByRole("tab", { name: "Plan" })).toBeSelected();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+    expect(mockReplanGoal).not.toHaveBeenCalled();
+  });
+
+  it("opens a pending clarification from the project overview without restarting the goal", async () => {
+    mockGetGoal.mockResolvedValue({ ...detail, result: null, goal: { ...detail.goal,
+      status: "waiting_permission", current_phase: "needs_user", failure_reason: "writing_needs_clarification" } });
+    const user = userEvent.setup();
+    await render(<GoalDetailScreen />);
+    expect(await screen.findByText("Phase : Précision demandée")).toBeOnTheScreen();
+    expect(screen.queryByText("Refus déclaré par le modèle")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Ouvrir la conversation du projet" }));
+    expect(screen.getByRole("tab", { name: "Échanges" })).toBeSelected();
+    expect(mockStartGoal).not.toHaveBeenCalled();
+  });
+
   it("opens the existing Results evidence panel from the selected graph step", async () => {
     const user = userEvent.setup();
     await render(<GoalDetailScreen />);
@@ -268,16 +294,26 @@ describe("GoalDetailScreen", () => {
     await waitFor(() => expect(mockGetGoal).toHaveBeenCalledTimes(2));
   });
 
-  it("offers the full document only for a completed writing job and never loads it automatically", async () => {
+  it("shows completed writing deliverables directly in Results without opening a Plan step", async () => {
     mockGetGoal.mockResolvedValue({ ...detail, nodes: [
       { ...detail.nodes[0], id: "write_done", status: "completed", required_skill: "writing.draft", worker_job_id: "job_draft" },
       { ...detail.nodes[0], id: "write_running", status: "running", required_skill: "writing.draft", worker_job_id: "job_running" },
       { ...detail.nodes[0], id: "write_missing_job", status: "completed", required_skill: "writing.draft", worker_job_id: null },
     ] });
+    jest.mocked(getGoalWritingDraft).mockResolvedValue({ schema_version: "1.0", content_trust: "untrusted", goal_run_id: "goal_1",
+      node_id: "write_done", worker_job_id: "job_draft", sha256: "a".repeat(64), summary: "Comparaison demandée", text: "SQLite conserve les clients. Sources : https://sqlite.org et https://docs.python.org" });
     await render(<GoalDetailScreen />);
-    await userEvent.setup().press((await screen.findAllByRole("button", { name: "Étape : Vérifier les invariants" }))[0]);
-    expect(await screen.findAllByRole("button", { name: "Lire le document complet" })).toHaveLength(1);
+    await screen.findByRole("tab", { name: "Résultats" });
     expect(getGoalWritingDraft).not.toHaveBeenCalled();
+    await userEvent.setup().press(screen.getByRole("tab", { name: "Résultats" }));
+    expect(await screen.findByText(/SQLite conserve les clients/)).toHaveProp("selectable", true);
+    expect(getGoalWritingDraft).toHaveBeenCalledTimes(1);
+    expect(getGoalWritingDraft).toHaveBeenCalledWith("goal_1", "write_done", "job_draft", expect.any(Function));
+    expect(screen.getByText(/aucun reçu de rédaction n’est lié/)).toBeOnTheScreen();
+    expect(screen.getByText(/Aucun document livré pour cette étape/)).toBeOnTheScreen();
+    expect(screen.queryByText(detail.result!.answer)).not.toBeOnTheScreen();
+    await userEvent.setup().press(screen.getByRole("button", { name: "Voir le bilan technique" }));
+    expect(screen.getByText(detail.result!.answer)).toBeOnTheScreen();
   });
 
   it("opens local planning only for a fresh unstarted goal without starting it", async () => {

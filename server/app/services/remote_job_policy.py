@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.models import CAPABILITY_ARGUMENT_MODELS
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
+from app.services.research_contracts import ResearchCollectPayload
 from app.services.specialist_contracts import (
     PERSONAL_SKILLS,
     SQLITE_SKILLS,
@@ -211,6 +212,15 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         return _workspace_payload(required_skill, payload)
     if required_skill == "research.query":
         return _research_payload(payload)
+    if required_skill == "research.collect":
+        try:
+            normalized = ResearchCollectPayload.model_validate(payload).model_dump()
+            for optional in ("source_urls", "required_domains"):
+                if not normalized[optional]:
+                    normalized.pop(optional)
+            return normalized
+        except ValueError as exc:
+            raise RemoteJobPolicyError("source collection payload is invalid") from exc
     if required_skill == WRITING_SKILL:
         try:
             return WritingPayload.model_validate(payload).model_dump(exclude_unset=True)

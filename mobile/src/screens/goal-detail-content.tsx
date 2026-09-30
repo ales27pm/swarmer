@@ -1,6 +1,7 @@
 import { ProjectGraphEvidence, ProjectGraphNodeEvidence, ProjectGraphPlan, useProjectGraph } from "@/components/project-graph";
 import { ProjectRequirementEvidence, useProjectEvidence } from "@/components/project-requirement-evidence";
 import { ActivityTimeline } from "@/components/activity-timeline";
+import { MemoryUsage } from "@/components/memory-usage";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Alert, Modal, Pressable, ScrollView, Text, View } from "react-native";
 
@@ -11,6 +12,8 @@ import { GoalCodeProposalReview } from "@/components/goal-code-proposal";
 import { GoalWritingDraft } from "@/components/goal-writing-draft";
 import { GoalConversation } from "@/components/goal-conversation";
 import { GoalProjectReview } from "@/components/goal-project-review";
+import { RecordedFailure } from "@/components/recorded-failure";
+import { workOutcome } from "@/lib/work-outcome";
 import {
   ActionButton,
   Card,
@@ -452,7 +455,7 @@ function NodeOutcome({ node }: { node: PlanNode }) {
         <Text selectable style={{ color: COLORS.accent }}>Résultat : {node.result_summary}</Text>
       ) : null}
       {node.error_summary ? (
-        <Text selectable style={{ color: COLORS.danger }}>Erreur : {node.error_summary}</Text>
+        <RecordedFailure reason={node.error_summary} />
       ) : null}
     </>
   );
@@ -600,6 +603,8 @@ function GoalActions({ controller, navigation, management = false }: { controlle
 }
 
 function goalPhaseNotice(goal: GoalDetail["goal"]) {
+  const outcome = workOutcome(goal.failure_reason);
+  if (outcome) return outcome;
   if (awaitsEvaluatorRetry(goal)) return EVALUATOR_RETRY_PHASE;
   if (goal.status === "planning") return PLANNING_PHASES[goal.current_phase];
   if (goal.status === "running") return runningPhase(goal);
@@ -658,9 +663,10 @@ function GoalProgress({ completed, total }: { completed: number; total: number }
   );
 }
 
-function GoalOverview({ controller, navigation }: {
+function GoalOverview({ controller, navigation, onOpenConversation }: {
   controller: GoalDetailController;
   navigation: GoalDetailNavigation;
+  onOpenConversation: () => void;
 }) {
   const [options, setOptions] = useState(false);
   const { blockedCount, completedCount, goal, nodes, runningAgents } = controller;
@@ -698,6 +704,8 @@ function GoalOverview({ controller, navigation }: {
           <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>Échec : {goal.failure_reason}</Text>
         ) : null}
         <GoalActions controller={controller} navigation={navigation} />
+        {goal.current_phase === "needs_user" || workOutcome(goal.failure_reason) ? <ActionButton
+          label="Ouvrir la conversation du projet" onPress={onOpenConversation} /> : null}
         {options ? <View style={{ gap: 10 }}>
           <GoalBudgets goal={goal} />
           <ActionButton label="Voir la tâche racine" onPress={() => navigation.openTask(goal.root_task_id)} />
@@ -710,11 +718,16 @@ function GoalOverview({ controller, navigation }: {
 
 function GoalResultSection({ controller }: { controller: GoalDetailController }) {
   const { feedbackLocked, online, result } = controller;
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const hasWriting = controller.nodes.some((node) => node.required_skill === "writing.draft");
   if (!result) return null;
   return (
     <>
-      <SectionTitle title="Résultat final" />
+      <SectionTitle title="Bilan du projet" />
       <Card testID="goal-result">
+        <Text style={{ color: COLORS.muted }}>Ce bilan décrit les étapes enregistrées. Les documents produits et leur conformité sont présentés séparément.</Text>
+        {hasWriting ? <ActionButton label={detailsOpen ? "Masquer le bilan technique" : "Voir le bilan technique"} onPress={() => setDetailsOpen(!detailsOpen)} /> : null}
+        {!hasWriting || detailsOpen ? <>
         <Text selectable style={{ color: COLORS.text, fontSize: 17, lineHeight: 24 }}>{result.answer}</Text>
         <Text style={{ color: COLORS.muted }}>
           {result.completed_nodes.length} nœuds terminés · {result.failed_nodes.length} échoués
@@ -730,6 +743,7 @@ function GoalResultSection({ controller }: { controller: GoalDetailController })
             ))}
           </View>
         ) : null}
+        </> : null}
       </Card>
       <SectionTitle title="Feedback final" />
       <Feedback disabled={!online} locked={feedbackLocked} onScore={(score) => void controller.submitFeedback(score)} />
@@ -740,6 +754,27 @@ function GoalResultSection({ controller }: { controller: GoalDetailController })
       ) : null}
     </>
   );
+}
+
+function GoalDeliverables({ controller, visible }: { controller: GoalDetailController; visible: boolean }) {
+  const writingNodes = controller.nodes.filter((node) => node.required_skill === "writing.draft");
+  if (!writingNodes.length) return null;
+  return <>
+    <SectionTitle title="Documents produits" />
+    <Text style={{ color: COLORS.muted, lineHeight: 20 }}>Les textes et leurs liens sont lisibles ici. Un document rédigé n’atteste pas à lui seul que toutes les exigences sont satisfaites.</Text>
+    {writingNodes.map((node) => <Card key={node.id} testID={`deliverable-${node.id}`}>
+      <Text accessibilityRole="header" style={{ color: COLORS.text, fontSize: 18, fontWeight: "700" }}>{node.title}</Text>
+      {node.status === "completed" && node.worker_job_id ? (
+        <GoalWritingDraft key={node.worker_job_id} goalId={node.goal_run_id} nodeId={node.id} workerJobId={node.worker_job_id}
+          disabled={!controller.online} autoLoad={visible} />
+      ) : workOutcome(node.error_summary) ? <RecordedFailure reason={node.error_summary!} /> : <Text style={{ color: COLORS.muted, lineHeight: 20 }}>
+        {node.status === "completed" ? "Le document n’est pas accessible : aucun reçu de rédaction n’est lié à cette étape. Actualise les preuves."
+          : node.status === "failed" ? "Cette rédaction a échoué. Consulte l’étape et la conversation pour connaître le blocage."
+            : ["cancelled", "skipped"].includes(node.status) ? "Cette étape n’a pas livré de document."
+              : "Aucun document livré pour cette étape pour le moment."}
+      </Text>}
+    </Card>)}
+  </>;
 }
 
 const PROJECT_TABS = ["Plan", "Activité", "Résultats", "Échanges"] as const;
@@ -758,7 +793,7 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
   const readOnly = !controller.online || Boolean(controller.busy) || (graph.graph !== null && graph.stale);
   const panel = (name: ProjectTab) => ({ display: tab === name ? "flex" as const : "none" as const, gap: 14 });
   return <>
-    <GoalOverview controller={controller} navigation={navigation} />
+    <GoalOverview controller={controller} navigation={navigation} onOpenConversation={() => setTab("Échanges")} />
     <View accessibilityRole="tablist" style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, borderBottomWidth: 1, borderColor: COLORS.border }}>
       {PROJECT_TABS.map((name) => <Pressable key={name} accessibilityRole="tab" accessibilityLabel={name}
         accessibilityState={{ selected: tab === name }} onPress={() => setTab(name)}
@@ -775,9 +810,13 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
     <View style={panel("Activité")} accessibilityElementsHidden={tab !== "Activité"} importantForAccessibility={tab !== "Activité" ? "no-hide-descendants" : "auto"}>
       {selected ? <ActionButton label="Voir les opérations de tout le projet" onPress={() => selectNode(null)} /> : null}
       <ActivityTimeline scope="goal" id={goal.id} enabled={controller.source === "authoritative"}
-        refreshKey={goal.updated_at} follow nodes={nodes} selectedNodeId={selected?.id ?? null} onOpenTask={navigation.openTask} />
+        refreshKey={goal.updated_at} follow nodes={nodes} selectedNodeId={selected?.id ?? null} onOpenTask={navigation.openTask}
+        intent={goal.objective} planningDecisions={graph.graph?.planning_decisions} contextStale={graph.stale}
+        onOpenResults={() => setTab("Résultats")} onOpenPlan={() => setTab("Plan")} />
+      <MemoryUsage goalId={goal.id} enabled={controller.source === "authoritative" && controller.online && tab === "Activité"} />
     </View>
     <View style={panel("Résultats")} accessibilityElementsHidden={tab !== "Résultats"} importantForAccessibility={tab !== "Résultats" ? "no-hide-descendants" : "auto"}>
+      <GoalDeliverables controller={controller} visible={tab === "Résultats"} />
       <ProjectRequirementEvidence state={evidence} disabled={!controller.online || Boolean(controller.busy)} />
       <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} showCriteria={evidence.view === null} />
       {controller.nodes.some((node) => node.required_skill === "code.build_project") ? <GoalProjectReview

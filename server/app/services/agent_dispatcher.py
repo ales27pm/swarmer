@@ -26,6 +26,7 @@ from app.services.message_board import MessageBoard
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.remote_job_policy import validate_remote_job
+from app.services.research_contracts import valid_research_collect_receipt
 from app.services.swift_contracts import valid_swift_receipt, validate_swift_project_payload
 from app.services.swift_project_validation import (
     SwiftProjectConflict,
@@ -35,7 +36,8 @@ from app.services.swift_project_validation import (
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 from app.services.writing_contracts import (
     UnsupportedCitationError,
-    validate_writing_declined_result,
+    WritingRequirementsError,
+    validate_writing_non_delivery_result,
     validate_writing_result,
 )
 
@@ -850,6 +852,13 @@ class AgentDispatcher:
                     "job cannot finish while an iPhone capability request is pending"
                 )
             native_payload = json.loads(str(row["payload_json"]))
+            if (
+                status == "completed"
+                and row["required_skill"] == "research.collect"
+                and not valid_research_collect_receipt(result, native_payload)
+            ):
+                await db.rollback()
+                raise AgentDispatchConflict("invalid_research_collection_receipt")
             if "project_revision" in native_payload:
                 try:
                     await require_project_grant_locked(
@@ -872,6 +881,9 @@ class AgentDispatcher:
                 except UnsupportedCitationError:
                     await db.rollback()
                     raise AgentDispatchConflict("unsupported_citation") from None
+                except WritingRequirementsError:
+                    await db.rollback()
+                    raise AgentDispatchConflict("writing_requirements_unmet") from None
                 except (TypeError, ValueError):
                     await db.rollback()
                     raise AgentDispatchConflict("invalid_writing_result") from None
@@ -879,17 +891,29 @@ class AgentDispatcher:
                 status == "failed"
                 and row["required_skill"] == "writing.draft"
                 and isinstance(result, dict)
-                and result.get("outcome") == "declined"
+                and "outcome" in result
             ):
                 try:
-                    validate_writing_declined_result(result, payload=native_payload)
+                    validate_writing_non_delivery_result(result, payload=native_payload)
                 except UnsupportedCitationError:
                     await db.rollback()
                     raise AgentDispatchConflict("unsupported_citation") from None
                 except (TypeError, ValueError):
                     await db.rollback()
                     raise AgentDispatchConflict("invalid_writing_result") from None
-                public_error = "model_declined"
+                public_error = {
+                    "declined": "model_declined",
+                    "needs_clarification": "writing_needs_clarification",
+                    "insufficient_sources": "writing_insufficient_sources",
+                }[result["outcome"]]
+            elif (
+                status == "failed"
+                and row["required_skill"] == "writing.draft"
+                and result is None
+                and error in {"writing_requirements_unmet", "writing_budget_exceeded"}
+            ):
+                # Fixed diagnostic codes only, never arbitrary remote error text.
+                public_error = error
             try:
                 await AgentJobStateMachine.transition_locked(
                     db,

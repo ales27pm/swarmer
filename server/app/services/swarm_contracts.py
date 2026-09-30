@@ -124,6 +124,8 @@ class GoalCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     objective: LongText
+    conversation_id: StableIdentifier | None = None
+    client_request_id: StableIdentifier | None = None
     autonomy_profile: AutonomyProfile = AutonomyProfile.ASSISTED
     completion_criteria: list[ShortText] = Field(default_factory=list, max_length=MAX_PLAN_NODES)
     max_steps: int | None = Field(default=None, strict=True, ge=1, le=MAX_PLAN_NODES)
@@ -384,6 +386,8 @@ class SwarmPlanNodeProposal(BaseModel):
 
         if self.required_skill in SPECIALIST_SKILLS and self.worker_arguments is None:
             raise ValueError("specialist workers require explicit operation arguments")
+        if self.required_skill == "research.collect" and self.worker_arguments is None:
+            raise ValueError("source collection requires explicit bounded queries")
         if self.worker_arguments is not None:
             from app.services.remote_job_policy import validate_remote_job
 

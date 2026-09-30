@@ -337,6 +337,15 @@
       ]
     },
     {
+      "id": "research.collect",
+      "title": "Rechercher et lire des sources",
+      "description": "Effectuer des recherches complémentaires et lire des passages de pages HTTPS publiques issues des résultats.",
+      "inputs": ["Question à documenter", "Requêtes complémentaires", "Limites de recherche et de lecture"],
+      "output": "Extraits de recherche et passages lus, avec provenance, dates et limites distinctes.",
+      "execution": {"kind": "worker", "target": "research.collect"},
+      "requirements": ["Worker enregistré avec cette capacité et un heartbeat récent.", "Adaptateur de recherche configuré et accès aux pages publiques autorisées."]
+    },
+    {
       "id": "research.source_compare",
       "title": "Comparer des sources",
       "description": "Rapprocher les affirmations et divergences de documents identifiés.",

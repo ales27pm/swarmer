@@ -43,7 +43,7 @@ async def _projection_rows(database: Path, goal_id: str) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("read", [False, True])
-async def test_expired_maintenance_lease_rolls_back_stall_projection_after_history_scan(
+async def test_expired_maintenance_lease_rolls_back_project_projection_after_history_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read: bool
 ) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
@@ -69,7 +69,7 @@ async def test_expired_maintenance_lease_rolls_back_stall_projection_after_histo
 
     async def expire_after_scan(db: aiosqlite.Connection, goal: str, revision: int) -> str | None:
         stalled = await original(db, goal, revision)
-        assert stalled
+        assert (stalled is not None) is (not read)
         clock.advance(2)
         return stalled
 

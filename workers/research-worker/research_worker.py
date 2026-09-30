@@ -18,12 +18,27 @@ import urllib.error
 import urllib.request
 import zlib
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
+
+from research_collect import (
+    COLLECT_SKILL,
+    MAX_COLLECTION_SECONDS,
+    MAX_PAGE_BYTES,
+    CollectionError,
+    RawPage,
+    collect,
+    public_page_url,
+)
 
 LOGGER = logging.getLogger("mongars.research_worker")
 HEARTBEAT_JOIN_TIMEOUT_SECONDS = 1.0
 _DNS_RESOLVER_SLOT = threading.BoundedSemaphore(value=1)
+_ACTIVE_CHECK: ContextVar[Callable[[], None] | None] = ContextVar(
+    "research_active_check", default=None
+)
+_ACTIVE_DEADLINE: ContextVar[float | None] = ContextVar("research_deadline", default=None)
 
 RESEARCH_SKILL = "research.query"
 MAX_QUERY_CHARACTERS = 2_000
@@ -436,6 +451,12 @@ def validate_adapter_endpoint(endpoint: str) -> str:
 
 
 def _remaining_seconds(deadline: float) -> float:
+    check = _ACTIVE_CHECK.get()
+    if check is not None:
+        check()
+    collection_deadline = _ACTIVE_DEADLINE.get()
+    if collection_deadline is not None:
+        deadline = min(deadline, collection_deadline)
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise ResearchAdapterError("research adapter deadline exceeded")
@@ -451,8 +472,8 @@ def _resolve_global_addresses(
 ) -> list[ResolvedAddress]:
     """Resolve once, then reject the complete answer set if any address is unsafe."""
 
-    if not _DNS_RESOLVER_SLOT.acquire(timeout=_remaining_seconds(deadline)):
-        raise ResearchAdapterError("research adapter deadline exceeded during DNS")
+    while not _DNS_RESOLVER_SLOT.acquire(timeout=min(0.1, _remaining_seconds(deadline))):
+        pass
     result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
     def resolve() -> None:
@@ -483,7 +504,14 @@ def _resolve_global_addresses(
         _DNS_RESOLVER_SLOT.release()
         raise ResearchAdapterError("research adapter DNS resolution could not start") from exc
     try:
-        succeeded, raw_answer = result_queue.get(timeout=_remaining_seconds(deadline))
+        while True:
+            try:
+                succeeded, raw_answer = result_queue.get(
+                    timeout=min(0.1, _remaining_seconds(deadline))
+                )
+                break
+            except queue.Empty:
+                _remaining_seconds(deadline)
     except queue.Empty as exc:
         raise ResearchAdapterError("research adapter deadline exceeded during DNS") from exc
     if not succeeded:
@@ -580,6 +608,29 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         )
         self._resolved_address = resolved
         self._deadline = deadline
+        self._connect_lock = threading.Lock()
+        self._connect_closed = threading.Event()
+        self._pending_socket: socket.socket | None = None
+
+    def _track_socket(self, sock: socket.socket) -> None:
+        with self._connect_lock:
+            if self._connect_closed.is_set():
+                sock.close()
+                raise ResearchAdapterError("research connection was closed")
+            self._pending_socket = sock
+
+    def close(self) -> None:
+        self._connect_closed.set()
+        with self._connect_lock:
+            pending = self._pending_socket
+            self._pending_socket = None
+            super().close()
+        if pending is not None:
+            try:
+                pending.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            pending.close()
 
     def connect(self) -> None:
         raw_socket: socket.socket | None = None
@@ -590,16 +641,25 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
                 self._resolved_address.socket_type,
                 self._resolved_address.protocol,
             )
+            self._track_socket(raw_socket)
             raw_socket.settimeout(_remaining_seconds(self._deadline))
             raw_socket.connect(self._resolved_address.sockaddr)
             _verify_pinned_peer(raw_socket, self._resolved_address)
             raw_socket.settimeout(_remaining_seconds(self._deadline))
-            tls_socket = self._ssl_context.wrap_socket(raw_socket, server_hostname=self.host)
+            tls_socket = self._ssl_context.wrap_socket(
+                raw_socket, server_hostname=self.host, do_handshake_on_connect=False
+            )
             raw_socket = None
+            self._track_socket(tls_socket)
+            tls_socket.do_handshake()
             _verify_pinned_peer(tls_socket, self._resolved_address)
             tls_socket.settimeout(_remaining_seconds(self._deadline))
-            self.sock = tls_socket
-            tls_socket = None
+            with self._connect_lock:
+                if self._connect_closed.is_set():
+                    raise ResearchAdapterError("research connection was closed")
+                self.sock = tls_socket
+                self._pending_socket = None
+                tls_socket = None
         except Exception:
             if raw_socket is not None:
                 raw_socket.close()
@@ -652,10 +712,15 @@ def _connection_operation(
     )
     operation_thread.start()
     try:
-        succeeded, result = result_queue.get(timeout=_remaining_seconds(deadline))
-    except queue.Empty as exc:
+        while True:
+            try:
+                succeeded, result = result_queue.get(timeout=min(0.1, _remaining_seconds(deadline)))
+                break
+            except queue.Empty:
+                _remaining_seconds(deadline)
+    except (ResearchAdapterError, LeaseLost, LeaseUnavailable):
         _abort_connection(connection)
-        raise ResearchAdapterError("research adapter deadline exceeded") from exc
+        raise
     if not succeeded:
         if isinstance(result, BaseException):
             raise result
@@ -774,7 +839,7 @@ def research_adapter_request(
     if hostname is None:
         raise ResearchAdapterError("research adapter endpoint is invalid")
     port = 443 if parsed.port is None else parsed.port
-    deadline = time.monotonic() + timeout_seconds
+    deadline = min(time.monotonic() + timeout_seconds, _ACTIVE_DEADLINE.get() or float("inf"))
     addresses = _resolve_global_addresses(hostname, port, deadline)
     connection: Any = None
     last_connect_error: Exception | None = None
@@ -782,7 +847,7 @@ def research_adapter_request(
         for address in addresses:
             candidate = _PinnedHTTPSConnection(hostname, port, address, deadline)
             try:
-                candidate.connect()
+                _connection_operation(candidate.connect, candidate, deadline)
             except (
                 ResearchAdapterError,
                 http.client.HTTPException,
@@ -819,7 +884,9 @@ def research_adapter_request(
             raise ResearchAdapterError("research adapter redirects are not allowed")
         if not 200 <= response.status < 300:
             raise ResearchAdapterError("research adapter request failed")
-        return _read_bounded_adapter_json(response, connection, deadline)
+        return _connection_operation(
+            lambda: _read_bounded_adapter_json(response, connection, deadline), connection, deadline
+        )
     except ResearchAdapterError:
         raise
     except (
@@ -1009,6 +1076,15 @@ def _normalize_searxng_response(response: Any, max_results: int) -> dict[str, An
         )
         if len(normalized) == max_results:
             break
+    if not normalized:
+        # SearXNG can answer HTTP 200 while upstream engines are unavailable.
+        # Keep usable partial results, but never turn reported engine failures
+        # into evidence of an empty search. Do not expose engine diagnostics.
+        failures = response.get("unresponsive_engines", [])
+        if not isinstance(failures, list):
+            raise ResearchAdapterError("SearXNG returned invalid engine diagnostics")
+        if failures:
+            raise ResearchAdapterError("SearXNG engines failed to return usable results")
     return normalize_adapter_response({"results": normalized}, max_results)
 
 
@@ -1022,7 +1098,9 @@ class SearXNGClient:
         self.timeout_seconds = timeout_seconds
 
     def query(self, request: ResearchQuery) -> dict[str, Any]:
-        deadline = time.monotonic() + self.timeout_seconds
+        deadline = min(
+            time.monotonic() + self.timeout_seconds, _ACTIVE_DEADLINE.get() or float("inf")
+        )
         body = urlencode({"q": request.query, "format": "json"}).encode("ascii")
         if len(body) > MAX_SEARXNG_REQUEST_BYTES:
             raise ResearchAdapterError("SearXNG request exceeded its size limit")
@@ -1101,10 +1179,133 @@ def ensure_result_contract(result: dict[str, Any]) -> None:
     ensure_result_size(result)
 
 
-def execute(adapter: ResearchProvider, job: dict[str, Any]) -> dict[str, Any]:
-    result = adapter.query(parse_research_job(job))
-    ensure_result_contract(result)
-    return result
+def public_page_request(url: str, deadline: float) -> RawPage:
+    """Pinned HTTPS GET, no ambient cookies/proxy/auth; one response per redirect hop."""
+    parsed = urlsplit(public_page_url(url))
+    hostname = parsed.hostname
+    if hostname is None:
+        raise CollectionError("invalid_url")
+    connection: Any = None
+    response: http.client.HTTPResponse | None = None
+    try:
+        addresses = _resolve_global_addresses(hostname, 443, deadline)
+        # Do not retry another address automatically on a page-read failure.
+        connection = _PinnedHTTPSConnection(hostname, 443, addresses[0], deadline)
+        _connection_operation(connection.connect, connection, deadline)
+        path = parsed.path + ("?" + parsed.query if parsed.query else "")
+        _connection_operation(
+            lambda: connection.request(
+                "GET",
+                path,
+                headers={
+                    "User-Agent": "monGARS-Research/1.0",
+                    "Accept": "text/html,text/plain,application/xhtml+xml",
+                    "Accept-Encoding": "identity",
+                    "Connection": "close",
+                },
+            ),
+            connection,
+            deadline,
+        )
+        if connection.sock is None:
+            raise CollectionError("connection_unavailable")
+        response = http.client.HTTPResponse(connection.sock, method="GET")
+        _connection_operation(response.begin, connection, deadline)
+        headers: dict[str, str] = {}
+        for key, value in response.getheaders():
+            name = key.lower()
+            if name in headers and name in {
+                "content-type",
+                "content-length",
+                "content-encoding",
+                "location",
+            }:
+                raise CollectionError("ambiguous_headers")
+            headers[name] = value
+        if sum(len(key) + len(value) for key, value in headers.items()) > 32_768:
+            raise CollectionError("header_byte_limit")
+        # Redirect bodies are unused, and error pages must not become successful text.
+        if response.status != 200:
+            return RawPage(response.status, headers, b"")
+        if headers.get("content-encoding", "identity").lower() not in {"", "identity"}:
+            raise CollectionError("unsupported_encoding")
+        if headers.get("content-type", "").split(";", 1)[0].strip().lower() not in {
+            "text/html",
+            "application/xhtml+xml",
+            "text/plain",
+        }:
+            raise CollectionError("unsupported_content_type")
+        length = headers.get("content-length")
+        if length is not None and (not length.isdecimal() or int(length) > MAX_PAGE_BYTES):
+            raise CollectionError("response_byte_limit")
+        content = bytearray()
+        while True:
+            _set_connection_deadline(connection, deadline)
+            chunk = _connection_operation(
+                lambda: response.read1(min(16_384, MAX_PAGE_BYTES + 1 - len(content))),
+                connection,
+                deadline,
+            )
+            if not chunk:
+                break
+            content.extend(chunk)
+            if len(content) > MAX_PAGE_BYTES:
+                raise CollectionError("response_byte_limit")
+        if length is not None and len(content) != int(length):
+            raise CollectionError("incomplete_response")
+        return RawPage(response.status, headers, bytes(content))
+    except CollectionError:
+        raise
+    except ResearchAdapterError as exc:
+        reason = "deadline_exceeded" if time.monotonic() >= deadline else "network_rejected"
+        raise CollectionError(reason) from exc
+    except (http.client.HTTPException, OSError, ValueError) as exc:
+        raise CollectionError("network_unavailable") from exc
+    finally:
+        if response is not None:
+            response.close()
+        if connection is not None:
+            connection.close()
+
+
+def execute(
+    adapter: ResearchProvider,
+    job: dict[str, Any],
+    *,
+    check_active: Callable[[], None] = lambda: None,
+) -> dict[str, Any]:
+    if job.get("required_skill") != COLLECT_SKILL:
+        result = adapter.query(parse_research_job(job))
+        ensure_result_contract(result)
+        return result
+    deadline = time.monotonic() + MAX_COLLECTION_SECONDS
+    active_token = _ACTIVE_CHECK.set(check_active)
+    deadline_token = _ACTIVE_DEADLINE.set(deadline)
+    try:
+
+        def search(query: str, count: int) -> dict[str, Any]:
+            # Cap each request as well as the complete collection, preserving the
+            # legacy provider interface and its no-retry behavior.
+            local_token = _ACTIVE_DEADLINE.set(min(deadline, time.monotonic() + 20))
+            try:
+                return adapter.query(ResearchQuery(query, count))
+            except (ResearchAdapterError, TypeError, ValueError) as exc:
+                raise CollectionError("search_unavailable") from exc
+            finally:
+                _ACTIVE_DEADLINE.reset(local_token)
+
+        result = collect(
+            job.get("payload"),
+            search,
+            public_page_request,
+            check_active=check_active,
+            deadline=deadline,
+        )
+        ensure_result_contract(result)
+        return result
+    finally:
+        _ACTIVE_CHECK.reset(active_token)
+        _ACTIVE_DEADLINE.reset(deadline_token)
 
 
 def run_once(
@@ -1131,7 +1332,7 @@ def run_once(
         client.heartbeat_agent("busy")
         heartbeat.start()
         try:
-            result = execute(adapter, job)
+            result = execute(adapter, job, check_active=heartbeat.ensure_active)
             result_body: dict[str, Any] = {"status": "completed", "result": result}
         except (ResearchAdapterError, TypeError, ValueError) as exc:
             result_body = {"status": "failed", "error": str(exc)[:500]}

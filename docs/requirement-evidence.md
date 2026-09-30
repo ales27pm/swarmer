@@ -89,8 +89,13 @@ inside the existing migration transaction. It neither backfills nor infers links
 Update/delete triggers preserve previous versions; changes append another version
 using compare-and-set semantics. Initialization is idempotent. A migration failure
 rolls back both the new table and the version increment. Existing schema-26 readers
-that reject newer schemas must not be pointed at this migrated database: rollback
-requires the pre-migration backup rather than lowering `user_version`.
+that reject newer schemas must not be pointed at this migrated database. Roll back
+the application only to a binary verified compatible with schema 27 while keeping
+the current database and all later accepted writes. Never lower `user_version`
+or restore a pre-migration backup over a live database. A pre-migration backup is
+for an isolated recovery rehearsal or a separately reviewed disaster-recovery
+procedure that accounts for newer writes; it is not the normal deployment rollback.
+See the [compatible deployment receipt](evidence/website-workflow-deployment-2026-09-28.md).
 
 The feature does not start model jobs, run checks, write source files, or deploy a
 project. Fresh linked evidence is not a substitute for those independent operations.

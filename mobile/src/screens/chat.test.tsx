@@ -1,17 +1,19 @@
-import { act, render, screen, userEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, userEvent, waitFor } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { AppState, type AppStateStatus } from "react-native";
 
 import ChatScreen from "@/../app/(main)/index";
 import {
   bootstrapSync,
+  createGoal,
   listMessages,
   planTask,
   sendChat,
+  startGoal,
   type Bootstrap,
+  type GoalDetail,
   type Message,
   type Task,
-  type ToolCall,
 } from "@/lib/api/client";
 import { LiveSyncContextProvider } from "@/lib/sync/live-sync-context";
 import { notifyConnectionChanged } from "@/lib/connection-events";
@@ -50,6 +52,8 @@ jest.mock("expo-router", () => {
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock("@/lib/api/client", () => ({
   bootstrapSync: jest.fn(),
+  createGoal: jest.fn(),
+  startGoal: jest.fn(),
   listMessages: jest.fn(),
   planTask: jest.fn(),
   sendChat: jest.fn(),
@@ -92,23 +96,6 @@ const proposalOnlyMessage: Message = {
   created_at: task.created_at,
 };
 
-function completedToolCallWith(result: unknown): ToolCall {
-  return {
-    id: "call_completed",
-    task_id: task.id,
-    tool_name: "workspace.list_dir",
-    arguments: { path: "." },
-    summary: "List a workspace directory",
-    risk: "low",
-    status: "completed",
-    approval_id: null,
-    result,
-    error: null,
-    created_at: task.created_at,
-    updated_at: task.updated_at,
-  } as unknown as ToolCall;
-}
-
 const bootstrap: Bootstrap = {
   server_time: "2026-09-04T12:00:00Z",
   tasks: [],
@@ -127,6 +114,9 @@ const bootstrap: Bootstrap = {
   },
   cursor: "0",
 };
+
+const mockCreateGoal = jest.mocked(createGoal);
+const goal = { goal: { id: "goal_new" }, nodes: [], result: null } as unknown as GoalDetail;
 
 const mockBootstrap = jest.mocked(bootstrapSync);
 const mockListMessages = jest.mocked(listMessages);
@@ -158,10 +148,11 @@ describe("ChatScreen", () => {
     mockFocusCleanup = undefined;
     mockAppStateListener = undefined;
     mockSearchParams = {};
+    mockCreateGoal.mockReset().mockResolvedValue(goal);
     mockBootstrap.mockResolvedValue(bootstrap);
-    mockListMessages.mockResolvedValue([message]);
-    mockSendChat.mockResolvedValue({ conversation_id: "conv_test", task });
-    mockPlanTask.mockResolvedValue({
+    mockListMessages.mockReset().mockResolvedValue([message]);
+    mockSendChat.mockReset().mockResolvedValue({ conversation_id: "conv_test", task });
+    mockPlanTask.mockReset().mockResolvedValue({
       task_id: task.id,
       proposal: { tool_name: "none", arguments: {}, summary: "Proposal only" },
       task: { ...task, status: "planned" },
@@ -341,55 +332,98 @@ describe("ChatScreen", () => {
     expect(screen.getByText(proposalOnlyMessage.content)).toBeOnTheScreen();
   });
 
-  it("labels a no-tool model response as a proposal rather than completion", async () => {
+  it("never plans an unexpected task returned to ordinary chat", async () => {
     const user = userEvent.setup();
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
-
     await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
-
-    await waitFor(() => expect(mockPlanTask).toHaveBeenCalledWith(task.id, expect.any(Function)));
-    expect(
-      screen.getByText("Le modèle a produit une proposition, sans prétendre l’avoir exécutée."),
-    ).toBeOnTheScreen();
-    expect(screen.getByRole("button", { name: "Voir la tâche et ses preuves" })).toBeEnabled();
+    expect(await screen.findByText(/Aucun démarrage n’a été demandé depuis Discuter/)).toBeOnTheScreen();
+    expect(mockSendChat).toHaveBeenCalledWith(task.input, undefined, "normal", false, expect.any(Function));
+    expect(mockPlanTask).not.toHaveBeenCalled();
+    expect(mockCreateGoal).not.toHaveBeenCalled();
   });
 
-  it("claims verified completion only when the executor result is an object", async () => {
-    mockPlanTask.mockResolvedValue(completedToolCallWith({ entries: [] }));
+  it("entrusts a URL research request to the goal pathway without legacy task planning or implicit start", async () => {
     const user = userEvent.setup();
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
-
-    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByRole("button", { name: "Confier une tâche" }));
+    const objective = "Recherche la documentation officielle sur https://sqlite.org puis rédige une note de 150 à 200 mots.";
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), objective);
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
-
-    expect(
-      await screen.findByText("L’exécuteur local a terminé et enregistré un résultat vérifié."),
-    ).toBeOnTheScreen();
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith({ pathname: "/goal/[id]", params: { id: "goal_new" } }));
+    expect(mockCreateGoal).toHaveBeenCalledWith({ objective, autonomy_profile: "autonomous", client_request_id: expect.stringMatching(/^reply_/), }, expect.any(Function));
+    expect(mockSendChat).not.toHaveBeenCalled();
+    expect(mockPlanTask).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Demande pour l’assistant")).toHaveDisplayValue("");
+    expect(startGoal).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Voir le projet et ses résultats" })).toBeOnTheScreen();
   });
 
-  it.each([
-    ["null", null],
-    ["an array", []],
-  ])("fails closed for a completed call with %s result", async (_label, result) => {
-    mockPlanTask.mockResolvedValue(completedToolCallWith(result));
+  it("reuses the request identity after uncertain creation without silently resending on refresh", async () => {
+    mockCreateGoal.mockRejectedValueOnce(new Error("Connexion interrompue"));
     const user = userEvent.setup();
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
-
-    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
+    await user.press(screen.getByRole("button", { name: "Confier une tâche" }));
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Comparer SQLite et JSON");
     await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    expect(await screen.findByText(/une nouvelle tentative identique retrouvera le même projet/)).toBeOnTheScreen();
+    const requestId = mockCreateGoal.mock.calls[0][0].client_request_id;
+    expect(screen.getByDisplayValue("Comparer SQLite et JSON")).toBeOnTheScreen();
+    await refocusChat();
+    expect(mockCreateGoal).toHaveBeenCalledTimes(1);
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledTimes(2));
+    expect(mockCreateGoal.mock.calls[1][0].client_request_id).toBe(requestId);
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
 
-    expect(
-      await screen.findByText(
-        "L’appel signale une fin sans résultat d’exécution vérifié; aucune réussite n’est confirmée.",
-      ),
-    ).toBeOnTheScreen();
-    expect(
-      screen.queryByText("L’exécuteur local a terminé et enregistré un résultat vérifié."),
-    ).not.toBeOnTheScreen();
+  it("preserves conversation identity when entrusting work without flattening messages into the objective", async () => {
+    mockBootstrap.mockResolvedValue({ ...bootstrap, conversations: [{ id: "conv_test", title: "Mon agenda", last_message: null, created_at: task.created_at, updated_at: task.updated_at }] });
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByRole("button", { name: "Historique" }));
+    await user.press(screen.getByRole("button", { name: /Mon agenda/ }));
+    await screen.findByText(message.content);
+    await user.press(screen.getByRole("button", { name: "Confier une tâche" }));
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Prépare la comparaison discutée");
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledTimes(1));
+    expect(mockCreateGoal.mock.calls[0][0]).toMatchObject({ objective: "Prépare la comparaison discutée", conversation_id: "conv_test" });
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("does not submit or truncate an oversized goal objective", async () => {
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByRole("button", { name: "Confier une tâche" }));
+    const input = "x".repeat(4001);
+    await fireEvent.changeText(screen.getByLabelText("Demande pour l’assistant"), input);
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    expect(await screen.findByText(/limitée à 4 000 caractères/)).toBeOnTheScreen();
+    expect(screen.getByDisplayValue(input)).toBeOnTheScreen();
+    expect(mockCreateGoal).not.toHaveBeenCalled();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("changes request identity when the user changes an uncertain objective", async () => {
+    mockCreateGoal.mockRejectedValueOnce(new Error("Réponse perdue"));
+    const user = userEvent.setup();
+    await render(<ChatScreen />);
+    await screen.findByText("Serveur connecté");
+    await user.press(screen.getByRole("button", { name: "Confier une tâche" }));
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), "Comparer SQLite et JSON");
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    await screen.findByText(/une nouvelle tentative identique retrouvera le même projet/);
+    const previous = mockCreateGoal.mock.calls[0][0].client_request_id;
+    await user.type(screen.getByLabelText("Demande pour l’assistant"), " pour un CRM");
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledTimes(2));
+    expect(mockCreateGoal.mock.calls[1][0].client_request_id).not.toBe(previous);
   });
 
   it("links the pending approval count directly to the decision queue", async () => {
@@ -410,28 +444,6 @@ describe("ChatScreen", () => {
 
     await user.press(await screen.findByRole("button", { name: "Ouvrir les réglages" }));
     expect(mockPush).toHaveBeenCalledWith("/settings");
-  });
-
-  it("preserves fail-closed error feedback and refresh after task creation", async () => {
-    mockPlanTask.mockRejectedValueOnce(new Error("Planification indisponible"));
-    const user = userEvent.setup();
-    await render(<ChatScreen />);
-    await screen.findByText("Serveur connecté");
-
-    await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
-    await user.press(screen.getByRole("button", { name: "Envoyer" }));
-
-    expect(await screen.findByText("Planification indisponible")).toBeOnTheScreen();
-    expect(
-      screen.getByText(
-        "La tâche a été créée, mais aucune planification ou exécution réussie n’a été confirmée.",
-      ),
-    ).toBeOnTheScreen();
-    expect(
-      screen.queryByText("L’exécuteur local a terminé et enregistré un résultat vérifié."),
-    ).not.toBeOnTheScreen();
-    expect(mockListMessages).toHaveBeenCalledTimes(2);
-    expect(mockBootstrap).toHaveBeenCalledTimes(2);
   });
 
   it("clears the previous pairing's conversation and authority while preserving the draft and mode", async () => {
@@ -461,8 +473,9 @@ describe("ChatScreen", () => {
     mockListMessages.mockResolvedValue([]);
     await refocusChat();
     await user.press(screen.getByTestId("send-button"));
-    await waitFor(() => expect(mockSendChat).toHaveBeenCalledTimes(2));
-    expect(mockSendChat).toHaveBeenLastCalledWith("Préparer mon agenda", undefined, "normal", true, expect.any(Function));
+    await waitFor(() => expect(mockCreateGoal).toHaveBeenCalledTimes(1));
+    expect(mockCreateGoal.mock.calls[0][0]).not.toHaveProperty("conversation_id");
+    expect(mockSendChat).toHaveBeenCalledTimes(1);
   });
 
   it.each(["resolve", "reject"] as const)("ignores a late chat %s after pairing changes without a follow-up request", async (outcome) => {
@@ -516,26 +529,25 @@ describe("ChatScreen", () => {
     expect(mockBootstrap).toHaveBeenCalledTimes(1);
   });
 
-  it("discards late planning evidence and skips all follow-up reads after a pairing change", async () => {
-    const pending = deferred<Awaited<ReturnType<typeof planTask>>>();
-    mockPlanTask.mockReturnValueOnce(pending.promise);
+  it("discards a late goal creation response after pairing changes and preserves the draft", async () => {
+    const pending = deferred<GoalDetail>();
+    mockCreateGoal.mockReturnValueOnce(pending.promise);
     const user = userEvent.setup();
     await render(<ChatScreen />);
     await screen.findByText("Serveur connecté");
+    await user.press(screen.getByRole("button", { name: "Confier une tâche" }));
     await user.type(screen.getByLabelText("Demande pour l’assistant"), task.input);
-    await user.press(screen.getByTestId("send-button"));
-    await waitFor(() => expect(mockPlanTask).toHaveBeenCalledTimes(1));
-    const isCurrent = mockPlanTask.mock.calls[0]?.[1];
-
+    await user.press(screen.getByRole("button", { name: "Envoyer" }));
+    const accepts = mockCreateGoal.mock.calls[0][1]!;
+    expect(accepts()).toBe(true);
     await act(async () => notifyConnectionChanged());
-    expect(isCurrent?.()).toBe(false);
-    await act(async () => pending.resolve(completedToolCallWith({ entries: [] })));
+    expect(accepts()).toBe(false);
+    await act(async () => pending.resolve(goal));
     expect(screen.getByDisplayValue(task.input)).toBeOnTheScreen();
-    expect(screen.queryByRole("button", { name: "Voir la tâche et ses preuves" })).not.toBeOnTheScreen();
-    expect(screen.queryByText("L’exécuteur local a terminé et enregistré un résultat vérifié.")).not.toBeOnTheScreen();
-    expect(mockListMessages).toHaveBeenCalledTimes(1);
-    expect(mockPlanTask).toHaveBeenCalledTimes(1);
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockCreateGoal).toHaveBeenCalledTimes(1);
     expect(mockBootstrap).toHaveBeenCalledTimes(1);
+    expect(mockListMessages).not.toHaveBeenCalled();
   });
 
   it("does not let an old submission's finally unlock a newer request on the replacement pairing", async () => {

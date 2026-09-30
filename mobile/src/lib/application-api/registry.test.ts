@@ -2,11 +2,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import * as server from "@/lib/api/client";
 import * as native from "@/lib/local-inference";
 import { applicationApi, ApplicationApiError } from "./index";
-import { createGoal, getActivity, getProjectGraph, getGoalWritingDraft, listAgents, planTask, sendChat } from "./server";
+import { createGoal, getActivity, getProjectGraph, getGoalWritingDraft, getGoalMemoryUsage, listAgents, planTask, sendChat } from "./server";
 import { createLocalGenerationSession, generateLocalProposal, pickAndImportLocalModel } from "./local-inference";
 import { applicationSessions, ApplicationSessions } from "./sessions";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { projectGraphFixture } from "@/testing/project-graph-fixtures";
+import { memoryUsagePage } from "@/testing/memory-usage-fixtures";
 import { activityPage } from "@/testing/activity-fixtures";
 import { projectFixture, projectGoalFixture } from "@/testing/project-fixtures";
 import type { LocalPlanContextHandle, GeneratedLocalPlan } from "./outputs";
@@ -26,7 +27,7 @@ jest.mock("expo-constants", () => ({ __esModule: true, default: {
 jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
   listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(), planTask: jest.fn(), sendChat: jest.fn(),
-  listAudit: jest.fn(), getProjectGraph: jest.fn(), getActivity: jest.fn(), getGoalWritingDraft: jest.fn(),
+  listAudit: jest.fn(), getProjectGraph: jest.fn(), getActivity: jest.fn(), getGoalMemoryUsage: jest.fn(), getGoalWritingDraft: jest.fn(),
   getSwiftProjectValidation: jest.fn(), cancelSwiftProjectValidation: jest.fn(), createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
 }));
 jest.mock("@/lib/local-inference", () => ({
@@ -105,6 +106,19 @@ describe("application API contract", () => {
     await expect(applicationApi.execute(`${scope}s.activity`, { id: "id_1" })).resolves.toMatchObject({ data: page });
     await expect(applicationApi.execute(`${scope}s.activity`, { id: "id_1", cursor: "unsafe&other=1" })).rejects.toMatchObject({ code: "invalid_arguments" });
     await expect(applicationApi.execute(`${scope}s.activity`, { id: "id_1", execute: true })).rejects.toMatchObject({ code: "invalid_arguments" });
+  });
+
+  it("exposes passive memory receipts through the screen API without execution authority", async () => {
+    const page = memoryUsagePage(); jest.mocked(server.getGoalMemoryUsage).mockResolvedValue(page);
+    const shouldAccept = () => true;
+    expect(await getGoalMemoryUsage("goal_1", "cursor_safe", shouldAccept)).toEqual(page);
+    expect(server.getGoalMemoryUsage).toHaveBeenCalledWith("goal_1", "cursor_safe", shouldAccept);
+    expect(applicationApi.catalog().commands.find(command => command.name === "goals.memory-usage")).toMatchObject({
+      effect: "read", execution: "immediate", output: { dataType: "MemoryUsagePage", validation: "existing_parser" },
+    });
+    await expect(applicationApi.execute("goals.memory-usage", { id: "goal_1", execute: true })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await expect(applicationApi.execute("goals.memory-usage", { id: "goal_1", cursor: "x".repeat(513) })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(server.createGoal).not.toHaveBeenCalled();
   });
 
   it("exposes the project graph as a readonly fenced command used by the screen", async () => {
@@ -395,7 +409,7 @@ describe("application API contract", () => {
 
   it("forwards caller guards for chat, planning and project creation without changing public inputs", async () => {
     const shouldAccept = () => true;
-    const goalInput = { objective: "Préparer mon agenda", autonomy_profile: "assisted" as const };
+    const goalInput = { objective: "Préparer mon agenda", autonomy_profile: "assisted" as const, conversation_id: "conv_one", client_request_id: "request_goal_one" };
     jest.mocked(server.createGoal).mockResolvedValue({ goal: { id: "goal_one" }, nodes: [], result: null } as unknown as server.GoalDetail);
     jest.mocked(server.sendChat).mockResolvedValue({ conversation_id: "conv_one", task: null });
     jest.mocked(server.planTask).mockResolvedValue({ task_id: "task_one", task: null, proposal: { tool_name: "none", arguments: {}, summary: "Proposition" } });

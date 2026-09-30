@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -9,7 +10,16 @@ import aiosqlite
 
 from app.models import TaskCreate, TaskMode, TaskRecord, TaskStatus
 from app.services.audit_log import append_audit_event
+from app.services.context_builder import safe_context_text
 from app.services.goal_limits import RESUME_RUNTIME_SQL
+from app.services.project_identity import (
+    MAX_IDENTITY_LINEAGE,
+    ProjectIdentityConflict,
+    continuation_project_locked,
+    has_project_artifact_locked,
+    require_idle_lineage_locked,
+    seed_legacy_proposal_locked,
+)
 from app.services.state_service import StateService
 
 
@@ -25,7 +35,12 @@ class GoalConversationService:
 
     @staticmethod
     async def create_locked(
-        db: aiosqlite.Connection, goal_id: str, objective: str, now: str
+        db: aiosqlite.Connection,
+        goal_id: str,
+        objective: str,
+        now: str,
+        *,
+        history: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         conversation_id = f"gconv_{goal_id}"
         await db.execute(
@@ -36,6 +51,26 @@ class GoalConversationService:
             "INSERT INTO goal_conversation_links(goal_run_id,conversation_id) VALUES(?,?)",
             (goal_id, conversation_id),
         )
+        # This is a snapshot of bounded chat context, never execution authority.
+        # Original chat messages remain available; assistant claims keep their role.
+        for message in history[-40:]:
+            if message["role"] not in {"user", "assistant", "agent"}:
+                continue
+            content = safe_context_text(str(message["content"]), max_chars=4_000)
+            if not content.strip():
+                continue
+            await db.execute(
+                """INSERT INTO goal_messages(id,conversation_id,goal_run_id,role,content,created_at)
+                VALUES(?,?,?,?,?,?)""",
+                (
+                    f"gmsg_{uuid4().hex}",
+                    conversation_id,
+                    goal_id,
+                    "user" if message["role"] == "user" else "assistant",
+                    content,
+                    str(message["created_at"]),
+                ),
+            )
         await db.execute(
             """INSERT INTO goal_messages(id,conversation_id,goal_run_id,role,content,created_at)
             VALUES(?,?,?,'user',?,?)""",
@@ -104,6 +139,7 @@ class GoalConversationService:
         reply_to_message_id: str | None,
         actor_id: str,
         planning_mode: Literal["automatic", "iphone_local"] = "automatic",
+        internal_checkpoint: bool = False,
     ) -> str:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
@@ -120,7 +156,7 @@ class GoalConversationService:
                 raise GoalConversationConflict("goal not found")
             replay = await (
                 await db.execute(
-                    """SELECT id,goal_run_id,content,reply_to_message_id FROM goal_messages
+                """SELECT id,goal_run_id,role,content,reply_to_message_id FROM goal_messages
                     WHERE conversation_id=? AND actor_id=? AND client_message_id=?""",
                     (link["id"], actor_id, client_message_id),
                 )
@@ -137,6 +173,7 @@ class GoalConversationService:
                 original_mode = accepted[0] if accepted and accepted[0] else "automatic"
                 if (
                     replay["content"] != message
+                    or replay["role"] != ("assistant" if internal_checkpoint else "user")
                     or replay["reply_to_message_id"] != reply_to_message_id
                     or original_mode != planning_mode
                 ):
@@ -157,18 +194,10 @@ class GoalConversationService:
                 and goal["started_at"] is None
                 and goal["current_phase"] == "awaiting_local_plan"
             )
-            if planning_mode == "iphone_local":
-                project = await (
-                    await db.execute(
-                        "SELECT project_id FROM goal_project_links WHERE goal_run_id=?",
-                        (active_id,),
-                    )
-                ).fetchone()
-                if project is None or not (terminal or awaiting_local_plan):
-                    raise GoalConversationConflict(
-                        "local continuation requires an existing project with no active work"
-                    )
-                awaiting_local_plan = True
+            if planning_mode == "iphone_local" and not (terminal or awaiting_local_plan):
+                raise GoalConversationConflict(
+                    "local continuation requires an existing project with no active work"
+                )
             waiting_for_reply = (
                 goal["status"] == "waiting_permission" and goal["current_phase"] == "needs_user"
             )
@@ -186,6 +215,24 @@ class GoalConversationService:
                 terminal or question is None or question["id"] != reply_to_message_id
             ):
                 raise GoalConversationConflict("the clarification question is no longer current")
+            try:
+                project_id, lineage = await continuation_project_locked(
+                    db, active_id, str(link["id"]), now, actor_id=actor_id
+                )
+                if terminal and len(lineage) >= MAX_IDENTITY_LINEAGE:
+                    raise GoalConversationConflict(
+                        "project lineage exceeds its reconciliation limit"
+                    )
+                await seed_legacy_proposal_locked(db, project_id, lineage, now)
+                if planning_mode == "iphone_local":
+                    await require_idle_lineage_locked(db, lineage)
+                    if not await has_project_artifact_locked(db, project_id):
+                        raise GoalConversationConflict(
+                            "local continuation requires an existing project artifact with no active work"
+                        )
+                    awaiting_local_plan = True
+            except ProjectIdentityConflict as exc:
+                raise GoalConversationConflict(str(exc)) from exc
             if terminal:
                 active_id = f"goal_{uuid4().hex}"
                 root = TaskRecord.new(
@@ -231,15 +278,14 @@ class GoalConversationService:
                     (active_id, link["id"]),
                 )
                 await db.execute(
-                    """INSERT INTO goal_project_links(goal_run_id,project_id)
-                    SELECT ?,project_id FROM goal_project_links WHERE goal_run_id=?""",
-                    (active_id, goal["id"]),
+                    "INSERT INTO goal_project_links(goal_run_id,project_id) VALUES(?,?)",
+                    (active_id, project_id),
                 )
                 await append_audit_event(
                     db,
                     "goal.continued",
                     {"parent_goal_id": goal["id"], "goal_run_id": active_id},
-                    actor_type="device",
+                    actor_type="control-plane" if internal_checkpoint else "device",
                     actor_id=actor_id,
                     task_id=root.id,
                     trace_id=active_id,
@@ -249,11 +295,12 @@ class GoalConversationService:
             await db.execute(
                 """INSERT INTO goal_messages(id,conversation_id,goal_run_id,role,content,
                 actor_id,client_message_id,reply_to_message_id,created_at)
-                VALUES(?,?,?,'user',?,?,?,?,?)""",
+                VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
                     message_id,
                     link["id"],
                     active_id,
+                    "assistant" if internal_checkpoint else "user",
                     message,
                     actor_id,
                     client_message_id,
@@ -293,7 +340,7 @@ class GoalConversationService:
                     "message_id": message_id,
                     "planning_mode": planning_mode,
                 },
-                actor_type="device",
+                actor_type="control-plane" if internal_checkpoint else "device",
                 actor_id=actor_id,
                 task_id=audit_task_id,
                 trace_id=active_id,

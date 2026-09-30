@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 import pytest
+
 from app.services.goal_manager import GoalManager
 from app.services.project_contracts import ProjectPayload, ProjectResult, project_digest
 from app.services.project_progress import has_project_progress
@@ -108,7 +109,7 @@ async def test_four_native_revisions_progress_then_request_exact_native_validati
 
 
 @pytest.mark.asyncio
-async def test_native_no_progress_and_repeated_reads_remain_bounded(tmp_path: Path) -> None:
+async def test_native_no_progress_attempts_remain_bounded(tmp_path: Path) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=16)
     goal_id = detail["goal"]["id"]
     await submit_native(manager, agent, FILES[:1])
@@ -121,12 +122,18 @@ async def test_native_no_progress_and_repeated_reads_remain_bounded(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_native_repeated_reads_pause_without_resetting_no_progress(tmp_path: Path) -> None:
+async def test_native_repeated_reads_continue_without_resetting_no_progress(tmp_path: Path) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=16)
     goal_id = detail["goal"]["id"]
     await submit_native(manager, agent, FILES[:1])
-    for _ in range(4):
+    for _ in range(2):
+        await submit_native(manager, agent, FILES[:1])
+    for _ in range(6):
         await submit_native(manager, agent, FILES[:1], focus=["Package.swift"])
+        current = await manager.get_goal(goal_id)
+        assert current and current["goal"]["status"] == "running"
+        assert current["goal"]["current_phase"] == "project_building"
+    await submit_native(manager, agent, FILES[:1])
     current = await manager.get_goal(goal_id)
     assert current and current["goal"]["current_phase"] == "needs_user"
     assert await manager.agent_dispatcher.claim(agent) is None

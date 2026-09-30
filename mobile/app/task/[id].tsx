@@ -1,4 +1,5 @@
 import { ActivityTimeline } from "@/components/activity-timeline";
+import { RecordedFailure } from "@/components/recorded-failure";
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Text, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
@@ -84,9 +85,7 @@ function TaskSummary({
         {task.input}
       </Text>
       {task.error_json?.message ? (
-        <Text selectable style={{ color: COLORS.danger, lineHeight: 20 }}>
-          {task.error_json.message}
-        </Text>
+        <RecordedFailure reason={task.error_json.message} />
       ) : null}
       {task.status === "created" && !readOnly ? (
         <ActionButton
@@ -199,7 +198,7 @@ function AgentWorkEvidence({ execution }: { execution: TaskDetail["goal_executio
           {node.provenance.required_skill ? <Text selectable style={{ color: COLORS.subtle }}>{node.provenance.required_skill}</Text> : null}
           {node.provenance.agent_id ? <Text selectable style={{ color: COLORS.subtle }}>Agent : {node.provenance.agent_id}</Text> : null}
           {node.output_summary ? <Text selectable style={{ color: COLORS.muted }}>Résumé déclaré par l’agent : {node.output_summary}</Text> : null}
-          {node.error_summary ? <Text selectable style={{ color: COLORS.danger }}>{node.error_summary}</Text> : null}
+          {node.error_summary ? <RecordedFailure reason={node.error_summary} /> : null}
         </Card>
       ))}
       {!execution.nodes.length ? <Text style={{ color: COLORS.subtle }}>Aucun travail d’agent planifié dans ce but.</Text> : null}
@@ -593,7 +592,8 @@ export default function TaskDetailScreen() {
         onPress={() => void state.refresh()}
         testID="refresh-task-button"
       />
-      {task ? <ActivityTimeline scope="task" id={task.id} enabled={!state.offline && !state.initialLoading} refreshKey={task.updated_at} /> : null}
+      {task ? <ActivityTimeline scope="task" id={task.id} enabled={!state.offline && !state.initialLoading} refreshKey={task.updated_at}
+        intent={task.input} onOpenGoal={(id) => router.push({ pathname: "/goal/[id]", params: { id } })} /> : null}
       <TaskDetailContent
         actions={actions}
         busy={state.busy}

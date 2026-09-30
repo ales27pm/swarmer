@@ -125,9 +125,7 @@ def test_wire_schema_excludes_conflicting_and_distinct_mixed_operation_families(
     assert validator.is_valid(response(runtime=runtime, edits=[], patches=[patch]))
     assert not validator.is_valid({**edit, "patches": [patch]})
     assert not validator.is_valid({**edit, "deletions": ["obsolete.txt"]})
-    assert not validator.is_valid(
-        {**edit, "requested_checks": [["python", "-m", "pytest", "-q"]]}
-    )
+    assert not validator.is_valid({**edit, "requested_checks": [["python", "-m", "pytest", "-q"]]})
 
 
 @pytest.mark.parametrize("field", ["deletions", "requested_checks"])
@@ -138,11 +136,7 @@ def test_normal_generator_locally_rejects_distinct_operation_families(
     data = payload(diagnostic="The previous edit was accepted.")
     data["files"].append({"path": "obsolete.txt", "content": "obsolete\n"})
     output = response(
-        **{
-            field: ["obsolete.txt"]
-            if field == "deletions"
-            else [["python", "-m", "pytest", "-q"]]
-        }
+        **{field: ["obsolete.txt"] if field == "deletions" else [["python", "-m", "pytest", "-q"]]}
     )
     calls = install_transport(monkeypatch, output)
     original = copy.deepcopy(data)
@@ -159,9 +153,7 @@ def test_rejection_profile_recognizes_exact_latest_failure_after_user_resume(
     diagnostic: str,
 ) -> None:
     data = payload(diagnostic=diagnostic)
-    data["conversation"].append(
-        {"role": "user", "content": "Continue, conserve les fichiers."}
-    )
+    data["conversation"].append({"role": "user", "content": "Continue, conserve les fichiers."})
     assert worker.follows_model_rejection(data)
 
 
@@ -198,9 +190,7 @@ def test_rejection_schema_keeps_delete_read_checks_and_native_ready_paths(
 ) -> None:
     data = payload(path)
     context = {"selected_complete_files": [], "selected_file_fragments": []}
-    original = worker.constrained_step_schema(
-        copy.deepcopy(worker.STEP_SCHEMA), context, data, {}
-    )
+    original = worker.constrained_step_schema(copy.deepcopy(worker.STEP_SCHEMA), context, data, {})
     schema = worker.bounded_rejection_schema(original)
     validator = Draft202012Validator(schema)
     assert validator.is_valid(response(edits=[], deletions=[path]))
@@ -209,9 +199,7 @@ def test_rejection_schema_keeps_delete_read_checks_and_native_ready_paths(
         response(edits=[], requested_checks=[["python", "-m", "pytest", "-q"]])
     )
     assert validator.is_valid(response(action="clarify", edits=[]))
-    assert validator.is_valid(response(action="complete", edits=[])) == path.endswith(
-        ".swift"
-    )
+    assert validator.is_valid(response(action="complete", edits=[])) == path.endswith(".swift")
     assert not validator.is_valid(response(edits=[], deletions=[path, path]))
     assert not validator.is_valid(response(edits=[], focus_paths=[path, path]))
     assert not validator.is_valid(
@@ -219,9 +207,7 @@ def test_rejection_schema_keeps_delete_read_checks_and_native_ready_paths(
     )
 
 
-@pytest.mark.parametrize(
-    "diagnostic", [CONFLICT, INCOMPLETE, PAUSE_PREFIX + INCOMPLETE]
-)
+@pytest.mark.parametrize("diagnostic", [CONFLICT, INCOMPLETE, PAUSE_PREFIX + INCOMPLETE])
 def test_smaller_next_charged_batch_preserves_exact_plan_and_input(
     monkeypatch: pytest.MonkeyPatch,
     diagnostic: str,
@@ -238,9 +224,7 @@ def test_smaller_next_charged_batch_preserves_exact_plan_and_input(
     validator = Draft202012Validator(calls[0]["format"])
     assert validator.is_valid(response())
     assert not validator.is_valid(response(plan=["Replace the accepted requirements"]))
-    assert not validator.is_valid(
-        response(edits=[{"path": "app.py", "content": "x" * 801}])
-    )
+    assert not validator.is_valid(response(edits=[{"path": "app.py", "content": "x" * 801}]))
 
 
 @pytest.mark.parametrize(
@@ -283,9 +267,7 @@ def test_failed_recovery_preserves_snapshot_and_receipts_without_runner_or_hidde
 
     def conflicting(body: dict[str, Any]) -> dict[str, Any]:
         branch = next(
-            b
-            for b in body["format"]["oneOf"]
-            if b["properties"]["patches"].get("minItems") == 1
+            b for b in body["format"]["oneOf"] if b["properties"]["patches"].get("minItems") == 1
         )
         choices = branch["properties"]["patches"]["items"]["oneOf"][0]["properties"]
         return response(
@@ -305,9 +287,7 @@ def test_failed_recovery_preserves_snapshot_and_receipts_without_runner_or_hidde
 
     class NoRunner:
         def run(self, *args: Any, **kwargs: Any) -> Any:
-            pytest.fail(
-                "A rejected or truncated model batch must never reach the runner"
-            )
+            pytest.fail("A rejected or truncated model batch must never reach the runner")
 
     result = worker.run_iteration(data, generator(), NoRunner(), lambda: None)
     assert len(calls) == 1

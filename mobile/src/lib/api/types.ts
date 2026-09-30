@@ -244,6 +244,8 @@ export type GoalDetail = {
 export type GoalCreateInput = {
   objective: string;
   autonomy_profile: GoalAutonomyProfile;
+  conversation_id?: string;
+  client_request_id?: string;
   completion_criteria?: string[];
   max_steps?: number;
   max_parallelism?: number;
@@ -445,6 +447,17 @@ export type MemoryItem = {
   updated_at: string;
   score?: number;
   search_kind?: "lexical" | "vector" | "hybrid";
+  presentation?: {
+    language: "fr";
+    content: string;
+    summary: string | null;
+    canonical_sha256: string;
+    summary_sha256: string | null;
+    source_revision: string;
+    validation_status: "model_reviewed";
+    temporary: true;
+    grants_authority: false;
+  };
 };
 
 export type Agent = {

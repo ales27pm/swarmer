@@ -107,8 +107,9 @@ class _Hints:
 
 
 class _StrategyRetrieval:
-    async def retrieve(self, query: str) -> _Hints:
+    async def retrieve(self, query: str, *, goal_run_id: str) -> _Hints:
         assert "goal-secret" in query
+        assert goal_run_id.startswith("goal_")
         return _Hints()
 
 

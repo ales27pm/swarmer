@@ -56,6 +56,10 @@ async def _seed_goal_run(db_path: Path, suffix: str) -> tuple[str, str]:
                 now,
             ),
         )
+        await db.execute(
+            "INSERT OR IGNORE INTO coding_projects VALUES('project_episode',?,?)", (now, now)
+        )
+        await db.execute("INSERT INTO goal_project_links VALUES(?,'project_episode')", (goal_id,))
         await db.commit()
     return goal_id, root.id
 
@@ -174,6 +178,7 @@ async def test_episode_search_combines_semantics_skill_outcome_and_failure_metad
 
     results = await service.search(
         "redis reconnect timeout",
+        goal_run_id=failed_goal,
         skills=("research.fetch_https",),
         preferred_outcome="failed",
         limit=2,
@@ -202,7 +207,7 @@ async def test_embedding_failure_preserves_episode_and_uses_lexical_fallback(
         duration_ms=10,
     )
 
-    results = await service.search("canoe route")
+    results = await service.search("canoe route", goal_run_id=goal_id)
 
     assert results[0].episode.id == episode.id
     assert results[0].search_kind == "lexical"

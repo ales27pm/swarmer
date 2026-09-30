@@ -14,6 +14,7 @@ import aiosqlite
 
 from app.services.context_builder import safe_context_text
 from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
+from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 _OUTCOME = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
@@ -378,6 +379,7 @@ class EpisodeMemoryService:
         preferred_outcome: str | None = None,
         outcomes: Sequence[str] | None = None,
         limit: int = 10,
+        goal_run_id: str | None = None,
     ) -> list[EpisodeSearchResult]:
         safe_query = safe_context_text(query, max_chars=512)
         if not safe_query:
@@ -391,8 +393,26 @@ class EpisodeMemoryService:
             if outcomes is not None
             else None
         )
-        query_vector = await self._query_vector(safe_query)
-        provider = self.embedding_service.provider_name if self.embedding_service else None
+        # Historical episodes are private to the persistent project. Omitted
+        # or unlinked scope never means search all episodes, nor an embedding
+        # request made merely to discover that no project is available.
+        if goal_run_id is None:
+            return []
+        goal_run_id = _validated_identifier(goal_run_id, "goal_run_id")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA query_only=ON")
+            project = await (
+                await db.execute(
+                    "SELECT project_id FROM goal_project_links WHERE goal_run_id=?",
+                    (goal_run_id,),
+                )
+            ).fetchone()
+        if project is None:
+            return []
+        project_id = str(project[0])
+        provider = self.embedding_service
+        identity = self._embedding_identity()
+        query_vector = await self._query_vector(safe_query, provider, identity)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA query_only=ON")
@@ -403,11 +423,23 @@ class EpisodeMemoryService:
                         """
                         SELECT e.*,x.vector_json,x.dimensions
                         FROM episodes AS e
+                        JOIN goal_project_links p ON p.goal_run_id=e.goal_run_id
                         LEFT JOIN episode_embeddings AS x
                           ON x.episode_id=e.id AND x.provider=?
+                        WHERE p.project_id=? AND EXISTS(
+                            SELECT 1 FROM goal_project_links current
+                            WHERE current.goal_run_id=? AND current.project_id=p.project_id
+                        ) AND (? IS NULL OR e.outcome IN (SELECT value FROM json_each(?)))
                         ORDER BY e.created_at DESC,e.id ASC LIMIT ?
                         """,
-                        (provider or "", _MAX_SEARCH_CANDIDATES),
+                        (
+                            identity,
+                            project_id,
+                            goal_run_id,
+                            None if outcome_filter is None else json.dumps(sorted(outcome_filter)),
+                            None if outcome_filter is None else json.dumps(sorted(outcome_filter)),
+                            _MAX_SEARCH_CANDIDATES,
+                        ),
                     )
                 ).fetchall()
                 step_map: dict[str, tuple[EpisodeStepRecord, ...]] = {}
@@ -421,6 +453,8 @@ class EpisodeMemoryService:
         if now.tzinfo is None:
             raise RuntimeError("episode memory clock must be timezone-aware")
         query_terms = _terms(safe_query)
+        if provider is not self.embedding_service or identity != self._embedding_identity():
+            query_vector = None
         results: list[EpisodeSearchResult] = []
         for row in rows:
             outcome = str(row["outcome"])
@@ -471,19 +505,39 @@ class EpisodeMemoryService:
         return results[:limit]
 
     async def _index_episode(self, episode_id: str) -> None:
-        if self.embedding_service is None:
+        provider = self.embedding_service
+        identity = self._embedding_identity()
+        if provider is None:
             return
         episode = await self.get_episode(episode_id)
         if episode is None:
             return
         text = _episode_search_text(episode)
-        vectors = await self.embedding_service.embed([text])
+        vectors = await provider.embed([text])
         if len(vectors) != 1:
             raise ValueError("embedding provider returned an invalid vector count")
-        vector = _validated_vector(vectors[0])
+        vector = memory_vector(vectors[0], getattr(provider, "dimensions", None))
+        if vector is None:
+            raise ValueError("embedding provider returned an invalid vector")
+        if provider is not self.embedding_service or identity != self._embedding_identity():
+            return
         now = _utc_iso(self.clock())
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA foreign_keys=ON")
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute("SELECT * FROM episodes WHERE id=?", (episode_id,))
+            ).fetchone()
+            if row is None:
+                return
+            current = _episode_from_row(row, await self._steps_locked(db, episode_id))
+            if (
+                _episode_search_text(current) != text
+                or provider is not self.embedding_service
+                or identity != self._embedding_identity()
+            ):
+                return
             await db.execute(
                 """
                 INSERT OR REPLACE INTO episode_embeddings(
@@ -492,22 +546,34 @@ class EpisodeMemoryService:
                 """,
                 (
                     episode_id,
-                    self.embedding_service.provider_name,
+                    identity,
                     len(vector),
                     json.dumps(vector, separators=(",", ":")),
                     now,
                 ),
             )
+            if provider is not self.embedding_service or identity != self._embedding_identity():
+                await db.rollback()
+                return
             await db.commit()
 
-    async def _query_vector(self, query: str) -> list[float] | None:
-        if self.embedding_service is None:
+    def _embedding_identity(self) -> str:
+        return embedding_identity(self.embedding_service, input_format="episode-search-text-v1")
+
+    async def _query_vector(
+        self, query: str, provider: EmbeddingService | None, identity: str
+    ) -> list[float] | None:
+        if provider is None:
             return None
         try:
-            vectors = await self.embedding_service.embed([query])
-            if len(vectors) != 1:
+            vectors = await provider.embed([query])
+            if (
+                len(vectors) != 1
+                or provider is not self.embedding_service
+                or identity != self._embedding_identity()
+            ):
                 return None
-            return _validated_vector(vectors[0])
+            return memory_vector(vectors[0], getattr(provider, "dimensions", None))
         except (EmbeddingServiceError, TypeError, ValueError):
             return None
 
@@ -703,31 +769,12 @@ def _stored_similarity(
         raw = json.loads(str(encoded))
         if not isinstance(raw, list):
             return None
-        vector = _validated_vector(raw)
+        vector = memory_vector(raw, len(query_vector))
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
-    if len(vector) != len(query_vector):
+    if vector is None:
         return None
-    dot = sum(left * right for left, right in zip(query_vector, vector, strict=True))
-    qnorm = math.sqrt(sum(value * value for value in query_vector))
-    vnorm = math.sqrt(sum(value * value for value in vector))
-    if qnorm == 0.0 or vnorm == 0.0:
-        return 0.0
-    return max(0.0, min(1.0, dot / (qnorm * vnorm)))
-
-
-def _validated_vector(raw: Sequence[object]) -> list[float]:
-    if not raw:
-        raise ValueError("embedding vector must not be empty")
-    values: list[float] = []
-    for value in raw:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError("embedding vector values must be finite numbers")
-        converted = float(value)
-        if not math.isfinite(converted):
-            raise ValueError("embedding vector values must be finite numbers")
-        values.append(converted)
-    return values
+    return max(0.0, memory_cosine(query_vector, vector))
 
 
 def _lexical_score(query_terms: frozenset[str], text: str) -> float:

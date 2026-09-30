@@ -113,6 +113,7 @@ class MemorySearch(BaseModel):
     query: str = Field(min_length=1, max_length=2_000)
     scope: str | None = Field(default=None, max_length=100)
     kind: str | None = Field(default=None, max_length=100)
+    limit: int = Field(default=6, ge=1, le=20)
 
 
 class AgentCreate(BaseModel):

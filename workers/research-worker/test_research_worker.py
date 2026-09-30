@@ -800,7 +800,10 @@ def test_agent_card_contains_only_static_safe_metadata() -> None:
 
     assert manifest["manifest_version"] == "1"
     assert manifest["name"] == "mongars-research-worker"
-    assert [skill["id"] for skill in manifest["skills"]] == ["research.query"]
+    assert [skill["id"] for skill in manifest["skills"]] == [
+        "research.query",
+        "research.collect",
+    ]
     encoded = json.dumps(manifest).casefold()
     for forbidden in (
         "credential",
@@ -812,3 +815,174 @@ def test_agent_card_contains_only_static_safe_metadata() -> None:
         "https://",
     ):
         assert forbidden not in encoded
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        [],
+        [
+            {
+                "title": "Rejected URL",
+                "url": "file:///private/source",
+                "content": "ignored",
+            }
+        ],
+    ],
+)
+def test_searxng_engine_failures_without_usable_results_are_not_empty_success(
+    results: list[dict[str, str]],
+) -> None:
+    worker = load_worker()
+    response = {
+        "results": results,
+        "unresponsive_engines": [
+            ["private-engine-one", "too many requests"],
+            [
+                "private-engine-two",
+                "Suspended: CAPTCHA at https://internal.invalid/?token=private",
+            ],
+        ],
+    }
+    with pytest.raises(worker.ResearchAdapterError) as caught:
+        worker._normalize_searxng_response(response, 3)
+    assert str(caught.value) == "SearXNG engines failed to return usable results"
+
+
+@pytest.mark.parametrize("metadata", [{}, {"unresponsive_engines": []}])
+def test_searxng_empty_results_without_reported_engine_failures_remain_compatible(
+    metadata: dict[str, Any],
+) -> None:
+    worker = load_worker()
+    result = worker._normalize_searxng_response({"results": [], **metadata}, 3)
+    assert result == {"content_trust": "untrusted", "results": []}
+    worker.ensure_result_contract(result)
+
+
+@pytest.mark.parametrize("diagnostics", [None, False, "", {}, "private failure"])
+def test_searxng_invalid_engine_diagnostics_cannot_prove_empty_success(
+    diagnostics: Any,
+) -> None:
+    worker = load_worker()
+    with pytest.raises(worker.ResearchAdapterError) as caught:
+        worker._normalize_searxng_response({"results": [], "unresponsive_engines": diagnostics}, 3)
+    assert str(caught.value) == "SearXNG returned invalid engine diagnostics"
+
+
+def test_searxng_usable_partial_results_keep_exact_legacy_contract() -> None:
+    worker = load_worker()
+    result = worker._normalize_searxng_response(
+        {
+            "results": [
+                {
+                    "title": "Source",
+                    "url": "https://example.org/a",
+                    "content": "Excerpt",
+                }
+            ],
+            "unresponsive_engines": [["private-engine", "CAPTCHA"]],
+        },
+        3,
+    )
+    assert result == {
+        "content_trust": "untrusted",
+        "results": [{"title": "Source", "url": "https://example.org/a", "snippet": "Excerpt"}],
+    }
+    worker.ensure_result_contract(result)
+
+
+def test_searxng_empty_engine_failure_is_submitted_once_as_failed() -> None:
+    worker = load_worker()
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+    queries: list[str] = []
+
+    def control_request(
+        base_url: str,
+        path: str,
+        token: str,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        calls.append((path, copy.deepcopy(body)))
+        return claimed_job() if path.endswith("/claim") else {"status": "ok"}
+
+    class UnavailableEngines:
+        def query(self, request: Any) -> dict[str, Any]:
+            queries.append(request.query)
+            return worker._normalize_searxng_response(
+                {
+                    "results": [],
+                    "unresponsive_engines": [["private-engine", "CAPTCHA private"]],
+                },
+                request.max_results,
+            )
+
+    worker.control_plane_request = control_request
+    assert worker.run_once(
+        "https://control.example", "agt_research", "agent-secret", UnavailableEngines()
+    )
+    results = [body for path, body in calls if path.endswith("/result")]
+    assert len(queries) == 1 and len(results) == 1
+    assert results[0] == {
+        "claim_token": claimed_job()["claim_token"],
+        "lease_id": claimed_job()["lease_id"],
+        "lease_generation": claimed_job()["lease_generation"],
+        "status": "failed",
+        "error": "SearXNG engines failed to return usable results",
+    }
+
+
+def test_collect_distinguishes_searxng_failure_from_empty_and_keeps_other_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = load_worker()
+    queries: list[str] = []
+    pages: list[str] = []
+
+    class MixedEngines:
+        def query(self, request: Any) -> dict[str, Any]:
+            queries.append(request.query)
+            response = {
+                "results": [
+                    {
+                        "title": "Source",
+                        "url": "https://example.org/a",
+                        "content": "Excerpt",
+                    }
+                ]
+                if request.query == "available"
+                else [],
+                "unresponsive_engines": []
+                if request.query == "empty"
+                else [["private-engine", "CAPTCHA"]],
+            }
+            return worker._normalize_searxng_response(response, request.max_results)
+
+    def read_page(url: str, deadline: float) -> Any:
+        pages.append(url)
+        return worker.RawPage(200, {"content-type": "text/plain"}, b"Public documentation.")
+
+    monkeypatch.setattr(worker, "public_page_request", read_page)
+    result = worker.execute(
+        MixedEngines(),
+        {
+            "required_skill": "research.collect",
+            "payload": {
+                "focus": "bounded question",
+                "queries": ["available", "failed", "empty"],
+            },
+        },
+    )
+    assert queries == ["available", "failed", "empty"]
+    assert pages == ["https://example.org/a"]
+    assert result["collection_status"] == "partial"
+    assert [entry["status"] for entry in result["searches"]] == [
+        "completed",
+        "failed",
+        "completed",
+    ]
+    assert result["searches"][1]["error_code"] == "search_unavailable"
+    assert "error_code" not in result["searches"][2]
+    assert result["pages"][0]["status"] == "read"
+    assert "private-engine" not in json.dumps(result)
+    worker.ensure_result_contract(result)

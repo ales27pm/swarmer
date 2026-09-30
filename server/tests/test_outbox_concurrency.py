@@ -5,8 +5,8 @@ from typing import Any
 
 import aiosqlite
 import pytest
-from app.services.message_board import DurableEvent
 
+from app.services.message_board import DurableEvent
 from app.services.outbox import OutboxService
 from app.services.state_service import StateService
 

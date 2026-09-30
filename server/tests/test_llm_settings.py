@@ -87,7 +87,9 @@ def test_goal_provider_deadlines_follow_operator_config_inside_lease(
     assert app.state.evaluator.timeout_seconds == expected
     assert app.state.research_evaluator.timeout_seconds == expected
     assert expected < app.state.settings.goal_model_call_lease_seconds
-    assert app.state.settings.goal_max_model_calls == 30
+    assert app.state.settings.goal_max_model_calls == 100
+    assert app.state.settings.goal_context_max_tokens == 8192
+    assert app.state.settings.goal_auto_continue_on_model_budget_exhausted is True
     assert app.state.settings.goal_max_runtime_seconds == 1800
 
 

@@ -18,9 +18,10 @@ from pydantic import (
 
 from app.services.writing_contracts import (
     MAX_DEPENDENCY_BYTES,
-    MAX_RESEARCH_SOURCE_BYTES,
+    MAX_RESEARCH_SOURCES,
     DependencyContextItem,
     WritingResearchSource,
+    research_source_limits,
 )
 
 PROJECT_SKILL = "code.build_project"
@@ -232,14 +233,21 @@ class ProjectPayload(NativeValidationState):
     durable_context: dict[str, Any] | None = None
     context_compaction: dict[str, Any] | None = None
     dependency_context: list[DependencyContextItem] = Field(default_factory=list, max_length=8)
-    research_sources: list[WritingResearchSource] = Field(default_factory=list, max_length=5)
+    research_sources: list[WritingResearchSource] = Field(
+        default_factory=list, max_length=MAX_RESEARCH_SOURCES
+    )
 
     @model_validator(mode="after")
     def validate_payload(self) -> ProjectPayload:
         validate_files(self.files)
+        source_count, source_limit = research_source_limits(
+            [s.model_dump() for s in self.research_sources]
+        )
+        if len(self.research_sources) > source_count:
+            raise ValueError("project research source count exceeds its limit")
         for entries, limit in (
             (self.dependency_context, MAX_DEPENDENCY_BYTES),
-            (self.research_sources, MAX_RESEARCH_SOURCE_BYTES),
+            (self.research_sources, source_limit),
         ):
             if (
                 len(

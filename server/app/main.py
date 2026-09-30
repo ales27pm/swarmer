@@ -23,7 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.models import (
     AgentCapabilityPoll,
@@ -108,6 +108,17 @@ from app.services.maintenance_lease import (
     MaintenanceLeaseRunner,
     MaintenanceLeaseService,
 )
+from app.services.memory_inspection import (
+    MemoryInspectionCursorError,
+    MemoryInspectionEvidenceError,
+    read_memory_usage,
+)
+from app.services.memory_inspection_contracts import MemoryUsagePage
+from app.services.memory_normalization import (
+    MemoryNormalizationError,
+    OpenAIMemoryNormalizationProvider,
+)
+from app.services.memory_presentation import OpenAIMemoryPresentationProvider
 from app.services.message_board import (
     MessageBoard,
     RedisStreamsMessageBoard,
@@ -163,6 +174,7 @@ from app.services.website_branding import InfographicArtistClient
 from app.services.website_browser import BrowserRuntimeConfig
 from app.services.website_publisher import StaticDirectoryPublisher
 from app.services.website_workflow import WebsiteWorkflow
+from app.services.website_workflow_locks import joined_thread
 from app.services.website_workflow_routes import install_website_routes
 from app.services.websocket_notifications import WebSocketNotificationService
 from app.services.writing_drafts import WritingDraftPreview, read_writing_draft
@@ -293,6 +305,34 @@ def _validate_runtime_boundaries(settings: Settings) -> None:
             )
 
 
+def _memory_normalization_http_error(error: MemoryNormalizationError) -> HTTPException:
+    # The provider reason is an internal fixed code. Neither source text nor
+    # model output belongs in a public failure, including validation failures.
+    code, detail = {
+        "unavailable": (
+            503,
+            "La traduction de la mémoire est indisponible. Aucune modification enregistrée.",
+        ),
+        "invalid": (
+            422,
+            "La traduction de la mémoire n’a pas pu être validée. Aucune modification enregistrée.",
+        ),
+        "uncertain": (
+            422,
+            "Le sens de la traduction reste incertain. Aucune modification enregistrée.",
+        ),
+        "source_conflict": (
+            409,
+            "La mémoire a changé pendant sa traduction. Actualisez-la avant de réessayer.",
+        ),
+    }[error.category]
+    return HTTPException(
+        status_code=code,
+        detail=detail,
+        headers={"X-Mongars-Memory-Normalization": error.category},
+    )
+
+
 def create_app(config: Settings | None = None) -> FastAPI:
     settings = config or get_settings()
     _validate_runtime_boundaries(settings)
@@ -321,10 +361,38 @@ def create_app(config: Settings | None = None) -> FastAPI:
         else None
     )
     permission_policy = PermissionPolicy.from_yaml(settings.permissions_path)
+    memory_normalizer = (
+        OpenAIMemoryNormalizationProvider(
+            settings.memory_normalization_base_url or "",
+            settings.memory_translator_model or "",
+            translator_revision=settings.memory_translator_revision,
+            reviewer_model=settings.memory_reviewer_model,
+            reviewer_revision=settings.memory_reviewer_revision,
+            timeout_seconds=settings.memory_normalization_timeout_seconds,
+        )
+        if settings.memory_canonical_language == "en"
+        else None
+    )
+    memory_presenter = (
+        OpenAIMemoryPresentationProvider(
+            settings.memory_normalization_base_url or "",
+            settings.memory_translator_model or "",
+            translator_revision=settings.memory_translator_revision,
+            reviewer_model=settings.memory_reviewer_model,
+            reviewer_revision=settings.memory_reviewer_revision,
+            timeout_seconds=settings.memory_normalization_timeout_seconds,
+        )
+        if settings.memory_canonical_language == "en"
+        else None
+    )
     state_service = StateService(
         settings.db_path,
         embedding_service,
         permission_policy=permission_policy,
+        memory_normalizer=memory_normalizer,
+        memory_presenter=memory_presenter,
+        canonical_language=settings.memory_canonical_language,
+        memory_normalization_timeout_seconds=settings.memory_normalization_timeout_seconds,
     )
     configured_pairing_secret = settings.pairing_bootstrap_token
     auth_service = AuthService(
@@ -413,6 +481,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
         max_result_chars_per_node=settings.goal_context_max_result_chars_per_node,
     )
     episode_memory = EpisodeMemoryService(settings.db_path, embedding_service)
+    # Agent translation requires model-call admission/accounting before wiring
+    # the optional canonical-memory seam; explicit memory API remains separate.
     strategy_retrieval = StrategyRetrieval(settings.db_path, episode_memory)
     model_router = ModelRouter(
         [
@@ -483,6 +553,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         default_max_replans=settings.goal_max_replans,
         default_max_runtime_seconds=settings.goal_max_runtime_seconds,
         default_max_model_calls=settings.goal_max_model_calls,
+        auto_continue_on_model_budget_exhausted=settings.goal_auto_continue_on_model_budget_exhausted,
         instance_id=control_plane_instance.instance_id,
         model_call_lease_seconds=settings.goal_model_call_lease_seconds,
         require_execution_workers=True,
@@ -621,6 +692,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "goal-runtime",
             lambda: maintenance_runner.run("goal-runtime", reconcile_goal_runs),
         )
+        await _run_isolated_maintenance_operation(
+            "website-runtime",
+            lambda: joined_thread(website_workflow.reconcile),
+        )
         if not refresh_scores:
             return False
         return await _run_isolated_maintenance_operation(
@@ -692,7 +767,6 @@ def create_app(config: Settings | None = None) -> FastAPI:
             )
             yield
         finally:
-            await website_workflow.close()
             if websocket_notification_pump is not None:
                 websocket_notification_pump.cancel()
                 with suppress(asyncio.CancelledError):
@@ -701,6 +775,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 maintenance.cancel()
                 with suppress(asyncio.CancelledError):
                     await maintenance
+            await website_workflow.close()
             await websocket_notifications.close()
             await maintenance_runner.close()
             if instance_started:
@@ -1456,7 +1531,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: GoalCreateRequest,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
-        goal = await goal_manager.create_goal(request, actor_id=str(principal["id"]))
+        try:
+            goal = await goal_manager.create_goal(request, actor_id=str(principal["id"]))
+        except GoalManagerConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         detail = await goal_manager.get_goal(str(goal["id"]))
         if detail is None:
             raise HTTPException(status_code=500, detail="created goal is unavailable")
@@ -1501,6 +1579,28 @@ def create_app(config: Settings | None = None) -> FastAPI:
         del principal
         response.headers["Cache-Control"] = "private, no-store"
         return await activity_page("goal", goal_id, limit, cursor)
+
+    @app.get("/goals/{goal_id}/memory-usage", response_model=MemoryUsagePage)
+    async def get_goal_memory_usage(
+        goal_id: str,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+        cursor: str | None = None,
+    ) -> MemoryUsagePage:
+        del principal
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            page = await read_memory_usage(settings.db_path, goal_id, limit=limit, cursor=cursor)
+        except MemoryInspectionCursorError as exc:
+            raise HTTPException(
+                status_code=400, detail="invalid memory receipt cursor; refresh"
+            ) from exc
+        except (MemoryInspectionEvidenceError, ValidationError, sqlite3.Error, OSError) as exc:
+            raise HTTPException(status_code=503, detail="memory receipts unavailable") from exc
+        if page is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        return page
 
     @app.get("/goals/{goal_id}/graph", response_model=ProjectGraph)
     async def get_project_graph(
@@ -2178,7 +2278,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> list[dict[str, Any]]:
         del principal
-        return await state_service.search_memory(request)
+        try:
+            return await state_service.search_memory(request)
+        except MemoryNormalizationError as exc:
+            raise _memory_normalization_http_error(exc) from exc
 
     @app.post("/memory", status_code=status.HTTP_201_CREATED)
     @app.post("/memory/remember", status_code=status.HTTP_201_CREATED, include_in_schema=False)
@@ -2186,7 +2289,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: MemoryCreate,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
-        return await state_service.create_memory(request, str(principal["id"]))
+        try:
+            return await state_service.create_memory(request, str(principal["id"]))
+        except MemoryNormalizationError as exc:
+            raise _memory_normalization_http_error(exc) from exc
 
     @app.patch("/memory/{memory_id}")
     async def update_memory(
@@ -2194,7 +2300,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: MemoryUpdate,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
-        record = await state_service.update_memory(memory_id, request, str(principal["id"]))
+        try:
+            record = await state_service.update_memory(memory_id, request, str(principal["id"]))
+        except MemoryNormalizationError as exc:
+            raise _memory_normalization_http_error(exc) from exc
         if not record:
             raise HTTPException(status_code=404, detail="memory not found")
         return record

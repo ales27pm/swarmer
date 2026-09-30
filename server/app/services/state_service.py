@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import math
 import os
 import secrets
 import stat
@@ -43,6 +43,20 @@ from app.services.iphone_capability_binding import (
     canonical_capability_request_fingerprint,
 )
 from app.services.maintenance_lease import MaintenanceLeaseGuard
+from app.services.memory_canonical_store import (
+    MEMORY_CANONICAL_SCHEMA,
+    MemoryCanonicalStore,
+    MemoryNormalizer,
+    forget_canonical_sources,
+)
+from app.services.memory_normalization import (
+    MAX_CANONICAL_BYTES,
+    MemoryNormalizationError,
+    MemoryNormalizationSource,
+    canonical_text_sha256,
+)
+from app.services.memory_search_presentation import MemoryPresenter, finalize_memory_search
+from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.project_compaction import COMPACTION_SCHEMA
@@ -849,7 +863,7 @@ class StateConflict(RuntimeError):
 
 from app.services.swift_project_validation import SWIFT_PROJECT_SCHEMA
 
-SCHEMA += COMPACTION_SCHEMA + SWIFT_PROJECT_SCHEMA
+SCHEMA += COMPACTION_SCHEMA + SWIFT_PROJECT_SCHEMA + MEMORY_CANONICAL_SCHEMA
 
 
 class StateService:
@@ -861,9 +875,25 @@ class StateService:
         embedding_service: EmbeddingService | None = None,
         *,
         permission_policy: PermissionPolicy | None = None,
+        embedding_model_revision: str | None = None,
+        canonical_language: Literal["legacy", "en"] = "legacy",
+        memory_normalizer: MemoryNormalizer | None = None,
+        memory_presenter: MemoryPresenter | None = None,
+        memory_normalization_timeout_seconds: float = 60,
     ) -> None:
         self.db_path = db_path
         self.embedding_service = embedding_service
+        self.embedding_model_revision = embedding_model_revision
+        if (
+            canonical_language not in {"legacy", "en"}
+            or not 0 < memory_normalization_timeout_seconds <= 60
+        ):
+            raise ValueError("invalid canonical memory configuration")
+        self.canonical_language = canonical_language
+        self.memory_normalizer = memory_normalizer
+        self.memory_presenter = memory_presenter
+        self.memory_normalization_timeout_seconds = memory_normalization_timeout_seconds
+        self.memory_normalization_gate = asyncio.Lock()
         self.worker_skill_policy = WorkerSkillPolicyStore(db_path, permission_policy)
 
     async def initialize(self) -> None:
@@ -2423,7 +2453,31 @@ class StateService:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
+    def _canonical_store(self) -> MemoryCanonicalStore:
+        return MemoryCanonicalStore(
+            self.db_path,
+            self.memory_normalizer,
+            current_provider=lambda: (
+                self.memory_normalizer if self.canonical_language == "en" else None
+            ),
+            gate=self.memory_normalization_gate,
+            timeout_seconds=self.memory_normalization_timeout_seconds,
+        )
+
     async def create_memory(self, request: MemoryCreate, actor_id: str) -> dict[str, Any]:
+        if self.canonical_language == "en":
+            outcome = await self._canonical_store().write(request, actor_id)
+            assert outcome is not None
+            memory_id, changed = outcome
+            if changed and self.embedding_service is not None:
+                try:
+                    await self.index_memory(memory_id)
+                except EmbeddingServiceError:
+                    pass
+            record = await self.get_memory(memory_id)
+            if record is None:
+                raise MemoryNormalizationError("source_conflict", "memory_changed")
+            return record
         now = datetime.now(UTC).isoformat()
         memory_id = f"mem_{uuid4().hex}"
         async with aiosqlite.connect(self.db_path) as db:
@@ -2482,9 +2536,158 @@ class StateService:
         value["pinned"] = bool(value["pinned"])
         return value
 
-    async def search_memory(self, request: MemorySearch) -> list[dict[str, Any]]:
-        terms = tuple({term.casefold() for term in request.query.split() if term.strip()})
-        items = await self.list_memory(500)
+    async def search_memory(
+        self,
+        request: MemorySearch,
+        *,
+        allowed_scopes: tuple[str, ...] | None = None,
+        required_sensitivity: str | None = None,
+    ) -> list[dict[str, Any]]:
+        # Internal agent callers provide their authoritative scope. Invalid or
+        # empty scope must not become an unrestricted search or trigger a model.
+        if allowed_scopes is not None and (
+            not isinstance(allowed_scopes, tuple)
+            or not 1 <= len(allowed_scopes) <= 16
+            or any(
+                not isinstance(scope, str) or not scope.strip() or len(scope) > 100
+                for scope in allowed_scopes
+            )
+            or (request.scope and request.scope not in allowed_scopes)
+        ):
+            return []
+        if required_sensitivity is not None and (
+            not isinstance(required_sensitivity, str)
+            or not required_sensitivity.strip()
+            or len(required_sensitivity) > 50
+        ):
+            return []
+        scope_filter = json.dumps(allowed_scopes) if allowed_scopes is not None else None
+        query = request.query
+        source_language = None
+        normalizer = self.memory_normalizer if self.canonical_language == "en" else None
+        signature = normalizer.normalization_signature if normalizer is not None else None
+
+        def assert_query_current() -> None:
+            if normalizer is not None and (
+                self.canonical_language != "en"
+                or normalizer is not self.memory_normalizer
+                or normalizer.normalization_signature != signature
+            ):
+                raise MemoryNormalizationError("source_conflict", "query_normalizer_changed")
+
+        if self.canonical_language == "en":
+            if normalizer is None:
+                raise MemoryNormalizationError("unavailable", "normalizer_not_configured")
+            if self.memory_normalization_gate.locked():
+                raise MemoryNormalizationError("unavailable", "normalizer_busy")
+            try:
+                # This source exists only for this request. It grants no scope;
+                # lookup still uses the original request's permission filters.
+                source = MemoryNormalizationSource(
+                    scope="general",
+                    kind="query",
+                    source_id=f"memory_query_{uuid4().hex}",
+                    source_version="ephemeral-v1",
+                    source_sha256=canonical_text_sha256(request.query),
+                    text=request.query,
+                )
+
+                async def recheck_query(candidate: MemoryNormalizationSource) -> bool:
+                    assert_query_current()
+                    return candidate == source
+
+                async with self.memory_normalization_gate:
+                    async with asyncio.timeout(self.memory_normalization_timeout_seconds):
+                        translated = await normalizer.normalize(
+                            source, recheck_source=recheck_query
+                        )
+                    assert_query_current()
+                    if (
+                        translated.source_id != source.source_id
+                        or translated.source_version != source.source_version
+                        or translated.source_sha256 != source.source_sha256
+                        or translated.scope != source.scope
+                        or translated.kind != source.kind
+                        or translated.applicability_sha256 != source.applicability_sha256
+                        or translated.expected_memory_revision is not None
+                        or translated.normalization_signature != signature
+                        or translated.canonical_language != "en"
+                        or translated.validation_status != "model_reviewed"
+                        or not translated.canonical_text.strip()
+                        or len(translated.canonical_text.encode("utf-8")) > MAX_CANONICAL_BYTES
+                        or translated.canonical_sha256
+                        != canonical_text_sha256(translated.canonical_text)
+                    ):
+                        raise MemoryNormalizationError("invalid", "query_translation_mismatch")
+                    query = translated.canonical_text
+                    source_language = translated.source_language
+            except MemoryNormalizationError:
+                raise
+            except TimeoutError as exc:
+                raise MemoryNormalizationError("unavailable", "query_deadline_exceeded") from exc
+            except UnicodeError as exc:
+                raise MemoryNormalizationError("invalid", "invalid_query_encoding") from exc
+            except Exception as exc:
+                raise MemoryNormalizationError(
+                    "unavailable", "query_normalizer_unavailable"
+                ) from exc
+        term_channels = [
+            tuple({term.casefold() for term in text.split() if term.strip()})
+            for text in dict.fromkeys((request.query, query))
+        ]
+        provider = self.embedding_service
+        identity = embedding_identity(provider, self.embedding_model_revision) if provider else None
+        query_vector: list[float] | None = None
+        if provider is not None:
+            try:
+                vectors = await provider.embed([query])
+                if len(vectors) == 1:
+                    query_vector = memory_vector(vectors[0], getattr(provider, "dimensions", None))
+            except EmbeddingServiceError:
+                pass
+            if provider is not self.embedding_service or identity != embedding_identity(
+                self.embedding_service, self.embedding_model_revision
+            ):
+                query_vector = None
+        # Read authoritative memories after provider I/O. A delete or update
+        # during that call must not leak stale text from an earlier snapshot.
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN")
+            item_rows = await (
+                await db.execute(
+                    """SELECT * FROM memory_items
+                    WHERE (? IS NULL OR scope=?) AND (? IS NULL OR kind=?)
+                    AND (? IS NULL OR scope IN (SELECT value FROM json_each(?)))
+                    AND (? IS NULL OR sensitivity=?)
+                    ORDER BY pinned DESC,updated_at DESC,id LIMIT 500""",
+                    (
+                        request.scope or None,
+                        request.scope or None,
+                        request.kind or None,
+                        request.kind or None,
+                        scope_filter,
+                        scope_filter,
+                        required_sensitivity,
+                        required_sensitivity,
+                    ),
+                )
+            ).fetchall()
+            rows = (
+                await (
+                    await db.execute(
+                        """SELECT e.* FROM memory_embeddings e
+                    JOIN memory_items m ON m.id=e.memory_id
+                    WHERE e.provider=? AND e.updated_at=m.updated_at
+                    AND e.memory_id IN (SELECT value FROM json_each(?))""",
+                        (identity, json.dumps([row["id"] for row in item_rows])),
+                    )
+                ).fetchall()
+                if query_vector is not None
+                else []
+            )
+        items = [self._memory_from_row(row) for row in item_rows]
+        assert_query_current()
         scored: list[dict[str, Any]] = []
         for item in items:
             if request.scope and item["scope"] != request.scope:
@@ -2492,98 +2695,277 @@ class StateService:
             if request.kind and item["kind"] != request.kind:
                 continue
             haystack = f"{item['content']} {item.get('summary') or ''}".casefold()
-            matches = sum(term in haystack for term in terms)
-            if matches:
-                scored.append({**item, "score": matches / len(terms), "search_kind": "lexical"})
-        lexical = sorted(scored, key=lambda item: (-item["score"], not item["pinned"]))[:50]
-        if self.embedding_service is None:
-            return lexical
-        try:
-            vectors = await self.embedding_service.embed([request.query])
-        except EmbeddingServiceError:
-            return lexical
-        if not vectors:
-            return lexical
-        async with aiosqlite.connect(self.db_path) as db:
-            rows = await (
-                await db.execute(
-                    "SELECT memory_id,vector_json FROM memory_embeddings WHERE provider=?",
-                    (self.embedding_service.provider_name,),
-                )
-            ).fetchall()
-        if not rows:
-            return lexical
-        query_vector = vectors[0]
+            score = max(
+                (
+                    sum(term in haystack for term in terms) / max(1, len(terms))
+                    for terms in term_channels
+                ),
+                default=0.0,
+            )
+            if score:
+                scored.append({**item, "score": score, "search_kind": "lexical"})
+        lexical = sorted(scored, key=lambda item: (-item["score"], not item["pinned"], item["id"]))[
+            :50
+        ]
+
+        async def finalize(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            selected = found[: request.limit]
+            if normalizer is None:
+                return selected
+
+            def assert_search_current() -> None:
+                assert_query_current()
+                if any(item["search_kind"] == "hybrid" for item in selected) and (
+                    provider is not self.embedding_service
+                    or identity
+                    != embedding_identity(self.embedding_service, self.embedding_model_revision)
+                ):
+                    raise MemoryNormalizationError(
+                        "source_conflict", "query_embedding_provider_changed"
+                    )
+
+            return await finalize_memory_search(
+                self.db_path,
+                selected,
+                french=source_language == "fr",
+                get_presenter=lambda: self.memory_presenter,
+                gate=self.memory_normalization_gate,
+                timeout_seconds=self.memory_normalization_timeout_seconds,
+                assert_current=assert_search_current,
+            )
+
+        if (
+            query_vector is None
+            or not rows
+            or provider is not self.embedding_service
+            or identity != embedding_identity(self.embedding_service, self.embedding_model_revision)
+        ):
+            return await finalize(lexical)
         lexical_scores = {str(item["id"]): float(item["score"]) for item in lexical}
         item_by_id = {str(item["id"]): item for item in items}
-        combined: list[dict[str, Any]] = []
-        for memory_id, encoded in rows:
-            candidate = item_by_id.get(str(memory_id))
+        # Union, not intersection: missing embeddings must never remove valid
+        # lexical matches from a partially indexed collection.
+        combined = {str(item["id"]): {**item, "score": 0.35 * item["score"]} for item in lexical}
+        for row in rows:
+            memory_id = str(row["memory_id"])
+            candidate = item_by_id.get(memory_id)
             if (
                 candidate is None
                 or (request.scope and candidate["scope"] != request.scope)
                 or (request.kind and candidate["kind"] != request.kind)
             ):
                 continue
-            vector = json.loads(str(encoded))
-            dot = sum(a * b for a, b in zip(query_vector, vector, strict=False))
-            qnorm = math.sqrt(sum(value * value for value in query_vector)) or 1.0
-            vnorm = math.sqrt(sum(value * value for value in vector)) or 1.0
-            vector_score = max(0.0, dot / (qnorm * vnorm))
-            lexical_score = lexical_scores.get(str(memory_id), 0.0)
-            combined.append(
-                {
+            try:
+                vector = memory_vector(json.loads(row["vector_json"]), len(query_vector))
+            except (ValueError, TypeError):
+                vector = None
+            if vector is None or row["dimensions"] != len(query_vector):
+                continue
+            vector_score = max(0.0, memory_cosine(query_vector, vector))
+            lexical_score = lexical_scores.get(memory_id, 0.0)
+            if vector_score > 0 or lexical_score > 0:
+                combined[memory_id] = {
                     **candidate,
                     "score": 0.65 * vector_score + 0.35 * lexical_score,
                     "search_kind": "hybrid",
                 }
+        return await finalize(
+            sorted(
+                combined.values(), key=lambda item: (-item["score"], not item["pinned"], item["id"])
             )
-        return sorted(combined, key=lambda item: (-item["score"], not item["pinned"]))[:50]
+        )
 
-    async def index_memory(self, memory_id: str) -> None:
-        if self.embedding_service is None:
-            return
+    async def index_memory(self, memory_id: str) -> bool:
+        provider = self.embedding_service
+        if provider is None:
+            return False
+        identity = embedding_identity(provider, self.embedding_model_revision)
         item = await self.get_memory(memory_id)
         if item is None:
-            return
-        vectors = await self.embedding_service.embed(
-            [f"{item['content']} {item.get('summary') or ''}"]
+            return False
+        vectors = await provider.embed([f"{item['content']} {item.get('summary') or ''}"])
+        vector = (
+            memory_vector(vectors[0], getattr(provider, "dimensions", None))
+            if len(vectors) == 1
+            else None
         )
-        if len(vectors) != 1 or not vectors[0]:
-            raise ValueError("embedding provider returned an invalid vector")
-        now = datetime.now(UTC).isoformat()
-        await self._store_embedding(memory_id, vectors[0], now)
+        if vector is None:
+            raise EmbeddingServiceError("embedding provider returned an invalid vector")
+        if provider is not self.embedding_service or identity != embedding_identity(
+            self.embedding_service, self.embedding_model_revision
+        ):
+            return False
+        return await self._store_embedding(item, vector, identity, provider)
 
-    async def _store_embedding(self, memory_id: str, vector: list[float], updated_at: str) -> None:
-        if self.embedding_service is None:
-            return
+    async def _store_embedding(
+        self,
+        item: dict[str, Any],
+        vector: list[float],
+        identity: str,
+        provider: EmbeddingService,
+    ) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
+            await db.execute("BEGIN IMMEDIATE")
+            if provider is not self.embedding_service or identity != embedding_identity(
+                self.embedding_service, self.embedding_model_revision
+            ):
+                return False
+            cursor = await db.execute(
                 """INSERT OR REPLACE INTO memory_embeddings(
                     memory_id,provider,dimensions,vector_json,updated_at
-                ) VALUES(?,?,?,?,?)""",
+                ) SELECT id,?,?,?,updated_at FROM memory_items
+                WHERE id=? AND updated_at=? AND content=? AND summary IS ?""",
                 (
-                    memory_id,
-                    self.embedding_service.provider_name,
+                    identity,
                     len(vector),
-                    json.dumps(vector),
-                    updated_at,
+                    json.dumps(vector, allow_nan=False),
+                    item["id"],
+                    item["updated_at"],
+                    item["content"],
+                    item["summary"],
                 ),
             )
+            if provider is not self.embedding_service or identity != embedding_identity(
+                self.embedding_service, self.embedding_model_revision
+            ):
+                await db.rollback()
+                return False
             await db.commit()
+            return cursor.rowcount == 1
+
+    async def backfill_memory_embeddings(
+        self,
+        *,
+        scope: str,
+        after_id: str | None = None,
+        limit: int = 24,
+        dimensions: int | None = None,
+    ) -> dict[str, Any]:
+        """Rebuild one explicit scope/page; the caller persists the returned cursor.
+
+        No startup task or request automatically invokes this operator seam.
+        One provider call handles at most 100 rows. Each stored vector uses a
+        source-version check. A failed/conflicted page retains its cursor so a
+        retry can skip successful rows without losing unfinished work. Starting
+        another pass handles memories inserted before the cursor meanwhile.
+        """
+        if not scope.strip() or len(scope) > 100 or not 1 <= limit <= 100:
+            raise ValueError("invalid memory backfill scope or batch size")
+        if after_id is not None and (not after_id or len(after_id) > 100):
+            raise ValueError("invalid memory backfill cursor")
+        if dimensions is not None and not 1 <= dimensions <= 8_192:
+            raise ValueError("invalid memory backfill dimensions")
+        provider = self.embedding_service
+        if provider is None:
+            raise EmbeddingServiceError("memory embedding provider is not configured")
+        declared_dimensions = getattr(provider, "dimensions", None)
+        if dimensions is not None and declared_dimensions not in {None, dimensions}:
+            raise ValueError("backfill dimensions conflict with the provider contract")
+        identity = embedding_identity(provider, self.embedding_model_revision)
+        expected_dimensions = dimensions or declared_dimensions
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = list(
+                await (
+                    await db.execute(
+                        """SELECT m.*,e.vector_json,e.dimensions AS vector_dimensions,
+                e.updated_at AS vector_updated_at FROM memory_items m
+                LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.provider=?
+                WHERE m.scope=? AND m.id>? ORDER BY m.id LIMIT ?""",
+                        (identity, scope, after_id or "", limit + 1),
+                    )
+                ).fetchall()
+            )
+        page = [dict(row) for row in rows[:limit]]
+        pending: list[dict[str, Any]] = []
+        for item in page:
+            try:
+                vector = memory_vector(json.loads(item["vector_json"]), expected_dimensions)
+            except (ValueError, TypeError):
+                vector = None
+            if (
+                vector is None
+                or item["vector_dimensions"] != len(vector)
+                or item["vector_updated_at"] != item["updated_at"]
+            ):
+                pending.append(item)
+        report: dict[str, Any] = {
+            "provider_identity": identity,
+            "scanned": len(page),
+            "indexed": 0,
+            "unchanged": len(page) - len(pending),
+            "failed": 0,
+            "conflicted": 0,
+            "next_after_id": page[-1]["id"] if page else after_id,
+            "complete": len(rows) <= limit,
+        }
+        if not pending:
+            return report
+        try:
+            returned = await provider.embed(
+                [f"{item['content']} {item.get('summary') or ''}" for item in pending]
+            )
+            vectors = [memory_vector(value, expected_dimensions) for value in returned]
+            if (
+                len(vectors) != len(pending)
+                or any(vector is None for vector in vectors)
+                or len({len(vector) for vector in vectors if vector is not None}) != 1
+            ):
+                raise EmbeddingServiceError("invalid memory backfill vectors")
+        except EmbeddingServiceError:
+            report.update(failed=len(pending), complete=False, next_after_id=after_id)
+            return report
+        if provider is not self.embedding_service or identity != embedding_identity(
+            self.embedding_service, self.embedding_model_revision
+        ):
+            report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+            return report
+        valid_vectors = [vector for vector in vectors if vector is not None]
+        for item, vector in zip(pending, valid_vectors, strict=True):
+            stored = await self._store_embedding(item, vector, identity, provider)
+            report["indexed" if stored else "conflicted"] += 1
+        if report["conflicted"]:
+            report.update(complete=False, next_after_id=after_id)
+        return report
 
     async def update_memory(
         self, memory_id: str, request: MemoryUpdate, actor_id: str
     ) -> dict[str, Any] | None:
-        existing = await self.get_memory(memory_id)
-        if not existing:
-            return None
-        now = datetime.now(UTC).isoformat()
-        content = request.content if request.content is not None else existing["content"]
-        summary = request.summary if request.summary is not None else existing["summary"]
-        pinned = request.pinned if request.pinned is not None else existing["pinned"]
+        if self.canonical_language == "en" and (
+            request.content is not None or "summary" in request.model_fields_set
+        ):
+            outcome = await self._canonical_store().write(request, actor_id, memory_id=memory_id)
+            if outcome is None:
+                return None
+            _, changed = outcome
+            if changed and self.embedding_service is not None:
+                try:
+                    await self.index_memory(memory_id)
+                except EmbeddingServiceError:
+                    pass
+            return await self.get_memory(memory_id)
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            existing = await (
+                await db.execute("SELECT * FROM memory_items WHERE id=?", (memory_id,))
+            ).fetchone()
+            if existing is None:
+                return None
+            now = datetime.now(UTC).isoformat()
+            content = request.content if request.content is not None else existing["content"]
+            # An omitted summary cannot stay authoritative after its source
+            # text changes. Explicit summaries remain the caller's correction;
+            # pin-only or identical-content updates keep the existing summary.
+            summary = (
+                request.summary
+                if "summary" in request.model_fields_set
+                else None
+                if content != existing["content"]
+                else existing["summary"]
+            )
+            pinned = request.pinned if request.pinned is not None else existing["pinned"]
+            source_changed = content != existing["content"] or summary != existing["summary"]
             cursor = await db.execute(
                 "UPDATE memory_items SET content=?, summary=?, pinned=?, updated_at=? WHERE id=?",
                 (content, summary, int(pinned), now, memory_id),
@@ -2591,6 +2973,13 @@ class StateService:
             if cursor.rowcount != 1:
                 await db.rollback()
                 return None
+            if source_changed:
+                await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+            else:
+                await db.execute(
+                    "UPDATE memory_embeddings SET updated_at=? WHERE memory_id=? AND updated_at=?",
+                    (now, memory_id, existing["updated_at"]),
+                )
             await append_audit_event(
                 db,
                 "memory.updated",
@@ -2600,7 +2989,7 @@ class StateService:
                 created_at=now,
             )
             await db.commit()
-        if self.embedding_service is not None and request.content is not None:
+        if self.embedding_service is not None and source_changed:
             try:
                 await self.index_memory(memory_id)
             except EmbeddingServiceError:
@@ -2615,6 +3004,10 @@ class StateService:
             if cursor.rowcount != 1:
                 await db.rollback()
                 return False
+            # SQLite foreign keys are connection-local; invalidate explicitly
+            # even when the connection does not enable ON DELETE CASCADE.
+            await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+            await forget_canonical_sources(db, memory_id)
             await append_audit_event(
                 db,
                 "memory.deleted",

@@ -388,7 +388,7 @@ async def test_http_200_invalid_response_has_safe_stage_and_digest(
     if stage == "schema":
         raw["SECRET_FIELD"] = "SECRET_CONTENT"
     if stage == "graph":
-        raw["suggested_new_nodes"][0]["required_skill"] = "SECRET_SKILL"
+        raw["suggested_new_nodes"][0].update(required_skill="SECRET_SKILL", worker_arguments=None)
     content = "not json SECRET" if stage == "json" else json.dumps(raw)
     envelope = {} if stage == "envelope" else {"choices": [{"message": {"content": content}}]}
     response = httpx.Response(

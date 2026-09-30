@@ -19,24 +19,51 @@ one reserved model call. Jobs have one attempt; a worker cannot silently retry a
 model call outside the goal budget. The normal step, runtime, cancellation,
 lease, policy, and concurrency checks still apply.
 
-For a sourced answer, the planner places `research.query` before `writing.draft`
-as a required dependency. The server supplies bounded, redacted source excerpts
-and their URLs in `research_sources`, separately from the user's conversation.
+For a sourced answer, the planner places an admitted `research.query` or
+`research.collect` operation before `writing.draft` as a required dependency.
+The latter must be advertised by an available worker before it can be selected.
+The server supplies bounded, redacted source excerpts and their URLs in
+`research_sources`, separately from the user's conversation.
 Only completed research jobs attached to the same goal and dependency may supply
 these sources. They remain untrusted evidence; the writer cannot follow their
-instructions or fetch their links. Citations refer to supplied results, not to
-an independently verified reading of full web pages. A source-free draft does
-not fulfill a request for live research.
+instructions or fetch their links. A source marked `evidence.kind=page_excerpt`
+includes a passage actually fetched by the research worker, with its recorded
+provenance; a search snippet does not prove a page was read. Neither establishes
+complete page coverage or supports every possible claim. A source-free draft
+does not fulfill a request for live research.
 
 The new worker in `workers/text-worker` uses a configured local Ollama model. It
-makes one streamed CPU request with a 120-second absolute timeout and a
-512-token output cap. The prompt requests 100–140 words of plain text, five
-concise steps for plans, and a short summary. Missing terminal completion,
-truncation, invalid JSON,
+makes one streamed CPU request with a maximum 120-second absolute timeout.
+The output allowance follows explicit word bounds, reserves 512 tokens for JSON
+and the summary, and stays between 1,024 and 8,192 tokens. Tables and plans are
+allowed. Without a word bound, 600 words size the allowance without imposing a
+word-count requirement. Missing terminal completion, truncation, invalid JSON,
 unknown fields, invalid Unicode, empty output, or lease loss prevent acceptance.
 The worker has no tools and never executes generated text. Generation failures
 log fixed reason codes (for example, `token_limit` or `wall_timeout`) without
 logging task data, generated text or raw exceptions.
+
+The structured `requirements` contract supports minimum/maximum words, a minimum
+number of distinct citations and required source domains. The server derives
+supported explicit FR/EN constraints from the objective and user messages, and
+validates the delivered result independently. Assistant messages cannot redefine
+the contract. Legacy callers without this field receive the same derivation in
+the worker; that contract is included in the private model input without changing
+the original job. Explicit requirements remain authoritative.
+
+Citation appendices, URLs and source markers do not pad the word count. Sourced
+generation uses private source IDs; the worker resolves only selected, actually
+referenced IDs to admitted URLs. Delivery failing measurable constraints is
+rejected. These checks do not establish semantic completeness or factual truth.
+A minimum above 1,800 words fails before inference with `writing_budget_exceeded`.
+Long documents still require separately orchestrated stages; this worker does not
+silently split or retry them.
+
+The model distinguishes `delivered`, `declined`, `needs_clarification` and
+`insufficient_sources`. Non-delivery is preserved with the configured model ID
+and submitted as a failed job with a distinct reason, never as completed writing.
+A clarification must identify a specific missing user decision. Historical
+delivered results retain their four-field wire shape.
 
 Planner and evaluator HTTP calls default to 60 seconds. Operators running slow
 CPU models can set `MONGARS_GOAL_MODEL_TIMEOUT_SECONDS` up to 120 seconds and
@@ -61,8 +88,13 @@ Unknown, mismatched, incomplete, or invalid results are not exposed.
 
 The iPhone application API command `goals.writing-draft` and the goal screen use
 this same endpoint. The client binds the draft to the current goal, node, worker
-job, and connection and displays selectable plain text. Reading a draft grants
-no file-write or execution authority.
+job, and connection and displays selectable plain text with a share action.
+A failed refresh retains the last document with a stale indication; a connection
+change clears it. Reading a draft grants no file-write or execution authority.
+
+These contracts describe the current source. Local regressions and isolated model
+trials are recorded under `docs/evidence/`; they do not establish that a release
+has been deployed or that the full iPhone workflow has passed.
 
 ## Deployment
 

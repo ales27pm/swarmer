@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.services.project_contracts import ProjectPayload
-from app.services.swarm_contracts import GoalCreateRequest
+from app.services.swarm_contracts import GoalMessageRequest
 from tests.test_goal_project_runtime import _project, _result
 
 
@@ -48,12 +48,16 @@ async def test_lifetime_revision_100_preserves_base_with_goal_scoped_iteration(
 
     goal_id = parent_goal_id
     if continued_goal:
-        goal = await manager.create_goal(
-            GoalCreateRequest(objective="Add contact search to the CRM", max_model_calls=5),
+        await manager.cancel_goal(parent_goal_id, actor_id="test-phone")
+        parent_before = await accounting(manager.db_path, parent_goal_id)
+        continuation = await manager.reply_goal(
+            parent_goal_id,
+            GoalMessageRequest(
+                message="Add contact search to the CRM", client_message_id="contact-search"
+            ),
             actor_id="test-phone",
         )
-        goal_id = goal["id"]
-        await service.inherit_project(parent_goal_id, goal_id)
+        goal_id = continuation["goal"]["id"]
     goal_before = await accounting(manager.db_path, goal_id)
     conversation = [{"role": "user", "content": "Keep the existing contacts and add search."}]
     value = await service.payload(

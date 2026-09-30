@@ -66,3 +66,36 @@ def test_declined_result_cannot_bypass_source_validation() -> None:
         validate_writing_declined_result(
             {**refusal(), "text": "Voir https://invented.example/refusal"}, payload=payload
         )
+
+
+@pytest.mark.parametrize("outcome", ["declined", "needs_clarification", "insufficient_sources"])
+def test_non_deliveries_bypass_delivery_word_count_but_never_prove_success(outcome: str) -> None:
+    from app.services.writing_contracts import validate_writing_non_delivery_result
+
+    value = {**refusal(), "outcome": outcome}
+    if outcome == "needs_clarification":
+        value["question"] = "Pour quelle année faut-il préparer ce calendrier familial ?"
+    payload = {"schema_version": "1.0", "objective": "Write 500 words.", "conversation": []}
+    assert validate_writing_non_delivery_result(value, payload=payload) == value
+    assert not validate_worker_evidence("writing.draft", value)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        None,
+        "",
+        "Please clarify?",
+        "Could you please clarify your request?",
+        "Please provide the plan?",
+        "x" * 801,
+        "Specific information without a question",
+    ],
+)
+def test_missing_or_vague_clarification_question_is_not_accepted(question: object) -> None:
+    from app.services.writing_contracts import validate_writing_non_delivery_result
+
+    with pytest.raises(ValueError):
+        validate_writing_non_delivery_result(
+            {**refusal(), "outcome": "needs_clarification", "question": question}
+        )

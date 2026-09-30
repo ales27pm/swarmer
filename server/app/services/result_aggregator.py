@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from app.services.code_proposal import validate_code_proposal_result
 from app.services.feedback_dataset import SafeDatasetValue, sanitize_dataset_value
 from app.services.project_contracts import PROJECT_SKILL, ProjectResult
+from app.services.research_contracts import valid_research_collect_result
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
 from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
 from app.services.writing_contracts import (
@@ -271,6 +272,32 @@ def summarize_untrusted_worker_output(
         # Project source and runner output are available only on the private
         # revision endpoint. Generic summaries never serialize this envelope.
         return "Project iteration recorded; inspect its private revision and check results."
+    if isinstance(value, dict) and valid_research_collect_result(value):
+        pages = [page for page in value["pages"] if page["status"] == "read"]
+        prefix = (
+            f"Untrusted collection: {len(value['searches'])} search receipts, "
+            f"{len(value['results'])} results, {len(pages)} page excerpts read; "
+            f"status {value['collection_status']} describes operations, not task fulfillment. "
+        )
+        summary = prefix
+        coverage = value.get("coverage")
+        if coverage is not None:
+            missing = ", ".join(coverage["missing_domains"]) or "none"
+            summary += (
+                f"Coverage (source presence only): Required domains without read pages: {missing}. "
+                f"Queries without a read result: {len(coverage['queries_without_read_pages'])}. "
+            )
+        for page in pages:
+            url = page["final_url"]
+            if _safe_optional_text(url, max_chars=1_001) != url:
+                continue
+            entry = f"Page {url}: " + (_safe_optional_text(page["text"], max_chars=240) or "")
+            if len(summary) + len(entry) <= max_chars:
+                summary += entry + " "
+        remaining = max_chars - len(summary)
+        if remaining > 100:
+            summary += _research_summary(value["results"], max_chars=remaining)
+        return _bounded_text(summary, max_chars=max_chars)
     if isinstance(value, dict) and validate_worker_evidence("research.query", value):
         return _research_summary(value["results"], max_chars=max_chars)
     sanitized = sanitize_dataset_value(value, max_text_chars=min(max_chars, 1_000))
@@ -377,6 +404,8 @@ def validate_worker_evidence(required_skill: object, value: object) -> bool:
         if not _only_result_fields(value, required={"content"}, optional={"capability_result"}):
             return False
         return isinstance(value.get("content"), str)
+    if required_skill == "research.collect":
+        return valid_research_collect_result(value)
     if required_skill == "research.query":
         if set(value) != {"content_trust", "results"} or value.get("content_trust") != "untrusted":
             return False

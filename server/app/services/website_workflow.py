@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import fcntl
 import hashlib
 import json
 import secrets
@@ -37,7 +36,8 @@ from app.services.website_workflow_contracts import (
     WebsitePublish,
     WebsiteReview,
 )
-from app.services.website_workflow_store import WebsiteConflict, WebsiteStore
+from app.services.website_workflow_locks import FileLease, WebsiteLocks, joined_thread, try_lease
+from app.services.website_workflow_store import ACTIVE_STATUSES, WebsiteConflict, WebsiteStore
 
 # Only stable internal codes may cross the durable job boundary. Never persist
 # arbitrary exception text, even if a provider raises ValueError or a subclass.
@@ -218,24 +218,69 @@ class WebsiteWorkflow:
         self.fetcher = fetcher
         self.tasks: set[asyncio.Task[None]] = set()
         self.publications: set[asyncio.Task[dict[str, Any]]] = set()
-        self._lock_file: Any = None
-        self.slots = asyncio.Semaphore(2)
+        self._lock_file: FileLease | None = None
+        self._closing = False
+        self._task_projects: dict[asyncio.Task[None], str] = {}
+        self.locks = WebsiteLocks(root)
 
     def initialize(self) -> None:
+        if self._lock_file is not None:
+            return
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
-        lock = (self.root / ".instance.lock").open("a+")
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            lock.close()
-            raise RuntimeError("website_workflow_instance_already_running") from None
+        # Keep the same file to exclude older binaries that held an exclusive
+        # process lock and performed unconditional startup recovery.
+        lock = try_lease(self.root / ".instance.lock", shared=True)
+        if lock is None:
+            raise RuntimeError("website_workflow_instance_already_running")
         self._lock_file = lock
-        self.store.initialize()
-        for data in self.store.pending_publications():
+        self._closing = False
+        try:
+            self.store.initialize()
+            self.reconcile()
+        except BaseException:
+            lock.close()
+            self._lock_file = None
+            raise
+
+    def reconcile(self) -> int:
+        """Recover abandoned operations only; a live peer retains its project lock."""
+        if self._lock_file is None or self._closing:
+            return 0
+        return sum(self._reconcile_project(data["id"]) for data in self.store.pending_operations())
+
+    def _reconcile_project(self, project_id: str) -> int:
+        lease = self.locks.project(project_id)
+        if lease is None:
+            return 0
+        try:
+            # The scan can be stale: reread only after acquiring ownership.
+            data = self.store.get(project_id)
+            if data["status"] not in ACTIVE_STATUSES:
+                return 0
             version = data["version"]
-            self._recover_publication(data)
+            if data["status"] == "publishing":
+                if not self._recover_publication(data):
+                    return 0
+            else:
+                data.update(
+                    status="interrupted",
+                    approval=None,
+                    error="Opération interrompue ; vérifie le résultat avant de reprendre.",
+                )
             self.store.save(data, version)
+            return 1
+        finally:
+            lease.close()
+
+    def _operation_lease(self, owner: str, project_id: str) -> FileLease:
+        self.store.get(project_id, owner)
+        if self._closing or self._lock_file is None:
+            raise WebsiteConflict("Le service termine ses opérations. Réessaie après son retour.")
+        lease = self.locks.project(project_id)
+        if lease is None:
+            raise WebsiteConflict("Une opération est déjà en cours.")
+        return lease
 
     def _publisher_identity(self) -> dict[str, str | None]:
         return {
@@ -243,34 +288,42 @@ class WebsiteWorkflow:
             "root": str(self.publisher.root.resolve()) if self.publisher.root else None,
         }
 
-    def _recover_publication(self, data: dict[str, Any]) -> None:
+    def _recover_publication(self, data: dict[str, Any]) -> bool:
+        intent = data.get("publication_intent")
+        receipt = None
+        try:
+            if intent and all(
+                intent.get(key) == value for key, value in self._publisher_identity().items()
+            ):
+                build = WebsiteBuild.model_validate(self._read(data["build_file"]))
+                receipt = self.publisher.recover(
+                    build, expected_digest=intent["digest"], release_id=intent["release_id"]
+                )
+        except (ValueError, OSError, KeyError) as exc:
+            if isinstance(exc, ValueError) and str(exc) == "publication_busy":
+                # Another project's publisher may hold the destination lock.
+                # This says nothing about our existing release; inspect later.
+                return False
         data.update(
             status="interrupted",
             approval=None,
             error="Publication interrompue ; aucune nouvelle publication automatique.",
         )
-        intent = data.get("publication_intent")
-        if not intent or any(
-            intent[key] != value for key, value in self._publisher_identity().items()
-        ):
-            return
-        try:
-            build = WebsiteBuild.model_validate(self._read(data["build_file"]))
-            receipt = self.publisher.recover(
-                build, expected_digest=intent["digest"], release_id=intent["release_id"]
-            )
-            if receipt:
-                data.update(status="published", publication=receipt, error=None)
-        except (ValueError, OSError, KeyError):
-            return
+        if receipt:
+            data.update(status="published", publication=receipt, error=None)
+        return True
 
     async def close(self) -> None:
+        self._closing = True
+        owned_projects = list(self._task_projects.values())
         for task in self.tasks:
             task.cancel()
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
         if self.publications:
             await asyncio.gather(*self.publications, return_exceptions=True)
+        for project_id in owned_projects:
+            self._reconcile_project(project_id)
         if self._lock_file is not None:
             self._lock_file.close()
             self._lock_file = None
@@ -308,7 +361,15 @@ class WebsiteWorkflow:
         public = {
             key: value
             for key, value in data.items()
-            if key not in {"approval", "capture_dir", "build_file", "owner", "publication_intent"}
+            if key
+            not in {
+                "approval",
+                "capture_dir",
+                "failed_capture_dir",
+                "build_file",
+                "owner",
+                "publication_intent",
+            }
         }
         if data.get("build"):
             build = dict(data["build"])
@@ -374,42 +435,61 @@ class WebsiteWorkflow:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def command(self, owner: str, project_id: str, request: WebsiteCommand) -> dict[str, Any]:
-        data = self.store.get(project_id, owner)
-        if data["status"] in {"capturing", "branding", "building", "publishing"}:
-            raise WebsiteConflict("Une opération est déjà en cours.")
-        if len(self.tasks) >= 8:
-            raise WebsiteConflict(
-                "La file de travail est pleine. Réessaie après les opérations en cours."
+        self.store.get(project_id, owner)
+        request_digest = digest(request.model_dump())
+        prior = self.store.command_result(project_id, owner, request.request_id, request_digest)
+        if prior is not None:
+            return self.public(prior)
+        lease = self._operation_lease(owner, project_id)
+        try:
+            # A competing request may have committed between the first lookup
+            # and our acquisition. Exact replay must not enqueue a second job.
+            prior = self.store.command_result(project_id, owner, request.request_id, request_digest)
+            if prior is not None:
+                return self.public(prior)
+            data = self.store.get(project_id, owner)
+            if data["status"] in ACTIVE_STATUSES:
+                raise WebsiteConflict("Une opération est déjà en cours.")
+            if request.action != "capture" and not data.get("capture_dir"):
+                raise WebsiteConflict("Capture d’abord le site source.")
+            if request.action == "branding" and not self.brand_client.endpoint:
+                raise WebsiteConflict(
+                    "Le service Infographic Artist n’est pas configuré sur ce serveur."
+                )
+            if request.action == "build" and request.palette_id not in {p.id for p in PALETTES}:
+                raise ValueError("Choisis une palette avant de reconstruire le site.")
+            if request.action != "build" and request.palette_id is not None:
+                raise ValueError("La palette s’applique uniquement à la reconstruction.")
+            stage = {"capture": "capturing", "branding": "branding", "build": "building"}[
+                request.action
+            ]
+            data.update(status=stage, error=None, approval=None)
+            data = self.store.save(
+                data,
+                request.expected_version,
+                request_id=request.request_id,
+                request_digest=request_digest,
+                admit_operation=True,
             )
-        if request.action != "capture" and not data.get("capture_dir"):
-            raise WebsiteConflict("Capture d’abord le site source.")
-        if request.action == "branding" and not self.brand_client.endpoint:
-            raise WebsiteConflict(
-                "Le service Infographic Artist n’est pas configuré sur ce serveur."
-            )
-        if request.action == "build" and request.palette_id not in {p.id for p in PALETTES}:
-            raise ValueError("Choisis une palette avant de reconstruire le site.")
-        if request.action != "build" and request.palette_id is not None:
-            raise ValueError("La palette s’applique uniquement à la reconstruction.")
-        stage = {"capture": "capturing", "branding": "branding", "build": "building"}[
-            request.action
-        ]
-        data.update(status=stage, error=None, approval=None)
-        data = self.store.save(
-            data,
-            request.expected_version,
-            request_id=request.request_id,
-            request_digest=digest(request.model_dump()),
-        )
-        task = asyncio.create_task(self._run(data, request), name=f"website-{project_id}")
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
-        return self.public(data)
+            task = asyncio.create_task(self._run(data, request), name=f"website-{project_id}")
+            self.tasks.add(task)
+            self._task_projects[task] = project_id
+            task.add_done_callback(self.tasks.discard)
+            task.add_done_callback(lambda done: self._task_projects.pop(done, None))
+            task.add_done_callback(lambda _: lease.close())
+        except BaseException:
+            lease.close()
+            raise
+        else:
+            return self.public(data)
+        finally:
+            if prior is not None:
+                lease.close()
 
     async def _run(self, data: dict[str, Any], request: WebsiteCommand) -> None:
         version = data["version"]
         try:
-            async with self.slots:
+            async with self.locks.execution():
                 if request.action == "capture":
                     await self._capture(data)
                 elif request.action == "branding":
@@ -435,9 +515,16 @@ class WebsiteWorkflow:
             # Provider responses and paths may contain credentials or captured private text.
             reason = str(exc) if isinstance(exc, ValueError) else None
             suffix = f" Motif : {reason}." if reason in _SAFE_FAILURE_REASONS else ""
+            explanation = {
+                "robots_unavailable": "Impossible de vérifier les règles d’exploration du site (robots.txt). L’exploration n’a pas commencé.",
+                "robots_disallowed": "Le site interdit l’exploration de cette page dans ses règles robots.txt.",
+                "no_source_pages": "Aucune page exploitable n’a été obtenue pour cette adresse.",
+            }.get(reason or "")
             data.update(
                 status="failed",
-                error="L’étape a échoué. Les résultats précédents sont conservés ; réessaie ou vérifie la configuration du serveur."
+                error=(explanation + " Les résultats précédents sont conservés.")
+                if explanation
+                else "L’étape a échoué. Les résultats précédents sont conservés ; réessaie ou vérifie la configuration du serveur."
                 + suffix,
             )
         finally:
@@ -449,14 +536,23 @@ class WebsiteWorkflow:
     async def _capture(self, data: dict[str, Any]) -> None:
         relative = f"{data['id']}/capture-{data['version']}"
         directory = self.root / relative
-        dossier = await asyncio.to_thread(
+        dossier = await joined_thread(
             capture_website,
             data["source_url"],
             fetcher=self.fetcher,
             limits=CaptureLimits.model_validate(data["limits"]),
         )
         if not dossier.pages:
-            raise ValueError("no_source_pages")
+            self._write(f"{relative}/failed-dossier.json", dossier.model_dump())
+            data["failed_capture_dir"] = relative
+            reasons = {
+                entry.reason for entry in dossier.coverage.entries if entry.state == "blocked"
+            }
+            reason = next(
+                (code for code in ("robots_unavailable", "robots_disallowed") if code in reasons),
+                "no_source_pages",
+            )
+            raise ValueError(reason)
         renders = []
         references = [
             AssetReference(
@@ -481,7 +577,7 @@ class WebsiteWorkflow:
                 references.extend(viewport.asset_references)
             if rendered.status == "unavailable":
                 break
-        assets = await asyncio.to_thread(
+        assets = await joined_thread(
             download_website_assets,
             references,
             source_url=dossier.source_url,
@@ -608,7 +704,7 @@ class WebsiteWorkflow:
             if brand
             else None,
         )
-        build = await asyncio.to_thread(
+        build = await joined_thread(
             WebsiteBuilder().build,
             dossier,
             palette=next(p for p in PALETTES if p.id == palette_id),
@@ -678,70 +774,86 @@ class WebsiteWorkflow:
     def prepare_publication(
         self, owner: str, project_id: str, review: WebsiteReview
     ) -> dict[str, Any]:
-        data = self.store.get(project_id, owner)
-        build = self.reviewed_build(data, review)
-        if not self.capabilities()["publication_configured"]:
-            raise WebsiteConflict(
-                "Configure d’abord une destination de publication sur le serveur."
+        lease = self._operation_lease(owner, project_id)
+        try:
+            data = self.store.get(project_id, owner)
+            build = self.reviewed_build(data, review)
+            if not self.capabilities()["publication_configured"]:
+                raise WebsiteConflict(
+                    "Configure d’abord une destination de publication sur le serveur."
+                )
+            self.publisher.preflight(
+                build, expected_digest=build.digest, release_id=f"{project_id}-{build.digest[:16]}"
             )
-        self.publisher.preflight(
-            build, expected_digest=build.digest, release_id=f"{project_id}-{build.digest[:16]}"
-        )
-        token = secrets.token_urlsafe(32)
-        data["approval"] = {
-            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-            "expires": time.time() + 300,
-            "digest": review.build_digest,
-            **self._publisher_identity(),
-        }
-        data = self.store.save(data, review.expected_version)
-        return {
-            "approval_token": token,
-            "build_digest": review.build_digest,
-            "expected_version": data["version"],
-            "target": self.publisher.public_base_url,
-            "expires_in_seconds": 300,
-        }
+            token = secrets.token_urlsafe(32)
+            data["approval"] = {
+                "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                "expires": time.time() + 300,
+                "digest": review.build_digest,
+                **self._publisher_identity(),
+            }
+            data = self.store.save(data, review.expected_version)
+            return {
+                "approval_token": token,
+                "build_digest": review.build_digest,
+                "expected_version": data["version"],
+                "target": self.publisher.public_base_url,
+                "expires_in_seconds": 300,
+            }
+        finally:
+            lease.close()
 
     async def publish(self, owner: str, project_id: str, request: WebsitePublish) -> dict[str, Any]:
-        data = self.store.get(project_id, owner)
-        build = self.reviewed_build(data, request)
-        approval = data.get("approval")
-        if (
-            not approval
-            or approval["expires"] < time.time()
-            or approval["digest"] != build.digest
-            or any(approval.get(key) != value for key, value in self._publisher_identity().items())
-            or not secrets.compare_digest(
-                approval["token_hash"], hashlib.sha256(request.approval_token.encode()).hexdigest()
+        lease = self._operation_lease(owner, project_id)
+        try:
+            data = self.store.get(project_id, owner)
+            build = self.reviewed_build(data, request)
+            approval = data.get("approval")
+            if (
+                not approval
+                or approval["expires"] < time.time()
+                or approval["digest"] != build.digest
+                or any(
+                    approval.get(key) != value for key, value in self._publisher_identity().items()
+                )
+                or not secrets.compare_digest(
+                    approval["token_hash"],
+                    hashlib.sha256(request.approval_token.encode()).hexdigest(),
+                )
+            ):
+                raise WebsiteConflict(
+                    "Autorisation expirée ou différente de la version et destination affichées."
+                )
+            data.update(
+                status="publishing",
+                approval=None,
+                publication_intent={
+                    "digest": build.digest,
+                    "release_id": f"{project_id}-{build.digest[:16]}",
+                    **self._publisher_identity(),
+                },
             )
-        ):
-            raise WebsiteConflict(
-                "Autorisation expirée ou différente de la version et destination affichées."
+            data = self.store.save(data, request.expected_version, admit_operation=True)
+            task = asyncio.create_task(
+                self._publish(data, build), name=f"website-publish-{project_id}"
             )
-        data.update(
-            status="publishing",
-            approval=None,
-            publication_intent={
-                "digest": build.digest,
-                "release_id": f"{project_id}-{build.digest[:16]}",
-                **self._publisher_identity(),
-            },
-        )
-        data = self.store.save(data, request.expected_version)
-        task = asyncio.create_task(self._publish(data, build), name=f"website-publish-{project_id}")
-        self.publications.add(task)
-        task.add_done_callback(self.publications.discard)
+            self.publications.add(task)
+            task.add_done_callback(self.publications.discard)
+            task.add_done_callback(lambda _: lease.close())
+        except BaseException:
+            lease.close()
+            raise
         return await asyncio.shield(task)
 
     async def _publish(self, data: dict[str, Any], build: WebsiteBuild) -> dict[str, Any]:
         try:
-            receipt = await asyncio.to_thread(
-                self.publisher.publish,
-                build,
-                expected_digest=build.digest,
-                release_id=f"{data['id']}-{build.digest[:16]}",
-            )
+            async with self.locks.execution():
+                receipt = await joined_thread(
+                    self.publisher.publish,
+                    build,
+                    expected_digest=build.digest,
+                    release_id=f"{data['id']}-{build.digest[:16]}",
+                )
             data.update(status="published", publication=receipt, error=None)
         except Exception:  # noqa: BLE001 - durable job boundary; sanitize provider failures
             self._recover_publication(data)

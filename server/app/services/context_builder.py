@@ -246,7 +246,7 @@ class ContextBuilder:
                     node_id,
                     limit=self.max_upstream_results,
                 )
-                memories = await self._memory_locked(db, limit=self.max_memory_items)
+                memories = await self._memory_locked(db, goal_run_id, limit=self.max_memory_items)
                 episodes = await self._episodes_locked(
                     db,
                     goal_run_id,
@@ -833,21 +833,30 @@ class ContextBuilder:
     @staticmethod
     async def _memory_locked(
         db: aiosqlite.Connection,
+        current_goal_run_id: str,
         *,
         limit: int,
     ) -> list[aiosqlite.Row]:
         if limit == 0:
             return []
+        # Only the API's explicit general scope (and its historical global
+        # alias) is shared. Free-form legacy labels never imply project scope.
+        # Resolve the exact project from the goal in this read transaction.
         return list(
             await (
                 await db.execute(
                     """
                     SELECT id,scope,kind,content,summary,sensitivity,confidence,pinned,updated_at
                     FROM memory_items
-                    WHERE sensitivity='normal'
+                    WHERE sensitivity='normal' AND (
+                        scope IN ('general','global') OR scope=(
+                            SELECT 'project:' || project_id FROM goal_project_links
+                            WHERE goal_run_id=?
+                        )
+                    )
                     ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ?
                     """,
-                    (limit,),
+                    (current_goal_run_id, limit),
                 )
             ).fetchall()
         )
@@ -865,12 +874,15 @@ class ContextBuilder:
             await (
                 await db.execute(
                     """
-                    SELECT id,goal_run_id,objective_summary,outcome,score,
-                           failure_tags_json,user_feedback_score,created_at
-                    FROM episodes WHERE goal_run_id<>?
-                    ORDER BY created_at DESC,id ASC LIMIT ?
+                    SELECT e.id,e.goal_run_id,e.objective_summary,e.outcome,e.score,
+                           e.failure_tags_json,e.user_feedback_score,e.created_at
+                    FROM episodes e JOIN goal_project_links p ON p.goal_run_id=e.goal_run_id
+                    WHERE e.goal_run_id<>? AND p.project_id=(
+                        SELECT project_id FROM goal_project_links WHERE goal_run_id=?
+                    )
+                    ORDER BY e.created_at DESC,e.id ASC LIMIT ?
                     """,
-                    (current_goal_run_id, limit),
+                    (current_goal_run_id, current_goal_run_id, limit),
                 )
             ).fetchall()
         )

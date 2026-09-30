@@ -43,8 +43,9 @@ class ProjectContextService:
             await db.execute(
                 """SELECT DISTINCT m.rowid AS seq,m.id,
             m.role,m.content,m.created_at FROM goal_messages m
-            JOIN goal_conversation_links c ON c.conversation_id=m.conversation_id
-            JOIN goal_project_links p ON p.goal_run_id=c.goal_run_id
+            JOIN goal_conversation_links c
+              ON c.goal_run_id=m.goal_run_id AND c.conversation_id=m.conversation_id
+            JOIN goal_project_links p ON p.goal_run_id=m.goal_run_id
             WHERE p.project_id=? ORDER BY seq LIMIT 10001""",
                 (goal["project_id"],),
             )
@@ -174,8 +175,9 @@ class ProjectContextService:
             row = await (
                 await db.execute(
                     """SELECT DISTINCT m.id,m.role,m.content,m.created_at
-                FROM goal_messages m JOIN goal_conversation_links c ON c.conversation_id=m.conversation_id
-                JOIN goal_project_links p ON p.goal_run_id=c.goal_run_id
+                FROM goal_messages m JOIN goal_conversation_links c
+                  ON c.goal_run_id=m.goal_run_id AND c.conversation_id=m.conversation_id
+                JOIN goal_project_links p ON p.goal_run_id=m.goal_run_id
                 JOIN goal_project_links target ON target.project_id=p.project_id
                 WHERE target.goal_run_id=? AND m.id=?""",
                     (goal_id, source_id),

@@ -1,6 +1,8 @@
+import ipaddress
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -54,10 +56,11 @@ class Settings(BaseSettings):
     goal_max_replans: int = Field(default=3, ge=0, le=10)
     goal_max_parallelism: int = Field(default=3, ge=1, le=3)
     goal_max_runtime_seconds: int = Field(default=1_800, ge=30, le=86_400)
-    goal_max_model_calls: int = Field(default=30, ge=1, le=100)
+    goal_max_model_calls: int = Field(default=100, ge=1, le=100)
+    goal_auto_continue_on_model_budget_exhausted: bool = True
     goal_model_call_lease_seconds: int = Field(default=120, ge=30, le=900)
     goal_model_timeout_seconds: float = Field(default=60, ge=10, le=120)
-    goal_context_max_tokens: int = Field(default=2_048, ge=64, le=32_768)
+    goal_context_max_tokens: int = Field(default=8_192, ge=64, le=32_768)
     goal_context_max_memory_items: int = Field(default=6, ge=0, le=100)
     goal_context_max_episode_items: int = Field(default=4, ge=0, le=100)
     goal_context_max_agent_cards: int = Field(default=6, ge=0, le=64)
@@ -65,6 +68,15 @@ class Settings(BaseSettings):
     goal_context_max_result_chars_per_node: int = Field(default=2_000, ge=0, le=100_000)
     embedding_base_url: str | None = None
     embedding_model: str | None = None
+    # Explicit opt-in for the memory-items write API. Project/episode sources
+    # retain their own lifecycle until their canonical projection is qualified.
+    memory_canonical_language: Literal["legacy", "en"] = "legacy"
+    memory_normalization_base_url: str | None = Field(default=None, max_length=2_083)
+    memory_translator_model: ModelIdentifier | None = None
+    memory_translator_revision: str | None = Field(default=None, min_length=1, max_length=200)
+    memory_reviewer_model: ModelIdentifier | None = None
+    memory_reviewer_revision: str | None = Field(default=None, min_length=1, max_length=200)
+    memory_normalization_timeout_seconds: float = Field(default=45, ge=1, le=60)
     project_embedding_base_url: str | None = None
     project_embedding_model: str | None = None
     project_embedding_model_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -135,6 +147,34 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_agent_timing(self) -> "Settings":
+        normalization_fields = (
+            self.memory_normalization_base_url,
+            self.memory_translator_model,
+            self.memory_reviewer_model,
+        )
+        if self.memory_canonical_language == "en" and not all(normalization_fields):
+            raise ValueError(
+                "English memory writes require an explicit local URL, translator and reviewer"
+            )
+        if self.memory_normalization_base_url is not None:
+            try:
+                endpoint = urlsplit(self.memory_normalization_base_url)
+                host = endpoint.hostname or ""
+                local = host == "localhost" or ipaddress.ip_address(host).is_loopback
+                valid = (
+                    endpoint.scheme in {"http", "https"}
+                    and local
+                    and endpoint.username is None
+                    and endpoint.password is None
+                    and not endpoint.query
+                    and not endpoint.fragment
+                    and endpoint.port != 0
+                    and not any(char.isspace() for char in self.memory_normalization_base_url)
+                )
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("memory normalization requires a credential-free loopback URL")
         project_embedding_fields = (
             self.project_embedding_base_url,
             self.project_embedding_model,

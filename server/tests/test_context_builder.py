@@ -213,6 +213,12 @@ async def _seed_budget_sources(
     ]
     now = datetime.now(UTC).isoformat()
     async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO coding_projects VALUES('project_context_budget',?,?)", (now, now)
+        )
+        await db.execute(
+            "INSERT INTO goal_project_links VALUES(?,'project_context_budget')", (goal_id,)
+        )
         for index in range(2, 4):
             upstream_id = f"node_upstream_{index}"
             await db.execute(
@@ -251,7 +257,7 @@ async def _seed_budget_sources(
                 """,
                 (
                     f"mem_context_{index}",
-                    "goal",
+                    "project:project_context_budget",
                     "fact",
                     f"Memory summary {index}",
                     None,
@@ -316,6 +322,10 @@ async def _seed_budget_sources(
                     now,
                     now,
                 ),
+            )
+            await db.execute(
+                "INSERT INTO goal_project_links VALUES(?,'project_context_budget')",
+                (historical_goal_id,),
             )
             await db.execute(
                 """

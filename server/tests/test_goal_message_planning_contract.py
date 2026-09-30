@@ -75,9 +75,9 @@ def test_conversation_project_id_follows_active_goal_without_creating_a_project(
     ).json()["goal"]["id"]
     endpoint = f"/goals/{original}/messages"
     before = client.get(endpoint, headers=paired_headers)
-    assert before.status_code == 200 and before.json()["project_id"] is None
+    assert before.status_code == 200 and before.json()["project_id"] is not None
     with sqlite3.connect(test_app.state.settings.db_path) as db:
-        assert db.execute("SELECT COUNT(*) FROM coding_projects").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM coding_projects").fetchone() == (2,)
     assert client.portal is not None
     project_id = client.portal.call(
         test_app.state.goal_manager.project_applications.ensure_project, active
@@ -93,7 +93,7 @@ def test_conversation_project_id_follows_active_goal_without_creating_a_project(
     assert current.json()["project_id"] == project_id
     assert current.headers["cache-control"] == "no-store"
     with sqlite3.connect(test_app.state.settings.db_path) as db:
-        assert db.execute("SELECT COUNT(*) FROM coding_projects").fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM coding_projects").fetchone() == (2,)
         assert db.execute(
             "SELECT COUNT(*) FROM goal_project_links WHERE goal_run_id=?", (original,)
-        ).fetchone() == (0,)
+        ).fetchone() == (1,)

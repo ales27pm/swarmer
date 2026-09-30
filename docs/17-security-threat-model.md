@@ -139,5 +139,9 @@ Logs ne doivent pas inclure:
 - revoke agent token;
 - freeze permissions;
 - export audit;
-- restore DB backup;
+- validate a database backup in an isolated location; preserve the live database
+  and newer accepted writes during application rollback, using a binary compatible
+  with its current schema. A disaster-recovery cutover needs a separate integrity
+  check and reconciliation of newer writes; never blindly overwrite production
+  with an older backup or lower `user_version`;
 - rebuild vector index.

@@ -9,6 +9,10 @@ from typing import Any
 import aiosqlite
 
 from app.services.context_builder import safe_context_text
+from app.services.research_contracts import (
+    project_research_collect_sources,
+    valid_research_collect_receipt,
+)
 from app.services.result_aggregator import (
     summarize_untrusted_worker_output,
     validate_worker_evidence,
@@ -17,10 +21,9 @@ from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
 from app.services.writing_contracts import (
     MAX_DEPENDENCY_BYTES,
     MAX_DEPENDENCY_ITEMS,
-    MAX_RESEARCH_SOURCE_BYTES,
-    MAX_RESEARCH_SOURCES,
     DependencyContextItem,
     WritingResearchSource,
+    research_source_limits,
 )
 
 
@@ -30,10 +33,10 @@ def context_bytes(value: object) -> int:
 
 async def read_worker_context(
     db_path: Path, goal_id: str, consumer_id: str
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     """Only direct, same-run/revision dependencies, with authoritative job receipts."""
     context: list[dict[str, str]] = []
-    sources: list[dict[str, str]] = []
+    sources: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
@@ -95,6 +98,10 @@ async def read_worker_context(
             skill = str(node["required_skill"])
             if not validate_worker_evidence(skill, result):
                 raise ValueError("completed dependency evidence is invalid")
+            if skill == "research.collect" and not valid_research_collect_receipt(
+                result, json.loads(row["payload_json"])
+            ):
+                raise ValueError("research dependency receipt does not match its input")
             if skill in SWIFT_SKILLS and not valid_swift_receipt(
                 skill, result, json.loads(row["payload_json"])
             ):
@@ -113,26 +120,43 @@ async def read_worker_context(
                     and context_bytes([*context, item]) <= MAX_DEPENDENCY_BYTES
                 ):
                     context.append(item)
-            if skill != "research.query":
+            if skill not in {"research.query", "research.collect"}:
                 continue
-            for item in result["results"]:
+            candidates = (
+                project_research_collect_sources(result, str(row["id"]))
+                if skill == "research.collect"
+                else [
+                    {
+                        "content_trust": "untrusted",
+                        "worker_job_id": str(row["id"]),
+                        "title": item["title"],
+                        "url": item["url"],
+                        "snippet": item["snippet"],
+                    }
+                    for item in result["results"]
+                ]
+            )
+            for item in candidates:
                 url = item["url"]
                 if safe_context_text(url, max_chars=1_001) != url or url in seen_urls:
                     continue
+                item["title"] = safe_context_text(item["title"], max_chars=240)
+                item["snippet"] = safe_context_text(item["snippet"], max_chars=700)
+                evidence = item.get("evidence")
+                if evidence is not None and (
+                    safe_context_text(evidence["text"], max_chars=4_001) != evidence["text"]
+                    or safe_context_text(evidence["requested_url"], max_chars=1_001)
+                    != evidence["requested_url"]
+                ):
+                    # A transformed passage must not keep the original exact-text hash.
+                    # Fall back to the safe snippet instead of laundering its provenance.
+                    item.pop("evidence")
                 try:
-                    source = WritingResearchSource(
-                        content_trust="untrusted",
-                        worker_job_id=str(row["id"]),
-                        title=safe_context_text(item["title"], max_chars=240),
-                        url=url,
-                        snippet=safe_context_text(item["snippet"], max_chars=700),
-                    ).model_dump()
+                    source = WritingResearchSource.model_validate(item).model_dump()
                 except ValueError:
                     continue
-                if (
-                    len(sources) < MAX_RESEARCH_SOURCES
-                    and context_bytes([*sources, source]) <= MAX_RESEARCH_SOURCE_BYTES
-                ):
+                count_limit, byte_limit = research_source_limits([*sources, source])
+                if len(sources) < count_limit and context_bytes([*sources, source]) <= byte_limit:
                     sources.append(source)
                     seen_urls.add(url)
         await db.rollback()

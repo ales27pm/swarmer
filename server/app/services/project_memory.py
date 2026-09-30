@@ -16,12 +16,12 @@ from app.services.audit_log import append_audit_event
 from app.services.context_builder import safe_context_text
 from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
 from app.services.goal_limits import runtime_expired
+from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
 from app.services.project_contracts import ProjectMemoryContext
 from app.services.swarm_contracts import GoalMemoryContextResponse
 
 MAX_ITEMS = 512
 MAX_EMBED_DOCUMENTS = 24
-MAX_DIMENSIONS = 8_192
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "budget_exhausted"})
 _CODE_LINE = re.compile(
     r"^\s*(?:def |class |import |from \S+ import |function |(?:export )?(?:const|let|var) "
@@ -48,37 +48,6 @@ def _summary(value: str) -> str:
     prose = re.sub(r"```.*?(?:```|\Z)", "", value, flags=re.DOTALL)
     prose = "\n".join(line for line in prose.splitlines() if not _CODE_LINE.match(line))
     return safe_context_text(prose, max_chars=1_200).strip()
-
-
-def _vector(value: object) -> list[float] | None:
-    if not isinstance(value, list) or not 1 <= len(value) <= MAX_DIMENSIONS:
-        return None
-    if any(type(item) not in {int, float} for item in value):
-        return None
-    try:
-        result = [float(item) for item in value]
-    except (OverflowError, ValueError):
-        return None
-    if not all(math.isfinite(item) for item in result):
-        return None
-    scale = max(abs(item) for item in result)
-    if scale <= 0:
-        return None
-    return result
-
-
-def _cosine(left: list[float], right: list[float]) -> float:
-    # Scale before normalizing, so finite but very large/small provider values
-    # never overflow intermediate squares or denominators.
-    def unit(values: list[float]) -> list[float]:
-        scale = max(abs(value) for value in values)
-        scaled = [value / scale for value in values]
-        norm = math.hypot(*scaled)
-        return [value / norm for value in scaled]
-
-    return max(
-        -1.0, min(1.0, math.fsum(a * b for a, b in zip(unit(left), unit(right), strict=True)))
-    )
 
 
 def _tokens(text: str) -> set[str]:
@@ -119,16 +88,26 @@ class ProjectMemoryService:
         self.query_prefix, self.document_prefix = query_prefix, document_prefix
         self.timeout_seconds = timeout_seconds
         self.hybrid = hybrid
-        self.provider_identity = _digest(
-            {
-                "format": 1,
-                "provider": getattr(embedding_service, "provider_name", None),
-                "origin": str(getattr(embedding_service, "base_url", "")).rstrip("/"),
-                "model": getattr(embedding_service, "model", None),
-                "revision": model_revision,
-                "query_prefix": query_prefix,
-                "document_prefix": document_prefix,
-            }
+        self._bound_provider = embedding_service
+        self.provider_identity = self._embedding_identity()
+
+    def _embedding_identity(self) -> str:
+        # Keep the public 64-hex fingerprint while using the common space
+        # contract. Existing vectors/receipts remain intact and ineligible.
+        return embedding_identity(
+            self.embedding_service,
+            self.model_revision,
+            query_prefix=self.query_prefix,
+            document_prefix=self.document_prefix,
+            input_format="project-decision-summary-v1",
+        ).removeprefix("memory-v3:")
+
+    def _provider_current(self) -> bool:
+        # Instances are bound to one immutable configuration. Reconfigure by
+        # creating a new service; mutating a live one degrades to lexical mode.
+        return (
+            self.embedding_service is self._bound_provider
+            and self._embedding_identity() == self.provider_identity
         )
 
     async def initialize(self) -> None:
@@ -177,9 +156,14 @@ class ProjectMemoryService:
         history = await (
             await db.execute(
                 """SELECT m.role,m.content FROM goal_messages m JOIN goal_conversation_links l
-            ON l.conversation_id=m.conversation_id WHERE l.goal_run_id=?
+            ON l.conversation_id=m.conversation_id
+            JOIN goal_conversation_links source
+              ON source.goal_run_id=m.goal_run_id AND source.conversation_id=m.conversation_id
+            LEFT JOIN goal_project_links source_project ON source_project.goal_run_id=m.goal_run_id
+            WHERE l.goal_run_id=? AND
+              ((? IS NULL AND source_project.project_id IS NULL) OR source_project.project_id=?)
             ORDER BY m.rowid DESC LIMIT 40""",
-                (goal_id,),
+                (goal_id, goal["project_id"], goal["project_id"]),
             )
         ).fetchall()
         goal["recent_conversation"] = [
@@ -200,7 +184,10 @@ class ProjectMemoryService:
                 "revision_id": goal["revision_id"],
                 "revision_sha256": goal["revision_sha256"],
                 "provider": self.provider_identity,
-                "retrieval": "hybrid_rrf_v1" if self.hybrid else "semantic_or_lexical_v1",
+                "provider_current": self._provider_current(),
+                "retrieval": "hybrid_rrf_distinct_v2"
+                if self.hybrid
+                else "semantic_or_lexical_distinct_v2",
                 "query": goal["memory_query"],
                 "recent_conversation": goal["recent_conversation"],
             }
@@ -284,7 +271,7 @@ class ProjectMemoryService:
             base_revision_id,
             query_sha,
             self.provider_identity,
-            "hybrid_rrf_v1" if self.hybrid else "semantic_or_lexical_v1",
+            "hybrid_rrf_distinct_v2" if self.hybrid else "semantic_or_lexical_distinct_v2",
         ]
         if purpose != "worker":
             identity += [purpose, logical_fingerprint]
@@ -397,6 +384,8 @@ class ProjectMemoryService:
             # Concurrent callers share the first completed immutable result.
             result = self._parse_receipt(persisted[0])
             result.update(local_planning_eligible=eligible, planning_embedding_call_count=credits)
+            if logical != self._logical_fingerprint(current, purpose):
+                raise ProjectMemoryConflict("project memory context changed")
             return result
 
     @staticmethod
@@ -427,6 +416,7 @@ class ProjectMemoryService:
             or response["recent_conversation"] != goal["recent_conversation"]
             or response["context_fingerprint"]
             != _digest({"logical": logical_fingerprint, "memory": memory})
+            or (memory["mode"] != "lexical" and not self._provider_current())
         ):
             raise ProjectMemoryConflict("project memory context changed")
         for item in memory["items"]:
@@ -443,7 +433,10 @@ class ProjectMemoryService:
                 source = await (
                     await db.execute(
                         """SELECT m.content FROM goal_messages m JOIN goal_conversation_links l
-                    ON l.conversation_id=m.conversation_id JOIN goal_project_links p ON p.goal_run_id=l.goal_run_id
+                    ON l.conversation_id=m.conversation_id
+                    JOIN goal_conversation_links source
+                      ON source.goal_run_id=m.goal_run_id AND source.conversation_id=m.conversation_id
+                    JOIN goal_project_links p ON p.goal_run_id=m.goal_run_id
                     WHERE m.id=? AND l.goal_run_id=? AND p.project_id=?""",
                         (item["source_id"], goal["id"], goal["project_id"]),
                     )
@@ -452,7 +445,9 @@ class ProjectMemoryService:
             else:
                 source = await (
                     await db.execute(
-                        "SELECT json_extract(snapshot_json,'$.plan') FROM project_revisions WHERE id=? AND project_id=?",
+                        """SELECT json_extract(r.snapshot_json,'$.plan') FROM project_revisions r
+                        JOIN goal_project_links p ON p.goal_run_id=r.goal_run_id
+                        WHERE r.id=? AND r.project_id=? AND p.project_id=r.project_id""",
                         (item["source_id"], goal["project_id"]),
                     )
                 ).fetchone()
@@ -464,6 +459,9 @@ class ProjectMemoryService:
                 )
             if summary != item["summary"]:
                 raise ProjectMemoryConflict("project memory source changed")
+        # Provider configuration can change while authoritative sources are being read.
+        if logical_fingerprint != self._logical_fingerprint(goal, purpose):
+            raise ProjectMemoryConflict("project memory context changed")
 
     async def assert_context_current(
         self,
@@ -534,7 +532,9 @@ class ProjectMemoryService:
                     await db.execute(
                         """SELECT m.id,m.goal_run_id,m.role,m.content,m.rowid AS source_order
                 FROM goal_messages m JOIN goal_conversation_links c ON c.conversation_id=m.conversation_id
-                JOIN goal_project_links p ON p.goal_run_id=c.goal_run_id
+                JOIN goal_conversation_links source
+                  ON source.goal_run_id=m.goal_run_id AND source.conversation_id=m.conversation_id
+                JOIN goal_project_links p ON p.goal_run_id=m.goal_run_id
                 WHERE c.goal_run_id=? AND p.project_id=? ORDER BY m.rowid DESC LIMIT 480""",
                         (goal_id, goal["project_id"]),
                     )
@@ -543,8 +543,10 @@ class ProjectMemoryService:
             plans = list(
                 await (
                     await db.execute(
-                        """SELECT id,goal_run_id,revision,json_extract(snapshot_json,'$.plan') AS plan_json
-                FROM project_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 32""",
+                        """SELECT r.id,r.goal_run_id,r.revision,json_extract(r.snapshot_json,'$.plan') AS plan_json
+                FROM project_revisions r JOIN goal_project_links p ON p.goal_run_id=r.goal_run_id
+                WHERE r.project_id=? AND p.project_id=r.project_id
+                ORDER BY r.revision DESC LIMIT 32""",
                         (goal["project_id"],),
                     )
                 ).fetchall()
@@ -561,6 +563,9 @@ class ProjectMemoryService:
                         "source_revision_id": None,
                         "source_order": int(message["source_order"]),
                         "summary": summary,
+                        "deduplication_sha256": _digest(
+                            ["message", message["role"], message["content"]]
+                        ),
                     }
                 )
         for plan in reversed(plans):
@@ -579,6 +584,7 @@ class ProjectMemoryService:
                         "source_revision_id": plan["id"],
                         "source_order": int(plan["revision"]),
                         "summary": summary,
+                        "deduplication_sha256": _digest(["plan", values]),
                     }
                 )
         for document in documents:
@@ -593,16 +599,30 @@ class ProjectMemoryService:
         self,
         goal: Mapping[str, Any],
         documents: list[dict[str, Any]],
+        complete_snapshot: bool = False,
     ) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
-            await db.execute(
-                """DELETE FROM project_memory_items WHERE project_id=?
-                AND id NOT IN (SELECT value FROM json_each(?))""",
-                (goal["project_id"], json.dumps([document["id"] for document in documents])),
-            )
+            if not await self._sources_current_locked(db, goal, documents):
+                return []
+            keep_ids = json.dumps([document["id"] for document in documents])
+            if complete_snapshot:
+                # The source snapshot covers one conversation plus recent plans.
+                # Its absence says nothing about other conversations linked to
+                # the same project. Partial imports only upsert their sources.
+                await db.execute(
+                    """DELETE FROM project_memory_items WHERE project_id=?
+                    AND id NOT IN (SELECT value FROM json_each(?))
+                    AND (source_kind='plan' OR (source_kind='message' AND (
+                        source_id IN (SELECT m.id FROM goal_messages m
+                            JOIN goal_conversation_links c ON c.conversation_id=m.conversation_id
+                            WHERE c.goal_run_id=?)
+                        OR NOT EXISTS (SELECT 1 FROM goal_messages m WHERE m.id=source_id)
+                    )))""",
+                    (goal["project_id"], keep_ids, goal["id"]),
+                )
             for document in documents:
                 await db.execute(
                     """INSERT INTO project_memory_items(id,project_id,source_kind,source_id,
@@ -631,19 +651,121 @@ class ProjectMemoryService:
             rows = list(
                 await (
                     await db.execute(
-                        "SELECT * FROM project_memory_items WHERE project_id=? ORDER BY source_order,id LIMIT ?",
-                        (goal["project_id"], MAX_ITEMS),
+                        """SELECT * FROM project_memory_items WHERE project_id=?
+                        AND id IN (SELECT value FROM json_each(?)) ORDER BY source_order,id LIMIT ?""",
+                        (goal["project_id"], keep_ids, MAX_ITEMS),
                     )
                 ).fetchall()
             )
             await db.commit()
-        return [dict(row) for row in rows if row["id"] in keep]
+        provenance = {document["id"]: document["deduplication_sha256"] for document in documents}
+        return [
+            {**dict(row), "deduplication_sha256": provenance[row["id"]]}
+            for row in rows
+            if row["id"] in keep
+        ]
+
+    @staticmethod
+    async def _sources_current_locked(
+        db: aiosqlite.Connection,
+        goal: Mapping[str, Any],
+        items: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        """Validate bounded source snapshots inside the caller's read/write transaction.
+
+        A shared conversation does not authorize another project's messages.
+        Projections and cached vectors cannot substitute for current source ownership.
+        """
+        if len(items) > MAX_ITEMS:
+            return False
+        if not await (
+            await db.execute(
+                "SELECT 1 FROM goal_project_links WHERE goal_run_id=? AND project_id=?",
+                (goal["id"], goal["project_id"]),
+            )
+        ).fetchone():
+            return False
+        if not items:
+            return True
+        ids = json.dumps(list({str(item["source_id"]) for item in items}))
+        messages = await (
+            await db.execute(
+                """SELECT m.id,m.goal_run_id,m.role,m.content FROM goal_messages m
+                JOIN goal_conversation_links source
+                  ON source.goal_run_id=m.goal_run_id AND source.conversation_id=m.conversation_id
+                JOIN goal_project_links p ON p.goal_run_id=m.goal_run_id
+                JOIN goal_conversation_links target ON target.conversation_id=m.conversation_id
+                WHERE target.goal_run_id=? AND p.project_id=?
+                  AND m.id IN (SELECT value FROM json_each(?))""",
+                (goal["id"], goal["project_id"], ids),
+            )
+        ).fetchall()
+        plans = await (
+            await db.execute(
+                """SELECT r.id,r.goal_run_id,json_extract(r.snapshot_json,'$.plan') AS plan_json
+                FROM project_revisions r JOIN goal_project_links p ON p.goal_run_id=r.goal_run_id
+                WHERE r.project_id=? AND p.project_id=r.project_id
+                  AND r.id IN (SELECT value FROM json_each(?))""",
+                (goal["project_id"], ids),
+            )
+        ).fetchall()
+        sources: dict[tuple[str, str], tuple[str, str | None, str, str]] = {}
+        for row in messages:
+            sources[("message", str(row["id"]))] = (
+                str(row["goal_run_id"]),
+                None,
+                _summary(str(row["content"])),
+                _digest(["message", row["role"], row["content"]]),
+            )
+        for row in plans:
+            values = json.loads(str(row["plan_json"] or "[]"))
+            if not isinstance(values, list):
+                return False
+            sources[("plan", str(row["id"]))] = (
+                str(row["goal_run_id"]),
+                str(row["id"]),
+                _summary("\n".join(str(value) for value in values)),
+                _digest(["plan", values]),
+            )
+        for item in items:
+            source = sources.get((str(item["source_kind"]), str(item["source_id"])))
+            if source is None:
+                return False
+            source_goal, source_revision, summary, content_identity = source
+            if (
+                item["source_goal_id"] != source_goal
+                or item["source_revision_id"] != source_revision
+                or item["summary"] != summary
+                or item["content_sha256"] != _digest(summary)
+                or item["deduplication_sha256"] != content_identity
+            ):
+                return False
+        return True
+
+    def _distinct_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # Only exact original text and source-role equality; equal summaries
+        # after truncation/redaction do not merge distinct source contents.
+        # Opposing, revised or subtly different decisions remain separate.
+        # All occurrence/source rows stay intact;
+        # one stable representative spends the context and embedding budget.
+        representatives: dict[str, dict[str, Any]] = {}
+        for item in items:
+            key = str(item["deduplication_sha256"])
+            existing = representatives.get(key)
+            if existing is None or (
+                self._stored_vector(existing) is None and self._stored_vector(item) is not None
+            ):
+                representatives[key] = item
+        return list(representatives.values())
 
     def _stored_vector(self, item: Mapping[str, Any]) -> list[float] | None:
-        if item.get("embedding_identity") != self.provider_identity:
+        if not self._provider_current() or item.get("embedding_identity") != self.provider_identity:
             return None
         try:
-            vector = _vector(json.loads(str(item["vector_json"])))
+            vector = memory_vector(
+                json.loads(str(item["vector_json"])),
+                getattr(self.embedding_service, "dimensions", None),
+            )
         except (ValueError, TypeError):
             return None
         if vector is None or len(vector) != item.get("dimensions"):
@@ -818,10 +940,12 @@ class ProjectMemoryService:
             and int(goal["conversation_revision"]) != conversation_revision
         ):
             return _context("lexical", "conversation_changed", [])
-        items = await self._refresh_items(goal, documents)
+        items = self._distinct_items(await self._refresh_items(goal, documents, True))
+        if documents and not items:
+            return _context("lexical", "project_context_changed", [])
 
         async def fallback(reason: str) -> dict[str, Any]:
-            if not await self._context_current(goal, base_revision_id):
+            if not await self._context_current(goal, base_revision_id, items):
                 return _context("lexical", "project_context_changed", [])
             return self._rank_lexical(query, items, reason)
 
@@ -829,6 +953,8 @@ class ProjectMemoryService:
             return _context("lexical", "no_indexable_decisions", [])
         if self.embedding_service is None:
             return await fallback("embedding_not_configured")
+        if not self._provider_current():
+            return await fallback("embedding_provider_changed")
         query_sha = _digest(query)
         request_id = self._request_id(
             goal, node_id, query_sha, base_revision_id, purpose, logical_fingerprint
@@ -846,6 +972,12 @@ class ProjectMemoryService:
             return _context("lexical", state, [])
         query_vector: list[float] | None = None
         if state == "reserved":
+            if not await self._context_current(goal, base_revision_id, items):
+                await self._fail_request(request_id, "context_changed", purpose=purpose)
+                return _context("lexical", "project_context_changed", [])
+            if not self._provider_current():
+                await self._fail_request(request_id, "embedding_provider_changed", purpose=purpose)
+                return await fallback("embedding_provider_changed")
             missing = [item for item in items if self._stored_vector(item) is None][
                 :MAX_EMBED_DOCUMENTS
             ]
@@ -855,7 +987,15 @@ class ProjectMemoryService:
                         [self.query_prefix + query]
                         + [self.document_prefix + str(item["summary"]) for item in missing]
                     )
-                checked_vectors = [_vector(value) for value in returned]
+                if not self._provider_current():
+                    await self._fail_request(
+                        request_id, "embedding_provider_changed", purpose=purpose
+                    )
+                    return await fallback("embedding_provider_changed")
+                checked_vectors = [
+                    memory_vector(value, getattr(self.embedding_service, "dimensions", None))
+                    for value in returned
+                ]
                 if len(checked_vectors) != len(missing) + 1 or any(
                     vector is None for vector in checked_vectors
                 ):
@@ -873,7 +1013,13 @@ class ProjectMemoryService:
                     missing,
                     vectors[1:],
                     purpose=purpose,
+                    source_items=items,
                 ):
+                    if not self._provider_current():
+                        await self._fail_request(
+                            request_id, "embedding_provider_changed", purpose=purpose
+                        )
+                        return await fallback("embedding_provider_changed")
                     return _context("lexical", "project_context_changed", [])
                 for item, vector in zip(missing, vectors[1:], strict=True):
                     item.update(
@@ -896,7 +1042,10 @@ class ProjectMemoryService:
                 return await fallback("embedding_unavailable")
         elif cached is not None and cached["status"] == "completed":
             try:
-                query_vector = _vector(json.loads(str(cached["query_vector_json"])))
+                query_vector = memory_vector(
+                    json.loads(str(cached["query_vector_json"])),
+                    getattr(self.embedding_service, "dimensions", None),
+                )
             except (ValueError, TypeError):
                 query_vector = None
             if (
@@ -921,15 +1070,17 @@ class ProjectMemoryService:
                 if cached
                 else state,
             )
-        if not await self._context_current(goal, base_revision_id):
+        if not await self._context_current(goal, base_revision_id, items):
             return _context("lexical", "project_context_changed", [])
+        if not self._provider_current():
+            return await fallback("embedding_provider_changed")
         ranked: list[dict[str, Any]] = []
         if query_vector is None:
             return await fallback("embedding_cache_invalid")
         for item in items:
             stored_vector = self._stored_vector(item)
             if stored_vector is not None and len(stored_vector) == len(query_vector):
-                score = _cosine(query_vector, stored_vector)
+                score = memory_cosine(query_vector, stored_vector)
                 if score > 0:
                     ranked.append(
                         {
@@ -953,9 +1104,15 @@ class ProjectMemoryService:
             return _context("hybrid", "lexical_semantic_rank_fusion", ranked)
         return _context("semantic", "historical_hints_recent_replies_take_precedence", ranked)
 
-    async def _context_current(self, goal: Mapping[str, Any], base_revision_id: str | None) -> bool:
+    async def _context_current(
+        self,
+        goal: Mapping[str, Any],
+        base_revision_id: str | None,
+        items: Sequence[Mapping[str, Any]],
+    ) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN")
             row = await (
                 await db.execute(
                     """SELECT g.*,
@@ -965,14 +1122,15 @@ class ProjectMemoryService:
                     (goal["id"], goal["project_id"]),
                 )
             ).fetchone()
-        return (
-            row is not None
-            and row["status"] not in _TERMINAL
-            and int(row["conversation_revision"]) == int(goal["conversation_revision"])
-            and self._logical_goal(dict(row)) == self._logical_goal(goal)
-            and row["revision_id"] == base_revision_id
-            and not runtime_expired(dict(row))
-        )
+            return (
+                row is not None
+                and row["status"] not in _TERMINAL
+                and int(row["conversation_revision"]) == int(goal["conversation_revision"])
+                and self._logical_goal(dict(row)) == self._logical_goal(goal)
+                and row["revision_id"] == base_revision_id
+                and not runtime_expired(dict(row))
+                and await self._sources_current_locked(db, goal, items)
+            )
 
     async def _persist_vectors(
         self,
@@ -985,11 +1143,14 @@ class ProjectMemoryService:
         vectors: list[list[float]],
         *,
         purpose: MemoryPurpose = "worker",
+        source_items: Sequence[Mapping[str, Any]],
     ) -> bool:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            if not self._provider_current():
+                return False
             current = await (
                 await db.execute(
                     """SELECT g.*,
@@ -1018,6 +1179,7 @@ class ProjectMemoryService:
                 or receipt is None
                 or receipt["status"] != "started"
                 or receipt["expires_at"] <= now
+                or not await self._sources_current_locked(db, goal, source_items)
             ):
                 await db.execute(
                     "UPDATE project_memory_queries SET status='failed',error_category='context_changed',completed_at=? WHERE id=?"
@@ -1064,6 +1226,9 @@ class ProjectMemoryService:
                     request_id,
                 ),
             )
+            if not self._provider_current():
+                await db.rollback()
+                return False
             await db.commit()
         return True
 

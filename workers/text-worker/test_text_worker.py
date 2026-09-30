@@ -159,7 +159,7 @@ def test_step_objective_is_advisory_and_reaches_the_model_with_original_request(
     assert "planner-authored" in instructions
     assert "original objective and latest user instructions take precedence" in instructions
     assert "Never ask the user to provide the plan or draft" in instructions
-    assert body["options"]["num_predict"] == 512
+    assert body["options"]["num_predict"] == 2912
 
 
 @pytest.mark.parametrize(
@@ -364,7 +364,7 @@ def test_complete_native_stream_is_one_cpu_call_with_bounded_tokens(
     assert len(requests) == 1
     _, path, body, headers = requests[0]
     assert path == "/api/chat"
-    assert body["options"] == {"temperature": 0, "num_predict": 512, "num_gpu": 0}
+    assert body["options"] == {"temperature": 0, "num_predict": 2912, "num_gpu": 0}
     assert body["stream"] is True
     assert body["think"] is False
     assert body["format"] == worker.MODEL_RESPONSE_SCHEMA
@@ -623,9 +623,12 @@ def test_declared_delivery_keeps_legacy_client_contract(worker: ModuleType) -> N
     )
     # Words in quoted drafts cannot turn an otherwise valid response into a refusal.
     quoted = {**draft(), "text": "Voici le message demandé : « Je ne peux pas venir. »"}
-    assert worker._decode_model_result(
-        {**quoted, "outcome": "delivered"}, payload(), model_id="local:7b"
-    ) == quoted
+    assert (
+        worker._decode_model_result(
+            {**quoted, "outcome": "delivered"}, payload(), model_id="local:7b"
+        )
+        == quoted
+    )
 
 
 def test_new_model_response_must_declare_an_outcome(worker: ModuleType) -> None:

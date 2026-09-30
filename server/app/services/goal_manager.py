@@ -64,6 +64,7 @@ from app.services.planner_provider import (
     advertised_worker_skills,
 )
 from app.services.project_contracts import ProjectMemoryContext, ProjectPayload, ProjectResult
+from app.services.project_identity import create_project_locked
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.project_progress import has_project_progress
 from app.services.project_validation import (
@@ -73,6 +74,7 @@ from app.services.project_validation import (
     pause_native_validation_locked,
 )
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
+from app.services.research_contracts import valid_research_collect_receipt
 from app.services.result_aggregator import (
     ResultAggregator,
     summarize_untrusted_worker_output,
@@ -98,25 +100,26 @@ from app.services.swarm_contracts import (
 )
 from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
 from app.services.worker_context import read_worker_context
-from app.services.writing_contracts import WRITING_SKILL, validate_writing_declined_result
-from app.services.writing_drafts import read_writing_draft, writing_payload
+from app.services.writing_contracts import (
+    WRITING_SKILL,
+    validate_writing_non_delivery_result,
+    validate_writing_result,
+)
+from app.services.writing_drafts import (
+    read_writing_draft,
+    writing_completion_failure_locked,
+    writing_payload,
+)
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
 _EVALUATOR_RETRY_COOLDOWN_SECONDS = 60
 _MAX_INVALID_EVALUATOR_ATTEMPTS = 3
 _MAX_UNPRODUCTIVE_PROJECT_ITERATIONS = 3
-_MAX_REPEATED_PROJECT_READS = 3
 _PROJECT_STALLED_REASON = (
     "Le projet est en pause après trois tentatives sans modification de fichier "
     "ni nouveau contrôle réussi. Les lectures intermédiaires ne remettent pas "
     "ce compteur à zéro. Les fichiers et les résultats de vérification sont conservés. "
-    "Envoyez un message au projet pour reprendre avec de nouvelles instructions."
-)
-_PROJECT_REPEATED_READ_REASON = (
-    "Le projet est en pause après trois demandes de lecture répétées sans modification "
-    "de fichier ni nouveau contrôle réussi. Aucun nouvel appel au modèle n'est lancé. "
-    "Les fichiers et les résultats de vérification sont conservés. "
     "Envoyez un message au projet pour reprendre avec de nouvelles instructions."
 )
 _EVALUATOR_FAILURE_DETAILS = {
@@ -207,7 +210,8 @@ class GoalManager:
         default_max_parallelism: int = 3,
         default_max_replans: int = 3,
         default_max_runtime_seconds: int = 1_800,
-        default_max_model_calls: int = 30,
+        default_max_model_calls: int = 100,
+        auto_continue_on_model_budget_exhausted: bool = False,
         instance_id: str | None = None,
         model_call_lease_seconds: int = 120,
         require_execution_workers: bool = False,
@@ -230,6 +234,7 @@ class GoalManager:
             raise ValueError("model_call_lease_seconds must be between 30 and 900")
         self.model_call_lease_seconds = model_call_lease_seconds
         self.require_execution_workers = require_execution_workers
+        self.auto_continue_on_model_budget_exhausted = auto_continue_on_model_budget_exhausted
         self.code_applications = (
             GoalCodeApplicationService(db_path, execution_engine)
             if execution_engine is not None
@@ -326,29 +331,51 @@ class GoalManager:
             raise GoalManagerConflict(str(exc)) from exc
 
     async def recent_conversation(self, goal_id: str, limit: int = 40) -> list[dict[str, str]]:
-        history = await self.conversation_messages(goal_id, limit=limit)
+        # The UI may show a shared continuation history. Model inputs instead
+        # require each message's own goal/conversation and exact project scope.
+        # This read snapshot does not lease source scope after returning;
+        # model-call admission independently checks goal/conversation revision.
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA query_only=ON")
+            await db.execute("BEGIN")
+            target = await (
+                await db.execute(
+                    """SELECT c.conversation_id,p.project_id FROM goal_conversation_links c
+                    LEFT JOIN goal_project_links p ON p.goal_run_id=c.goal_run_id
+                    WHERE c.goal_run_id=?""",
+                    (goal_id,),
+                )
+            ).fetchone()
+            if target is None:
+                raise GoalManagerConflict("goal not found")
+            rows = await (
+                await db.execute(
+                    """SELECT m.role,m.content FROM goal_messages m
+                    JOIN goal_conversation_links source
+                      ON source.goal_run_id=m.goal_run_id
+                     AND source.conversation_id=m.conversation_id
+                    LEFT JOIN goal_project_links p ON p.goal_run_id=m.goal_run_id
+                    WHERE m.conversation_id=? AND
+                      (p.project_id=? OR (? IS NULL AND p.project_id IS NULL))
+                    ORDER BY m.rowid DESC LIMIT ?""",
+                    (
+                        target["conversation_id"],
+                        target["project_id"],
+                        target["project_id"],
+                        max(1, min(limit, 100)),
+                    ),
+                )
+            ).fetchall()
+            await db.rollback()
         return [
             {"role": item["role"], "content": safe_context_text(item["content"], max_chars=4_000)}
-            for item in history["messages"]
+            for item in reversed(list(rows))
         ]
 
     async def reply_goal(
         self, goal_id: str, request: GoalMessageRequest, *, actor_id: str
     ) -> dict[str, Any]:
-        # Seed a prior single-file artifact before creating its linked project continuation.
-        if self.project_applications is not None and request.planning_mode == "automatic":
-            async with aiosqlite.connect(self.db_path) as db:
-                legacy = await (
-                    await db.execute(
-                        """SELECT 1 FROM goal_code_proposals p JOIN goal_runs g ON g.id=p.goal_run_id
-                    WHERE g.id=? AND g.status IN ('completed','failed','cancelled','budget_exhausted')
-                    AND NOT EXISTS (SELECT 1 FROM goal_project_links l WHERE l.goal_run_id=g.id)
-                    LIMIT 1""",
-                        (goal_id,),
-                    )
-                ).fetchone()
-            if legacy is not None:
-                await self.project_applications.ensure_project(goal_id)
         # Never hold a model-call lock while accepting an independently durable reply.
         try:
             active_id = await self.conversations.append(
@@ -385,7 +412,7 @@ class GoalManager:
                 raise GoalManagerConflict("The writing goal is unavailable.")
             return writing_payload(
                 str(original["objective"]),
-                await self.recent_conversation(goal_id, limit=12),
+                await self.recent_conversation(goal_id, limit=100),
                 research_sources=sources,
                 dependency_context=dependency_context,
                 step_objective=str(node["objective"]) if node.get("id") else None,
@@ -730,7 +757,8 @@ class GoalManager:
         """Count accepted no-progress receipts, never free-text model claims.
 
         A new user revision or real file/check progress resets the streak.
-        Inspection is allowed between attempts without erasing their failures.
+        Inspection has no repeat cutoff and does not erase failed attempts.
+        Read iterations remain subject to the goal's overall budgets.
         The bounded history is confined to this goal and instruction revision.
         """
         rows = await (
@@ -744,24 +772,12 @@ class GoalManager:
             )
         ).fetchall()
         attempts = 0
-        repeated_reads = 0
-        reads: set[tuple[str, ...]] = set()
         for row in rows:
             result = ProjectResult.model_validate_json(str(row[0]))
             payload = ProjectPayload.model_validate_json(str(row[1]))
             if result.action != "continue" or has_project_progress(payload, result):
                 return None
             if result.focus_paths:
-                # First inspection of each selection is allowed. Reordering or
-                # alternating previously requested selections cannot erase the
-                # repeated-read count. File/check progress above resets both
-                # counters, so content hashes need not be retained here.
-                selection = tuple(sorted(result.focus_paths))
-                if selection in reads:
-                    repeated_reads += 1
-                    if repeated_reads >= _MAX_REPEATED_PROJECT_READS:
-                        return _PROJECT_REPEATED_READ_REASON
-                reads.add(selection)
                 continue
             attempts += 1
             if attempts >= _MAX_UNPRODUCTIVE_PROJECT_ITERATIONS:
@@ -917,6 +933,7 @@ class GoalManager:
         root = TaskRecord.new(
             TaskCreate(
                 input=request.objective,
+                conversation_id=request.conversation_id,
                 mode=(
                     TaskMode.AUTONOME
                     if request.autonomy_profile is AutonomyProfile.AUTONOMOUS
@@ -938,7 +955,60 @@ class GoalManager:
         if int(limits["max_parallelism"]) > int(limits["max_steps"]):
             limits["max_parallelism"] = int(limits["max_steps"])
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            request_key = (
+                f"goal.create:{request.client_request_id}" if request.client_request_id else None
+            )
+            request_digest = hashlib.sha256(
+                json.dumps(
+                    request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            if request_key is not None:
+                receipt = await (
+                    await db.execute(
+                        "SELECT operation,request_digest,response_json FROM idempotency_receipts WHERE actor_id=? AND idempotency_key=?",
+                        (actor_id, request_key),
+                    )
+                ).fetchone()
+                if receipt is not None:
+                    if (
+                        receipt["operation"] != "goal.create"
+                        or receipt["request_digest"] != request_digest
+                    ):
+                        raise GoalManagerConflict(
+                            "request identifier already belongs to a different request"
+                        )
+                    saved = json.loads(receipt["response_json"])
+                    previous = await (
+                        await db.execute(
+                            "SELECT * FROM goal_runs WHERE id=?", (saved["goal_run_id"],)
+                        )
+                    ).fetchone()
+                    if previous is None:
+                        raise GoalManagerConflict("previously created goal is unavailable")
+                    return self.graph._goal_from_row(previous)
+            chat_history: list[dict[str, Any]] = []
+            if request.conversation_id is not None:
+                chat = await (
+                    await db.execute(
+                        "SELECT id FROM conversations WHERE id=?", (request.conversation_id,)
+                    )
+                ).fetchone()
+                if chat is None:
+                    raise GoalManagerConflict("conversation not found")
+                chat_history = [
+                    dict(row)
+                    for row in await (
+                        await db.execute(
+                            """SELECT * FROM (SELECT rowid AS sequence,id,role,content,created_at
+                    FROM messages WHERE conversation_id=? AND role IN ('user','assistant','agent')
+                    ORDER BY rowid DESC LIMIT 40) ORDER BY sequence ASC""",
+                            (request.conversation_id,),
+                        )
+                    ).fetchall()
+                ]
             await StateService._insert_task(db, root)
             await db.execute(
                 """
@@ -970,9 +1040,55 @@ class GoalManager:
                     now.isoformat(),
                 ),
             )
+            await create_project_locked(db, goal_run_id, now.isoformat())
             await GoalConversationService.create_locked(
-                db, goal_run_id, request.objective, now.isoformat()
+                db, goal_run_id, request.objective, now.isoformat(), history=chat_history
             )
+            if request.conversation_id is not None:
+                await db.execute(
+                    """INSERT INTO messages(id,conversation_id,task_id,role,content,metadata_json,created_at)
+                    VALUES(?,?,?,'user',?,?,?)""",
+                    (
+                        f"msg_{uuid4().hex}",
+                        request.conversation_id,
+                        root.id,
+                        request.objective,
+                        json.dumps({"goal_run_id": goal_run_id}),
+                        now.isoformat(),
+                    ),
+                )
+                await db.execute(
+                    "UPDATE conversations SET updated_at=? WHERE id=?",
+                    (now.isoformat(), request.conversation_id),
+                )
+                await append_audit_event(
+                    db,
+                    "goal.chat_context_captured",
+                    {
+                        "goal_run_id": goal_run_id,
+                        "conversation_id": request.conversation_id,
+                        "source_message_ids": [message["id"] for message in chat_history],
+                        "limit": 40,
+                    },
+                    actor_type="device",
+                    actor_id=actor_id,
+                    task_id=root.id,
+                    trace_id=goal_run_id,
+                    created_at=now.isoformat(),
+                )
+            if request_key is not None:
+                await db.execute(
+                    """INSERT INTO idempotency_receipts(actor_id,idempotency_key,operation,request_digest,response_json,created_at,completed_at)
+                    VALUES(?,?,'goal.create',?,?,?,?)""",
+                    (
+                        actor_id,
+                        request_key,
+                        request_digest,
+                        json.dumps({"goal_run_id": goal_run_id}),
+                        now.isoformat(),
+                        now.isoformat(),
+                    ),
+                )
             await append_audit_event(
                 db,
                 "task.created",
@@ -1338,7 +1454,9 @@ class GoalManager:
                     )
                 )
         if self.strategy_retrieval is not None:
-            hints = await self.strategy_retrieval.retrieve(str(goal["objective"]))
+            hints = await self.strategy_retrieval.retrieve(
+                str(goal["objective"]), goal_run_id=goal_id
+            )
             raw_hints = hints.as_dict()
             for group in ("successful", "failures", "memory"):
                 values = raw_hints.get(group)
@@ -2059,9 +2177,9 @@ class GoalManager:
                     "node_count": len(proposal.nodes),
                     "plan_fingerprint": validated.fingerprint,
                     "memory_context_fingerprint": memory_context_fingerprint,
-                    "rationale_summary": (
-                        redact_dataset_text(proposal.rationale_summary) or ""
-                    )[:4_000],
+                    "rationale_summary": (redact_dataset_text(proposal.rationale_summary) or "")[
+                        :4_000
+                    ],
                     "node_ids": list(by_temp.values()),
                     "model_call_id": model_call_id,
                     "conversation_revision": int(current["conversation_revision"]),
@@ -2556,9 +2674,11 @@ class GoalManager:
                 node["required_skill"] == WRITING_SKILL
                 and job["status"] == "failed"
                 and isinstance(job.get("result"), dict)
-                and job["result"].get("outcome") == "declined"
+                and isinstance(job["result"].get("outcome"), str)
+                and job["result"].get("outcome")
+                in {"declined", "needs_clarification", "insufficient_sources"}
             ):
-                await self._accept_writing_declined_result(
+                await self._accept_writing_non_delivery_result(
                     goal_run_id,
                     str(node["id"]),
                     str(job["id"]),
@@ -2569,9 +2689,18 @@ class GoalManager:
                 node.get("required_skill"),
                 job.get("result"),
             )
+            if node["required_skill"] == WRITING_SKILL and job["status"] == "completed":
+                try:
+                    validate_writing_result(job.get("result"), payload=job.get("payload"))
+                except (TypeError, ValueError):
+                    valid_evidence = False
             if node["required_skill"] in SWIFT_SKILLS:
                 valid_evidence = valid_evidence and valid_swift_receipt(
                     str(node["required_skill"]), job.get("result"), job.get("payload")
+                )
+            if node["required_skill"] == "research.collect":
+                valid_evidence = valid_evidence and valid_research_collect_receipt(
+                    job.get("result"), job.get("payload")
                 )
             if (
                 node["required_skill"] == CODE_PROPOSAL_SKILL
@@ -2635,7 +2764,7 @@ class GoalManager:
             )
             return await self.get_goal(goal_run_id)
 
-    async def _accept_writing_declined_result(
+    async def _accept_writing_non_delivery_result(
         self,
         goal_id: str,
         node_id: str,
@@ -2643,7 +2772,7 @@ class GoalManager:
         *,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
-        """Stop a current declared refusal; preserve newer user input and raw evidence."""
+        """Project a durable non-delivery without evaluating it as a document."""
         terminated = False
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -2657,14 +2786,14 @@ class GoalManager:
                 return
             row = await (
                 await db.execute(
-                    """SELECT n.status,n.conversation_revision,j.result_json,j.payload_json,
+                    """SELECT n.status,n.conversation_revision,j.result_json,j.payload_json,j.error,
                               j.claimed_by,j.last_agent_id
                     FROM plan_nodes n JOIN agent_jobs j
                       ON j.id=n.worker_job_id AND j.task_id=n.task_id
                     JOIN tasks t ON t.id=j.task_id AND t.source=? AND t.status='failed'
                     WHERE n.id=? AND n.goal_run_id=? AND n.required_skill=?
                       AND j.id=? AND j.required_skill=? AND j.status='failed'
-                      AND j.error='model_declined'""",
+                      AND j.error IN ('model_declined','writing_needs_clarification','writing_insufficient_sources')""",
                     (f"goal:{goal_id}", node_id, goal_id, WRITING_SKILL, job_id, WRITING_SKILL),
                 )
             ).fetchone()
@@ -2673,42 +2802,86 @@ class GoalManager:
             if row["status"] not in {"dispatched", "running", "waiting_capability"}:
                 return
             try:
-                result = validate_writing_declined_result(
+                result = validate_writing_non_delivery_result(
                     json.loads(str(row["result_json"])),
                     payload=json.loads(str(row["payload_json"])),
                 )
             except (TypeError, ValueError) as exc:
                 raise GoalManagerConflict("writing refusal evidence is invalid") from exc
+            outcome = result["outcome"]
+            reason = {
+                "declined": "model_declined",
+                "needs_clarification": "writing_needs_clarification",
+                "insufficient_sources": "writing_insufficient_sources",
+            }[outcome]
+            if row["error"] != reason:
+                raise GoalManagerConflict("writing non-delivery evidence is inconsistent")
             now = self._now()
             await db.execute(
-                """UPDATE plan_nodes SET status='failed',error_summary='model_declined',
+                """UPDATE plan_nodes SET status='failed',error_summary=?,
                    result_summary=NULL,assigned_agent_id=?,updated_at=?,completed_at=?
                    WHERE id=?""",
-                (row["claimed_by"] or row["last_agent_id"], now, now, node_id),
+                (reason, row["claimed_by"] or row["last_agent_id"], now, now, node_id),
             )
             stale = int(row["conversation_revision"]) != int(goal["conversation_revision"])
             if not stale and not int(goal["pending_message_revision"] or 0):
                 model_id = safe_context_text(str(result["model_id"]), max_chars=500)
                 excerpt = safe_context_text(str(result["text"]), max_chars=2_800)
-                await GoalConversationService.assistant_locked(
+                if outcome == "needs_clarification":
+                    question = safe_context_text(str(result["question"]), max_chars=800)
+                    summary = f"Le modèle {model_id} demande une précision.\n\n{question}"
+                    await GoalConversationService.assistant_locked(
+                        db, goal_id, summary, question=True, now=now
+                    )
+                    await db.execute(
+                        """UPDATE goal_runs SET status='waiting_permission',current_phase='needs_user',
+                        evaluator_summary=?,failure_reason=NULL,paused_at=COALESCE(paused_at,?),updated_at=? WHERE id=?""",
+                        (summary, now, now, goal_id),
+                    )
+                    await db.execute(
+                        "UPDATE tasks SET status='waiting_permission',updated_at=? WHERE id=?",
+                        (now, goal["root_task_id"]),
+                    )
+                else:
+                    message = (
+                        f"Le modèle {model_id} a déclaré un refus de produire le document demandé. "
+                        "Le texte ci-dessous est sa réponse, pas une conclusion vérifiée du serveur. "
+                        "Le but est arrêté sans nouvelle tentative automatique. "
+                        f"Les résultats enregistrés sont conservés.\n\n{excerpt}"
+                        if outcome == "declined"
+                        else f"Le modèle {model_id} signale des sources insuffisantes pour produire le document. "
+                        "Aucun document conforme n’est livré. Les sources et résultats sont conservés. "
+                        "Précisez les sources à utiliser dans la conversation du projet pour poursuivre.\n\n"
+                        f"{excerpt}"
+                    )
+                    await GoalConversationService.assistant_locked(
+                        db, goal_id, message, question=False, now=now
+                    )
+                    await self._terminate_goal_locked(
+                        db,
+                        dict(goal),
+                        status="failed",
+                        reason=reason,
+                        now=now,
+                        maintenance_guard=maintenance_guard,
+                    )
+                    terminated = True
+                await append_audit_event(
                     db,
-                    goal_id,
-                    f"Le modèle {model_id} a déclaré un refus de produire le document demandé. "
-                    "Le texte ci-dessous est sa réponse, pas une conclusion vérifiée du serveur. "
-                    "Le but est arrêté sans nouvelle tentative automatique. "
-                    f"Les résultats enregistrés sont conservés.\n\n{excerpt}",
-                    question=False,
-                    now=now,
+                    "goal.writing.non_delivery",
+                    {
+                        "goal_run_id": goal_id,
+                        "node_id": node_id,
+                        "job_id": job_id,
+                        "outcome": outcome,
+                        "model_id": model_id,
+                    },
+                    actor_type="control-plane",
+                    actor_id="goal-manager",
+                    task_id=str(goal["root_task_id"]),
+                    trace_id=goal_id,
+                    created_at=now,
                 )
-                await self._terminate_goal_locked(
-                    db,
-                    dict(goal),
-                    status="failed",
-                    reason="model_declined",
-                    now=now,
-                    maintenance_guard=maintenance_guard,
-                )
-                terminated = True
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             await db.commit()
@@ -3108,7 +3281,11 @@ class GoalManager:
         # omitted code or legacy nodes must never switch evaluation models.
         for node in nodes:
             if node.get("node_type") == PlanNodeType.WORKER.value:
-                if node.get("required_skill") not in {"research.query", WRITING_SKILL}:
+                if node.get("required_skill") not in {
+                    "research.query",
+                    "research.collect",
+                    WRITING_SKILL,
+                }:
                     return self.evaluator
             elif node.get("node_type") != PlanNodeType.SYNTHESIS.value:
                 return self.evaluator
@@ -3116,14 +3293,14 @@ class GoalManager:
             str(node["id"])
             for node in nodes
             if node.get("node_type") == PlanNodeType.WORKER.value
-            and node.get("required_skill") == "research.query"
+            and node.get("required_skill") in {"research.query", "research.collect"}
             and node.get("status") == PlanNodeStatus.COMPLETED.value
             and str(node.get("result_summary") or "").strip()
         }
         if any(
             node.node_id in completed_research
             and node.node_type is PlanNodeType.WORKER
-            and node.required_skill == "research.query"
+            and node.required_skill in {"research.query", "research.collect"}
             and node.status is PlanNodeStatus.COMPLETED
             and node.result_summary is not None
             and node.result_summary.strip()
@@ -3509,8 +3686,12 @@ class GoalManager:
                     and node["status"] in {"failed", "blocked", "cancelled"}
                     for node in current_nodes
                 )
+                writing_failure = await writing_completion_failure_locked(db, goal_run_id)
                 if unsupported_native:
                     await pause_native_validation_locked(db, goal_run_id, now=now)
+                elif writing_failure is not None:
+                    terminal_status = "failed"
+                    terminal_reason = writing_failure
                 elif (
                     not completed_evidence
                     or failed_required_evidence
@@ -3848,6 +4029,55 @@ class GoalManager:
             await self._record_episode(goal_run_id)
         except (OSError, RuntimeError, TypeError, ValueError, aiosqlite.Error):
             logger.exception("terminal goal episode projection deferred: %s", goal_run_id)
+        if status == "budget_exhausted":
+            try:
+                await self._auto_continue_model_budget_exhausted(
+                    goal_run_id, maintenance_guard=maintenance_guard
+                )
+            except (
+                GoalManagerConflict,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                aiosqlite.Error,
+            ):
+                logger.exception("automatic budget continuation deferred: %s", goal_run_id)
+
+    async def _auto_continue_model_budget_exhausted(
+        self, goal_run_id: str, *, maintenance_guard: MaintenanceLeaseGuard | None = None
+    ) -> None:
+        if not self.auto_continue_on_model_budget_exhausted:
+            return
+        goal = await self.graph.get_goal(goal_run_id)
+        if goal is None or goal.get("status") != "budget_exhausted":
+            return
+        if str(goal.get("failure_reason") or "") != "goal model call budget exhausted":
+            return
+        if int(goal.get("model_call_count") or 0) < int(goal.get("max_model_calls") or 0):
+            return
+        if maintenance_guard is not None:
+            await maintenance_guard.renew_now()
+        request = GoalMessageRequest(
+            message=(
+                "Continue automatically from the compacted project context after the model-call "
+                "budget was exhausted. Preserve completed work, avoid repeating settled steps, and "
+                "use the durable project snapshot and compaction summaries as the source of truth."
+            ),
+            client_message_id=f"auto-model-budget:{goal_run_id}",
+        )
+        active_id = await self.conversations.append(
+            goal_run_id,
+            message=request.message,
+            client_message_id=request.client_message_id,
+            reply_to_message_id=request.reply_to_message_id,
+            actor_id="goal-manager",
+            planning_mode=request.planning_mode,
+        )
+        await self._resume_pending_conversation(active_id, maintenance_guard=maintenance_guard)
+        await self._advance_ready(
+            active_id, explicit_user_action=False, maintenance_guard=maintenance_guard
+        )
 
     async def _record_episode(self, goal_run_id: str) -> None:
         if self.episode_memory is None:
@@ -4151,6 +4381,15 @@ class GoalManager:
                 ).fetchone()
                 if prepared:
                     raise GoalManagerConflict("an existing approval must settle before rerouting")
+                # The failed receipt remains immutable. Only the superseded
+                # clarification step leaves the active plan after user input.
+                await db.execute(
+                    """UPDATE plan_nodes SET status='skipped',updated_at=?,
+                    result_summary='Clarification superseded by newer user instructions.'
+                    WHERE goal_run_id=? AND required_skill=? AND status='failed'
+                    AND error_summary='writing_needs_clarification' AND conversation_revision<?""",
+                    (now, goal["id"], WRITING_SKILL, current["conversation_revision"]),
+                )
                 await db.execute(
                     """UPDATE plan_nodes SET status='skipped',updated_at=?,completed_at=?,
                     result_summary='Superseded by newer user instructions.'
@@ -4236,9 +4475,9 @@ class GoalManager:
                     "goal_run_id": goal["id"],
                     "planner_source": source.value,
                     "plan_fingerprint": validated.fingerprint,
-                    "rationale_summary": (
-                        redact_dataset_text(proposal.rationale_summary) or ""
-                    )[:4_000],
+                    "rationale_summary": (redact_dataset_text(proposal.rationale_summary) or "")[
+                        :4_000
+                    ],
                     "node_ids": list(by_temp.values()),
                     "model_call_id": model_call_id,
                     "conversation_revision": int(current["conversation_revision"]),

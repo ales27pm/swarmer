@@ -85,6 +85,7 @@ async def _manager(
     *,
     evaluator: object | None = None,
     episode_memory: EpisodeMemoryService | None = None,
+    auto_continue_on_model_budget_exhausted: bool = False,
 ) -> GoalManager:
     policy = PermissionPolicy.from_yaml(REPO_ROOT / "configs" / "permissions.yaml")
     state = StateService(db_path, permission_policy=policy)
@@ -102,6 +103,7 @@ async def _manager(
         evaluator=evaluator or NoopEvaluatorProvider(),  # type: ignore[arg-type]
         permission_policy=policy,
         episode_memory=episode_memory,
+        auto_continue_on_model_budget_exhausted=auto_continue_on_model_budget_exhausted,
     )
     await manager.initialize()
     return manager

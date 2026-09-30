@@ -102,7 +102,7 @@ export function IntentComposer({ input, interactionMode, busy, authenticated, no
         ))}
       </View>
       <Text style={{ color: COLORS.muted, fontSize: 13, lineHeight: 19 }}>
-        {interactionMode === "chat" ? "Échange avec ton assistant, sans lancer de tâche." : "Décris le résultat souhaité. Ton équipe préparera un plan."}
+        {interactionMode === "chat" ? "Échange avec ton assistant, sans lancer de tâche." : "Crée un projet avec cette demande et le contexte de la discussion. Tu pourras le démarrer depuis sa fiche."}
       </Text>
       <KeyboardInputGroup dismissKeyboard testID="chat-composer-controls">
         <KeyboardTextInput

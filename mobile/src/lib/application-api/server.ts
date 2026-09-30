@@ -11,6 +11,7 @@ export type {
 } from "@/lib/api/types";
 export type { GoalCodeProposal, GoalCodeProposalReview } from "@/lib/api/code-proposal";
 export type { ActivityPage, ActivityItem, ActivityScopeType } from "@/lib/api/activity";
+export type { MemoryUsagePage, MemoryUsageEntry, MemoryUsageItem } from "@/lib/api/memory-usage";
 export type { ProjectGraph } from "@/lib/api/project-graph";
 export type { ProjectEvidenceView, ProjectEvidenceWrite } from "@/lib/api/project-evidence";
 export type { WebsiteProject, WebsiteCapabilities, WebsiteCreate, WebsiteCommand, WebsiteReview, WebsitePublish, WebsiteApproval } from "@/lib/api/website-projects";
@@ -79,4 +80,7 @@ export const cancelSwiftProjectValidation: typeof adapter.cancelSwiftProjectVali
 
 export const getActivity: typeof adapter.getActivity = (scope, id, cursor, shouldAccept) => invokeApplicationCommand(
   scope === "task" ? "tasks.activity" : "goals.activity", { id, ...(cursor === undefined ? {} : { cursor }) }, { shouldAccept },
+);
+export const getGoalMemoryUsage: typeof adapter.getGoalMemoryUsage = (id, cursor, shouldAccept) => invokeApplicationCommand(
+  "goals.memory-usage", { id, ...(cursor === undefined ? {} : { cursor }) }, { shouldAccept },
 );

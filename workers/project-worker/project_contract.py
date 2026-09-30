@@ -7,6 +7,7 @@ import ipaddress
 import json
 import math
 import re
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -16,8 +17,8 @@ MAX_FILE_BYTES = 64_000
 MAX_PROJECT_BYTES = 1_000_000
 MAX_CONTROL_BYTES = 4_000_000
 MAX_PATCH_BYTES = 8_000
-MAX_RESEARCH_SOURCES = 5
-MAX_RESEARCH_SOURCE_BYTES = 8_000
+MAX_RESEARCH_SOURCES = 6
+MAX_RESEARCH_SOURCE_BYTES = 24_000
 MAX_DEPENDENCY_CONTEXT_ITEMS = 8
 MAX_DEPENDENCY_CONTEXT_BYTES = 12_000
 RUNTIMES = frozenset({"python", "node", "python_node"})
@@ -227,14 +228,60 @@ def research_url(value: object) -> str:
     return value
 
 
-def research_sources_value(value: object) -> list[dict[str, str]]:
+def _page_evidence(value: object, citation_url: str) -> dict[str, Any]:
+    fields = {
+        "kind",
+        "requested_url",
+        "final_url",
+        "fetched_at",
+        "content_sha256",
+        "body_sha256",
+        "excerpt_sha256",
+        "text",
+        "truncated",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ProjectError("page evidence fields are invalid")
+    if value["kind"] != "page_excerpt" or type(value["truncated"]) is not bool:
+        raise ProjectError("page evidence kind is invalid")
+    for key in ("requested_url", "final_url"):
+        raw = value[key]
+        # Reuse the consumer's citation URL validator, including literal host checks.
+        research_url(raw)
+        parsed = urlsplit(raw)
+        if parsed.scheme != "https" or parsed.port not in (None, 443):
+            raise ProjectError("page evidence requires public HTTPS")
+    if value["final_url"] != citation_url:
+        raise ProjectError("page evidence citation mismatch")
+    for key in ("content_sha256", "body_sha256", "excerpt_sha256"):
+        if not isinstance(value[key], str) or re.fullmatch(r"[0-9a-f]{64}", value[key]) is None:
+            raise ProjectError("page evidence hash is invalid")
+    if not isinstance(value["fetched_at"], str) or len(value["fetched_at"]) > 64:
+        raise ProjectError("page evidence timestamp is invalid")
+    try:
+        date = datetime.fromisoformat(value["fetched_at"])
+        if date.utcoffset() is None:
+            raise ValueError("missing timezone")
+    except ValueError as exc:
+        raise ProjectError("page evidence timestamp is invalid") from exc
+    text = evidence_text(value["text"], 4_000)
+    if hashlib.sha256(text.encode()).hexdigest() != value["excerpt_sha256"]:
+        raise ProjectError("page excerpt digest mismatch")
+    return dict(value)
+
+
+def research_sources_value(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list) or len(value) > MAX_RESEARCH_SOURCES:
         raise ProjectError("project research source count is invalid")
     sources = []
     for item in value:
         if (
             not isinstance(item, dict)
-            or set(item) != {"content_trust", "worker_job_id", "title", "url", "snippet"}
+            or set(item)
+            not in (
+                {"content_trust", "worker_job_id", "title", "url", "snippet"},
+                {"content_trust", "worker_job_id", "title", "url", "snippet", "evidence"},
+            )
             or item["content_trust"] != "untrusted"
         ):
             raise ProjectError("project research source fields are invalid")
@@ -245,11 +292,18 @@ def research_sources_value(value: object) -> list[dict[str, str]]:
                 "title": evidence_text(item["title"], 240),
                 "url": research_url(item["url"]),
                 "snippet": evidence_text(item["snippet"], 700, empty=True),
+                **(
+                    {"evidence": _page_evidence(item["evidence"], item["url"])}
+                    if "evidence" in item
+                    else {}
+                ),
             }
         )
-    if (
-        len(json.dumps(sources, ensure_ascii=False, separators=(",", ":")).encode())
-        > MAX_RESEARCH_SOURCE_BYTES
+    has_pages = any(item.get("evidence") for item in sources)
+    if len(sources) > (6 if has_pages else 5):
+        raise ProjectError("project research source count is invalid")
+    if len(json.dumps(sources, ensure_ascii=False, separators=(",", ":")).encode()) > (
+        MAX_RESEARCH_SOURCE_BYTES if has_pages else 8_000
     ):
         raise ProjectError("project research sources exceed their UTF-8 byte limit")
     return sources

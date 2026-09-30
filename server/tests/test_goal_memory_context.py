@@ -33,6 +33,11 @@ async def _goal(tmp_path: Path, *, linked: bool = True, max_calls: int = 8) -> t
             manager.db_path, ExecutionEngine(manager.db_path, tmp_path, manager.permission_policy)
         )
         await projects.ensure_project(goal["id"])
+    else:
+        # Explicit pre-M01 data, rather than depending on new goals lacking identity.
+        async with aiosqlite.connect(manager.db_path) as db:
+            await db.execute("DELETE FROM goal_project_links WHERE goal_run_id=?", (goal["id"],))
+            await db.commit()
     return manager, str(goal["id"])
 
 
@@ -40,6 +45,9 @@ def test_memory_endpoint_auth_scope_stale_version_and_no_project_side_effects(
     client: TestClient, paired_headers: dict[str, str], test_app: FastAPI
 ) -> None:
     goal = _create_goal(client, paired_headers, objective="Build the CRM")["goal"]
+    # An old unlinked goal stays unlinked during this read-oriented operation.
+    with sqlite3.connect(test_app.state.project_memory.db_path) as db:
+        db.execute("DELETE FROM goal_project_links WHERE goal_run_id=?", (goal["id"],))
     endpoint = f"/goals/{goal['id']}/memory-context"
     body = {"purpose": "planner", "expected_goal_updated_at": goal["updated_at"]}
     assert client.post(endpoint, json=body).status_code == 401
@@ -90,8 +98,9 @@ def test_memory_endpoint_auth_scope_stale_version_and_no_project_side_effects(
         "storage": "ubuntu_sqlite",
     }
     with sqlite3.connect(test_app.state.project_memory.db_path) as db:
+        assert db.execute("SELECT COUNT(*) FROM coding_projects").fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM goal_project_links").fetchone() == (0,)
         for table in (
-            "coding_projects",
             "goal_memory_queries",
             "project_memory_items",
             "project_memory_queries",

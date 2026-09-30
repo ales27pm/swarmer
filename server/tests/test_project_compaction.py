@@ -396,3 +396,38 @@ async def test_racing_initial_cache_misses_charge_only_once(tmp_path):
     assert all(result["status"] in {"started", "completed"} for result in results)
     assert len(provider.calls) == 1
     assert await _count(manager, goal) == before + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_miss", [False, True], ids=["cache_hit", "lost_claim"])
+async def test_cached_summary_revalidates_source_before_return(tmp_path, monkeypatch, initial_miss):
+    manager, goal, context, provider, service = await setup(tmp_path)
+    state = await context.refresh(goal)
+    source_id = state["proposals"][0]["source_id"]
+    assert (await service.compact(goal))["status"] == "completed"
+    calls_before = len(provider.calls)
+    charges_before = await _count(manager, goal)
+    original = service._cached
+    reads = 0
+
+    async def changed_source_after_cache_read(key):
+        nonlocal reads
+        reads += 1
+        if initial_miss and reads == 1:
+            # A competing claimant may insert between the first read and our
+            # INSERT OR IGNORE. Both cached-return paths must check the source.
+            return None
+        cached = await original(key)
+        async with aiosqlite.connect(manager.db_path) as db:
+            await db.execute(
+                "UPDATE goal_messages SET content=? WHERE id=?",
+                ("Corrected proposal: withdraw the previous architecture.", source_id),
+            )
+            await db.commit()
+        return cached
+
+    monkeypatch.setattr(service, "_cached", changed_source_after_cache_read)
+    with pytest.raises(ProjectContextConflict, match="context changed"):
+        await service.compact(goal)
+    assert len(provider.calls) == calls_before
+    assert await _count(manager, goal) == charges_before

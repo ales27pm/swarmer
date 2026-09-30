@@ -9,6 +9,8 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
+ACTIVE_STATUSES = ("capturing", "branding", "building", "publishing")
+
 
 class WebsiteConflict(ValueError):
     pass
@@ -39,27 +41,33 @@ class WebsiteStore:
             connection.execute("""CREATE TABLE IF NOT EXISTS website_preview_tokens (
                 token_hash TEXT PRIMARY KEY, project_id TEXT NOT NULL, build_digest TEXT NOT NULL,
                 expires REAL NOT NULL)""")
-            for row in connection.execute("SELECT id,data FROM website_projects").fetchall():
-                data = json.loads(row["data"])
-                if data["status"] in {"capturing", "branding", "building"}:
-                    data.update(
-                        status="interrupted",
-                        error="Opération interrompue ; vérifie le résultat avant de reprendre.",
-                        approval=None,
-                    )
-                    data["version"] += 1
-                    connection.execute(
-                        "UPDATE website_projects SET version=?,data=? WHERE id=?",
-                        (data["version"], json.dumps(data), row["id"]),
-                    )
 
-    def pending_publications(self) -> list[dict[str, Any]]:
+    def pending_operations(self) -> list[dict[str, Any]]:
         with self.transaction() as connection:
             return [
-                data
-                for row in connection.execute("SELECT data FROM website_projects")
-                if (data := json.loads(row[0]))["status"] == "publishing"
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT data FROM website_projects WHERE json_extract(data,'$.status') "
+                    "IN (?,?,?,?)",
+                    ACTIVE_STATUSES,
+                )
             ]
+
+    def command_result(
+        self, project_id: str, owner: str, request_id: str, digest: str
+    ) -> dict[str, Any] | None:
+        """Read an exact accepted command receipt, even while its owner is running."""
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT r.digest,p.data FROM website_requests r JOIN website_projects p "
+                "ON p.id=r.project_id WHERE r.project_id=? AND r.request_id=? AND p.owner=?",
+                (project_id, request_id, owner),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["digest"] != digest:
+                raise WebsiteConflict("Identifiant de demande déjà utilisé avec un autre contenu.")
+            return json.loads(row["data"])  # type: ignore[no-any-return]
 
     def create(
         self, owner: str, request_id: str, digest: str, data: dict[str, Any]
@@ -107,6 +115,7 @@ class WebsiteStore:
         *,
         request_id: str | None = None,
         request_digest: str | None = None,
+        admit_operation: bool = False,
     ) -> dict[str, Any]:
         with self.transaction() as connection:
             if request_id:
@@ -116,6 +125,16 @@ class WebsiteStore:
                 ).fetchone()
                 if prior:
                     raise WebsiteConflict("Cette demande a déjà été traitée ; actualise le projet.")
+            if admit_operation:
+                active = connection.execute(
+                    "SELECT COUNT(*) FROM website_projects WHERE json_extract(data,'$.status') "
+                    "IN (?,?,?,?)",
+                    ACTIVE_STATUSES,
+                ).fetchone()[0]
+                if active >= 8:
+                    raise WebsiteConflict(
+                        "La file de travail est pleine. Réessaie après les opérations en cours."
+                    )
             data = {**data, "version": expected + 1}
             cursor = connection.execute(
                 "UPDATE website_projects SET version=?,data=? WHERE id=? AND version=?",

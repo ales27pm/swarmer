@@ -1,5 +1,6 @@
 import { act, render, screen, userEvent } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { Share } from "react-native";
 
 import { GoalWritingDraft } from "@/components/goal-writing-draft";
 import { getGoalWritingDraft, type GoalWritingDraft as WritingDraft } from "@/lib/application-api/server";
@@ -20,6 +21,44 @@ function deferred<T>() {
 beforeEach(() => { jest.clearAllMocks(); load.mockResolvedValue(draft); });
 
 describe("GoalWritingDraft", () => {
+  it("loads once when Results is revealed, preserving the document across tab changes", async () => {
+    await render(<GoalWritingDraft {...props} autoLoad={false} />);
+    expect(load).not.toHaveBeenCalled();
+    await screen.rerender(<GoalWritingDraft {...props} autoLoad />);
+    expect(await screen.findByText(draft.text)).toBeOnTheScreen();
+    await screen.rerender(<GoalWritingDraft {...props} autoLoad={false} />);
+    await screen.rerender(<GoalWritingDraft {...props} autoLoad />);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a loaded document with a stale warning when refresh fails", async () => {
+    const user = userEvent.setup();
+    await render(<GoalWritingDraft {...props} autoLoad />);
+    await screen.findByText(draft.text);
+    load.mockRejectedValueOnce(new Error("private transport detail"));
+    await user.press(screen.getByRole("button", { name: "Actualiser le document" }));
+    expect(await screen.findByText(/Dernier document chargé, non actualisé/)).toBeOnTheScreen();
+    expect(screen.getByText(draft.text)).toBeOnTheScreen();
+    expect(screen.queryByText("private transport detail")).not.toBeOnTheScreen();
+    await screen.rerender(<GoalWritingDraft {...props} autoLoad disabled />);
+    expect(screen.getByText(draft.text)).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Réessayer le document" })).toBeDisabled();
+  });
+
+  it("shares only on explicit request and clears the automatic document on pairing change", async () => {
+    const share = jest.spyOn(Share, "share").mockResolvedValue({ action: Share.sharedAction });
+    const user = userEvent.setup();
+    await render(<GoalWritingDraft {...props} autoLoad />);
+    await screen.findByText(draft.text);
+    expect(share).not.toHaveBeenCalled();
+    await user.press(screen.getByRole("button", { name: "Partager le document" }));
+    expect(share).toHaveBeenCalledWith({ message: draft.text });
+    await act(async () => notifyConnectionChanged());
+    expect(screen.queryByText(draft.text)).not.toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(1);
+    share.mockRestore();
+  });
+
   it("loads only on request and presents complete selectable plain text", async () => {
     const user = userEvent.setup();
     await render(<GoalWritingDraft {...props} />);

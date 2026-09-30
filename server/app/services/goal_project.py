@@ -64,64 +64,20 @@ class GoalProjectService:
         return datetime.now(UTC).isoformat()
 
     async def ensure_project(self, goal_id: str) -> str:
+        """Check identity without migrating old data from a read or payload request."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("BEGIN IMMEDIATE")
             existing = await (
                 await db.execute(
-                    "SELECT project_id FROM goal_project_links WHERE goal_run_id=?", (goal_id,)
-                )
-            ).fetchone()
-            if existing:
-                return str(existing[0])
-            if not await (
-                await db.execute("SELECT 1 FROM goal_runs WHERE id=?", (goal_id,))
-            ).fetchone():
-                raise GoalProjectConflict("goal not found")
-            project_id = f"project_{uuid4().hex}"
-            now = self._now()
-            await db.execute("INSERT INTO coding_projects VALUES(?,?,?)", (project_id, now, now))
-            await db.execute("INSERT INTO goal_project_links VALUES(?,?)", (goal_id, project_id))
-            # An explicit continuation of a legacy Python proposal preserves its
-            # actual source rather than silently beginning from an empty project.
-            legacy = await (
-                await db.execute(
-                    """SELECT node_id,worker_job_id,content FROM goal_code_proposals
-                    WHERE goal_run_id=? ORDER BY created_at DESC LIMIT 1""",
+                    """SELECT p.project_id FROM goal_project_links p
+                    JOIN coding_projects c ON c.id=p.project_id WHERE p.goal_run_id=?""",
                     (goal_id,),
                 )
             ).fetchone()
-            if legacy:
-                seed = ProjectResult.model_validate(
-                    {
-                        "schema_version": "1.0",
-                        "action": "continue",
-                        "message": "Existing Python source retained for project continuation.",
-                        "plan": ["Extend the existing application and verify it with tests."],
-                        "files": [{"path": "app.py", "content": str(legacy[2])}],
-                        "checks": [],
-                        "run_instructions": "",
-                        "runtime": "python",
-                        "base_revision_id": None,
-                        "base_sha256": None,
-                    }
-                )
-                await db.execute(
-                    """INSERT INTO project_revisions(id,project_id,goal_run_id,node_id,
-                    worker_job_id,revision,snapshot_json,sha256,created_at)
-                    VALUES(?,?,?,?,?,1,?,?,?)""",
-                    (
-                        f"revision_{uuid4().hex}",
-                        project_id,
-                        goal_id,
-                        str(legacy[0]),
-                        str(legacy[1]),
-                        seed.model_dump_json(),
-                        project_digest(seed.files),
-                        now,
-                    ),
-                )
-            await db.commit()
-            return project_id
+        if existing is None:
+            raise GoalProjectConflict(
+                "project identity unavailable; explicit continuation required"
+            )
+        return str(existing[0])
 
     async def inherit_project(self, parent_goal_id: str, new_goal_id: str) -> None:
         project_id = await self.ensure_project(parent_goal_id)

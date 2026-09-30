@@ -53,7 +53,10 @@ async def graph_evidence(path: Path):
             ],
         )
         await db.execute("INSERT INTO coding_projects VALUES('project_one',?,?)", (NOW, NOW))
-        await db.execute("INSERT INTO goal_project_links VALUES(?,'project_one')", (goal["id"],))
+        await db.execute(
+            "UPDATE goal_project_links SET project_id='project_one' WHERE goal_run_id=?",
+            (goal["id"],),
+        )
         await db.execute(
             """INSERT INTO project_revisions(id,project_id,goal_run_id,node_id,worker_job_id,
             revision,snapshot_json,sha256,created_at) VALUES('revision_one','project_one',?,
@@ -170,7 +173,8 @@ async def test_empty_graph_is_distinct_from_unknown_goal_and_isolates_other_proj
     other = await manager.create_goal(GoalCreateRequest(objective="Autre projet"), actor_id="phone")
     graph = await read_project_graph(path, other["id"])
     assert graph is not None and graph.goal.objective == "Autre projet"
-    assert graph.project_id is None and graph.latest_revision is None
+    assert graph.project_id is not None and graph.project_id != "project_one"
+    assert graph.latest_revision is None
     assert not graph.nodes and not graph.dependencies and not graph.evaluations
     assert goal["id"] not in graph.model_dump_json()
 
@@ -185,7 +189,7 @@ async def test_linked_revision_keeps_original_producer_when_read_from_successor_
     )
     async with aiosqlite.connect(path) as db:
         await db.execute(
-            "INSERT INTO goal_project_links VALUES(?,'project_one')",
+            "UPDATE goal_project_links SET project_id='project_one' WHERE goal_run_id=?",
             (successor["id"],),
         )
         await db.commit()

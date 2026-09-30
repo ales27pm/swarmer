@@ -206,6 +206,7 @@ class PublicHttpFetcher:
         timer.daemon = True
         timer.start()
         length = 0
+        response: http.client.HTTPResponse | None = None
         try:
             sock.settimeout(_remaining(deadline))
             sock.connect(address)
@@ -224,7 +225,11 @@ class PublicHttpFetcher:
                     "Connection": "close",
                 },
             )
-            response = connection.getresponse()
+            # Retain ownership of the socket until body consumption finishes.
+            # getresponse() closes connection.sock on Connection: close; after
+            # the final body read that makes settimeout() touch a closed fd.
+            response = http.client.HTTPResponse(sock, method="GET")
+            response.begin()
             headers = {name.lower(): value for name, value in response.getheaders()}
             if headers.get("content-encoding", "identity").lower() not in {"", "identity"}:
                 raise CaptureError("unsupported_encoding")
@@ -251,6 +256,8 @@ class PublicHttpFetcher:
             raise CaptureError(reason, received_bytes=length) from exc
         finally:
             timer.cancel()
+            if response is not None:
+                response.close()
             connection.close()
             sock.close()
 

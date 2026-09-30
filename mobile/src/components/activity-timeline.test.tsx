@@ -6,6 +6,7 @@ import { ActivityTimeline } from "@/components/activity-timeline";
 import { ApiError, getActivity, type ActivityPage, type PlanNode } from "@/lib/application-api/server";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { activityItem, activityPage } from "@/testing/activity-fixtures";
+import { projectGraphFixture } from "@/testing/project-graph-fixtures";
 
 jest.mock("@/lib/application-api/server", () => ({
   getActivity: jest.fn(),
@@ -39,7 +40,7 @@ describe("persisted activity timeline", () => {
     expect(screen.queryByText("Modèle : local-model-7b")).not.toBeOnTheScreen();
     expect(screen.queryByText("python -m pytest")).not.toBeOnTheScreen();
     expect(screen.getByText("Durée non enregistrée")).toBeOnTheScreen();
-    expect(screen.getByText("Durée enregistrée : 0 ms")).toBeOnTheScreen();
+    expect(screen.getByText("Durée enregistrée : 0 s")).toBeOnTheScreen();
     expect(screen.getByText(/Seules les preuves enregistrées/)).toBeOnTheScreen();
     expect(screen.queryByText("Révision : revision_1")).not.toBeOnTheScreen();
     await user.press(screen.getByRole("button", { name: "Détails de Vérification du projet" }));
@@ -237,6 +238,8 @@ describe("persisted activity timeline", () => {
     await user.press(screen.getByRole("button", { name: "Ouvrir la tâche de Recherche web" }));
     expect(onOpenTask).toHaveBeenCalledWith("task_1");
     await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    expect(screen.queryByText("Agent : agent_1")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Détails de Recherche web" }));
     expect(screen.getByText("Agent : agent_1")).toBeOnTheScreen();
     expect(screen.getByText("Modèle : modele-local")).toBeOnTheScreen();
     expect(screen.getByText("Outil / compétence : research.query")).toBeOnTheScreen();
@@ -289,6 +292,53 @@ describe("persisted activity timeline", () => {
     expect(screen.getByText("Autre travail")).toBeOnTheScreen();
     expect(screen.getByText("Opération : one")).toBeOnTheScreen();
     expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("links public plan explanations and a declared result by recorded producer IDs", async () => {
+    const node: PlanNode = { id: "node_1", goal_run_id: "goal_1", task_id: "task_1", worker_job_id: "job_1", node_type: "worker", title: "Comparer les options", objective: "Comparer les stockages pour une personne", expected_output: "Une note avec deux sources", result_summary: "Une note a été proposée.", status: "completed", priority: 1, depends_on: [], created_at: "2026-09-27T12:00:00Z", updated_at: "2026-09-27T12:00:00Z" };
+    const decision = { ...projectGraphFixture().planning_decisions[0], goal_run_id: "goal_1", node_ids: [node.id], rationale_summary: "Chercher les sources avant de comparer." };
+    load.mockResolvedValue(activityPage([activityItem()]));
+    const results = jest.fn(); const plan = jest.fn();
+    await render(<ActivityTimeline {...props} follow intent="Choisir un stockage local" nodes={[node]} planningDecisions={[decision]} contextStale onOpenResults={results} onOpenPlan={plan} />);
+    expect(await screen.findByText("Objectif de l’étape : Comparer les stockages pour une personne")).toBeOnTheScreen();
+    expect(screen.getByText("Résultat attendu : Une note avec deux sources")).toBeOnTheScreen();
+    expect(screen.getByText(decision.rationale_summary)).toBeOnTheScreen();
+    expect(screen.getByText(/Elle décrit le plan, pas une preuve/)).toBeOnTheScreen();
+    expect(screen.getByText("Résultat déclaré par l’agent : Une note a été proposée.")).toBeOnTheScreen();
+    expect(screen.getByText(/Contexte de l’étape conservé/)).toBeOnTheScreen();
+    const user = userEvent.setup();
+    await user.press(screen.getByRole("button", { name: "Voir les résultats du projet" }));
+    await user.press(screen.getByRole("button", { name: "Comprendre le plan" }));
+    expect(results).toHaveBeenCalledTimes(1); expect(plan).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["goal", "task", "node", "job"] as const)("does not attach another %s's result or explanation", async (mismatch) => {
+    const node: PlanNode = { id: "node_1", goal_run_id: "goal_1", task_id: "task_1", worker_job_id: "job_1", node_type: "worker", title: "Étape", objective: "Objectif lié", result_summary: "Résultat réservé", status: "completed", priority: 1, depends_on: [], created_at: "2026-09-27T12:00:00Z", updated_at: "2026-09-27T12:00:00Z" };
+    const decision = { ...projectGraphFixture().planning_decisions[0], goal_run_id: "goal_1", node_ids: [node.id], rationale_summary: "Explication réservée" };
+    const changes = mismatch === "goal" ? { goal_run_id: "other_goal" } : mismatch === "task" ? { task_id: "other_task" } : mismatch === "node" ? { node_id: "other_node" } : { id: "worker_job:old_job" };
+    load.mockResolvedValue(activityPage([activityItem(undefined, changes)]));
+    await render(<ActivityTimeline {...props} follow nodes={[node]} planningDecisions={[decision]} />);
+    await screen.findByText("Travail d’agent");
+    expect(screen.queryByText(/Résultat déclaré par l’agent/)).not.toBeOnTheScreen();
+    if (mismatch !== "job") expect(screen.queryByText("Explication réservée")).not.toBeOnTheScreen();
+  });
+
+  it("joins a planner explanation only to the exact model call and exposes a proved task/project link", async () => {
+    const decision = { ...projectGraphFixture().planning_decisions[0], goal_run_id: "goal_1", model_call_id: "call_1", rationale_summary: "Explication du plan accepté" };
+    load.mockResolvedValue(activityPage([activityItem("model_call:call_1", { kind: "model_call", node_id: null, title: "Plan accepté" }), activityItem("model_call:call_2", { kind: "model_call", node_id: null, title: "Autre plan" })]));
+    const user = userEvent.setup(); const onOpenGoal = jest.fn();
+    await render(<ActivityTimeline {...props} scope="task" id="task_1" planningDecisions={[decision]} onOpenGoal={onOpenGoal} />);
+    await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    expect(await screen.findAllByText(decision.rationale_summary)).toHaveLength(1);
+    await user.press(screen.getByRole("button", { name: "Ouvrir le projet lié" }));
+    expect(onOpenGoal).toHaveBeenCalledWith("goal_1");
+  });
+
+  it.each<[number, string]>([[34878, "34,9 s"], [62000, "1 min 2 s"], [3605000, "1 h 0 min"], [2, "moins de 1 s"]])("formats a recorded %i ms duration for humans", async (duration_ms, label) => {
+    load.mockResolvedValue(activityPage([activityItem(undefined, { duration_ms })]));
+    await open();
+    expect(await screen.findByText(`Durée enregistrée : ${label}`)).toBeOnTheScreen();
   });
 
 });

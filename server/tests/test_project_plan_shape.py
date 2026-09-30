@@ -214,11 +214,23 @@ def test_planner_generation_schema_supports_mixed_project_dags_with_server_singl
     from tests.test_planner_provider import _graph_wire_proposal as wire
 
     assert validator.is_valid(wire(_plan([_node("project", "code.build_project")])))
-    assert validator.is_valid(wire(valid_plan()))
+    inspection = valid_plan()
+    for node in inspection["nodes"]:
+        if node["required_skill"] == "workspace.read_text":
+            node["worker_arguments"] = {"path": "README.md"}
+    assert validator.is_valid(wire(inspection))
     from app.services.specialist_contracts import SPECIALIST_SKILLS
 
     for skill in sorted(SUPPORTED_AGENT_SKILLS - {"code.build_project"} - SPECIALIST_SKILLS):
-        assert validator.is_valid(wire(_plan([_node("worker", skill), _node("summary", None)])))
+        node = _node("worker", skill)
+        if skill == "workspace.read_text":
+            node["worker_arguments"] = {"path": "notes.txt"}
+        if skill == "research.collect":
+            node["worker_arguments"] = {
+                "focus": "Créer une application utile et vérifiée",
+                "queries": ["documentation officielle"],
+            }
+        assert validator.is_valid(wire(_plan([node, _node("summary", None)])))
     for case in ("synthesis", "dependencies", "optional_dependencies", "independent"):
         assert validator.is_valid(wire(_plan(_mixed_nodes(case)))), case
     # Cross-node mutator limits are enforced

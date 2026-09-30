@@ -331,9 +331,9 @@ class SwiftProjectValidationService:
                 }
                 columns = ",".join(grant)
                 await db.execute(
-                    f"INSERT INTO swift_project_validations({columns}) VALUES({','.join('?' for _ in grant)})",
+                    f"INSERT INTO swift_project_validations({columns}) VALUES({','.join('?' for _ in grant)})",  # nosec B608 - fixed local column names; values are bound
                     tuple(grant.values()),
-                )  # nosec B608 - fixed local column names
+                )
                 await append_audit_event(
                     db,
                     "project.swift.execution_approved",

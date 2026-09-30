@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -12,6 +14,48 @@ from app.services.website_dossier import FetchResponse, capture_website, normali
 from app.services.website_dossier_contracts import CaptureLimits
 
 BASE = "https://company.example"
+
+
+def test_public_fetcher_reads_connection_close_body_without_closed_socket_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.website_dossier as module
+
+    body = b"User-agent: *\nAllow: /\n"
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    # Only this test injects a local resolver result; production DNS checks stay.
+    monkeypatch.setattr(
+        module,
+        "_resolve",
+        lambda *a: [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", server.server_address)
+        ],
+    )
+    try:
+        result = module.PublicHttpFetcher().get(
+            "http://company.example/robots.txt", max_bytes=1024, deadline=time.monotonic() + 3
+        )
+        assert result.status == 200 and result.body == body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 class FixtureFetcher:
@@ -408,23 +452,17 @@ def test_network_adapter_pins_ip_and_uses_only_get_without_cookie_or_proxy(
         def getpeername(self) -> Any:
             return ("8.8.8.8", 80)
 
+        def makefile(self, mode: str) -> io.BytesIO:
+            assert mode == "rb"
+            return io.BytesIO(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\nConnection: close\r\n\r\n<p>Source</p>"
+            )
+
         def shutdown(self, _: int) -> None:
             pass
 
         def close(self) -> None:
             pass
-
-    class FakeResponse:
-        status = 200
-
-        def __init__(self) -> None:
-            self.stream = io.BytesIO(b"<p>Source</p>")
-
-        def getheaders(self) -> Any:
-            return [("Content-Type", "text/html")]
-
-        def read1(self, size: int) -> bytes:
-            return self.stream.read(size)
 
     class FakeConnection:
         sock: Any = None
@@ -434,9 +472,6 @@ def test_network_adapter_pins_ip_and_uses_only_get_without_cookie_or_proxy(
 
         def request(self, method: str, path: str, *, headers: Any) -> None:
             methods.append((method, path, headers))
-
-        def getresponse(self) -> FakeResponse:
-            return FakeResponse()
 
         def close(self) -> None:
             pass

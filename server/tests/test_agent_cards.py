@@ -59,6 +59,7 @@ def test_agent_skill_allowlist_is_exact() -> None:
             "workspace.list_dir",
             "workspace.read_text",
             "research.query",
+            "research.collect",
             "code_review.git_status",
             "code_review.git_diff",
             "code_review.git_show",
@@ -453,6 +454,18 @@ def test_worker_manifests_are_valid_policy_bound_cards(relative_path: str) -> No
     assert card.skills
     assert set(card.skills) <= SUPPORTED_AGENT_SKILLS
     assert card.policy["writes"] is False
+
+
+def test_legacy_collection_card_remains_readable_without_explicit_source_capabilities() -> None:
+    raw = json.loads((REPO_ROOT / "workers/research-worker/agent-card.json").read_text())
+    raw["policy"]["network"] = (
+        "configured-research-provider-and-public-https-pages-from-search-results"
+    )
+    for name in ("max_source_urls", "max_required_domains"):
+        raw["limits"].pop(name)
+    card = validate_agent_card_manifest(raw)
+    assert "research.collect" in card.skills
+    assert "max_source_urls" not in card.capability_metadata
 
 
 def test_agent_card_manifest_rejects_privilege_or_metadata_escalation() -> None:

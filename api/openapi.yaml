@@ -48,6 +48,8 @@ tags:
   - name: Audit
   - name: Feedback
   - name: Events
+  - name: website-projects
+    description: Owner-scoped website capture, review, private preview and explicit publication.
 paths:
   /health:
     get:
@@ -207,6 +209,47 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
+
+  /goals/{goal_id}/memory-usage:
+    parameters:
+      - $ref: '#/components/parameters/GoalId'
+    get:
+      tags: [Goals]
+      summary: Inspect persisted memory receipts without retrieval or indexing
+      description: |
+        Passive query-only history, available for terminal and legacy goals.
+        Sources are rechecked for current scope and sensitivity on every page.
+        A receipt proves retrieval or attachment, not understanding or successful
+        use. Missing recorded source versions remain unknown. No raw context,
+        vectors or reasoning are exposed. At most 100 items per receipt and
+        128 KiB of UTF-8 JSON per page; omitted items are counted explicitly.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 50, default: 20}
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque goal-bound insertion-window cursor; invalid or changed scope returns 400.
+          schema: {type: string, maxLength: 512}
+      responses:
+        '200':
+          description: Recorded receipts with a goal-bound continuation cursor
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemoryUsagePage'}
+        '400':
+          description: Invalid cursor or changed receipt scope; restart pagination.
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '503':
+          description: Recorded evidence unavailable or invalid; never an empty success.
 
   /goals/{goal_id}/memory-context:
     parameters:
@@ -752,6 +795,11 @@ paths:
     post:
       tags: [Memory]
       summary: Store a memory item
+      description: |
+        When the operator enables English canonical writes, content and any
+        summary are translated and reviewed before being stored. Original
+        source versions remain in a separate provenance journal, not the
+        retrieval index. An uncertain translation is not a successful write.
       requestBody:
         required: true
         content:
@@ -763,6 +811,8 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MemoryItem'}
+        '409': {description: Memory changed during normalization; no stale write committed}
+        '503': {description: Local memory normalization unavailable; no write committed}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -776,6 +826,8 @@ paths:
         provider and stored embeddings are available, ranking is hybrid;
         otherwise the endpoint falls back to lexical search. Any external
         vector index is rebuildable and cannot destroy or replace memory state.
+        In English canonical mode, query normalization is ephemeral and never
+        creates a memory. Normalization failures are explicit, not empty results.
       requestBody:
         required: true
         content:
@@ -783,7 +835,7 @@ paths:
             schema: {$ref: '#/components/schemas/MemorySearch'}
       responses:
         '200':
-          description: Up to 50 ranked lexical or hybrid matches
+          description: Ranked lexical or hybrid matches bounded by the requested limit
           content:
             application/json:
               schema:
@@ -792,6 +844,8 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '409': {description: Normalization configuration changed during the query}
+        '503': {description: Local query normalization unavailable}
 
   /memory/{memory_id}:
     parameters:
@@ -802,6 +856,7 @@ paths:
     patch:
       tags: [Memory]
       summary: Update memory content, summary, or pin state
+      description: English canonical mode validates changed text before an atomic revision update.
       requestBody:
         required: true
         content:
@@ -815,6 +870,8 @@ paths:
               schema: {$ref: '#/components/schemas/MemoryItem'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Memory changed during normalization; refresh before retrying}
+        '503': {description: Local memory normalization unavailable; no write committed}
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
     delete:
@@ -1852,6 +1909,887 @@ paths:
       security:
       - bearerAuth: []
 
+  /goals/{goal_id}/evidence:
+    get:
+      summary: Read requirement evidence mappings
+      operationId: get_evidence_goals__goal_id__evidence_get
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequirementEvidenceView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Goal not found
+        '503':
+          description: Requirement evidence unavailable
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: 'Read immutable file and check snapshots explicitly linked to criteria, including stale
+        mappings. A linked or reviewed mapping does not itself establish goal completion. Cache-Control:
+        private, no-store.'
+  /goals/{goal_id}/evidence/{criterion_index}:
+    put:
+      summary: Link or review evidence for a requirement
+      operationId: put_evidence_goals__goal_id__evidence__criterion_index__put
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: criterion_index
+        in: path
+        required: true
+        schema:
+          type: integer
+          maximum: 19
+          minimum: 0
+          title: Criterion Index
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceMappingRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequirementEvidenceView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Goal not found
+        '409':
+          description: Mapping version, context, selection or producer no longer matches
+        '503':
+          description: Requirement evidence unavailable
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: 'Record an explicit selection with request identity, expected version and immutable project/context
+        digests. Select at least one unique file or check; reviewed requires a passing recorded check. Conflicting
+        or stale identities are rejected. Cache-Control: private, no-store.'
+  /website-projects/{project_id}/screenshots/{sha256}/preview:
+    post:
+      tags:
+      - website-projects
+      summary: Create a private screenshot preview
+      operationId: screenshot_preview_website_projects__project_id__screenshots__sha256__preview_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      - name: sha256
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Sha256
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Screenshot Preview Website Projects  Project Id  Screenshots  Sha256  Preview
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+      security:
+      - bearerAuth: []
+      description: Validate ownership and immutable screenshot hash, then return a short-lived relative
+        preview path and expires_in_seconds=300. Missing or changed screenshots are rejected.
+  /website-projects/capabilities:
+    get:
+      tags:
+      - website-projects
+      summary: Read website workflow capabilities
+      operationId: capabilities_website_projects_capabilities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Capabilities Website Projects Capabilities Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      security:
+      - bearerAuth: []
+      description: 'Read configured browser, branding and publishing capabilities. Availability is not a
+        receipt of a successful operation. Cache-Control: no-store.'
+  /website-projects:
+    get:
+      tags:
+      - website-projects
+      summary: List owned website projects
+      operationId: projects_website_projects_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response Projects Website Projects Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      security:
+      - bearerAuth: []
+      description: 'Return public projections for the authenticated device; private capture paths, owner
+        credentials and approval tokens are omitted. Cache-Control: no-store.'
+    post:
+      tags:
+      - website-projects
+      summary: Create a website project
+      operationId: create_website_projects_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebsiteCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Create Website Projects Post
+        '422':
+          description: Invalid request body or website workflow input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '409':
+          description: Request replay, expected version, build digest or workflow state conflicts
+      security:
+      - bearerAuth: []
+      description: Create an owner-scoped project with an idempotent request id, source URL, objective and
+        bounded capture limits. Does not capture, build or publish the website.
+  /website-projects/{project_id}:
+    get:
+      tags:
+      - website-projects
+      summary: Read an owned website project
+      operationId: project_website_projects__project_id__get
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Project Website Projects  Project Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+      security:
+      - bearerAuth: []
+      description: 'Return the public state and recorded evidence for this owner-scoped website project.
+        Cache-Control: no-store.'
+  /website-projects/{project_id}/commands:
+    post:
+      tags:
+      - website-projects
+      summary: Queue a website capture, branding or build command
+      operationId: command_website_projects__project_id__commands_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebsiteCommand'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Command Website Projects  Project Id  Commands Post
+        '422':
+          description: Invalid request body or website workflow input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+        '409':
+          description: Request replay, expected version, build digest or workflow state conflicts
+      security:
+      - bearerAuth: []
+      description: Require an idempotent request id and current expected_version. Accepted commands run
+        asynchronously; the 202 response is not a completion receipt.
+  /website-projects/{project_id}/preview:
+    post:
+      tags:
+      - website-projects
+      summary: Create a private website preview
+      operationId: preview_website_projects__project_id__preview_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebsiteReview'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Preview Website Projects  Project Id  Preview Post
+        '422':
+          description: Invalid request body or website workflow input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+        '409':
+          description: Request replay, expected version, build digest or workflow state conflicts
+      security:
+      - bearerAuth: []
+      description: Require the current expected_version and build_digest. Return a short-lived relative
+        preview path. Preview documents are script-free and are not publicly published.
+  /website-projects/{project_id}/publication-review:
+    post:
+      tags:
+      - website-projects
+      summary: Prepare a website publication review
+      operationId: review_website_projects__project_id__publication_review_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebsiteReview'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Review Website Projects  Project Id  Publication Review Post
+        '422':
+          description: Invalid request body or website workflow input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+        '409':
+          description: Request replay, expected version, build digest or workflow state conflicts
+      security:
+      - bearerAuth: []
+      description: Bind the review and approval token to the current version and build digest. Preparing
+        a review does not publish the site.
+  /website-projects/{project_id}/publish:
+    post:
+      tags:
+      - website-projects
+      summary: Publish the explicitly approved website build
+      operationId: publish_website_projects__project_id__publish_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebsitePublish'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Publish Website Projects  Project Id  Publish Post
+        '422':
+          description: Invalid request body or website workflow input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+        '409':
+          description: Request replay, expected version, build digest or workflow state conflicts
+      security:
+      - bearerAuth: []
+      description: Require the exact reviewed version, build digest, approval token and confirm_publication=true.
+        Only the approved public build files may be published.
+  /website-projects/{project_id}/dossier:
+    get:
+      tags:
+      - website-projects
+      summary: Read the captured website dossier
+      operationId: dossier_website_projects__project_id__dossier_get
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+      security:
+      - bearerAuth: []
+      description: 'Return the owned capture dossier as JSON. The recorded capture must exist; no arbitrary
+        filesystem path is accepted. Cache-Control: no-store.'
+  /website-projects/{project_id}/screenshots/{sha256}:
+    get:
+      tags:
+      - website-projects
+      summary: Read a recorded website screenshot
+      operationId: screenshot_website_projects__project_id__screenshots__sha256__get
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      - name: sha256
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Sha256
+      responses:
+        '200':
+          description: Recorded screenshot bytes
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Owned website project or requested artifact not found
+      security:
+      - bearerAuth: []
+      description: 'Return PNG bytes only for a screenshot belonging to the owned capture and matching the
+        requested SHA-256. Changed or missing bytes are rejected. Cache-Control: no-store.'
+  /goals/{goal_id}/activity:
+    get:
+      summary: Read recorded project operations
+      operationId: get_goal_activity_goals__goal_id__activity_get
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 4096
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '400':
+          description: Invalid activity cursor
+        '404':
+          description: Activity scope not found
+        '409':
+          description: Activity history changed; refresh from the first page
+        '503':
+          description: Recorded activity evidence unavailable
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: 'Cursor-paginated persisted evidence, not an exhaustive live stream. Unknown durations
+        remain null. Responses use Cache-Control: private, no-store. Refresh from the first page when the
+        cursor is stale.'
+  /goals/{goal_id}/graph:
+    get:
+      summary: Read project structure and recorded decisions
+      operationId: get_project_graph_goals__goal_id__graph_get
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectGraph'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Goal not found
+        '503':
+          description: Project graph evidence unavailable
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: 'Read-only graph of the current goal and latest project revision. Planner explanations
+        and evaluator reports are labelled separately from file and check receipts. Does not establish completion
+        or check freshness. Cache-Control: private, no-store.'
+  /goals/{goal_id}/project/swift-validation:
+    post:
+      summary: Request native validation of an approved revision
+      operationId: request_swift_validation_goals__goal_id__project_swift_validation_post
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwiftProjectValidationRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Request Swift Validation Goals  Goal Id  Project Swift Validation Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '409':
+          description: Revision, consent, target, agent or execution state conflicts
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: Explicit execution_consent=true is required. Bind the build or test to the immutable
+        revision, digest, agent, target and idempotency key. This queues validation; creation is not evidence
+        that compilation or tests passed.
+    get:
+      summary: Read the latest native validation receipt
+      operationId: get_swift_validation_goals__goal_id__project_swift_validation_get
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Swift Validation Goals  Goal Id  Project Swift Validation Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Native validation not found
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: 'Return validation status and a receipt only when the completed job matches the approved
+        source. Stale or cancelled validation is distinguished from passed. Cache-Control: no-store.'
+  /goals/{goal_id}/project/swift-validation/{validation_id}/cancel:
+    post:
+      summary: Cancel native validation
+      operationId: cancel_swift_validation_goals__goal_id__project_swift_validation__validation_id__cancel_post
+      parameters:
+      - name: goal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Goal Id
+      - name: validation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Validation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cancel Swift Validation Goals  Goal Id  Project Swift Validation  Validation
+                  Id  Cancel Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '409':
+          description: Validation identity or execution state conflicts
+      security:
+      - bearerAuth: []
+      tags:
+      - Goals
+      description: Cancel the identified validation with the paired-device authority. Recorded project sources
+        and receipts are preserved.
+  /agents/{agent_id}/jobs/{job_id}/project-source:
+    post:
+      summary: Read approved Swift sources for the current worker lease
+      operationId: get_swift_project_source_agents__agent_id__jobs__job_id__project_source_post
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentJobHeartbeat'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Swift Project Source Agents  Agent Id  Jobs  Job Id  Project Source
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '409':
+          description: Lease, task, validation grant or approved source no longer matches
+      security:
+      - agentBearer: []
+      tags:
+      - Agents
+      description: 'Requires this agent credential plus the current claim token, lease id and generation.
+        The task must remain active and the immutable source must match the approved validation grant. Returns
+        source files and their project revision/digest; no caller filesystem path is accepted. Cache-Control:
+        no-store.'
+  /tasks/{task_id}/activity:
+    get:
+      summary: Read recorded task operations
+      operationId: get_task_activity_tasks__task_id__activity_get
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Task Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 4096
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '400':
+          description: Invalid activity cursor
+        '404':
+          description: Activity scope not found
+        '409':
+          description: Activity history changed; refresh from the first page
+        '503':
+          description: Recorded activity evidence unavailable
+      security:
+      - bearerAuth: []
+      tags:
+      - Tasks
+      description: 'Cursor-paginated persisted evidence, not an exhaustive live stream. Unknown durations
+        remain null. Responses use Cache-Control: private, no-store. Refresh from the first page when the
+        cursor is stale.'
+
 x-websocket-endpoints:
   /ws:
     authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
@@ -2554,6 +3492,18 @@ components:
       required: [objective]
       properties:
         objective: {type: string, minLength: 1, maxLength: 4000}
+        conversation_id:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+          description: Existing authenticated chat whose last 40 user/assistant messages seed the project. Does not start execution.
+        client_request_id:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+          description: Actor-scoped retry identity; the same request returns the same goal, conflicting content is rejected.
         autonomy_profile:
           allOf:
             - $ref: '#/components/schemas/AutonomyProfile'
@@ -3463,6 +4413,7 @@ components:
         query: {type: string, minLength: 1, maxLength: 2000}
         scope: {type: [string, 'null'], maxLength: 100}
         kind: {type: [string, 'null'], maxLength: 100}
+        limit: {type: integer, minimum: 1, maximum: 20, default: 6}
     MemoryItem:
       type: object
       required: [id, scope, kind, content, summary, sensitivity, confidence, pinned, metadata, created_at, updated_at]
@@ -3489,6 +4440,333 @@ components:
           properties:
             score: {type: number, minimum: 0, maximum: 1}
             search_kind: {type: string, enum: [lexical, vector, hybrid]}
+            presentation: {$ref: '#/components/schemas/MemoryPresentation'}
+
+    MemoryPresentation:
+      type: object
+      description: Temporary French rendering bound to the unchanged English source; never indexed as another memory.
+      required: [language, content, summary, canonical_sha256, summary_sha256, source_revision, validation_status, temporary, grants_authority]
+      properties:
+        language: {type: string, const: fr}
+        content: {type: string, minLength: 1, maxLength: 32000}
+        summary: {type: [string, 'null'], maxLength: 8000}
+        canonical_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        summary_sha256: {type: [string, 'null'], pattern: '^[a-f0-9]{64}$'}
+        source_revision: {type: string, description: Exact updated_at of the canonical memory item}
+        validation_status: {type: string, const: model_reviewed}
+        temporary: {type: boolean, const: true}
+        grants_authority: {type: boolean, const: false}
+
+    MemoryUsageRetrieval:
+      properties:
+        mode:
+          type: string
+          enum:
+          - lexical
+          - semantic
+          - hybrid
+          - unknown
+          title: Mode
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Reason
+        provider_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[a-f0-9]{64}$
+          - type: 'null'
+          title: Provider Fingerprint
+      additionalProperties: false
+      type: object
+      required:
+      - mode
+      - reason
+      - provider_fingerprint
+      title: MemoryUsageRetrieval
+    MemoryUsageItem:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        source_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Source Id
+        source_kind:
+          type: string
+          enum:
+          - general_memory
+          - message
+          - project_plan
+          - episode
+          - unknown
+          title: Source Kind
+        scope:
+          type: string
+          enum:
+          - general
+          - project
+          title: Scope
+        source_goal_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Source Goal Id
+        source_revision_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Source Revision Id
+        source_at:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Source At
+        source_state:
+          type: string
+          enum:
+          - available
+          - changed
+          - missing
+          - redacted
+          - unknown
+          title: Source State
+        verification:
+          type: string
+          enum:
+          - user_asserted
+          - assistant_claim
+          - recorded_outcome
+          - unknown
+          title: Verification
+        summary:
+          anyOf:
+          - type: string
+            maxLength: 800
+          - type: 'null'
+          title: Summary
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - source_id
+      - source_kind
+      - scope
+      - source_goal_id
+      - source_revision_id
+      - source_at
+      - source_state
+      - verification
+      - summary
+      title: MemoryUsageItem
+    MemoryUsageEntry:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        evidence_stage:
+          type: string
+          enum:
+          - retrieved
+          - attached_to_model_call
+          - included_in_worker_job
+          title: Evidence Stage
+        recorded_at:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Recorded At
+        completed_at:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Completed At
+        status:
+          type: string
+          maxLength: 50
+          minLength: 1
+          title: Status
+        purpose:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Purpose
+        conversation_revision:
+          anyOf:
+          - type: integer
+            maximum: 9007199254740991.0
+            minimum: 0.0
+          - type: 'null'
+          title: Conversation Revision
+        task_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Task Id
+        node_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Node Id
+        model_call_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Model Call Id
+        worker_job_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Worker Job Id
+        context_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Context Id
+        model_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Model Id
+        retrieval:
+          $ref: '#/components/schemas/MemoryUsageRetrieval'
+        items:
+          items:
+            $ref: '#/components/schemas/MemoryUsageItem'
+          type: array
+          maxItems: 100
+          title: Items
+        omitted_item_count:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 0.0
+          title: Omitted Item Count
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - evidence_stage
+      - recorded_at
+      - completed_at
+      - status
+      - purpose
+      - conversation_revision
+      - task_id
+      - node_id
+      - model_call_id
+      - worker_job_id
+      - context_id
+      - model_id
+      - retrieval
+      - items
+      - omitted_item_count
+      title: MemoryUsageEntry
+    MemoryUsagePage:
+      properties:
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+        goal_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Id
+        project_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Project Id
+        current_conversation_revision:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 0.0
+          title: Current Conversation Revision
+        observed_at:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Observed At
+        availability:
+          type: string
+          enum:
+          - available
+          - no_records
+          title: Availability
+        history_coverage:
+          type: string
+          const: recorded_receipts_only
+          title: History Coverage
+        entries:
+          items:
+            $ref: '#/components/schemas/MemoryUsageEntry'
+          type: array
+          maxItems: 50
+          title: Entries
+        next_cursor:
+          anyOf:
+          - type: string
+            maxLength: 512
+            pattern: ^[A-Za-z0-9_-]+$
+          - type: 'null'
+          title: Next Cursor
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - goal_id
+      - project_id
+      - current_conversation_revision
+      - observed_at
+      - availability
+      - history_coverage
+      - entries
+      - next_cursor
+      title: MemoryUsagePage
 
     AgentSkill:
       type: string
@@ -3496,6 +4774,7 @@ components:
         - workspace.list_dir
         - workspace.read_text
         - research.query
+        - research.collect
         - code_review.git_status
         - code_review.git_diff
         - code_review.git_show
@@ -5029,3 +6308,1323 @@ components:
           format: date-time
         completed:
           type: boolean
+
+    ActivityCoverage:
+      properties:
+        mode:
+          type: string
+          const: persisted_records
+          title: Mode
+          default: persisted_records
+        live_operations:
+          type: boolean
+          const: false
+          title: Live Operations
+          default: false
+        notice:
+          type: string
+          title: Notice
+          default: Preuves enregistrées, relues à chaque actualisation. Les opérations internes en direct
+            non enregistrées restent absentes. Les durées inconnues ne sont pas estimées.
+      additionalProperties: false
+      type: object
+      title: ActivityCoverage
+    ActivityDetail:
+      properties:
+        revision_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Revision Id
+        check_index:
+          anyOf:
+          - type: integer
+            maximum: 11.0
+            minimum: 0.0
+          - type: 'null'
+          title: Check Index
+        exit_code:
+          anyOf:
+          - type: integer
+            maximum: 255.0
+            minimum: -255.0
+          - type: 'null'
+          title: Exit Code
+        file_count:
+          anyOf:
+          - type: integer
+            maximum: 80.0
+            minimum: 0.0
+          - type: 'null'
+          title: File Count
+        command:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 8
+          - type: 'null'
+          title: Command
+      additionalProperties: false
+      type: object
+      title: ActivityDetail
+    ActivityItem:
+      properties:
+        id:
+          type: string
+          maxLength: 260
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        kind:
+          type: string
+          enum:
+          - model_call
+          - worker_job
+          - tool_call
+          - project_revision
+          - project_check
+          title: Kind
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - waiting
+          - completed
+          - failed
+          - cancelled
+          - skipped
+          - recorded
+          title: Status
+        title:
+          type: string
+          maxLength: 160
+          minLength: 1
+          title: Title
+        recorded_at:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Recorded At
+        started_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Started At
+        completed_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Completed At
+        duration_ms:
+          anyOf:
+          - type: integer
+            maximum: 9007199254740991.0
+            minimum: 0.0
+          - type: 'null'
+          title: Duration Ms
+        goal_run_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Goal Run Id
+        task_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Task Id
+        node_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Node Id
+        agent_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Agent Id
+        model_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Model Id
+        role:
+          anyOf:
+          - type: string
+            enum:
+            - planner
+            - evaluator
+            - summarizer
+            - synthesizer
+          - type: 'null'
+          title: Role
+        tool_name:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Tool Name
+        detail:
+          $ref: '#/components/schemas/ActivityDetail'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - kind
+      - status
+      - title
+      - recorded_at
+      title: ActivityItem
+    ActivityPage:
+      properties:
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+          default: '1.0'
+        scope:
+          $ref: '#/components/schemas/ActivityScope'
+        items:
+          items:
+            $ref: '#/components/schemas/ActivityItem'
+          type: array
+          maxItems: 100
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+        has_more:
+          type: boolean
+          title: Has More
+        coverage:
+          $ref: '#/components/schemas/ActivityCoverage'
+      additionalProperties: false
+      type: object
+      required:
+      - scope
+      - items
+      - next_cursor
+      - has_more
+      title: ActivityPage
+    ActivityScope:
+      properties:
+        type:
+          type: string
+          enum:
+          - task
+          - goal
+          title: Type
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        goal_run_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Goal Run Id
+        root_task_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Root Task Id
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - id
+      title: ActivityScope
+    CaptureLimits:
+      properties:
+        max_pages:
+          type: integer
+          maximum: 30.0
+          minimum: 1.0
+          title: Max Pages
+          default: 12
+        max_discovered_urls:
+          type: integer
+          maximum: 1000.0
+          minimum: 1.0
+          title: Max Discovered Urls
+          default: 200
+        max_page_bytes:
+          type: integer
+          maximum: 1048576.0
+          minimum: 1024.0
+          title: Max Page Bytes
+          default: 262144
+        max_total_bytes:
+          type: integer
+          maximum: 8388608.0
+          minimum: 1024.0
+          title: Max Total Bytes
+          default: 2097152
+        max_seconds:
+          type: integer
+          maximum: 120.0
+          minimum: 1.0
+          title: Max Seconds
+          default: 60
+        max_redirects:
+          type: integer
+          maximum: 5.0
+          minimum: 0.0
+          title: Max Redirects
+          default: 3
+        max_sitemaps:
+          type: integer
+          maximum: 5.0
+          minimum: 0.0
+          title: Max Sitemaps
+          default: 3
+        max_text_characters:
+          type: integer
+          maximum: 64000.0
+          minimum: 100.0
+          title: Max Text Characters
+          default: 32000
+      additionalProperties: false
+      type: object
+      title: CaptureLimits
+    EvidenceCriterion:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        index:
+          type: integer
+          maximum: 19.0
+          minimum: 0.0
+          title: Index
+        text:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Text
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+        status:
+          type: string
+          enum:
+          - unmapped
+          - linked
+          - reviewed
+          - stale
+          title: Status
+        mapping:
+          anyOf:
+          - $ref: '#/components/schemas/EvidenceMapping'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - index
+      - text
+      - sha256
+      - status
+      - mapping
+      title: EvidenceCriterion
+    EvidenceMapping:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        criterion_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Criterion Id
+        criterion_index:
+          type: integer
+          maximum: 19.0
+          minimum: 0.0
+          title: Criterion Index
+        criterion_text:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Criterion Text
+        criterion_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Criterion Sha256
+        goal_run_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Run Id
+        project_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Project Id
+        node_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Node Id
+        worker_job_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Worker Job Id
+        revision_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Revision Id
+        revision_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Revision Sha256
+        context_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Context Sha256
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        file_ids:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          type: array
+          maxItems: 80
+          title: File Ids
+        check_ids:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          type: array
+          maxItems: 12
+          title: Check Ids
+        files:
+          items:
+            $ref: '#/components/schemas/GraphFile'
+          type: array
+          maxItems: 80
+          title: Files
+        checks:
+          items:
+            $ref: '#/components/schemas/GraphCheck'
+          type: array
+          maxItems: 12
+          title: Checks
+        review_status:
+          type: string
+          enum:
+          - linked
+          - reviewed
+          title: Review Status
+        public_explanation:
+          type: string
+          maxLength: 2000
+          title: Public Explanation
+        recorded_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Recorded At
+        reviewed_at:
+          anyOf:
+          - type: string
+            maxLength: 40
+            minLength: 20
+            pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+            format: date-time
+          - type: 'null'
+          title: Reviewed At
+        stale_reasons:
+          items:
+            type: string
+            enum:
+            - goal_changed
+            - revision_changed
+            - producer_changed
+            - evidence_changed
+          type: array
+          maxItems: 4
+          title: Stale Reasons
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - version
+      - criterion_id
+      - criterion_index
+      - criterion_text
+      - criterion_sha256
+      - goal_run_id
+      - project_id
+      - node_id
+      - worker_job_id
+      - revision_id
+      - revision_sha256
+      - context_sha256
+      - conversation_revision
+      - file_ids
+      - check_ids
+      - files
+      - checks
+      - review_status
+      - public_explanation
+      - recorded_at
+      - reviewed_at
+      title: EvidenceMapping
+    EvidenceMappingRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Request Id
+        expected_version:
+          type: integer
+          maximum: 2147483647.0
+          minimum: 0.0
+          title: Expected Version
+        context_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Context Sha256
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        criterion_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Criterion Sha256
+        project_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Project Id
+        node_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Node Id
+        revision_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Revision Id
+        revision_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Revision Sha256
+        file_ids:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          type: array
+          maxItems: 80
+          title: File Ids
+        check_ids:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          type: array
+          maxItems: 12
+          title: Check Ids
+        review_status:
+          type: string
+          enum:
+          - linked
+          - reviewed
+          title: Review Status
+        public_explanation:
+          type: string
+          maxLength: 2000
+          title: Public Explanation
+          default: ''
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      - context_sha256
+      - conversation_revision
+      - criterion_sha256
+      - project_id
+      - node_id
+      - revision_id
+      - revision_sha256
+      - file_ids
+      - check_ids
+      - review_status
+      title: EvidenceMappingRequest
+    GraphCheck:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        index:
+          type: integer
+          maximum: 11.0
+          minimum: 0.0
+          title: Index
+        command:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 8
+          - type: 'null'
+          title: Command
+        status:
+          type: string
+          enum:
+          - passed
+          - failed
+          - skipped
+          title: Status
+        exit_code:
+          anyOf:
+          - type: integer
+            maximum: 255.0
+            minimum: -255.0
+          - type: 'null'
+          title: Exit Code
+        duration_ms:
+          type: integer
+          maximum: 900000.0
+          minimum: 0.0
+          title: Duration Ms
+        provenance:
+          type: string
+          const: attached_to_revision
+          title: Provenance
+          default: attached_to_revision
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - index
+      - command
+      - status
+      - exit_code
+      - duration_ms
+      title: GraphCheck
+    GraphCoverage:
+      properties:
+        mode:
+          type: string
+          const: persisted_records
+          title: Mode
+          default: persisted_records
+        scope:
+          type: string
+          const: current_goal_and_latest_project_revision
+          title: Scope
+          default: current_goal_and_latest_project_revision
+        criterion_mapping:
+          type: string
+          const: not_recorded
+          title: Criterion Mapping
+          default: not_recorded
+        planner_rationale:
+          type: string
+          enum:
+          - recorded
+          - not_recorded
+          title: Planner Rationale
+          default: not_recorded
+        check_freshness:
+          type: string
+          const: not_established
+          title: Check Freshness
+          default: not_established
+      additionalProperties: false
+      type: object
+      title: GraphCoverage
+    GraphCriterion:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        index:
+          type: integer
+          maximum: 19.0
+          minimum: 0.0
+          title: Index
+        text:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Text
+        coverage:
+          type: string
+          const: not_mapped
+          title: Coverage
+          default: not_mapped
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - index
+      - text
+      title: GraphCriterion
+    GraphDependency:
+      properties:
+        from_node_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: From Node Id
+        to_node_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: To Node Id
+        dependency_type:
+          type: string
+          enum:
+          - hard
+          - optional
+          title: Dependency Type
+      additionalProperties: false
+      type: object
+      required:
+      - from_node_id
+      - to_node_id
+      - dependency_type
+      title: GraphDependency
+    GraphEvaluation:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        goal_run_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Run Id
+        sequence:
+          type: integer
+          minimum: 1.0
+          title: Sequence
+        status:
+          type: string
+          enum:
+          - continue
+          - replan
+          - done
+          - failed
+          - needs_user
+          title: Status
+        reason_summary:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Reason Summary
+        missing_requirements:
+          items:
+            type: string
+            maxLength: 500
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Missing Requirements
+        invalid_results:
+          items:
+            type: string
+            maxLength: 500
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Invalid Results
+        created_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Created At
+        authority:
+          type: string
+          const: model_report
+          title: Authority
+          default: model_report
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - goal_run_id
+      - sequence
+      - status
+      - reason_summary
+      - missing_requirements
+      - invalid_results
+      - created_at
+      title: GraphEvaluation
+    GraphFile:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        path:
+          type: string
+          maxLength: 240
+          minLength: 1
+          title: Path
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+        bytes:
+          type: integer
+          maximum: 64000.0
+          minimum: 0.0
+          title: Bytes
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - path
+      - sha256
+      - bytes
+      title: GraphFile
+    GraphPlanningDecision:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        audit_event_id:
+          type: integer
+          minimum: 1.0
+          title: Audit Event Id
+        goal_run_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Run Id
+        event_type:
+          type: string
+          enum:
+          - goal.plan.accepted
+          - goal.replan.accepted
+          title: Event Type
+        planner_source:
+          type: string
+          enum:
+          - iphone_local
+          - ubuntu_local
+          - manual
+          - test
+          title: Planner Source
+        rationale_summary:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Rationale Summary
+        node_ids:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          type: array
+          maxItems: 20
+          minItems: 1
+          title: Node Ids
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        model_call_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Model Call Id
+        model_id:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Model Id
+        created_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Created At
+        authority:
+          type: string
+          const: planner_proposal
+          title: Authority
+          default: planner_proposal
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - audit_event_id
+      - goal_run_id
+      - event_type
+      - planner_source
+      - rationale_summary
+      - node_ids
+      - conversation_revision
+      - model_call_id
+      - model_id
+      - created_at
+      title: GraphPlanningDecision
+    GraphRevision:
+      properties:
+        id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Id
+        project_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Project Id
+        goal_run_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Run Id
+        node_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Node Id
+        worker_job_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Worker Job Id
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+        created_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Created At
+        files:
+          items:
+            $ref: '#/components/schemas/GraphFile'
+          type: array
+          maxItems: 80
+          title: Files
+        checks:
+          items:
+            $ref: '#/components/schemas/GraphCheck'
+          type: array
+          maxItems: 12
+          title: Checks
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - project_id
+      - goal_run_id
+      - node_id
+      - worker_job_id
+      - revision
+      - sha256
+      - created_at
+      - files
+      - checks
+      title: GraphRevision
+    ProjectGraph:
+      properties:
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+          default: '1.0'
+        observed_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Observed At
+        goal:
+          $ref: '#/components/schemas/GoalRecord'
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        project_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Project Id
+        criteria:
+          items:
+            $ref: '#/components/schemas/GraphCriterion'
+          type: array
+          maxItems: 20
+          title: Criteria
+        nodes:
+          items:
+            $ref: '#/components/schemas/PlanNode'
+          type: array
+          maxItems: 20
+          title: Nodes
+        dependencies:
+          items:
+            $ref: '#/components/schemas/GraphDependency'
+          type: array
+          maxItems: 190
+          title: Dependencies
+        latest_revision:
+          anyOf:
+          - $ref: '#/components/schemas/GraphRevision'
+          - type: 'null'
+        evaluations:
+          items:
+            $ref: '#/components/schemas/GraphEvaluation'
+          type: array
+          maxItems: 5
+          title: Evaluations
+        evaluations_has_more:
+          type: boolean
+          title: Evaluations Has More
+        planning_decisions:
+          items:
+            $ref: '#/components/schemas/GraphPlanningDecision'
+          type: array
+          maxItems: 5
+          title: Planning Decisions
+        planning_decisions_has_more:
+          type: boolean
+          title: Planning Decisions Has More
+        coverage:
+          $ref: '#/components/schemas/GraphCoverage'
+      additionalProperties: false
+      type: object
+      required:
+      - observed_at
+      - goal
+      - conversation_revision
+      - project_id
+      - criteria
+      - nodes
+      - dependencies
+      - latest_revision
+      - evaluations
+      - evaluations_has_more
+      - planning_decisions
+      - planning_decisions_has_more
+      title: ProjectGraph
+    RequirementEvidenceView:
+      properties:
+        schema_version:
+          type: string
+          const: '1.0'
+          title: Schema Version
+          default: '1.0'
+        observed_at:
+          type: string
+          maxLength: 40
+          minLength: 20
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$
+          format: date-time
+          title: Observed At
+        goal_run_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          title: Goal Run Id
+        project_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]*$
+          - type: 'null'
+          title: Project Id
+        context_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Context Sha256
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        current_revision:
+          anyOf:
+          - $ref: '#/components/schemas/GraphRevision'
+          - type: 'null'
+        criteria:
+          items:
+            $ref: '#/components/schemas/EvidenceCriterion'
+          type: array
+          maxItems: 20
+          title: Criteria
+        unmatched_mappings:
+          items:
+            $ref: '#/components/schemas/EvidenceMapping'
+          type: array
+          maxItems: 20
+          title: Unmatched Mappings
+      additionalProperties: false
+      type: object
+      required:
+      - observed_at
+      - goal_run_id
+      - project_id
+      - context_sha256
+      - conversation_revision
+      - current_revision
+      - criteria
+      - unmatched_mappings
+      title: RequirementEvidenceView
+    SwiftProjectValidationRequest:
+      properties:
+        revision_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Revision Id
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+        agent_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Agent Id
+        operation:
+          type: string
+          enum:
+          - build
+          - test
+          title: Operation
+          default: test
+        target:
+          additionalProperties:
+            type: string
+          type: object
+          title: Target
+        execution_consent:
+          type: boolean
+          const: true
+          title: Execution Consent
+        idempotency_key:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$
+          title: Idempotency Key
+      additionalProperties: false
+      type: object
+      required:
+      - revision_id
+      - sha256
+      - agent_id
+      - target
+      - execution_consent
+      - idempotency_key
+      title: SwiftProjectValidationRequest
+    WebsiteCommand:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{8,100}$
+          title: Request Id
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        action:
+          type: string
+          enum:
+          - capture
+          - branding
+          - build
+          title: Action
+        palette_id:
+          anyOf:
+          - type: string
+            pattern: ^[a-z][a-z0-9-]{0,39}$
+          - type: 'null'
+          title: Palette Id
+        direction_id:
+          anyOf:
+          - type: string
+            enum:
+            - editorial
+            - studio
+            - catalog
+          - type: 'null'
+          title: Direction Id
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      - action
+      title: WebsiteCommand
+    WebsiteCreate:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{8,100}$
+          title: Request Id
+        source_url:
+          type: string
+          maxLength: 2048
+          minLength: 8
+          title: Source Url
+        objective:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Objective
+        limits:
+          $ref: '#/components/schemas/CaptureLimits'
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - source_url
+      - objective
+      title: WebsiteCreate
+    WebsitePublish:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        build_digest:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Build Digest
+        approval_token:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{32,100}$
+          title: Approval Token
+        confirm_publication:
+          type: boolean
+          const: true
+          title: Confirm Publication
+      additionalProperties: false
+      type: object
+      required:
+      - expected_version
+      - build_digest
+      - approval_token
+      - confirm_publication
+      title: WebsitePublish
+    WebsiteReview:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        build_digest:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Build Digest
+      additionalProperties: false
+      type: object
+      required:
+      - expected_version
+      - build_digest
+      title: WebsiteReview

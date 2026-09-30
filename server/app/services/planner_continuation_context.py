@@ -16,6 +16,8 @@ async def continuation_cards(db_path: Path, goal_id: str) -> tuple[ContextCard, 
     These cards must survive context budgeting intact. Source names are untrusted
     labels; counts/revision IDs come from persisted records, not assistant claims.
     No source body, check log or worker-authored success summary is loaded here.
+    Message ownership is checked within this read snapshot, before the limit;
+    the shared UI conversation is not authority for another project's input.
     """
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
@@ -25,7 +27,25 @@ async def continuation_cards(db_path: Path, goal_id: str) -> tuple[ContextCard, 
             await db.execute(
                 """SELECT m.id,m.content FROM goal_messages m
                 JOIN goal_conversation_links l ON l.conversation_id=m.conversation_id
-                WHERE l.goal_run_id=? AND m.role='user' ORDER BY m.rowid DESC LIMIT 1""",
+                LEFT JOIN goal_project_links target_project ON target_project.goal_run_id=l.goal_run_id
+                JOIN goal_conversation_links source
+                  ON source.goal_run_id=m.goal_run_id AND source.conversation_id=m.conversation_id
+                LEFT JOIN goal_project_links source_project ON source_project.goal_run_id=m.goal_run_id
+                WHERE l.goal_run_id=? AND m.role='user'
+                  AND (source_project.project_id=target_project.project_id OR
+                    (target_project.project_id IS NULL AND source_project.project_id IS NULL))
+                ORDER BY m.rowid DESC LIMIT 1""",
+                (goal_id,),
+            )
+        ).fetchone()
+        checkpoint = await (
+            await db.execute(
+                """SELECT m.id,m.content FROM goal_messages m
+                JOIN goal_conversation_links l ON l.goal_run_id=m.goal_run_id
+                  AND l.conversation_id=m.conversation_id
+                WHERE m.goal_run_id=? AND m.role='assistant' AND m.actor_id='goal-manager'
+                  AND m.client_message_id LIKE 'auto-model-budget:%'
+                ORDER BY m.rowid DESC LIMIT 1""",
                 (goal_id,),
             )
         ).fetchone()
@@ -46,6 +66,15 @@ async def continuation_cards(db_path: Path, goal_id: str) -> tuple[ContextCard, 
         await db.rollback()
 
     cards: list[ContextCard] = []
+    if checkpoint is not None:
+        cards.append(
+            ContextCard(
+                card_id=f"continuation-checkpoint:{goal_id}",
+                kind="continuation_checkpoint",
+                summary=safe_context_text(str(checkpoint["content"]), max_chars=4_000),
+                provenance_ids=(str(checkpoint["id"]),),
+            )
+        )
     # The initial objective already has its own card. Subsequent instructions
     # cannot compete for space with earlier assistant diagnostics.
     if message is not None and not str(message["id"]).startswith("gmsg_initial_"):

@@ -1,11 +1,16 @@
 {
   "manifest_version": "1",
   "name": "mongars-research-worker",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "protocol": "mongars-worker-v0.9",
   "skills": [
     {
       "id": "research.query",
+      "risk": "low",
+      "result_trust": "untrusted"
+    },
+    {
+      "id": "research.collect",
       "risk": "low",
       "result_trust": "untrusted"
     }
@@ -15,11 +20,17 @@
     "max_results": 10,
     "max_query_characters": 2000,
     "max_result_bytes": 524288,
-    "max_operation_seconds": 60
+    "max_operation_seconds": 120,
+    "max_queries": 4,
+    "max_pages": 6,
+    "max_page_bytes": 1048576,
+    "max_page_characters": 4000,
+    "max_source_urls": 6,
+    "max_required_domains": 6
   },
   "policy": {
     "filesystem": "none",
-    "network": "configured-research-adapter-only",
+    "network": "configured-research-provider-and-public-https-pages-from-search-results-or-explicit-source-urls",
     "writes": false
   }
 }

@@ -175,7 +175,7 @@ async def test_valid_check_only_completion_still_reaches_review(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_repeated_reads_pause_without_dispatching_again_or_changing_files(
+async def test_repeated_reads_continue_without_changing_files_or_duplicate_dispatch(
     tmp_path: Path,
 ) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
@@ -183,73 +183,90 @@ async def test_repeated_reads_pause_without_dispatching_again_or_changing_files(
     await _result(manager, agent, action="continue")
     assert manager.project_applications is not None
     before = await manager.project_applications.get_project(goal_id)
-    for _ in range(3):
-        await iteration(manager, agent, read=True)
+    for _ in range(6):
+        final_job, _ = await iteration(manager, agent, read=True)
         current = await manager.get_goal(goal_id)
         assert current and current["goal"]["status"] == "running"
-    final_job, _ = await iteration(manager, agent, read=True)
-    paused = await manager.get_goal(goal_id)
-    assert paused and paused["goal"]["status"] == "waiting_permission"
-    assert "lecture" in paused["goal"]["evaluator_summary"]
-    assert len(paused["nodes"]) == 5
-    assert await manager.agent_dispatcher.claim(agent) is None
+    continued = await manager.get_goal(goal_id)
+    assert continued and continued["goal"]["current_phase"] == "project_building"
+    assert len(continued["nodes"]) == 8
+    assert sum(n["status"] == "dispatched" for n in continued["nodes"]) == 1
     conversation = await manager.conversation_messages(goal_id)
     assert conversation["pending_question_id"] is None
+    assert "trois demandes de lecture" not in str(conversation)
     after = await manager.project_applications.get_project(goal_id)
     assert before and after
     assert after["files"] == before["files"] and after["checks"] == before["checks"]
     await manager.on_job_result(final_job)
     await manager.reconcile()
     again = await manager.get_goal(goal_id)
-    assert again and again["goal"]["model_call_count"] == paused["goal"]["model_call_count"]
-    assert len(again["nodes"]) == 5
+    assert again and again["goal"]["model_call_count"] == continued["goal"]["model_call_count"]
+    assert len(again["nodes"]) == len(continued["nodes"])
+    followup = await manager.agent_dispatcher.claim(agent)
+    assert followup and followup["payload"]["focus_paths"] == ["app.py"]
     async with aiosqlite.connect(manager.db_path) as db:
         assert await (await db.execute("SELECT COUNT(*) FROM approvals")).fetchone() == (0,)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["reordered", "alternating"])
-async def test_read_loop_cannot_escape_by_reordering_or_alternating_paths(
+async def test_repeated_reads_continue_with_reordered_or_alternating_paths(
     tmp_path: Path, mode: str
 ) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
     await _result(manager, agent, action="continue")
     reads = (
-        [["app.py", "README.md"], ["README.md", "app.py"]] * 2
+        [["app.py", "README.md"], ["README.md", "app.py"]] * 4
         if mode == "reordered"
-        else [["app.py"], ["README.md"], ["app.py"], ["README.md"], ["app.py"]]
+        else [["app.py"], ["README.md"]] * 4
     )
     for paths in reads:
         await iteration(manager, agent, focus_paths=paths)
-    paused = await manager.get_goal(detail["goal"]["id"])
-    assert paused and paused["goal"]["status"] == "waiting_permission"
-    assert "lecture" in paused["goal"]["evaluator_summary"]
+        current = await manager.get_goal(detail["goal"]["id"])
+        assert current and current["goal"]["status"] == "running"
+    followup = await manager.agent_dispatcher.claim(agent)
+    assert followup and followup["payload"]["focus_paths"] == reads[-1]
+
+
+@pytest.mark.asyncio
+async def test_repeated_reads_still_exhaust_the_total_model_budget(tmp_path: Path) -> None:
+    manager, detail, agent = await _project(tmp_path, max_calls=8)
+    await _result(manager, agent, action="continue")
+    for _ in range(6):
+        await iteration(manager, agent, read=True)
+    exhausted = await manager.get_goal(detail["goal"]["id"])
+    assert exhausted and exhausted["goal"]["status"] == "budget_exhausted"
+    assert exhausted["goal"]["model_call_count"] == 8
     assert await manager.agent_dispatcher.claim(agent) is None
 
 
 @pytest.mark.asyncio
-async def test_distinct_reads_are_allowed_and_do_not_reset_failed_attempts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("paths", [["app.py"] * 6, ["app.py", "README.md", "test_app.py"]])
+async def test_reads_are_allowed_and_do_not_reset_failed_attempts(
+    tmp_path: Path, paths: list[str]
+) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
     await _result(manager, agent, action="continue")
-    for path in ["app.py", "README.md", "test_app.py"]:
+    for _ in range(2):
+        await iteration(manager, agent)
+    for path in paths:
         await iteration(manager, agent, focus_paths=[path])
     current = await manager.get_goal(detail["goal"]["id"])
     assert current and current["goal"]["status"] == "running"
-    for _ in range(3):
-        await iteration(manager, agent)
+    await iteration(manager, agent)
     paused = await manager.get_goal(detail["goal"]["id"])
     assert paused and paused["goal"]["status"] == "waiting_permission"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("progress", ["files", "check", "instruction"])
-async def test_read_allowance_resets_after_actual_progress_or_new_instruction(
+async def test_repeated_reads_continue_after_actual_progress_or_new_instruction(
     tmp_path: Path, progress: str
 ) -> None:
     manager, detail, agent = await _project(tmp_path, max_calls=30)
     goal_id = detail["goal"]["id"]
     await _result(manager, agent, action="continue")
-    for _ in range(3):
+    for _ in range(4):
         await iteration(manager, agent, read=True)
     if progress == "instruction":
         stale, _ = await iteration(manager, agent, read=True, receive=False)

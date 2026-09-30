@@ -33,7 +33,15 @@ def schema_and_wire(consumer: str, node: dict[str, Any]) -> tuple[dict[str, Any]
 
 
 @pytest.mark.parametrize("consumer", ["planner", "evaluator"])
-@pytest.mark.parametrize("skill", [None, *sorted(SUPPORTED_AGENT_SKILLS - SPECIALIST_SKILLS)])
+@pytest.mark.parametrize(
+    "skill",
+    [
+        None,
+        *sorted(
+            SUPPORTED_AGENT_SKILLS - SPECIALIST_SKILLS - {"research.collect", "workspace.read_text"}
+        ),
+    ],
+)
 def test_server_derived_worker_arguments_cannot_be_invented_by_the_grammar(
     consumer: str, skill: str | None
 ) -> None:
@@ -112,3 +120,118 @@ def test_public_parser_still_accepts_valid_legacy_non_specialist_arguments(
     node = deepcopy(_proposal(skill)["nodes"][0])
     node["worker_arguments"] = arguments
     assert SwarmPlanNodeProposal.model_validate(node).worker_arguments == arguments
+
+
+@pytest.mark.parametrize("consumer", ["planner", "evaluator"])
+def test_workspace_read_path_reaches_dispatch_payload(consumer: str) -> None:
+    """Wire grammar -> public parser -> persisted metadata -> dispatch payload."""
+    import json
+
+    from app.services.goal_manager import GoalManager
+
+    node = deepcopy(_proposal("workspace.read_text")["nodes"][0])
+    node["worker_arguments"] = {"path": "notes.txt"}
+    schema, wire = schema_and_wire(consumer, node)
+    Draft202012Validator(schema).validate(wire)
+    parsed = SwarmPlanNodeProposal.model_validate(node)
+    payload = GoalManager._payload_for_node(
+        {
+            "required_skill": parsed.required_skill,
+            "objective": parsed.objective,
+            "planner_metadata_json": json.dumps({"worker_arguments": parsed.worker_arguments}),
+        }
+    )
+    assert payload == {"path": "notes.txt"}
+
+
+@pytest.mark.parametrize("consumer", ["planner", "evaluator"])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        None,
+        {},
+        {"path": ""},
+        {"path": 12},
+        {"path": "notes.txt", "start_line": 1},
+        {"path": "notes.txt", "end_line": 200},
+        {"path": "notes.txt", "max_bytes": 32768},
+        {"path": "notes.txt", "capability_request": {}},
+    ],
+)
+def test_workspace_read_wire_requires_only_explicit_path(consumer: str, arguments: Any) -> None:
+    node = deepcopy(_proposal("workspace.read_text")["nodes"][0])
+    node["worker_arguments"] = arguments
+    schema, wire = schema_and_wire(consumer, node)
+    assert not Draft202012Validator(schema).is_valid(wire)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../outside.txt",
+        "/etc/passwd",
+        ".env",
+        "private.key",
+        "a" * 501,
+        "src/access_token.txt",
+        "src\\notes.txt",
+        "https://example.test/notes.txt",
+    ],
+)
+def test_workspace_read_fix_does_not_weaken_runtime_path_policy(path: str) -> None:
+    from app.services.goal_manager import GoalManager, GoalManagerConflict
+
+    with pytest.raises(GoalManagerConflict):
+        GoalManager._payload_for_node(
+            {
+                "required_skill": "workspace.read_text",
+                "objective": "Read a file.",
+                "planner_metadata": {"worker_arguments": {"path": path}},
+            }
+        )
+
+
+@pytest.mark.parametrize("consumer", ["planner", "evaluator"])
+@pytest.mark.parametrize("skills", [[], ["writing.draft"], ["workspace.read_text"], None])
+def test_workspace_read_has_no_missing_arguments_or_unadvertised_branch(
+    consumer: str, skills: list[str] | None
+) -> None:
+    node = deepcopy(_proposal("workspace.read_text")["nodes"][0])
+    node["worker_arguments"] = {"path": "notes.txt"}
+    _, wire = schema_and_wire(consumer, node)
+    if consumer == "planner":
+        response_format = UbuntuSwarmPlannerProvider._response_format(available_skills=skills)
+    else:
+        response_format = UbuntuEvaluatorProvider._response_format(skills)
+    validator = Draft202012Validator(response_format["json_schema"]["schema"])
+    assert validator.is_valid(wire) is (skills is None or "workspace.read_text" in skills)
+    node.pop("worker_arguments")
+    _, missing = schema_and_wire(consumer, node)
+    assert not validator.is_valid(missing)
+
+
+@pytest.mark.parametrize("length", [500, 501])
+def test_workspace_read_length_is_enforced_after_wire_grammar(length: int) -> None:
+    # The Ollama dialect omits maxLength to avoid enormous llama.cpp grammars.
+    # Both public validation and persisted dispatch must retain the real bound.
+    from app.services.goal_manager import GoalManager, GoalManagerConflict
+
+    node = deepcopy(_proposal("workspace.read_text")["nodes"][0])
+    node["worker_arguments"] = {"path": "a" * length}
+    schema, wire = schema_and_wire("planner", node)
+    Draft202012Validator(schema).validate(wire)
+    persisted = {
+        "required_skill": "workspace.read_text",
+        "objective": "Read a file.",
+        "planner_metadata": {"worker_arguments": node["worker_arguments"]},
+    }
+    if length == 500:
+        assert (
+            SwarmPlanNodeProposal.model_validate(node).worker_arguments == node["worker_arguments"]
+        )
+        assert GoalManager._payload_for_node(persisted) == node["worker_arguments"]
+    else:
+        with pytest.raises(ValidationError):
+            SwarmPlanNodeProposal.model_validate(node)
+        with pytest.raises(GoalManagerConflict):
+            GoalManager._payload_for_node(persisted)

@@ -101,19 +101,21 @@ printf 'check: running server format, lint, type, test, and security gates\n'
 (
   cd "$SERVER_DIR"
   "$SERVER_BIN/ruff" format --check . "$ROOT/scripts/validate_openapi.py" \
-    "$ROOT/workers/file-worker" "$ROOT/workers/research-worker" \
+    "$ROOT/workers/file-worker" "$ROOT/workers/research-worker" "$ROOT/workers/text-worker" \
     "$ROOT/workers/code-review-worker" "$ROOT/workers/code-worker" "$ROOT/workers/project-worker" \
     "$ROOT/workers/sqlite-worker" "$ROOT/workers/swift-worker" "$ROOT/workers/personal-worker" \
     "$ROOT/scripts/evaluate_personal_context.py"
   "$SERVER_BIN/ruff" check . "$ROOT/scripts/validate_openapi.py" \
-    "$ROOT/workers/file-worker" "$ROOT/workers/research-worker" \
+    "$ROOT/workers/file-worker" "$ROOT/workers/research-worker" "$ROOT/workers/text-worker" \
     "$ROOT/workers/code-review-worker" "$ROOT/workers/code-worker" "$ROOT/workers/project-worker" \
     "$ROOT/workers/sqlite-worker" "$ROOT/workers/swift-worker" "$ROOT/workers/personal-worker" \
     "$ROOT/scripts/evaluate_personal_context.py"
   "$SERVER_BIN/mypy" app
   MYPYPATH="$SERVER_DIR" "$SERVER_BIN/mypy" --strict "$ROOT/scripts/validate_openapi.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/file-worker/file_worker.py"
-  "$SERVER_BIN/mypy" --strict "$ROOT/workers/research-worker/research_worker.py"
+  "$SERVER_BIN/mypy" --strict "$ROOT/workers/research-worker/research_worker.py" \
+    "$ROOT/workers/research-worker/research_collect.py"
+  "$SERVER_BIN/mypy" --strict "$ROOT/workers/text-worker/text_worker.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/code-review-worker/code_review_worker.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/code-worker/code_worker.py"
   "$SERVER_BIN/mypy" --strict "$ROOT/workers/code-worker/launch_sandboxed.py"
@@ -126,14 +128,17 @@ printf 'check: running server format, lint, type, test, and security gates\n'
   "$SERVER_BIN/pytest" -q
   "$SERVER_BIN/pytest" -q \
     "$ROOT/workers/file-worker/test_file_worker_v09.py" \
-    "$ROOT/workers/research-worker/test_research_worker.py" \
+    "$ROOT/workers/research-worker" \
+    "$ROOT/workers/text-worker" \
     "$ROOT/workers/code-review-worker/test_code_review_worker.py" \
     "$ROOT/workers/code-worker/test_code_worker.py" \
     "$ROOT/workers/code-worker/test_launch_sandboxed.py" "$ROOT/workers/project-worker" \
     "$ROOT/workers/sqlite-worker" "$ROOT/workers/swift-worker" "$ROOT/workers/personal-worker"
   "$SERVER_BIN/bandit" -r app
   "$SERVER_BIN/bandit" "$ROOT/workers/file-worker/file_worker.py"
-  "$SERVER_BIN/bandit" "$ROOT/workers/research-worker/research_worker.py"
+  "$SERVER_BIN/bandit" "$ROOT/workers/research-worker/research_worker.py" \
+    "$ROOT/workers/research-worker/research_collect.py"
+  "$SERVER_BIN/bandit" "$ROOT/workers/text-worker/text_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/code-review-worker/code_review_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/code-worker/code_worker.py"
   "$SERVER_BIN/bandit" "$ROOT/workers/code-worker/launch_sandboxed.py"

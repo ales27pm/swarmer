@@ -34,7 +34,11 @@ QUERY = "bibliothèques Sorel-Tracy services"
 def public_response(kind: Kind, skill: str | None = "research.query") -> dict[str, Any]:
     result = deepcopy(_proposal(skill) if kind == "planner" else continue_decision())
     field = "nodes" if kind == "planner" else "suggested_new_nodes"
-    result[field][0].update(required_skill=skill, objective=QUERY)
+    result[field][0].update(
+        required_skill=skill,
+        objective=QUERY,
+        worker_arguments={"path": "notes.txt"} if skill == "workspace.read_text" else None,
+    )
     if skill is None:
         result[field][0].update(
             node_type="synthesis", preferred_agent_constraints=None, dependencies=[]

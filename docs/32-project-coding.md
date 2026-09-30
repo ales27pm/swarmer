@@ -58,6 +58,13 @@ or inspection uses another node/job and another call. Generation jobs have one
 attempt and cannot be automatically redistributed. Existing user-selected step,
 runtime, and model-call limits remain authoritative.
 
+Repeated file reads have no separate three-repeat cutoff. They continue within
+the goal's step, runtime, and model-call budgets, preserving the source snapshot
+and check receipts. Reads do not reset the separate pause after three unchanged
+implementation attempts without file changes or a newly successful check.
+Projects already paused by the former read cutoff can resume through a new
+message in the project conversation.
+
 Model responses are limited to 2,000 tokens. Each iteration can write one
 complete file and use small patches or deletions to repair several paths. Ollama
 responses are consumed as bounded NDJSON streams. Code-changing batches retain a

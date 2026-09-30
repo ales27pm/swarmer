@@ -10,7 +10,7 @@ from app.models import AgentCard, AgentCreate
 
 SUPPORTED_AGENT_PROTOCOL = "mongars-worker-v0.9"
 WORKSPACE_SKILLS = frozenset({"workspace.list_dir", "workspace.read_text"})
-RESEARCH_SKILLS = frozenset({"research.query"})
+RESEARCH_SKILLS = frozenset({"research.query", "research.collect"})
 CODE_REVIEW_SKILLS = frozenset(
     {
         "code_review.git_status",
@@ -54,6 +54,12 @@ _CAPABILITY_METADATA_RANGES: Mapping[str, tuple[int, int]] = MappingProxyType(
         "memory_mb": (1, 4_194_304),
         "max_results": (1, 10),
         "max_query_characters": (1, 2_000),
+        "max_queries": (1, 4),
+        "max_pages": (1, 6),
+        "max_page_bytes": (1, 1_048_576),
+        "max_page_characters": (1, 12_000),
+        "max_source_urls": (1, 6),
+        "max_required_domains": (1, 6),
         "max_result_bytes": (1, 524_288),
         "max_operation_seconds": (1, 120),
         "max_paths": (1, 50),
@@ -65,7 +71,17 @@ _FAMILY_METADATA: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "workspace": _BASE_METADATA | {"max_operation_seconds"},
         "research": _BASE_METADATA
-        | {"max_operation_seconds", "max_results", "max_query_characters"},
+        | {
+            "max_operation_seconds",
+            "max_results",
+            "max_query_characters",
+            "max_queries",
+            "max_pages",
+            "max_page_bytes",
+            "max_page_characters",
+            "max_source_urls",
+            "max_required_domains",
+        },
         "code_review": _BASE_METADATA
         | {"max_operation_seconds", "max_paths", "max_selected_files"},
         "code": _BASE_METADATA | {"max_operation_seconds"},
@@ -262,6 +278,14 @@ def _manifest_policy(raw: object, skills: tuple[str, ...]) -> Mapping[str, str |
         "project": ("isolated-project-scratch", "control-plane-loopback-model-and-registry-only"),
         "writing": ("none", "control-plane-and-loopback-model-only"),
     }[family]
+    if family == "research" and "research.collect" in skills:
+        expected = (
+            "none",
+            "configured-research-provider-and-public-https-pages-from-search-results",
+        )
+        explicit_sources_policy = expected[1] + "-or-explicit-source-urls"
+        if raw.get("network") == explicit_sources_policy:
+            expected = ("none", explicit_sources_policy)
     if raw.get("filesystem") != expected[0] or raw.get("network") != expected[1]:
         raise AgentCardPolicyError("agent card execution policy is incompatible with its skills")
     if family in {"code_review", "code", "project", "writing"} and "shell" not in raw:

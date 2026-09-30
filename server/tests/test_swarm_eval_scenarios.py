@@ -92,7 +92,8 @@ class FakeStrategyRetrieval:
     hints: FakeStrategyHints
     queries: list[str] = field(default_factory=list)
 
-    async def retrieve(self, query: str) -> FakeStrategyHints:
+    async def retrieve(self, query: str, *, goal_run_id: str) -> FakeStrategyHints:
+        assert goal_run_id.startswith("goal_")
         self.queries.append(query)
         return self.hints
 

@@ -14,6 +14,7 @@ import aiosqlite
 from app.services.agent_card import (
     CODE_GENERATION_SKILLS,
     PROJECT_BUILD_SKILLS,
+    RESEARCH_SKILLS,
     SPECIALIST_SKILLS,
     SUPPORTED_AGENT_SKILLS,
     WRITING_SKILLS,
@@ -125,6 +126,7 @@ class WorkerSkillPolicyStore:
             missing
             - CODE_GENERATION_SKILLS
             - PROJECT_BUILD_SKILLS
+            - RESEARCH_SKILLS
             - WRITING_SKILLS
             - SWIFT_SKILLS
             - SPECIALIST_SKILLS

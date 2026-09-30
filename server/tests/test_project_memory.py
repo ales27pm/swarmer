@@ -211,12 +211,15 @@ async def test_content_origin_model_revision_and_dimensions_invalidate_vectors(
     await changed.retrieve(goal_id, node_id, "Purchaser", base_revision_id=None)
     assert len(provider.calls) == 3 and len(provider.calls[-1]) > 1
     provider.dimensions = 4
-    await changed.retrieve(goal_id, node_id, "Purchaser updated", base_revision_id=None)
-    assert len(provider.calls[-1]) == 1
+    fallback = await changed.retrieve(goal_id, node_id, "Purchaser updated", base_revision_id=None)
+    assert fallback["mode"] == "lexical" and fallback["reason"] == "embedding_provider_changed"
+    assert len(provider.calls) == 3
     async with aiosqlite.connect(manager.db_path) as db:
         assert await (
             await db.execute("SELECT COUNT(*) FROM project_memory_items WHERE dimensions=3")
-        ).fetchone() == (0,)
+        ).fetchone() != (0,)
+    # A new immutable service configuration gets its own space, including dimensions.
+    changed = ProjectMemoryService(manager.db_path, provider, model_revision="two")
     await changed.retrieve(goal_id, node_id, "Purchaser final", base_revision_id=None)
     assert len(provider.calls[-1]) > 1
     async with aiosqlite.connect(manager.db_path) as db:
@@ -445,7 +448,7 @@ async def test_invalid_provider_vectors_fail_to_lexical(tmp_path: Path, bad: lis
         async def embed(self, texts: list[str]) -> list[list[float]]:
             return [[1.0, 0.0]] + [bad for _ in texts[1:]]
 
-    result = await ProjectMemoryService(manager.db_path, Invalid()).retrieve(
+    result = await ProjectMemoryService(manager.db_path, Invalid(dimensions=2)).retrieve(
         goal_id, node_id, "Customer", base_revision_id=None
     )
     assert result["mode"] == "lexical" and result["reason"] == "embedding_unavailable"
@@ -461,7 +464,7 @@ async def test_extreme_finite_vectors_have_finite_cosine(tmp_path: Path) -> None
         async def embed(self, texts: list[str]) -> list[list[float]]:
             return [[1e308, 1e308] for _ in texts]
 
-    result = await ProjectMemoryService(manager.db_path, Huge()).retrieve(
+    result = await ProjectMemoryService(manager.db_path, Huge(dimensions=2)).retrieve(
         goal_id, node_id, "Purchaser", base_revision_id=None
     )
     assert result["mode"] == "semantic" and all(

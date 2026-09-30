@@ -48,7 +48,8 @@ AvailabilityState = Literal[
 # These two implemented jobs need explicit paths that a generic goal node does
 # not carry. The remaining worker targets have a bounded GoalManager mapping.
 PARAMETER_BOUND_SKILLS = (
-    frozenset({"workspace.read_text", "code_review.static_analysis"}) | SPECIALIST_SKILLS
+    frozenset({"workspace.read_text", "code_review.static_analysis", "research.collect"})
+    | SPECIALIST_SKILLS
 )
 GOAL_READY_SKILLS = frozenset(
     {

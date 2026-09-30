@@ -80,6 +80,7 @@ def continue_decision() -> dict[str, object]:
                 "title": "Read implementation",
                 "objective": "Read the bounded implementation file.",
                 "required_skill": "workspace.read_text",
+                "worker_arguments": {"path": "notes.txt"},
                 "dependencies": ["node_existing"],
                 "expected_output": "A grounded implementation summary.",
                 "priority": 50,
@@ -180,7 +181,7 @@ def test_evaluation_rejects_privileged_suggested_skill(policy: PermissionPolicy)
     decision = continue_decision()
     assert isinstance(decision["suggested_new_nodes"], list)
     assert isinstance(decision["suggested_new_nodes"][0], dict)
-    decision["suggested_new_nodes"][0]["required_skill"] = "process.run"
+    decision["suggested_new_nodes"][0].update(required_skill="process.run", worker_arguments=None)
     with pytest.raises(PlanValidationError, match="unsupported worker skill"):
         validate_evaluation_decision(
             decision,
@@ -350,13 +351,21 @@ def test_evaluator_schema_limits_workers_but_preserves_unknown_availability(
     for required_skill in ["code.build_project", "code.generate_python", "workspace.read_text"]:
         raw = continue_decision()
         assert isinstance(raw["suggested_new_nodes"], list)
-        raw["suggested_new_nodes"][0].update(required_skill=required_skill, dependencies=[])
+        raw["suggested_new_nodes"][0].update(
+            required_skill=required_skill,
+            dependencies=[],
+            worker_arguments={"path": "notes.txt"}
+            if required_skill == "workspace.read_text"
+            else None,
+        )
         assert validator.is_valid(wire_decision(raw)) is (
             skills is None or required_skill in skills
         )
     raw = continue_decision()
     assert isinstance(raw["suggested_new_nodes"], list)
-    raw["suggested_new_nodes"][0].update(node_type="synthesis", required_skill=None)
+    raw["suggested_new_nodes"][0].update(
+        node_type="synthesis", required_skill=None, worker_arguments=None
+    )
     assert validator.is_valid(wire_decision(raw))
     assert validator.is_valid(wire_decision({**raw, "suggested_new_nodes": []}))
 
@@ -367,7 +376,9 @@ def test_evaluator_schema_allows_a_project_to_depend_on_another_capability() -> 
     )["json_schema"]["schema"]
     raw = continue_decision()
     assert isinstance(raw["suggested_new_nodes"], list)
-    raw["suggested_new_nodes"][0].update(required_skill="code.build_project", dependencies=[])
+    raw["suggested_new_nodes"][0].update(
+        required_skill="code.build_project", dependencies=[], worker_arguments=None
+    )
     assert Draft202012Validator(schema).is_valid(wire_decision(raw))
     raw["suggested_new_nodes"].append(continue_decision()["suggested_new_nodes"][0])
     raw["suggested_new_nodes"][1].update(temporary_id="source_input", dependencies=[])

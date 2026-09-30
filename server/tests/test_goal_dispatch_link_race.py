@@ -8,6 +8,7 @@ from typing import Any
 
 import aiosqlite
 import pytest
+
 from app.models import AgentCreate, TaskCreate, TaskRecord
 from app.services.goal_manager import GoalManager
 from app.services.swarm_contracts import AutonomyProfile, GoalCreateRequest, GoalStartRequest

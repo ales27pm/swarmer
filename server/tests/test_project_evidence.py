@@ -321,7 +321,8 @@ async def test_successor_goal_does_not_inherit_evidence_and_fences_predecessor_m
     )
     async with aiosqlite.connect(path) as db:
         await db.execute(
-            "INSERT INTO goal_project_links VALUES(?,'project_one')", (successor["id"],)
+            "UPDATE goal_project_links SET project_id='project_one' WHERE goal_run_id=?",
+            (successor["id"],),
         )
         await db.execute(
             "UPDATE goal_runs SET completion_criteria_json='[\"Conserver les clients\"]' WHERE id=?",

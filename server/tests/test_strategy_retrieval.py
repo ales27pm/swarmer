@@ -49,6 +49,10 @@ async def _new_goal(db_path: Path, suffix: str) -> tuple[str, str]:
                 now,
             ),
         )
+        await db.execute(
+            "INSERT OR IGNORE INTO coding_projects VALUES('project_strategy',?,?)", (now, now)
+        )
+        await db.execute("INSERT INTO goal_project_links VALUES(?,'project_strategy')", (goal_id,))
         await db.commit()
     return goal_id, task.id
 
@@ -174,6 +178,7 @@ async def test_strategy_returns_compact_success_failure_and_memory_hints_without
 
     hints = await retrieval.retrieve(
         "review repository status snapshot",
+        goal_run_id=success_goal,
         skills=("code_review.git_status",),
     )
 
@@ -212,7 +217,7 @@ async def test_strategy_result_is_deterministic_for_the_same_state(tmp_path: Pat
     )
     retrieval = StrategyRetrieval(db_path, episode_memory)
 
-    first = await retrieval.retrieve("list project files")
-    second = await retrieval.retrieve("list project files")
+    first = await retrieval.retrieve("list project files", goal_run_id=goal_id)
+    second = await retrieval.retrieve("list project files", goal_run_id=goal_id)
 
     assert first == second

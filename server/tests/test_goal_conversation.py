@@ -136,8 +136,13 @@ async def test_terminal_reply_creates_one_linked_run_without_resetting_history(
             "UPDATE goal_runs SET status='budget_exhausted',model_call_count=7,step_count=2 WHERE id=?",
             (goal["id"],),
         )
-        await db.execute("INSERT INTO coding_projects VALUES('project_one','now','now')")
-        await db.execute("INSERT INTO goal_project_links VALUES(?,'project_one')", (goal["id"],))
+        project_id = (
+            await (
+                await db.execute(
+                    "SELECT project_id FROM goal_project_links WHERE goal_run_id=?", (goal["id"],)
+                )
+            ).fetchone()
+        )[0]
         await db.commit()
     request = GoalMessageRequest(message="Continue with exports", client_message_id="followup")
     first, second = await asyncio.gather(
@@ -158,7 +163,7 @@ async def test_terminal_reply_creates_one_linked_run_without_resetting_history(
             await db.execute(
                 "SELECT project_id FROM goal_project_links WHERE goal_run_id=?", (new_id,)
             )
-        ).fetchone() == ("project_one",)
+        ).fetchone() == (project_id,)
     history = await manager.conversation_messages(goal["id"])
     assert history["active_goal_id"] == new_id and len(history["messages"]) == 2
 
@@ -228,3 +233,40 @@ async def test_late_planner_timeout_cannot_terminate_newer_reply(tmp_path: Path)
     assert current is not None and current["status"] == "planning"
     assert current["pending_message_revision"] == 1
     assert current["model_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_model_budget_exhaustion_auto_continues_linked_run(tmp_path: Path) -> None:
+    manager = await _manager(
+        tmp_path / "state.db",
+        _worker_plan(),
+        auto_continue_on_model_budget_exhausted=True,
+    )
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective="Inspect the repository", max_model_calls=1), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+    await manager._terminate_goal(
+        goal["id"], status="budget_exhausted", reason="goal model call budget exhausted"
+    )
+
+    history = await manager.conversation_messages(goal["id"])
+    new_id = history["active_goal_id"]
+    assert new_id != goal["id"]
+    assert [message["role"] for message in history["messages"]] == ["user", "user"]
+    assert "Continue automatically" in history["messages"][-1]["content"]
+
+    old = await manager.graph.get_goal(goal["id"])
+    assert old is not None and old["status"] == "budget_exhausted"
+    continued = await manager.get_goal(new_id)
+    assert continued is not None
+    assert continued["goal"]["status"] == "running"
+    assert continued["goal"]["model_call_count"] == 1
+    assert continued["goal"]["max_model_calls"] == 1
+    assert continued["nodes"]
+    async with aiosqlite.connect(manager.db_path) as db:
+        assert await (
+            await db.execute(
+                "SELECT parent_goal_id FROM goal_conversation_links WHERE goal_run_id=?", (new_id,)
+            )
+        ).fetchone() == (goal["id"],)

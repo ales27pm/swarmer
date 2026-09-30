@@ -138,12 +138,15 @@ register<{ id: string; input: import("@/lib/api/website-projects").WebsiteReview
 register<{ id: string; input: import("@/lib/api/website-projects").WebsitePublish }>("websites.publish", object({ id: identifier, input: object({ expected_version: integer(1, Number.MAX_SAFE_INTEGER), build_digest: evidenceDigest, approval_token: text(100, 32), confirm_publication: { type: "boolean", enum: [true] } }) }), ({ id, input }, context) => server.publishWebsiteProject(id, input, context.shouldAccept), { ...mutation, requiresForeground: true, readiness: "review_required" });
 register<{ id: string; cursor?: string }>("tasks.activity", activityInput, ({ id, cursor }, context) => server.getActivity("task", id, cursor, context.shouldAccept));
 register<{ id: string; cursor?: string }>("goals.activity", activityInput, ({ id, cursor }, context) => server.getActivity("goal", id, cursor, context.shouldAccept));
+register<{ id: string; cursor?: string }>("goals.memory-usage", object({ id: identifier, cursor: { ...text(512), pattern: "^[A-Za-z0-9_-]+$" } }, ["id"]), ({ id, cursor }, context) => server.getGoalMemoryUsage(id, cursor, context.shouldAccept));
 register<{ id: string }>("goals.nodes", idInput, ({ id }, context) => context.shouldAccept ? server.listGoalNodes(id, context.shouldAccept) : server.listGoalNodes(id));
 register<{ id: string }>("goals.result", idInput, ({ id }, context) => context.shouldAccept ? server.getGoalResult(id, context.shouldAccept) : server.getGoalResult(id));
 register<{ goalId: string; nodeId: string; workerJobId: string }>("goals.writing-draft", object({ goalId: identifier, nodeId: identifier, workerJobId: identifier }),
   ({ goalId, nodeId, workerJobId }, context) => server.getGoalWritingDraft(goalId, nodeId, workerJobId, context.shouldAccept));
 register<GoalCreateInput>("goals.create", object({
   objective: text(4000), autonomy_profile: choice("manual", "assisted", "autonomous"),
+  conversation_id: { ...text(128), pattern: "^[A-Za-z0-9._:-]+$" },
+  client_request_id: { ...text(128), pattern: "^[A-Za-z0-9._:-]+$" },
   completion_criteria: list(text(500), 20), max_steps: integer(1, 20), max_parallelism: integer(1, 3),
   max_replans: integer(0, 10), max_runtime_seconds: integer(30, 86_400), max_model_calls: integer(1, 100),
 }, ["objective", "autonomy_profile"]), (input, context) => context.shouldAccept ? server.createGoal(input, context.shouldAccept) : server.createGoal(input), mutation);

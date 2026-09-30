@@ -86,6 +86,44 @@ def create(client: TestClient, headers: dict[str, str]) -> dict[str, Any]:
     return response.json()
 
 
+def test_failed_recapture_keeps_prior_pages_and_reports_robots_reason(
+    client: TestClient, paired_headers: dict[str, str]
+) -> None:
+    project = command(client, paired_headers, create(client, paired_headers), "capture")
+    service = client.app.state.website_workflow
+    old_capture = project["capture"]
+
+    class UnavailableRobots:
+        def get(self, url: str, **kwargs: Any) -> FetchResponse:
+            assert url.endswith("/robots.txt")
+            return FetchResponse(url, 503, {"content-type": "text/plain"}, b"unavailable")
+
+    service.fetcher = UnavailableRobots()
+    response = client.post(
+        f"/website-projects/{project['id']}/commands",
+        headers=paired_headers,
+        json={
+            "request_id": "failed-recapture",
+            "expected_version": project["version"],
+            "action": "capture",
+        },
+    )
+    assert response.status_code == 202
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        result = client.get(f"/website-projects/{project['id']}", headers=paired_headers).json()
+        if result["status"] == "failed":
+            break
+        time.sleep(0.01)
+    assert result["status"] == "failed"
+    assert "robots.txt" in result["error"] and "no_source_pages" not in result["error"]
+    assert result["capture"] == old_capture
+    assert "failed_capture_dir" not in result
+    private = service.store.get(project["id"])
+    failed = service._read(f"{private['failed_capture_dir']}/failed-dossier.json")
+    assert failed["pages"] == [] and failed["coverage"]["blocked"] == 1
+
+
 def command(
     client: TestClient, headers: dict[str, str], project: dict[str, Any], action: str, **extra: Any
 ) -> dict[str, Any]:

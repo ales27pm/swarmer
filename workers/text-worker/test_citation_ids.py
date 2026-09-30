@@ -67,7 +67,7 @@ def test_native_source_ids_project_evidence_and_resolve_exact_urls(
             "snippet": "Atelier 🧑‍🎨. Détail [URL omitted]",
         }
     ]
-    assert body["options"] == {"temperature": 0, "num_predict": 512, "num_gpu": 0}
+    assert body["options"] == {"temperature": 0, "num_predict": 2912, "num_gpu": 0}
     assert body["think"] is False
     schema = Draft202012Validator(body["format"])
     schema.validate(private)
@@ -76,6 +76,65 @@ def test_native_source_ids_project_evidence_and_resolve_exact_urls(
         with pytest.raises(ValidationError):
             schema.validate({**private, "source_ids": invalid})
     assert "source_ids" not in worker.RESPONSE_SCHEMA["properties"]
+
+
+def test_transmitted_citation_example_matches_the_sourced_contract(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = sourced_payload(
+        {**research_source(), "url": "https://docs.python.org/3/library/sqlite3.html"},
+        {**research_source(), "url": "https://www.sqlite.org/whentouse.html"},
+    )
+    supplied = {
+        **draft(),
+        "text": "Une première information [S1]. Une seconde information [S2].",
+        "source_ids": ["S1", "S2"],
+    }
+    generator, connection = generator_for(worker, monkeypatch, stream(supplied))
+    generator.generate(value, ensure_active=lambda: None)
+    requests = [call for call in connection.calls if call[0] == "POST"]
+    assert len(requests) == 1
+    body = requests[0][2]
+    system = body["messages"][0]["content"]
+    example = json.loads(
+        next(line for line in system.splitlines() if line.startswith('{"schema_version"'))
+    )
+    Draft202012Validator(body["format"]).validate(example)
+    decoded = worker._decode_model_result(example, value)
+    assert decoded["text"].startswith(example["text"])
+    assert decoded["text"].endswith(
+        "[S1] <https://docs.python.org/3/library/sqlite3.html>\n"
+        "[S2] <https://www.sqlite.org/whentouse.html>"
+    )
+    assert "not factual evidence and not text to copy" in system
+    assert "Markers appearing only in summary do not satisfy" in system
+
+
+@pytest.mark.parametrize(
+    "text,summary",
+    [
+        ("Le document contient des informations sans citations.", "Résumé."),
+        ("Le document contient des informations sans citations.", "Résumé [S1] [S2]."),
+        ("Une information étayée [S1]. Une seconde sans référence.", "Résumé."),
+    ],
+)
+def test_selected_sources_without_all_inline_markers_remain_rejected_without_retry(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch, text: str, summary: str
+) -> None:
+    # Regression of the direct model qualification: source_ids was populated,
+    # but the delivered text had no citation markers. Never invent them afterward.
+    value = sourced_payload(
+        {**research_source(), "url": "https://docs.python.org/3/library/sqlite3.html"},
+        {**research_source(), "url": "https://www.sqlite.org/whentouse.html"},
+    )
+    generator, connection = generator_for(
+        worker,
+        monkeypatch,
+        stream({**draft(), "text": text, "summary": summary, "source_ids": ["S1", "S2"]}),
+    )
+    with pytest.raises(worker.GenerationError, match="selected source must have a reference"):
+        generator.generate(value, ensure_active=lambda: None)
+    assert len([call for call in connection.calls if call[0] == "POST"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -94,7 +153,11 @@ def test_native_decoder_rejects_invalid_selected_ids_even_if_model_ignores_schem
     "reference,ids", [("S99", ["S1"]), ("S1", []), ("S01", ["S1"]), ("Sx", ["S1"])]
 )
 def test_unknown_or_unselected_markers_are_rejected_in_both_text_fields(
-    worker: ModuleType, monkeypatch: pytest.MonkeyPatch, key: str, reference: str, ids: list[str]
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    reference: str,
+    ids: list[str],
 ) -> None:
     private = {**draft(), key: f"Information [{reference}].", "source_ids": ids}
     generator, _ = generator_for(worker, monkeypatch, stream(private))
@@ -147,7 +210,9 @@ def test_captured_facebook_rewrite_cannot_survive_but_id_preserves_original(
         generator.generate(value, ensure_active=lambda: None)
     assert worker.failure_reason(error.value) == "unsupported_citation"
     generator, connection = generator_for(
-        worker, monkeypatch, stream({**draft(), "source_ids": ["S1"]})
+        worker,
+        monkeypatch,
+        stream({**draft(), "text": draft()["text"] + " [S1]", "source_ids": ["S1"]}),
     )
     result = generator.generate(value, ensure_active=lambda: None)
     assert result["text"].endswith("[S1] <" + fixture["original_url"] + ">")
@@ -160,7 +225,7 @@ def test_exact_final_utf8_boundary_counts_attached_urls(
 ) -> None:
     value = sourced_payload({**research_source(), "url": "https://é.example/été"})
     suffix = "\n\n[S1] <https://é.example/été>"
-    text = "é" + "a" * (worker.MAX_TEXT_BYTES - len(suffix.encode()) - 2)
+    text = "é" + "a" * (worker.MAX_TEXT_BYTES - len(suffix.encode()) - 7) + " [S1]"
     private = {**draft(), "text": text, "source_ids": ["S1"]}
     generator, _ = generator_for(worker, monkeypatch, stream(private))
     result = generator.generate(value, ensure_active=lambda: None)
@@ -174,13 +239,21 @@ def test_all_five_sources_and_empty_selection_are_bounded(
     worker: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sources = [{**research_source(), "url": f"https://example.org/{index}"} for index in range(5)]
-    private = {**draft(), "source_ids": ["S5", "S1"]}
+    private = {
+        **draft(),
+        "text": "Sources utiles [S5] et [S1].",
+        "source_ids": ["S5", "S1"],
+    }
     generator, connection = generator_for(worker, monkeypatch, stream(private))
     result = generator.generate(sourced_payload(*sources), ensure_active=lambda: None)
     assert result["text"].endswith("[S5] <https://example.org/4>\n[S1] <https://example.org/0>")
     body = next(call[2] for call in connection.calls if call[0] == "POST")
     assert body["format"]["properties"]["source_ids"]["maxItems"] == 5
-    private = {**draft(), "text": "Les extraits sont insuffisants pour répondre.", "source_ids": []}
+    private = {
+        **draft(),
+        "text": "Les extraits sont insuffisants pour répondre.",
+        "source_ids": [],
+    }
     generator, _ = generator_for(worker, monkeypatch, stream(private))
     result = generator.generate(sourced_payload(), ensure_active=lambda: None)
     assert result["text"] == private["text"] and "source_ids" not in result
@@ -214,7 +287,7 @@ def test_unsourced_transport_and_historical_canonical_results_are_unchanged(
     assert generator.generate(value, ensure_active=lambda: None) == legacy
     body = next(call[2] for call in connection.calls if call[0] == "POST")
     assert body["format"] == worker.MODEL_RESPONSE_SCHEMA
-    assert body["messages"][0]["content"] == worker.SYSTEM_PROMPT
+    assert body["messages"][0]["content"].startswith(worker.SYSTEM_PROMPT)
     assert json.loads(body["messages"][1]["content"]) == value
     with pytest.raises(worker.GenerationError):
         worker.validate_result({**legacy, "source_ids": []}, value)
@@ -231,7 +304,11 @@ def test_sourced_run_once_submits_only_canonical_result_accepted_by_server(
     client = FakeClient()
     client.job["payload"] = sourced_payload()
     monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
-    generator, _ = generator_for(worker, monkeypatch, stream({**draft(), "source_ids": ["S1"]}))
+    generator, _ = generator_for(
+        worker,
+        monkeypatch,
+        stream({**draft(), "text": draft()["text"] + " [S1]", "source_ids": ["S1"]}),
+    )
     assert worker.run_once("http://127.0.0.1", "agent", "secret", generator)
     assert len(client.submitted) == 1 and client.renewals == 2
     submitted = client.submitted[0]

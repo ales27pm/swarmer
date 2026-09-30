@@ -139,18 +139,18 @@ class OpenAICompactionProvider:
         if self.reasoning_effort is not None:
             body["reasoning_effort"] = self.reasoning_effort
         async with asyncio.timeout(self.timeout_seconds):
-            async with httpx.AsyncClient(
-                timeout=self.timeout_seconds, transport=self.transport, follow_redirects=False
-            ) as client:
-                async with client.stream(
-                    "POST", f"{self.base_url}/chat/completions", json=body
-                ) as response:
-                    response.raise_for_status()
-                    chunks = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        chunks.extend(chunk)
-                        if len(chunks) > 64_000:
-                            raise CompactionInvalid("provider response too large")
+            async with (
+                httpx.AsyncClient(
+                    timeout=self.timeout_seconds, transport=self.transport, follow_redirects=False
+                ) as client,
+                client.stream("POST", f"{self.base_url}/chat/completions", json=body) as response,
+            ):
+                response.raise_for_status()
+                chunks = bytearray()
+                async for chunk in response.aiter_bytes():
+                    chunks.extend(chunk)
+                    if len(chunks) > 64_000:
+                        raise CompactionInvalid("provider response too large")
         try:
             envelope = json.loads(chunks)
             choice = envelope["choices"][0]
@@ -335,6 +335,10 @@ class ProjectCompactionService:
             cached = await self._cached(key)
             if cached is None:
                 raise ProjectContextConflict("compaction claim disappeared")
+            async with aiosqlite.connect(self.context.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN IMMEDIATE")
+                await self.context.require_fingerprint_locked(db, goal_id, state["fingerprint"])
             return cached
         call_id: str | None = None
         try:
