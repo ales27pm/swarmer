@@ -154,7 +154,7 @@ not exhaustive process telemetry; the independent browser run is separate.
 The test confirms the bootstrap correction and exposes a further adherence
 gap: the browser Docker profile does not inspect Chromium options in generated
 tests. A scoped static preflight now rejects recognized
-explicit sandbox-disabling calls before installation/execution and return a
+explicit sandbox-disabling calls before installation/execution and returns a
 repair diagnostic. It must not be described as enforcement against dynamically
 constructed arguments or arbitrary generated code.
 
@@ -176,5 +176,32 @@ preflight proves that an arbitrary browser process is sandboxed.
 Local validation: **747 passed, 5 skipped** across the worker suite; **21**
 targeted policy tests cover actual known call forms, false positives, aliases,
 shadowing, bounded failure handling, no subprocess on rejection, and propagation
-to a failed project check. Ruff, mypy and `git diff --check` pass. Deployment and
-the static probe against the exact generated test remain pending.
+to a failed project check. Ruff, mypy and `git diff --check` pass.
+
+Implementation commit `fe08512318b3f0cf933eb921dfabdfb850e4e03b` is pushed and
+deployed as worker `project-browser-policy-d59be8bf3cf4286d441d`. Only
+`runtime.py` changes against the bootstrap predecessor. Independent verification
+at 20:16:09 UTC confirms 11 host sources / 10 mounted sources, six active
+services, five fresh heartbeats, unchanged API/schema/runtime configuration,
+and 52 strictly identical protected fingerprints. No database restoration or
+new model invocation was needed for this deployment.
+
+- Fresh baseline:
+  `b27aa3a8f5f5f95b718eb8185b5a44857ba84d287d11bebb8f4428ff1309ddd7`.
+- Independent verification receipt SHA-256:
+  `5821ddb21d7839c4562e52a480847107dcb5678146de35a261e96abb2a92d081`.
+
+The single static probe passed at 20:17:26 UTC against the deployed runtime
+SHA-256 `4954e8e191521ef610c2ce9c5544836d3824bc1c0052941cbe1c5e3c168ea71c`.
+The exact generated revision `5b4b539f` test was rejected at
+`tests/test_todo.py:40` with `browser_sandbox_disabled`. No project code,
+browser, child process or model was executed, and no backend record changed.
+This is deployed-code validation against a real artifact, not a new end-to-end
+repair or browser run.
+
+No complete application success, autonomous dependency repair or iPhone runtime
+proof is claimed by these deployments. The remaining qualification must correct
+the test configuration/lifecycle, repair the declared Flask dependency, and
+then expose/fix the two observed application defects through actual checks.
+The 64,000-token setting remains active, but the observed inputs do not fill
+that window and therefore do not establish full-window performance or quality.
