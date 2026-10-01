@@ -11,6 +11,7 @@ from pathlib import Path
 
 SOURCES = (
     "workers/project-worker/project_worker.py",
+    "workers/project-worker/model_transport.py",
     "workers/project-worker/project_contract.py",
     "workers/project-worker/agent_capsule.py",
     "workers/project-worker/runtime.py",

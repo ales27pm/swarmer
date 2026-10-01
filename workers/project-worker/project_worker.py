@@ -22,6 +22,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from model_transport import (
+    build_model_transport_receipt,
+    new_model_attempt_id,
+    utc_timestamp,
+)
 from project_contract import (
     MAX_CONTROL_BYTES,
     MAX_PATCH_BYTES,
@@ -57,6 +62,10 @@ MAX_ADDRESS_BYTES = 8_000
 MAX_RECOVERY_PROMPT_BYTES = 10_000
 MAX_RECOVERY_OUTPUT_TOKENS = 512
 MAX_RECOVERY_EDIT_CHARACTERS = 800
+TEST_PATH_PATTERNS = {
+    "python": r"^(?:[A-Za-z0-9_.@-]+/)*(?:test_[A-Za-z0-9_.@-]+|[A-Za-z0-9_.@-]+_test)\.py$",
+    "node": r"^(?:[A-Za-z0-9_.@-]+/)*[A-Za-z0-9_.@-]+\.test\.(?:js|mjs|cjs)$",
+}
 INCOMPLETE_RESPONSE_DIAGNOSTIC = (
     "The model response was incomplete. No edits were accepted. "
     "Return a smaller complete JSON file-edit batch in the next iteration."
@@ -122,8 +131,9 @@ file. Use ONE of edits, patches, deletions, requested_checks; leave others empty
 Repairs may change up to 3 paths. Prefer a smaller complete batch over
 truncating JSON or writing placeholder chunks. Use continue while work remains.
 Keep message to one sentence, the milestone plan concise, and run instructions brief.
-Keep the full concise milestone plan so later iterations finish the application,
-README.md, dependency manifests and real tests. No placeholder files or fake tests.
+Keep the full app, dependency and test plan concise.
+Setup belongs in run_instructions; README.md is optional unless requested.
+Respect file scope. No placeholders or fake tests.
 edits is an array of {path,content} with COMPLETE replacement file contents.
 For small repairs prefer patches: [{path,span_id,new}]. Choose span_id from the
 displayed editable_spans table using its real source line coordinates. It binds
@@ -152,8 +162,8 @@ When returning any edits or patches, set focus_paths to[]. Use manifest-relative
 paths such as app.py, never absolute paths copied from runtime tracebacks.
 Never replace an omitted existing file or partially shown file. Focus again to
 read the next labelled fragment of an oversized file. Split large modules into
-smaller files when their complete original content is available. Record durable
-user decisions and requirements in README.md to preserve them across follow-ups.
+smaller files when their complete original content is available. Record decisions
+in in-scope docs; the source-backed capsule retains requirements across turns.
 Use canonical relative paths. No secrets, .env, .git, credential files, binary
 files, vendored dependencies, generated build output, or node_modules.
 For Python use Python3.12. Put real pytest-compatible tests under tests/ with
@@ -960,6 +970,17 @@ def missing_node_manifest(payload: dict[str, Any]) -> bool:
     )
 
 
+def python_collected_no_tests(check: dict[str, Any]) -> bool:
+    return (
+        check.get("status") == "failed"
+        and check.get("exit_code") == 5
+        and check.get("command") == ["python", "-m", "pytest", "-q"]
+        and re.search(
+            r"(?m)^no tests ran(?: in [0-9.]+s)?\r?$", str(check.get("output", ""))
+        ) is not None
+    )
+
+
 def node_collected_no_tests(check: dict[str, Any]) -> bool:
     if (
         check.get("command") != ["node", "--test"]
@@ -1631,6 +1652,9 @@ class ProjectGenerator:
         self.prompt_max_bytes = prompt_max_bytes
         self.last_metrics: dict[str, int] = {}
         self.last_transport_metrics: dict[str, int] = {}
+        self.last_transport_receipt: dict[str, Any] = {}
+        self.receipt_job_id: str | None = None
+        self.receipt_goal_id: str | None = None
         self.last_visible_paths: set[str] = set()
         self.last_guidance_reads: list[dict[str, str]] = []
         self.runtime_instruction = (
@@ -1645,6 +1669,7 @@ class ProjectGenerator:
         ensure_active = ensure_active or (lambda: None)
         self.last_metrics = {}
         self.last_transport_metrics = {}
+        self.last_transport_receipt = {}
         self.last_guidance_reads = []
         context = model_context(
             payload,
@@ -1669,11 +1694,8 @@ class ProjectGenerator:
             last_user
         )
         needs_repair = any(check["status"] == "failed" for check in payload["checks"])
-        needs_tests = any(
-            check["status"] == "failed"
-            and check["exit_code"] == 5
-            and check["command"] == ["python", "-m", "pytest", "-q"]
-            and re.search(r"(?m)^no tests ran(?: in [0-9.]+s)?\r?$", check["output"])
+        needs_tests = any(python_collected_no_tests(check) for check in payload["checks"]) and all(
+            check["status"] != "failed" or python_collected_no_tests(check)
             for check in payload["checks"]
         )
         needs_node_manifest = missing_node_manifest(payload)
@@ -1689,6 +1711,11 @@ class ProjectGenerator:
             # These are historical non-native receipts, not instructions to
             # replace a Swift project with Python/Node repair scaffolding.
             needs_repair = needs_tests = needs_node_manifest = needs_node_tests = False
+        test_creation_kind = (
+            ("node" if needs_node_tests else "python" if needs_tests else None)
+            if not needs_node_manifest
+            else None
+        )
         schema = copy.deepcopy(STEP_SCHEMA)
         existing_paths = [item["path"] for item in payload["files"]]
         if existing_paths:
@@ -1722,6 +1749,18 @@ class ProjectGenerator:
                 first_field: schema["properties"][first_field],
                 **schema["properties"],
             }
+        if test_creation_kind:
+            # Constrain both the advertised grammar and the parsed response.
+            # A filename is only a discovery prerequisite; the runner still
+            # has to execute real tests against the resulting source.
+            schema["properties"]["edits"]["items"]["properties"]["path"] = {
+                "type": "string",
+                "pattern": TEST_PATH_PATTERNS[test_creation_kind],
+            }
+            schema["properties"]["runtime"]["enum"] = [
+                test_creation_kind,
+                "python_node",
+            ]
         if needs_node_manifest:
             current_task = (
                 "The actual npm build failed and the root package.json is missing. "
@@ -1866,7 +1905,11 @@ class ProjectGenerator:
         def workspace_message() -> str:
             nonlocal addresses
             refresh_project_guidance(context, payload)
-            addresses = addressed_patch_spans(context, payload, max_bytes=address_budget)
+            addresses = (
+                {}
+                if test_creation_kind
+                else addressed_patch_spans(context, payload, max_bytes=address_budget)
+            )
             context["editable_spans"] = [
                 {key: value for key, value in item.items() if key != "old"}
                 for item in addresses.values()
@@ -1990,6 +2033,11 @@ class ProjectGenerator:
             "terminal_received": 0,
         }
         attempt_started = time.perf_counter()
+        attempt_id = new_model_attempt_id()
+        started_at = utc_timestamp()
+        envelope: dict[str, Any] | None = None
+        transport_outcome = "error"
+        failure_category: str | None = None
         timed_out = False
         deadline = time.monotonic() + MAX_MODEL_WALL_SECONDS
         try:
@@ -2002,7 +2050,6 @@ class ProjectGenerator:
                     raise model_http_error(response.status)
                 total_bytes = 0
                 content_parts: list[str] = []
-                envelope: dict[str, Any] | None = None
                 while True:
                     ensure_active()
                     remaining = deadline - time.monotonic()
@@ -2045,18 +2092,36 @@ class ProjectGenerator:
                 if envelope is None:
                     raise ModelStepError(INCOMPLETE_RESPONSE_DIAGNOSTIC)
                 content = "".join(content_parts)
+                transport_outcome = (
+                    "success" if envelope.get("done_reason") == "stop" else "incomplete"
+                )
+                failure_category = None if transport_outcome == "success" else "incomplete_response"
         except (ModelTimeoutError, TimeoutError) as exc:
             timed_out = True
+            transport_outcome, failure_category = "timeout", "timeout"
             raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
         except urllib.error.HTTPError as exc:
+            failure_category = "http_error"
             raise model_http_error(exc.code) from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
                 timed_out = True
+                transport_outcome, failure_category = "timeout", "timeout"
                 raise ModelTimeoutError(MODEL_TIMEOUT_DIAGNOSTIC) from exc
+            failure_category = "connection_error"
             raise ModelTransportError("connection_error") from exc
         except OSError as exc:
+            failure_category = "connection_error"
             raise ModelTransportError("connection_error") from exc
+        except (protocol.LeaseLost, protocol.LeaseUnavailable):
+            transport_outcome, failure_category = "cancelled", "cancelled"
+            raise
+        except ModelStepError:
+            transport_outcome, failure_category = "incomplete", "invalid_response"
+            raise
+        except ModelTransportError as exc:
+            failure_category = exc.category
+            raise
         finally:
             self.last_transport_metrics["elapsed_ms"] = max(
                 0, int((time.perf_counter() - attempt_started) * 1_000)
@@ -2066,6 +2131,24 @@ class ProjectGenerator:
                     "project model timeout metrics: %s",
                     json.dumps(self.last_transport_metrics),
                 )
+            self.last_transport_receipt = build_model_transport_receipt(
+                attempt_id=attempt_id,
+                started_at=started_at,
+                job_id=self.receipt_job_id,
+                goal_id=self.receipt_goal_id,
+                outcome=transport_outcome,
+                failure_category=failure_category,
+                context_tokens=self.context_tokens,
+                prompt_max_bytes=self.prompt_max_bytes,
+                wall_timeout_seconds=MAX_MODEL_WALL_SECONDS,
+                read_timeout_seconds=self.timeout_seconds,
+                transport_metrics=self.last_transport_metrics,
+                terminal_envelope=envelope,
+            )
+            LOGGER.info(
+                "project model transport receipt: %s",
+                json.dumps(self.last_transport_receipt),
+            )
         try:
             self.last_metrics = {
                 key: envelope[key]
@@ -2095,11 +2178,24 @@ class ProjectGenerator:
                 # Native model grammars are advisory: enforce the final-prompt
                 # source boundary locally too, without another model call.
                 raise ModelStepError(REDUNDANT_READ_DIAGNOSTIC)
-            if (needs_tests or needs_node_tests) and not step["edits"] and not step["focus_paths"]:
+            if (
+                test_creation_kind
+                and not step["focus_paths"]
+                and (
+                    not step["edits"]
+                    or any(
+                        not re.fullmatch(TEST_PATH_PATTERNS[test_creation_kind], edit["path"])
+                        for edit in step["edits"]
+                    )
+                    or step["runtime"] not in {test_creation_kind, "python_node"}
+                )
+            ):
                 raise ModelStepError(
-                    "The test runner found no tests, but the model returned no test file. "
-                    "No changes were accepted. Create a small complete test file or read "
-                    "the application source first."
+                    "The test runner found no tests, but the model returned no test file "
+                    "discoverable by that runner. No changes were accepted. Create one "
+                    "small complete pytest test_*.py/*_test.py or Node *.test.js/*.test.mjs "
+                    "file for the failing runner, or read omitted application source first. "
+                    "Application, manifest and documentation edits alone are not tests."
                 )
             if (
                 needs_node_manifest
@@ -2333,8 +2429,6 @@ def run_iteration(
                 missing.append("application source files")
             if not step["plan"]:
                 missing.append("a nonempty plan")
-            if not any(item["path"].casefold() == "readme.md" for item in files):
-                missing.append("README.md with requirements and setup instructions")
             if not step["run_instructions"].strip():
                 missing.append("run_instructions")
             if not checks or not evidence["build_passed"]:
@@ -2421,6 +2515,9 @@ def run_once(
                 raise ProjectError("project operation exhausted its bounded execution time")
 
         try:
+            # Correlation comes from the authenticated claim, never model text.
+            generator.receipt_job_id = job_id
+            generator.receipt_goal_id = job.get("goal_run_id")
             result = run_iteration(parse_payload(job), generator, runner, ensure_job_active)
             result_body: dict[str, Any] = {"status": "completed", "result": result}
         except ModelTransportError as exc:
@@ -2441,6 +2538,8 @@ def run_once(
         LOGGER.warning("control-plane operation failed; leaving job for lease recovery")
         return False
     finally:
+        generator.receipt_job_id = None
+        generator.receipt_goal_id = None
         if heartbeat is not None:
             heartbeat.stop()
             try:
@@ -2474,6 +2573,7 @@ def model_budgets_from_environment() -> tuple[int, int]:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()

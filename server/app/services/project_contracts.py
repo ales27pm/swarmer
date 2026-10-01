@@ -186,8 +186,6 @@ class ProjectResult(NativeValidationState):
                 raise ValueError("completed project cannot require further inspection")
             if not self.files or not self.plan or not self.run_instructions.strip():
                 raise ValueError("completed project requires files, plan, and run instructions")
-            if not any(file.path.lower().startswith("readme") for file in self.files):
-                raise ValueError("completed project requires a README")
             if not self.checks or any(check.status != "passed" for check in self.checks):
                 raise ValueError("completed project requires successful executed checks")
             if not any(

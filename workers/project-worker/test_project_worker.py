@@ -1452,6 +1452,15 @@ def test_source_priority_keeps_app_and_user_requirements_over_old_progress_and_s
         ],
     }
     captured = []
+    response = step(
+        edits=[
+            {
+                "path": "tests/test_app.py",
+                "content": "from app import API_START, API_END\n"
+                "def test_api_boundaries():\n    assert API_START and API_END\n",
+            }
+        ]
+    )
 
     class Response(io.BytesIO):
         status = 200
@@ -1462,7 +1471,7 @@ def test_source_priority_keeps_app_and_user_requirements_over_old_progress_and_s
             return Response(
                 json.dumps(
                     {
-                        "message": {"content": json.dumps(single_file_step())},
+                        "message": {"content": json.dumps(response)},
                         "done": True,
                         "done_reason": "stop",
                     }
@@ -1656,7 +1665,19 @@ def test_real_empty_node_test_receipt_prioritizes_real_test_creation(
         ],
         "checks": [node_check(["node", "--test"], NODE_EMPTY_TAP)],
     }
-    request = capture_project_request(monkeypatch, data)
+    response = step(
+        runtime="node",
+        edits=[
+            {
+                "path": "tests/app.test.js",
+                "content": "import test from 'node:test';\n"
+                "import assert from 'node:assert/strict';\n"
+                "import { quantity } from '../app.js';\n"
+                "test('quantity converts strings', () => assert.equal(quantity('3'), 3));\n",
+            }
+        ],
+    )
+    request = capture_project_request(monkeypatch, data, response)
     task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
     assert "Node test runner collected NO TESTS" in task
     assert "node:test" in task and "*.test.js" in task and "*.test.mjs" in task
@@ -1673,7 +1694,12 @@ def test_missing_tests_retains_latest_users_narrow_module_scope(
     is_python = runtime == "python"
     data = {
         **payload(),
-        "files": [{"path": "store.py" if is_python else "store.js", "content": "# Store\n"}],
+        "files": [
+            {
+                "path": "store.py" if is_python else "store.js",
+                "content": "class Store:\n    pass\n" if is_python else "export class Store {}\n",
+            }
+        ],
         "conversation": [
             {"role": "user", "content": "Create the entire CRM application."},
             {"role": "assistant", "content": "The Store module is present."},
@@ -1687,7 +1713,24 @@ def test_missing_tests_retains_latest_users_narrow_module_scope(
             )
         ],
     }
-    request = capture_project_request(monkeypatch, data)
+    response = step(
+        runtime=runtime,
+        edits=[
+            {
+                "path": "tests/test_store.py" if is_python else "tests/store.test.js",
+                "content": (
+                    "from store import Store\n"
+                    "def test_store_can_be_created():\n    assert isinstance(Store(), Store)\n"
+                    if is_python
+                    else "import test from 'node:test';\n"
+                    "import assert from 'node:assert/strict';\n"
+                    "import { Store } from '../store.js';\n"
+                    "test('Store construction', () => assert.ok(new Store() instanceof Store));\n"
+                ),
+            }
+        ],
+    )
+    request = capture_project_request(monkeypatch, data, response)
     task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
     assert "collected NO TESTS" in task and latest_user in task
     assert "requested module and scope" in task
@@ -1704,7 +1747,7 @@ def test_missing_tests_cannot_select_an_empty_mutation(
         "files": [
             {
                 "path": path,
-                "content": "value = 1\n"
+                "content": ("value = 1\n" if runtime == "python" else "export const value = 1;\n")
                 + ("# context\n" if runtime == "python" else "// context\n") * 3_000,
             }
         ],
@@ -1716,9 +1759,25 @@ def test_missing_tests_cannot_select_an_empty_mutation(
     }
     if runtime == "node":
         data["files"].append({"path": "package.json", "content": '{"type":"module"}'})
-    request = capture_project_request(monkeypatch, data)
+    response = step(
+        runtime=runtime,
+        edits=[
+            {
+                "path": "tests/test_app.py" if runtime == "python" else "tests/app.test.js",
+                "content": (
+                    "from app import value\ndef test_value():\n    assert value == 1\n"
+                    if runtime == "python"
+                    else "import test from 'node:test';\n"
+                    "import assert from 'node:assert/strict';\n"
+                    "import { value } from '../app.js';\n"
+                    "test('value', () => assert.equal(value, 1));\n"
+                ),
+            }
+        ],
+    )
+    request = capture_project_request(monkeypatch, data, response)
     validator = Draft202012Validator(request["format"])
-    empty = step(action="continue", edits=[], patches=[], focus_paths=[])
+    empty = step(action="continue", runtime=runtime, edits=[], patches=[], focus_paths=[])
     assert not validator.is_valid(empty)
     read = {**empty, "focus_paths": [path]}
     assert validator.is_valid(read)
@@ -1809,14 +1868,31 @@ def test_other_repairs_do_not_impose_a_node_manifest(
     files: list[dict[str, str]],
     check: dict[str, Any],
 ) -> None:
-    request = capture_project_request(monkeypatch, {**payload(), "files": files, "checks": [check]})
-    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
-    assert "root package.json is missing" not in task
+    python_tests = check["command"] == ["python", "-m", "pytest", "-q"]
     response = {
-        **step(runtime="node", edits=[{"path": "app.js", "content": "export const x=1;"}]),
+        **step(
+            runtime="python" if python_tests else "node",
+            edits=[
+                {
+                    "path": "tests/test_app.py" if python_tests else "app.js",
+                    "content": (
+                        "import runpy\ndef test_greeting(capsys):\n"
+                        "    runpy.run_path('app.py')\n"
+                        "    assert capsys.readouterr().out == 'hello\\n'\n"
+                        if python_tests
+                        else "export const x=1;"
+                    ),
+                }
+            ],
+        ),
         "patches": [],
         "focus_paths": [],
     }
+    request = capture_project_request(
+        monkeypatch, {**payload(), "files": files, "checks": [check]}, response
+    )
+    task = request["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:")[1]
+    assert "root package.json is missing" not in task
     assert Draft202012Validator(request["format"]).is_valid(response)
 
 
@@ -2558,10 +2634,21 @@ def test_unread_existing_files_are_not_overwritten_by_model_guesses() -> None:
     assert runner.calls == 0
 
 
-def test_readiness_diagnostic_names_missing_readme_even_when_tests_pass() -> None:
-    response = step(edits=[{"path": "app.py", "content": "x=1"}])
-    result = worker.run_iteration(payload(), Generator(response), Runner(), lambda: None)
-    assert result["action"] == "continue" and "README.md" in result["message"]
+@pytest.mark.parametrize("instructions", ["python app.py", "", "   "])
+def test_readiness_accepts_inline_setup_without_readme_but_requires_instructions(
+    instructions: str,
+) -> None:
+    response = step(edits=[{"path": "app.py", "content": "x=1"}], run_instructions=instructions)
+    runner = Runner()
+    result = worker.run_iteration(payload(), Generator(response), runner, lambda: None)
+    assert runner.calls == 1 and result["checks"][0]["status"] == "passed"
+    assert {item["path"] for item in result["files"]} == {"app.py"}
+    assert "README.md" not in result["message"]
+    if instructions.strip():
+        assert result["action"] == "complete"
+        assert result["run_instructions"] == instructions
+    else:
+        assert result["action"] == "continue" and "run_instructions" in result["message"]
     assert "failed check" not in result["message"]
 
 

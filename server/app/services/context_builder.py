@@ -50,6 +50,9 @@ _ADDITIONAL_PATH = re.compile(
 _GENERIC_ABSOLUTE_PATH = re.compile(
     r"(?<![A-Za-z0-9/:])(?:/(?!/)[^\s\"',;]+|[A-Za-z]:\\[^\s\"',;]+)"
 )
+# Public reference literals only: retaining an instruction does not claim that
+# either executable is installed or authorize its use. Runtime probes own that.
+_PUBLIC_RUNTIME_EXECUTABLE_REFERENCES = frozenset({"/usr/bin/chromium", "/usr/bin/chromedriver"})
 _MAX_SAFE_TEXT_CHARS = 4_000
 
 SCHEMA = """
@@ -1022,9 +1025,19 @@ def _redacted_context_text(value: str) -> str:
     redacted = _CREDENTIAL_URL.sub("<redacted-credential-url>", redacted)
     redacted = _ADDITIONAL_SECRET.sub("<redacted-secret>", redacted)
     redacted = _ADDITIONAL_PATH.sub("<protected-path>", redacted)
-    redacted = _GENERIC_ABSOLUTE_PATH.sub("<protected-path>", redacted)
+    redacted = _GENERIC_ABSOLUTE_PATH.sub(_redact_absolute_path, redacted)
     redacted = "".join(max(character, " ") for character in redacted)
     return _WHITESPACE.sub(" ", redacted).strip()
+
+
+def _redact_absolute_path(match: re.Match[str]) -> str:
+    path = match.group(0)
+    # Markdown/prose closing punctuation is not part of the reference. Do not
+    # normalize case, Unicode, traversal, suffixes, descendants or URL encoding.
+    reference = path.rstrip(".,:!?)]}`")
+    if reference in _PUBLIC_RUNTIME_EXECUTABLE_REFERENCES:
+        return path
+    return "<protected-path>"
 
 
 def _goal_card(row: aiosqlite.Row) -> ContextCard:

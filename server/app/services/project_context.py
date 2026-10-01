@@ -66,7 +66,7 @@ class ProjectContextService:
         experiences = await read_worker_experiences(db, str(goal["project_id"]))
         fingerprint = digest(
             {
-                "capsule_version": 2,
+                "capsule_version": 3,
                 "operating_guidance_sha256": guide["sha256"],
                 "experiences": experiences,
                 "goal_id": goal_id,
