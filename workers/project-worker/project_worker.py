@@ -981,6 +981,18 @@ def python_collected_no_tests(check: dict[str, Any]) -> bool:
     )
 
 
+def python_build_without_source(check: dict[str, Any], files: list[dict[str, Any]]) -> bool:
+    # The trusted harness returns 1 before lint/compile when no Python file exists.
+    # Use the full accepted snapshot, never the model's selected source fragments.
+    return (
+        check.get("status") == "failed"
+        and check.get("exit_code") == 1
+        and check.get("command") == ["python", "-m", "compileall", "-q", "."]
+        # rglob("*.py") also matches directories: those are real build failures.
+        and not any(part.endswith(".py") for item in files for part in item["path"].split("/"))
+    )
+
+
 def node_collected_no_tests(check: dict[str, Any]) -> bool:
     if (
         check.get("command") != ["node", "--test"]
@@ -1695,7 +1707,9 @@ class ProjectGenerator:
         )
         needs_repair = any(check["status"] == "failed" for check in payload["checks"])
         needs_tests = any(python_collected_no_tests(check) for check in payload["checks"]) and all(
-            check["status"] != "failed" or python_collected_no_tests(check)
+            check["status"] != "failed"
+            or python_collected_no_tests(check)
+            or python_build_without_source(check, payload["files"])
             for check in payload["checks"]
         )
         needs_node_manifest = missing_node_manifest(payload)
@@ -1787,9 +1801,9 @@ class ProjectGenerator:
                 "The actual pytest run collected NO TESTS. Create pytest test files now using "
                 "edits with new tests/test_*.py paths and complete test code. Exercise the existing "
                 "application through its real API, including requested operations and persistence. "
-                "Read the shown application source; do not invent a different API. Dependency "
-                "installation already succeeded. Adding pytest to requirements does not create "
-                "tests. Preserve application behavior; report only the files actually changed."
+                "Read the shown application source; do not invent a different API. A Python "
+                "build without .py files is incomplete. Adding pytest to requirements does not "
+                "create tests. Preserve behavior and rerun the actual checks."
             )
         elif needs_repair:
             failures = "\n\n".join(
