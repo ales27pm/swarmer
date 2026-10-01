@@ -111,6 +111,27 @@ def test_passes_only_explicit_project_model_timeout(
     assert "MONGARS_CODE_TIMEOUT_SECONDS" not in environment
 
 
+def test_model_budget_settings_survive_through_execve_environment(
+    release: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MONGARS_PROJECT_MODEL_CONTEXT_TOKENS", "64000")
+    monkeypatch.setenv("MONGARS_PROJECT_PROMPT_MAX_BYTES", "50000")
+    monkeypatch.setenv("MONGARS_PROJECT_ARBITRARY_CONTEXT_SETTING", "not-allowed")
+    monkeypatch.setattr(
+        launcher, "__file__", str(release / "workers/project-worker/launch_sandboxed.py")
+    )
+    captured = []
+    monkeypatch.setattr(
+        launcher.os, "execve", lambda executable, command, env: captured.append((command, env))
+    )
+    launcher.main()
+    command, environment = captured[0]
+    assert environment["MONGARS_PROJECT_MODEL_CONTEXT_TOKENS"] == "64000"
+    assert environment["MONGARS_PROJECT_PROMPT_MAX_BYTES"] == "50000"
+    assert "MONGARS_PROJECT_ARBITRARY_CONTEXT_SETTING" not in environment
+    assert "64000" not in command and "50000" not in command
+
+
 def test_browser_profile_is_pinned_and_only_bound_read_only(
     release: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

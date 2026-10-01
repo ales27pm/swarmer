@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     project_memory_query_prefix: str = Field(default="", max_length=200)
     project_context_enabled: bool = False
     project_compaction_enabled: bool = False
+    project_context_budget_tokens: int = Field(
+        default=24_000,
+        ge=10_001,
+        le=262_144,
+        description=(
+            "Project admission budget including 2000 output and 8000 overhead reserves. "
+            "The serialized payload is conservatively counted in UTF-8 bytes, not measured "
+            "model tokens. This setting does not configure the worker or Ollama context window."
+        ),
+    )
     project_memory_hybrid_enabled: bool = False
     iphone_agenda_extended_enabled: bool = False
     project_memory_document_prefix: str = Field(default="", max_length=200)

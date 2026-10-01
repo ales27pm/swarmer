@@ -66,10 +66,17 @@ named `swarmer-project-worker-<uid>` (for example
 path for Docker bind mounts, hides host home, and makes worker source read-only.
 
 The provider uses native Ollama `/api/chat` on the validated loopback origin,
-with `num_ctx=32768`, `num_predict=2000`, and `keep_alive=10m`. Its stable system
+with defaults `num_ctx=32768`, `num_predict=2000`, and `keep_alive=10m`. Its stable system
 prefix supports Ollama's existing KV reuse; there is no invented cache-hit API or
-cloud fallback. Total prompt text is bounded to 22KB of UTF8, reserving output and
-message framing within 32K tokens. Numeric prompt/evaluation/load timings are
+cloud fallback. `MONGARS_PROJECT_MODEL_CONTEXT_TOKENS` sets the context window
+(32768 through 64000); `MONGARS_PROJECT_PROMPT_MAX_BYTES` sets the maximum UTF-8
+message content (default 22000, minimum 10000). Both must be decimal integers,
+and prompt bytes plus 2000 output tokens plus 1024 framing tokens must fit the
+context window. A coordinated 64000-token trial uses an explicit 50000-byte
+prompt budget. Source selection and final message assembly use that same budget;
+the launcher preserves both settings. Output limits, retries and deadlines do
+not increase. The server handoff budget is a separate control-plane setting
+and must be coordinated for larger payloads. Numeric prompt/evaluation/load timings are
 available on the generator for diagnosis; token counts alone are not cache-hit
 proof. CPU-only semantic embedding retrieval is supplied by the control plane as
 up to 4 bounded historical hints; recent user instructions and source/checks take
@@ -94,8 +101,8 @@ characters and output to 512 tokens. The worker preserves the prior plan and
 runs the normal checks; it does not ask the model to repeat unchanged metadata.
 The prompt targets 10KB, removes historical hints and duplicate planning data,
 and retains the latest user message. Irreducible user/context metadata may use
-the existing 22KB hard ceiling. Node manifest/test priorities and the Python
-static-web alternative remain in effect. The model and 240-second wall budget
+the configured hard ceiling (22000 bytes by default). Node manifest/test priorities
+and the Python static-web alternative remain in effect. The model and 240-second wall budget
 do not change. Missing terminal chunks, token-limit endings and incomplete JSON
 still reject the entire batch. A second consecutive timeout still pauses the
 project without accepting files or spending a third model call.

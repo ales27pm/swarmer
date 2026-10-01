@@ -588,7 +588,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             reasoning_effort="none",
         ),
         enabled=settings.project_context_enabled and settings.project_compaction_enabled,
-        context_tokens=24000,
+        context_tokens=settings.project_context_budget_tokens,
         output_tokens=2000,
         overhead_tokens=8000,
     )

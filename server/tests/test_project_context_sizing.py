@@ -8,6 +8,7 @@ import pytest
 from app.services.agent_capsule import required_capsule_identity, validate_agent_capsule
 from app.services.project_compaction import ProjectCompactionService, ProjectContextBudgetExceeded
 from app.services.project_context import ProjectContextService
+from app.settings import Settings
 from tests.test_goal_project_runtime import _project
 from tests.test_project_compaction import Provider, setup
 from tests.test_project_memory import _count, _messages
@@ -107,6 +108,61 @@ async def test_irreducible_payload_fails_before_charging_compaction(tmp_path):
     assert provider.calls == []
     assert await _count(manager, goal) == calls
     assert await context.refresh(goal) == state
+
+
+@pytest.mark.asyncio
+async def test_64000_budget_preserves_full_payload_rejected_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("MONGARS_PROJECT_CONTEXT_BUDGET_TOKENS", raising=False)
+    settings = Settings(_env_file=None)
+    manager, goal, context, provider, service = await setup(
+        tmp_path,
+        context_tokens=settings.project_context_budget_tokens,
+        output_tokens=2_000,
+        overhead_tokens=8_000,
+    )
+    requirement = "Keep every record local; never send it over the network. " * 30
+    await _messages(manager, goal, [requirement])
+    state = await context.refresh(goal)
+    payload = {
+        "objective": "Repair the local task interface without changing its data policy.",
+        "conversation": [{"role": "user", "content": requirement}],
+        "files": [{"path": "index.html", "content": "<div>Item</div>\n" * 1_200}],
+        "checks": [{"status": "failed", "output": "Task filter is incorrect.", "exit_code": 1}],
+        "base_revision_id": "revision_current",
+        "base_sha256": "a" * 64,
+        "focus_paths": ["index.html"],
+    }
+    original = copy.deepcopy(payload)
+    calls = await _count(manager, goal)
+    with pytest.raises(ProjectContextBudgetExceeded, match="pinned requirements preserved"):
+        await service.prepare(goal, payload)
+
+    monkeypatch.setenv("MONGARS_PROJECT_CONTEXT_BUDGET_TOKENS", "64000")
+    trial = ProjectCompactionService(
+        context,
+        manager,
+        provider,
+        enabled=True,
+        context_tokens=Settings(_env_file=None).project_context_budget_tokens,
+        output_tokens=2_000,
+        overhead_tokens=8_000,
+    )
+    result = await trial.prepare(goal, payload)
+
+    assert 14_000 < trial._count(result) <= 54_000
+    for key, value in original.items():
+        assert result[key] == value
+    assert result["durable_context"] == context.prompt_state(state)
+    assert result["context_compaction"]["token_budget"]["available_input_tokens"] == 54_000
+    assert result["context_compaction"]["token_budget"]["counter"] == "conservative_utf8_bytes"
+    still_too_large = copy.deepcopy(original)
+    still_too_large["files"][0]["content"] = "x" * 60_000
+    with pytest.raises(ProjectContextBudgetExceeded, match="pinned requirements preserved"):
+        await trial.prepare(goal, still_too_large)
+    assert still_too_large["files"][0]["content"] == "x" * 60_000
+    assert payload == original
+    assert await context.refresh(goal) == state
+    assert provider.calls == [] and await _count(manager, goal) == calls
 
 
 @pytest.mark.asyncio

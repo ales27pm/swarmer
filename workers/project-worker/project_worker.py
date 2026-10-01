@@ -47,6 +47,9 @@ LOGGER = logging.getLogger("mongars.project_worker")
 _JOB_LOCK = threading.Lock()
 MAX_MODEL_RESPONSE_BYTES = 2_000_000
 MAX_PROMPT_BYTES = 22_000
+DEFAULT_MODEL_CONTEXT_TOKENS = 32_768
+MAX_MODEL_CONTEXT_TOKENS = 64_000
+MODEL_FRAMING_RESERVE_TOKENS = 1_024
 MAX_OUTPUT_TOKENS = 2_000
 MAX_MODEL_WALL_SECONDS = 240
 MAX_SPAN_BYTES = 12_000
@@ -1348,8 +1351,29 @@ def dependency_preflight_context(checks: list[dict[str, Any]]) -> dict[str, Any]
     return None
 
 
-def model_context(payload: dict[str, Any]) -> dict[str, Any]:
+def validate_model_budgets(context_tokens: int, prompt_max_bytes: int) -> None:
+    if type(context_tokens) is not int or not (
+        DEFAULT_MODEL_CONTEXT_TOKENS <= context_tokens <= MAX_MODEL_CONTEXT_TOKENS
+    ):
+        raise ValueError("project model context tokens must be an integer between 32768 and 64000")
+    if type(prompt_max_bytes) is not int or prompt_max_bytes < MAX_RECOVERY_PROMPT_BYTES:
+        raise ValueError("project prompt byte budget must be an integer of at least 10000")
+    # Byte-fallback BPE uses no more input tokens than UTF-8 bytes. Reserve the
+    # full normal output even when an individual repair uses the smaller cap.
+    if prompt_max_bytes + MAX_OUTPUT_TOKENS + MODEL_FRAMING_RESERVE_TOKENS > context_tokens:
+        raise ValueError(
+            "project context must cover prompt bytes, output tokens and framing reserve"
+        )
+
+
+def model_context(
+    payload: dict[str, Any],
+    *,
+    context_tokens: int = DEFAULT_MODEL_CONTEXT_TOKENS,
+    prompt_max_bytes: int = MAX_PROMPT_BYTES,
+) -> dict[str, Any]:
     """Bound model context while keeping the full snapshot outside the model."""
+    validate_model_budgets(context_tokens, prompt_max_bytes)
     files = payload["files"]
     diagnostics = "\n".join(item["output"] for item in payload["checks"])
     diagnostic_paths = {item["path"] for item in files if diagnostic_functions(item, diagnostics)}
@@ -1483,23 +1507,23 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     # Qwen uses byte-fallback BPE: UTF-8 bytes conservatively bound input tokens.
-    # 22000 input bytes +2000 output tokens +1024 framing reserve is below32768.
-    while prompt_size() > MAX_PROMPT_BYTES:
+    # The configured input/output/framing budgets were validated together above.
+    while prompt_size() > prompt_max_bytes:
         removable = oldest_history_index()
         if removable is None:
             break
         context["conversation"].pop(removable)
-    if prompt_size() > MAX_PROMPT_BYTES:
+    if prompt_size() > prompt_max_bytes:
         for check in context["checks"]:
             check["output"] = check["output"][-200:]
-    if prompt_size() > MAX_PROMPT_BYTES:
+    if prompt_size() > prompt_max_bytes:
         context["historical_memory_hints"] = None
-    while prompt_size() > MAX_PROMPT_BYTES and trim_dependency_evidence(context):
+    while prompt_size() > prompt_max_bytes and trim_dependency_evidence(context):
         pass
-    if prompt_size() > MAX_PROMPT_BYTES:
+    if prompt_size() > prompt_max_bytes:
         for item in context["file_manifest"]:
             item.pop("sha256")
-    if prompt_size() > MAX_PROMPT_BYTES:
+    if prompt_size() > prompt_max_bytes:
         raise ProjectError("project metadata exceeds the local model context budget")
     for item in ordered:
         selected.append(item)
@@ -1512,21 +1536,21 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         # Leave room for current source before retaining older module requests.
         # Otherwise the final request can trim history but never recover a file
         # that was already omitted here.
-        while important and prompt_size() > MAX_PROMPT_BYTES:
+        while important and prompt_size() > prompt_max_bytes:
             removable = oldest_history_index()
             if removable is None:
                 break
             context["conversation"].pop(removable)
-        while important and prompt_size() > MAX_PROMPT_BYTES and trim_dependency_evidence(context):
+        while important and prompt_size() > prompt_max_bytes and trim_dependency_evidence(context):
             pass
-        if prompt_size() <= MAX_PROMPT_BYTES:
+        if prompt_size() <= prompt_max_bytes:
             continue
         selected.pop()
         if important:
             # An oversized file is explicitly a fragment, never mislabeled as
             # complete. Repeating focus rotates through bounded text segments.
             context["selected_file_fragments"].append(source_fragment(item, payload, diagnostics))
-            if prompt_size() > MAX_PROMPT_BYTES:
+            if prompt_size() > prompt_max_bytes:
                 context["selected_file_fragments"].pop()
     refresh_project_guidance(context, payload)
     return context
@@ -1591,7 +1615,10 @@ class ProjectGenerator:
         *,
         timeout_seconds: float = 240,
         runtime_profile: dict[str, Any] | None = None,
+        context_tokens: int = DEFAULT_MODEL_CONTEXT_TOKENS,
+        prompt_max_bytes: int = MAX_PROMPT_BYTES,
     ) -> None:
+        validate_model_budgets(context_tokens, prompt_max_bytes)
         if not math.isfinite(timeout_seconds) or not 30 <= timeout_seconds <= 240:
             raise ValueError("project model timeout must be between 30 and 240 seconds")
         # Reuse origin/model validation without inheriting the legacy one-file
@@ -1600,6 +1627,8 @@ class ProjectGenerator:
         self.url = validated.url.removesuffix("/v1/chat/completions") + "/api/chat"
         self.model = validated.model
         self.timeout_seconds = timeout_seconds
+        self.context_tokens = context_tokens
+        self.prompt_max_bytes = prompt_max_bytes
         self.last_metrics: dict[str, int] = {}
         self.last_transport_metrics: dict[str, int] = {}
         self.last_visible_paths: set[str] = set()
@@ -1617,7 +1646,11 @@ class ProjectGenerator:
         self.last_metrics = {}
         self.last_transport_metrics = {}
         self.last_guidance_reads = []
-        context = model_context(payload)
+        context = model_context(
+            payload,
+            context_tokens=self.context_tokens,
+            prompt_max_bytes=self.prompt_max_bytes,
+        )
         diagnostics = "\n".join(item["output"] for item in payload["checks"])
         conversation = context.pop("conversation")
         latest_user_message = next(
@@ -1792,7 +1825,7 @@ class ProjectGenerator:
         bounded_rejection = bool(payload["files"]) and follows_model_rejection(payload)
         if bounded_rejection:
             instruction += "\n" + REJECTED_BATCH_INSTRUCTION
-        prompt_budget = MAX_RECOVERY_PROMPT_BYTES if compact_repair else MAX_PROMPT_BYTES
+        prompt_budget = MAX_RECOVERY_PROMPT_BYTES if compact_repair else self.prompt_max_bytes
         if compact_repair:
             instruction = REPAIR_RECOVERY_INSTRUCTION
             # Creation instructions already contain the exact latest request.
@@ -1894,11 +1927,11 @@ class ProjectGenerator:
             elif context["selected_file_fragments"]:
                 context["selected_file_fragments"].pop()
             else:
-                if compact_repair and prompt_budget < MAX_PROMPT_BYTES:
+                if compact_repair and prompt_budget < self.prompt_max_bytes:
                     # The compact target is best effort. Never discard a
                     # valid latest user reply or reject it only because of
                     # the smaller recovery target; retain the hard bound.
-                    prompt_budget = MAX_PROMPT_BYTES
+                    prompt_budget = self.prompt_max_bytes
                     continue
                 raise ProjectError("project messages exceed the local model context budget")
             messages[-1]["content"] = workspace_message()
@@ -1920,7 +1953,7 @@ class ProjectGenerator:
             "keep_alive": "10m",
             "options": {
                 "temperature": 0,
-                "num_ctx": 32_768,
+                "num_ctx": self.context_tokens,
                 "num_predict": (
                     MAX_RECOVERY_OUTPUT_TOKENS if compact_repair else MAX_OUTPUT_TOKENS
                 ),
@@ -2425,10 +2458,26 @@ def browser_sandbox_enabled(value: str | None) -> bool:
     raise ValueError("MONGARS_PROJECT_BROWSER_SANDBOX must be 0 or 1")
 
 
+def model_budgets_from_environment() -> tuple[int, int]:
+    values = []
+    for name, default in (
+        ("MONGARS_PROJECT_MODEL_CONTEXT_TOKENS", DEFAULT_MODEL_CONTEXT_TOKENS),
+        ("MONGARS_PROJECT_PROMPT_MAX_BYTES", MAX_PROMPT_BYTES),
+    ):
+        value = os.environ.get(name, str(default))
+        if not re.fullmatch(r"[0-9]{1,6}", value):
+            raise ValueError(f"{name} must contain only decimal digits")
+        values.append(int(value))
+    context_tokens, prompt_max_bytes = values
+    validate_model_budgets(context_tokens, prompt_max_bytes)
+    return context_tokens, prompt_max_bytes
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    context_tokens, prompt_max_bytes = model_budgets_from_environment()
     runner = DockerRunner(
         os.environ["MONGARS_PROJECT_RUNTIME_IMAGE"],
         browser_sandbox=browser_sandbox_enabled(os.environ.get("MONGARS_PROJECT_BROWSER_SANDBOX")),
@@ -2438,6 +2487,8 @@ def main() -> None:
         os.environ["MONGARS_PROJECT_MODEL_ID"],
         timeout_seconds=float(os.environ.get("MONGARS_PROJECT_MODEL_TIMEOUT_SECONDS", "240")),
         runtime_profile=runner.probe_profile(),
+        context_tokens=context_tokens,
+        prompt_max_bytes=prompt_max_bytes,
     )
     while True:
         worked = run_once(

@@ -176,7 +176,7 @@ def test_read_eligibility_uses_final_prompt_after_source_compaction(
     # must trim it to a fragment while retaining the right to read more later.
     context["selected_complete_files"].append(large)
     context["selected_file_fragments"] = []
-    monkeypatch.setattr(worker, "model_context", lambda value: context)
+    monkeypatch.setattr(worker, "model_context", lambda value, **_budgets: context)
     read = step(action="continue", edits=[], patches=[], focus_paths=[large["path"]])
     generator, requests = model_transport(monkeypatch, read)
     result = worker.run_iteration(data, generator, Runner(), lambda: None)
