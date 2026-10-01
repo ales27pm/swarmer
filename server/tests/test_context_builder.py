@@ -8,7 +8,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.models import TaskCreate, TaskRecord
+from app.models import MemoryCreate, TaskCreate, TaskRecord
 from app.services.context_builder import (
     ContextBuilder,
     ContextCard,
@@ -196,6 +196,110 @@ async def _seed_goal(db_path: Path) -> tuple[str, str, str, str]:
         )
         await db.commit()
     return goal_id, root.id, upstream_id, node_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["general", "global"])
+@pytest.mark.parametrize("pinned", [False, True])
+async def test_general_facts_require_relevance_without_filtering_user_rules(
+    tmp_path: Path, scope: str, pinned: bool
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, node_id = await _seed_goal(db_path)
+    state = StateService(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE goal_runs SET objective='Create a Python CRM with SQLite' WHERE id=?",
+            (goal_id,),
+        )
+        await db.commit()
+    unrelated = await state.create_memory(
+        MemoryCreate(
+            content="The garden has roses with yellow petals.", scope=scope, pinned=pinned
+        ),
+        "phone",
+    )
+    related = await state.create_memory(
+        MemoryCreate(content="SQLite foreign keys must be enabled.", scope=scope), "phone"
+    )
+    rules = [
+        await state.create_memory(
+            MemoryCreate(content=text, scope=scope, kind=kind, pinned=True), "phone"
+        )
+        for kind, text in (
+            ("constraint", "Never send messages automatically."),
+            ("preference", "Always respond in French."),
+        )
+    ]
+    builder = ContextBuilder(db_path, max_tokens=8192, max_memory_items=20)
+    protected = _protected_project_cards(goal_id)
+    context = await builder.build(goal_run_id=goal_id, node_id=node_id, protected_cards=protected)
+    memories = {p for card in context.cards if card.kind == "memory" for p in card.provenance_ids}
+    assert unrelated["id"] not in memories
+    assert memories == {related["id"], *(rule["id"] for rule in rules)}
+    assert unrelated["id"] not in context.provenance_ids
+    assert {"goal", "constraints", "budgets"}.issubset(card.kind for card in context.cards)
+    by_id = {card.card_id: card for card in context.cards}
+    assert all(by_id[card.card_id].summary == card.summary for card in protected)
+    restored = await builder.get_record(context.id)
+    assert restored is not None and restored.payload == context.model_payload()
+    assert unrelated["id"] not in restored.provenance_ids
+
+
+@pytest.mark.asyncio
+async def test_irrelevant_general_facts_do_not_fill_context_memory_limit(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, node_id = await _seed_goal(db_path)
+    state = StateService(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE plan_nodes SET objective='Inspect SQLite schema' WHERE id=?", (node_id,)
+        )
+        await db.commit()
+    related = await state.create_memory(MemoryCreate(content="SQLite foreign keys."), "phone")
+    for _ in range(8):
+        await state.create_memory(MemoryCreate(content="Garden roses.", pinned=True), "phone")
+    context = await ContextBuilder(db_path, max_tokens=8192, max_memory_items=1).build(
+        goal_run_id=goal_id, node_id=node_id
+    )
+    assert {p for card in context.cards if card.kind == "memory" for p in card.provenance_ids} == {
+        related["id"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_general_fact_prefilter_cannot_admit_secret_or_path_only_matches(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.db"
+    goal_id, _, _, _ = await _seed_goal(db_path)
+    state = StateService(db_path)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("UPDATE goal_runs SET objective='SQLite' WHERE id=?", (goal_id,))
+        await db.commit()
+    rejected = [
+        await state.create_memory(MemoryCreate(content=content, pinned=True), "phone")
+        for content in (
+            "Garden password=SQLite-secret-fixture; roses.",
+            "Garden /home/SQLite/private; roses.",
+            "Garden SQLiteish flowers.",
+        )
+    ]
+    related = await state.create_memory(
+        MemoryCreate(content="SQLite foreign keys. password=secret-fixture; /home/alice/private"),
+        "phone",
+    )
+    builder = ContextBuilder(db_path, max_tokens=8192)
+    context = await builder.build(goal_run_id=goal_id)
+    assert {p for card in context.cards if card.kind == "memory" for p in card.provenance_ids} == {
+        related["id"]
+    }
+    assert not {item["id"] for item in rejected}.intersection(context.provenance_ids)
+    restored = await builder.get_record(context.id)
+    assert restored is not None
+    encoded = json.dumps(restored.payload)
+    assert "secret-fixture" not in encoded and "/home/" not in encoded
+    assert "<redacted-secret>" in encoded and "<protected-path>" in encoded
 
 
 async def _seed_budget_sources(

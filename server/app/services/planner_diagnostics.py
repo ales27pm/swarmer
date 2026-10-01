@@ -4,6 +4,14 @@ from __future__ import annotations
 
 # Public explanation and correction guidance are literals, not rejected response text.
 DIAGNOSTICS: dict[str, tuple[str, str]] = {
+    "research_source_requirements": (
+        "Le plan ne conserve pas les pages demandées dans les limites de lecture autorisées.",
+        (
+            "Assign every explicitly requested page to research.collect.source_urls with sufficient "
+            "max_pages within the existing limit of six. Preserve the exact public HTTPS URLs; "
+            "do not replace them with search queries or exceed the reading budget."
+        ),
+    ),
     "invalid_json": (
         "Le plan n'est pas un objet JSON valide.",
         "Return exactly one complete JSON object matching the supplied schema.",

@@ -76,6 +76,11 @@ from app.services.project_validation import (
 )
 from app.services.remote_job_policy import RemoteJobPolicyError, validate_remote_job
 from app.services.research_contracts import valid_research_collect_receipt
+from app.services.research_source_requirements import (
+    ResearchSourceRequirementError,
+    bind_research_sources,
+    completed_read_urls,
+)
 from app.services.result_aggregator import (
     ResultAggregator,
     summarize_untrusted_worker_output,
@@ -308,6 +313,24 @@ class GoalManager:
     def _runtime_expired(goal: Mapping[str, Any]) -> bool:
         return runtime_expired(goal)
 
+    async def _bind_research_source_requirements(
+        self, goal: Mapping[str, Any], proposal: SwarmPlanProposal, *, initial: bool = True
+    ) -> SwarmPlanProposal:
+        try:
+            return bind_research_sources(
+                proposal,
+                str(goal["objective"]),
+                await self.recent_conversation(str(goal["id"]), include_timestamps=True),
+                already_read=(
+                    {} if initial else await completed_read_urls(self.db_path, str(goal["id"]))
+                ),
+            )
+        except ResearchSourceRequirementError as exc:
+            raise _PlannerProposalRejected(
+                "plan does not preserve explicit source requirements",
+                diagnostic_code=exc.diagnostic_code,
+            ) from exc
+
     @staticmethod
     def _remaining_runtime_seconds(goal: Mapping[str, Any]) -> float:
         return runtime_remaining_seconds(goal)
@@ -335,7 +358,9 @@ class GoalManager:
         except GoalConversationConflict as exc:
             raise GoalManagerConflict(str(exc)) from exc
 
-    async def recent_conversation(self, goal_id: str, limit: int = 40) -> list[dict[str, str]]:
+    async def recent_conversation(
+        self, goal_id: str, limit: int = 40, *, include_timestamps: bool = False
+    ) -> list[dict[str, str]]:
         # The UI may show a shared continuation history. Model inputs instead
         # require each message's own goal/conversation and exact project scope.
         # This read snapshot does not lease source scope after returning;
@@ -356,7 +381,7 @@ class GoalManager:
                 raise GoalManagerConflict("goal not found")
             rows = await (
                 await db.execute(
-                    """SELECT m.role,m.content FROM goal_messages m
+                    """SELECT m.role,m.content,m.created_at FROM goal_messages m
                     JOIN goal_conversation_links source
                       ON source.goal_run_id=m.goal_run_id
                      AND source.conversation_id=m.conversation_id
@@ -374,7 +399,11 @@ class GoalManager:
             ).fetchall()
             await db.rollback()
         return [
-            {"role": item["role"], "content": safe_context_text(item["content"], max_chars=4_000)}
+            {
+                "role": item["role"],
+                "content": safe_context_text(item["content"], max_chars=4_000),
+                **({"created_at": item["created_at"]} if include_timestamps else {}),
+            }
             for item in reversed(list(rows))
         ]
 
@@ -2064,6 +2093,7 @@ class GoalManager:
     ) -> None:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
         proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
+        proposal = await self._bind_research_source_requirements(goal, proposal)
         if len(proposal.nodes) > int(goal["max_steps"]):
             raise _PlannerProposalRejected(
                 "plan exceeds the goal step budget", diagnostic_code="step_budget"
@@ -4514,6 +4544,7 @@ class GoalManager:
     ) -> None:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
         proposal = self._bind_plan_to_goal(goal, proposal, model_call_id=model_call_id)
+        proposal = await self._bind_research_source_requirements(goal, proposal, initial=False)
         validated = validate_swarm_plan(
             proposal,
             policy=self.permission_policy,

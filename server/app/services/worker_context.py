@@ -144,12 +144,15 @@ async def read_worker_context(
                 item["snippet"] = safe_context_text(item["snippet"], max_chars=700)
                 evidence = item.get("evidence")
                 if evidence is not None and (
-                    safe_context_text(evidence["text"], max_chars=4_001) != evidence["text"]
+                    safe_context_text(evidence["text"], max_chars=4_001)
+                    != " ".join(evidence["text"].split())
                     or safe_context_text(evidence["requested_url"], max_chars=1_001)
                     != evidence["requested_url"]
                 ):
-                    # A transformed passage must not keep the original exact-text hash.
-                    # Fall back to the safe snippet instead of laundering its provenance.
+                    # Compare against the same whitespace normalization as the
+                    # redactor, but retain the original passage and its exact hash.
+                    # Any content redaction still removes the evidence rather than
+                    # presenting transformed content under the original provenance.
                     item.pop("evidence")
                 try:
                     source = WritingResearchSource.model_validate(item).model_dump()

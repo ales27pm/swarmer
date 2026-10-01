@@ -183,6 +183,63 @@ async def test_admitted_collect_passages_reach_writer_and_readback(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "First paragraph.\nSecond paragraph.\n",
+        "\n  JSON example:\n>>> import json\n>>> json.loads('{}')\n{}\n",
+        "Transactions\r\n\tOne writer at a time.\u00a0 Limits apply. ",
+    ],
+)
+async def test_formatted_page_evidence_retains_exact_text_and_hash(
+    tmp_path: Path, text: str
+) -> None:
+    manager, goal, agents, job = await started(tmp_path)
+    value = receipt()
+    page = value["pages"][0]
+    page["text"] = text
+    page["content_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    await submit(manager, agents[0], job, value)
+    writer = await manager.agent_dispatcher.claim(agents[1])
+    assert writer is not None
+    evidence = writer["payload"]["research_sources"][0]["evidence"]
+    assert evidence["text"] == text
+    assert evidence["excerpt_sha256"] == page["content_sha256"]
+    assert evidence["body_sha256"] == page["body_sha256"]
+    assert validate_remote_job("writing.draft", writer["payload"]) == writer["payload"]
+    node = next(
+        n
+        for n in await manager.graph.list_nodes(goal["id"])
+        if n["required_skill"] == "writing.draft"
+    )
+    sources = await read_research_sources(manager.db_path, goal["id"], node["id"])
+    assert sources[0]["evidence"] == evidence
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Documentation.\nAuthorization: Bearer private-test-token\nEnd.",
+        "Local configuration:\n/Users/alex/.ssh/id_ed25519\nDo not share.",
+    ],
+)
+async def test_formatted_sensitive_page_still_loses_evidence(tmp_path: Path, text: str) -> None:
+    manager, _, agents, job = await started(tmp_path)
+    value = receipt()
+    value["pages"][0]["text"] = text
+    value["pages"][0]["content_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    await submit(manager, agents[0], job, value)
+    writer = await manager.agent_dispatcher.claim(agents[1])
+    assert writer is not None
+    source = writer["payload"]["research_sources"][0]
+    assert "evidence" not in source
+    assert source["snippet"] == "Extrait de recherche."
+    assert "private-test-token" not in json.dumps(writer["payload"])
+    assert "/Users/alex/.ssh/id_ed25519" not in json.dumps(writer["payload"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["query", "extra_page", "text_hash", "foreign_url"])
 async def test_mismatched_collect_receipt_cannot_complete_job(tmp_path: Path, change: str) -> None:
     manager, _, agents, job = await started(tmp_path)

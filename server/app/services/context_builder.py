@@ -18,6 +18,11 @@ from app.services.agent_liveness import (
     agent_is_fresh,
 )
 from app.services.feedback_dataset import redact_dataset_text
+from app.services.memory_relevance import (
+    general_fact_is_relevant,
+    general_fact_may_be_relevant,
+    memory_relevance_terms,
+)
 from app.services.project_contracts import ProjectMemoryContext, ProjectMemoryItem
 from app.services.swarm_contracts import (
     EvaluationConversationMessage,
@@ -246,7 +251,12 @@ class ContextBuilder:
                     node_id,
                     limit=self.max_upstream_results,
                 )
-                memories = await self._memory_locked(db, goal_run_id, limit=self.max_memory_items)
+                memory_query = "\n".join(
+                    str(row["objective"]) for row in (goal, node) if row is not None
+                )
+                memories = await self._memory_locked(
+                    db, goal_run_id, query=memory_query, limit=self.max_memory_items
+                )
                 episodes = await self._episodes_locked(
                     db,
                     goal_run_id,
@@ -835,6 +845,7 @@ class ContextBuilder:
         db: aiosqlite.Connection,
         current_goal_run_id: str,
         *,
+        query: str,
         limit: int,
     ) -> list[aiosqlite.Row]:
         if limit == 0:
@@ -842,24 +853,44 @@ class ContextBuilder:
         # Only the API's explicit general scope (and its historical global
         # alias) is shared. Free-form legacy labels never imply project scope.
         # Resolve the exact project from the goal in this read transaction.
-        return list(
-            await (
-                await db.execute(
-                    """
-                    SELECT id,scope,kind,content,summary,sensitivity,confidence,pinned,updated_at
-                    FROM memory_items
-                    WHERE sensitivity='normal' AND (
-                        scope IN ('general','global') OR scope=(
-                            SELECT 'project:' || project_id FROM goal_project_links
-                            WHERE goal_run_id=?
-                        )
-                    )
-                    ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ?
-                    """,
-                    (current_goal_run_id, limit),
+        query_terms = memory_relevance_terms(safe_context_text(query))
+        selected: list[aiosqlite.Row] = []
+        async with db.execute(
+            """
+            SELECT id,scope,kind,content,summary,sensitivity,confidence,pinned,updated_at
+            FROM memory_items
+            WHERE sensitivity='normal' AND (
+                scope IN ('general','global') OR scope=(
+                    SELECT 'project:' || project_id FROM goal_project_links
+                    WHERE goal_run_id=?
                 )
-            ).fetchall()
-        )
+            )
+            ORDER BY pinned DESC,updated_at DESC,id ASC
+            """,
+            (current_goal_run_id,),
+        ) as cursor:
+            async for row in cursor:
+                source = str(row["summary"] or row["content"])
+                if not general_fact_may_be_relevant(
+                    scope=str(row["scope"]),
+                    kind=str(row["kind"]),
+                    source=source,
+                    query_terms=query_terms,
+                ):
+                    continue
+                if not general_fact_is_relevant(
+                    scope=str(row["scope"]),
+                    kind=str(row["kind"]),
+                    source=safe_context_text(source, max_chars=700),
+                    query_terms=query_terms,
+                ):
+                    continue
+                selected.append(row)
+                # Filter before limiting so unrelated recent facts cannot
+                # displace useful memories or explicitly pinned user rules.
+                if len(selected) == limit:
+                    break
+        return selected
 
     @staticmethod
     async def _episodes_locked(

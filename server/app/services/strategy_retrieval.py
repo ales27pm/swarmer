@@ -14,6 +14,11 @@ from app.models import MemorySearch
 from app.services.context_builder import safe_context_text
 from app.services.episode_memory import EpisodeMemoryService, EpisodeSearchResult
 from app.services.memory_normalization import MemoryNormalizationError, canonical_text_sha256
+from app.services.memory_relevance import (
+    general_fact_is_relevant,
+    general_fact_may_be_relevant,
+    memory_relevance_terms,
+)
 
 if TYPE_CHECKING:
     from app.services.state_service import StateService
@@ -247,24 +252,43 @@ class StrategyRetrieval:
         if self.canonical_memory is not None:
             return await self._canonical_memory_hints(query, goal_run_id=goal_run_id)
         query_terms = _terms(query)
+        fact_query_terms = memory_relevance_terms(query)
+        rows: list[aiosqlite.Row] = []
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            rows = await (
-                await db.execute(
-                    """
-                    SELECT id,kind,content,summary,pinned,confidence,updated_at
-                    FROM memory_items
-                    WHERE sensitivity='normal' AND (
-                        scope IN ('general','global') OR scope=(
-                            SELECT 'project:' || project_id FROM goal_project_links
-                            WHERE goal_run_id=?
-                        )
+            async with db.execute(
+                """
+                SELECT id,scope,kind,content,summary,pinned,confidence,updated_at
+                FROM memory_items
+                WHERE sensitivity='normal' AND (
+                    scope IN ('general','global') OR scope=(
+                        SELECT 'project:' || project_id FROM goal_project_links
+                        WHERE goal_run_id=?
                     )
-                    ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ?
-                    """,
-                    (goal_run_id, _MAX_MEMORY_SCAN),
                 )
-            ).fetchall()
+                ORDER BY pinned DESC,updated_at DESC,id ASC
+                """,
+                (goal_run_id,),
+            ) as cursor:
+                async for row in cursor:
+                    source = str(row["summary"] or row["content"])
+                    if not general_fact_may_be_relevant(
+                        scope=str(row["scope"]),
+                        kind=str(row["kind"]),
+                        source=source,
+                        query_terms=fact_query_terms,
+                    ):
+                        continue
+                    if not general_fact_is_relevant(
+                        scope=str(row["scope"]),
+                        kind=str(row["kind"]),
+                        source=safe_context_text(source, max_chars=_MAX_HINT_CHARS),
+                        query_terms=fact_query_terms,
+                    ):
+                        continue
+                    rows.append(row)
+                    if len(rows) == _MAX_MEMORY_SCAN:
+                        break
         ranked: list[tuple[float, str, StrategyHint]] = []
         for row in rows:
             if "plan" in str(row["kind"]).casefold():
