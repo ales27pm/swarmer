@@ -503,12 +503,12 @@ class GoalManager:
 
         try:
             payload = await self.project_applications.payload(
-                goal_id, dict(node), await self.recent_conversation(goal_id)
+                goal_id,
+                dict(node),
+                await self.recent_conversation(goal_id),
+                dependency_context=dependency_context,
+                research_sources=sources,
             )
-            if dependency_context:
-                payload["dependency_context"] = dependency_context
-            if sources:
-                payload["research_sources"] = sources
             return ProjectPayload.model_validate(payload).model_dump(exclude_unset=True)
         except ProjectContextConflict as exc:
             raise GoalManagerConflict(str(exc)) from exc
@@ -3414,6 +3414,77 @@ class GoalManager:
             return self.research_evaluator
         return self.evaluator
 
+    async def _stop_unrecoverable_project_context(
+        self,
+        goal: Mapping[str, Any],
+        nodes: Sequence[Mapping[str, Any]],
+        *,
+        maintenance_guard: MaintenanceLeaseGuard | None = None,
+    ) -> bool:
+        """A model cannot repair an input that failed deterministic preparation.
+
+        Fence the observation transactionally, preserve revisions, and do not
+        spend another evaluator/worker call repeating the same admission error.
+        Historical blocks from earlier user revisions do not stop new work.
+        """
+        reason = "project context exceeds input budget; pinned requirements preserved"
+        if not any(
+            node["required_skill"] == PROJECT_SKILL
+            and node["status"] == "blocked"
+            and node.get("error_summary") == reason
+            for node in nodes
+        ):
+            return False
+        goal_id = str(goal["id"])
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            current = await (
+                await db.execute("SELECT * FROM goal_runs WHERE id=?", (goal_id,))
+            ).fetchone()
+            rows = list(
+                await (
+                    await db.execute(
+                        "SELECT * FROM plan_nodes WHERE goal_run_id=? ORDER BY rowid", (goal_id,)
+                    )
+                ).fetchall()
+            )
+            latest = next(
+                (row for row in reversed(rows) if row["required_skill"] == PROJECT_SKILL), None
+            )
+            if (
+                current is None
+                or current["status"] != "running"
+                or current["pending_message_revision"]
+                or current["conversation_revision"] != goal["conversation_revision"]
+                or any(row["status"] not in self.graph.NODE_TERMINAL for row in rows)
+                or latest is None
+                or latest["conversation_revision"] != current["conversation_revision"]
+                or latest["status"] != "blocked"
+                or latest["error_summary"] != reason
+                or self._state_fingerprint([dict(row) for row in rows])
+                != self._state_fingerprint([dict(node) for node in nodes])
+            ):
+                await db.rollback()
+                return False
+            await self._terminate_goal_locked(
+                db,
+                dict(current),
+                status="failed",
+                reason=reason,
+                now=self._now(),
+                maintenance_guard=maintenance_guard,
+            )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+        await self._finalize_terminal_goal(
+            goal_id, status="failed", maintenance_guard=maintenance_guard
+        )
+        return True
+
     async def _evaluate_if_quiescent(
         self,
         goal_run_id: str,
@@ -3436,6 +3507,10 @@ class GoalManager:
         if int(goal.get("pending_message_revision") or 0):
             return
         if not nodes or any(node["status"] not in self.graph.NODE_TERMINAL for node in nodes):
+            return
+        if await self._stop_unrecoverable_project_context(
+            goal, nodes, maintenance_guard=maintenance_guard
+        ):
             return
         state_fingerprint = self._state_fingerprint(nodes)
         if not explicit_user_action:

@@ -708,6 +708,35 @@ def test_failed_generation_publishes_only_fixed_error_and_no_private_text(
     assert "reason=invalid_json" in caplog.text
 
 
+@pytest.mark.parametrize("defect", ["extra_field", "missing_text", "invalid_outcome"])
+def test_invalid_output_publishes_closed_code_without_rejected_response(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    defect: str,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    response = {"outcome": "delivered", **draft()}
+    response["summary"] = "private rejected response credential-secret"
+    if defect == "extra_field":
+        response["private-extra"] = "private rejected content"
+    elif defect == "missing_text":
+        del response["text"]
+    else:
+        response["outcome"] = "private-unrecognized-outcome"
+    generator, connection = generator_for(
+        worker, monkeypatch, [event(json.dumps(response), done=True)]
+    )
+    assert worker.run_once("http://127.0.0.1", "agent", "credential-secret", generator)
+    assert client.submitted == [{"status": "failed", "error": "invalid_output"}]
+    assert client.renewals == 2
+    assert "reason=invalid_output" in caplog.text
+    assert "private" not in caplog.text and "credential-secret" not in caplog.text
+    assert len([call for call in connection.calls if call[0] == "POST"]) == 1
+    assert connection.initial_sock.closed.is_set()
+
+
 @pytest.mark.parametrize(
     ("chunks", "reason"),
     [
@@ -819,9 +848,7 @@ def test_run_once_redacts_unknown_failure_code_and_exception_text(
 
     monkeypatch.setattr(generator, "generate", unknown_failure)
     assert worker.run_once("http://127.0.0.1", "agent", "credential-secret", generator)
-    assert client.submitted == [
-        {"status": "failed", "error": "Text draft generation failed validation"}
-    ]
+    assert client.submitted == [{"status": "failed", "error": "invalid_output"}]
     assert "reason=invalid_output" in caplog.text
     assert "private" not in caplog.text
     assert "credential-secret" not in caplog.text

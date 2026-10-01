@@ -264,13 +264,15 @@ async def test_prepare_provider_failure_preserves_sources_and_reports_conflict(t
     manager, goal, context, _, service = await setup(
         tmp_path,
         provider=Provider(fail),
-        context_tokens=4000,
+        # Leave room for the mandatory capsule plus one distinct latest reply.
+        # Exact duplicate replies are now removed before the charged summary.
+        context_tokens=5000,
         output_tokens=500,
         overhead_tokens=300,
     )
     before = await context.refresh(goal)
     calls_before = await _count(manager, goal)
-    conversation = [{"role": "assistant", "content": before["proposals"][-1]["text"]}] * 5
+    conversation = [{"role": "assistant", "content": before["proposals"][-1]["text"]}]
     with pytest.raises(ProjectContextConflict, match="original project sources preserved"):
         await service.prepare(goal, {"conversation": conversation})
     assert await context.refresh(goal) == before

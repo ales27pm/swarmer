@@ -109,7 +109,13 @@ class GoalProjectService:
         return dict(row) if row else None
 
     async def payload(
-        self, goal_id: str, node: dict[str, Any], conversation: list[dict[str, str]]
+        self,
+        goal_id: str,
+        node: dict[str, Any],
+        conversation: list[dict[str, str]],
+        *,
+        dependency_context: list[dict[str, Any]] | None = None,
+        research_sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         await self.ensure_project(goal_id)
         latest = await self._latest(goal_id)
@@ -166,6 +172,8 @@ class GoalProjectService:
                 "base_sha256": latest["sha256"] if latest else None,
                 "focus_paths": snapshot.focus_paths if snapshot else [],
                 "memory": memory,
+                "dependency_context": dependency_context or [],
+                "research_sources": research_sources or [],
                 "durable_context": (
                     self.context.prompt_state(await self.context.refresh(goal_id))
                     if self.context is not None

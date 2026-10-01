@@ -1066,6 +1066,7 @@ class AgentDispatcher:
                     "writing_requirements_unmet",
                     "writing_budget_exceeded",
                     "unsupported_citation",
+                    "invalid_output",
                 }
             ):
                 # Fixed diagnostic codes only, never arbitrary remote error text.

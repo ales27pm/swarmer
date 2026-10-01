@@ -351,3 +351,22 @@ def test_question_courtesy_keeps_specific_choices_distinct_from_delegating_the_w
 
     for meaningful in (meaningful_writing_question, worker.meaningful_writing_question):
         assert meaningful(question) is expected
+
+
+@pytest.mark.parametrize(
+    "instruction,expected",
+    [
+        ("Cite les deux URL dans la note.", {"min_citations": 2}),
+        ("Include at least two URLs in the note.", {"min_citations": 2}),
+        ("Le brouillon contient deux URL.", {}),
+        ('Exemple : "Cite les deux URL dans la note."', {}),
+        ("Lis ces deux URL avant de répondre.", {}),
+    ],
+)
+def test_explicit_url_citation_count_is_shared_without_inventing_reading_requirements(
+    worker: ModuleType, instruction: str, expected: dict[str, Any]
+) -> None:
+    from app.services.writing_contracts import derive_writing_requirements
+
+    assert derive_writing_requirements(instruction, []) == expected
+    assert worker.derive_writing_requirements(instruction, []) == expected

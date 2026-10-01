@@ -25,7 +25,8 @@ async def read_worker_experiences(db: aiosqlite.Connection, project_id: str) -> 
         await (
             await db.execute(
                 """SELECT n.id AS node_id,n.goal_run_id,n.status AS node_status,
-                j.id AS job_id,j.required_skill,j.status,j.result_json,j.payload_json,
+                j.id AS job_id,j.required_skill,j.status,j.result_json,j.payload_json,j.error,
+                n.error_summary AS node_error_summary,
                 r.id AS revision_id,r.sha256 AS revision_sha256,
                 COUNT(*) OVER() AS total_count
             FROM plan_nodes n
@@ -88,6 +89,19 @@ def _observation(row: dict[str, Any], result: Any) -> tuple[str, str]:
                 raise ValueError("historical payload exceeds its bound")
             measured = validate_writing_failure_diagnostics(result, payload=json.loads(raw_payload))
             return "measured_failure", writing_failure_summary(measured)
+        if (
+            skill == "writing.draft"
+            and result is None
+            and row.get("error") == row.get("node_error_summary") == "invalid_output"
+        ):
+            return (
+                "reported_failure",
+                (
+                    "The writing worker reported invalid_output; no valid draft was accepted. "
+                    "No word-count or citation measurements were recorded. The specific defect "
+                    "and a successful remedy are not established; this is historical feedback."
+                ),
+            )
         return (
             "reported_failure",
             (

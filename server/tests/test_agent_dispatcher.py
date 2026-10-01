@@ -217,6 +217,15 @@ async def test_running_job_may_finish_under_policy_snapshot_from_claim(tmp_path:
         ("writing.draft", None, "writing_requirements_unmet", "writing_requirements_unmet"),
         ("writing.draft", None, "writing_budget_exceeded", "writing_budget_exceeded"),
         ("writing.draft", None, "unsupported_citation", "unsupported_citation"),
+        ("writing.draft", None, "invalid_output", "invalid_output"),
+        (
+            "writing.draft",
+            None,
+            "invalid_output: private rejected text",
+            "remote worker reported failure",
+        ),
+        ("writing.draft", {}, "invalid_output", "remote worker reported failure"),
+        ("workspace.list_dir", None, "invalid_output", "remote worker reported failure"),
         ("writing.draft", None, None, "remote worker reported failure"),
         (
             "writing.draft",

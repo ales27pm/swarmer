@@ -397,7 +397,7 @@ def derive_writing_requirements(
         for match in re.finditer(
             r"\b(\d+|one|two|three|four|five|un|une|deux|trois|quatre|cinq)\s+"
             r"(?:(?:official|distinct|different|officiels?|officielles?|distinctes?)\s+)*"
-            r"(?:liens?|links?|citations?|sources?)\b",
+            r"(?:liens?|links?|citations?|sources?|urls?)\b",
             lower,
         ):
             if _writing_count_is_directive(lower, match.start()):

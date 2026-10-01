@@ -169,6 +169,11 @@ into the next writer request. Keep completed research dependencies; do not make 
 draft a required evidence dependency. Use null or omit retry_of_node_id for an initial or
 different deliverable. Never attach an unrelated failure, or propose parallel repairs of
 the same attempt. A previously superseded attempt is not a new repair target.
+A fixed invalid_output failure means the writing output contract was rejected; the
+specific defect and requirement measurements are not established. Do not invent
+word counts or citations, infer a refusal, or use retry_of_node_id for that case.
+If another writing step is justified, keep the original constraints and completed
+research; it is a new budgeted step with no measured repair reference.
 Connection, first-content, idle and wall timeouts are execution failures, not
 refusals or evidence of a document. Every retry remains a new budgeted step.
 available_skills is the control plane's current fresh online-or-busy, protocol-compatible,

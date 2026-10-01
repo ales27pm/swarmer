@@ -9,7 +9,7 @@ import pytest
 
 from app.services.agent_guidance import accepted_project_guidance, operating_guidance
 from app.services.project_context import ProjectContextConflict, ProjectContextService
-from app.services.worker_experiences import read_worker_experiences
+from app.services.worker_experiences import _observation, read_worker_experiences
 from tests.test_goal_project_runtime import _project, _result
 from tests.test_project_memory import _messages
 from tests.test_writing_retry_feedback import failed_attempt
@@ -106,3 +106,28 @@ async def test_malformed_failure_and_wrong_task_cannot_become_measured_learning(
         await db.commit()
     state = await service.refresh(goal["id"])
     assert state["experiences"]["items"] == []
+
+
+@pytest.mark.parametrize(
+    "skill,error,node_error,result",
+    [
+        ("writing.draft", "invalid_output: private text", "invalid_output", None),
+        ("writing.draft", "invalid_output", "private node error", None),
+        ("code.build_project", "invalid_output", "invalid_output", None),
+        ("writing.draft", "invalid_output", "invalid_output", "private rejected text"),
+    ],
+)
+def test_unverified_failure_cannot_become_named_historical_diagnostic(
+    skill: str, error: str, node_error: str, result: object
+) -> None:
+    kind, summary = _observation(
+        {
+            "required_skill": skill,
+            "status": "failed",
+            "error": error,
+            "node_error_summary": node_error,
+        },
+        result,
+    )
+    assert kind == "reported_failure"
+    assert "invalid_output" not in summary and "private" not in summary

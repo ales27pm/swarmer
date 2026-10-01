@@ -142,6 +142,8 @@ async def test_semantic_history_outside_recent_window_and_restart_cache(tmp_path
 async def test_memory_is_project_scoped_and_never_reads_source_or_checks(tmp_path: Path) -> None:
     manager, detail, agent = await _project(tmp_path)
     goal_id, node_id = detail["goal"]["id"], detail["nodes"][0]["id"]
+    # The job must be claimed before later user revisions fence queued work.
+    job, _ = await _result(manager, agent, action="continue", receive=False)
     await _messages(
         manager,
         goal_id,
@@ -155,7 +157,6 @@ async def test_memory_is_project_scoped_and_never_reads_source_or_checks(tmp_pat
     )
     await manager.project_applications.ensure_project(other["id"])
     await _messages(manager, other["id"], ["Customer CROSS_PROJECT_SECRET"])
-    job, _ = await _result(manager, agent, action="continue", receive=False)
     revision = await manager.project_applications.capture_result(goal_id, node_id, job["id"])
     provider = SemanticProvider()
     memory = ProjectMemoryService(manager.db_path, provider)
@@ -377,8 +378,8 @@ async def test_revision_change_is_fenced_before_reservation_and_persistence(
 ) -> None:
     manager, detail, agent = await _project(tmp_path)
     goal_id, node_id = detail["goal"]["id"], detail["nodes"][0]["id"]
-    await _messages(manager, goal_id, ["Customer records"])
     job, _ = await _result(manager, agent, action="continue", receive=False)
+    await _messages(manager, goal_id, ["Customer records"])
 
     async def capture() -> None:
         await manager.project_applications.capture_result(goal_id, node_id, job["id"])

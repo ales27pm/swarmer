@@ -34,6 +34,13 @@ Git tools retain their narrow validated argument contracts; a guide never gives
 them a new capability. Their execution receipts are available to downstream
 model roles through the existing dependency and evidence paths.
 
+Research handoffs follow named dependency ancestry, including synthesis nodes
+and validated writing-repair parents. A replan that omits a reader may reuse
+completed same-goal page receipts only for still-current, explicit user reading
+requests. A newer read request requires newer evidence. Job, task, goal, requested
+URL and passage hashes remain attached; search snippets never become page reads.
+Unrelated project research and failed draft text are not implicit evidence.
+
 For eligible writing repairs, `retry_of_node_id` links a failed attempt to its
 next proposal. The server checks the goal, revision, job, original payload and
 measured diagnostics before sending `previous_attempt_feedback`. There is no
@@ -63,8 +70,18 @@ before promotion. Cross-project promotion is not implicit.
 
 The capsule has a 32 KB serialized limit; the common guide has a 4 KB limit.
 Workers additionally account for the full model request. Mandatory requirements
-and guides are never silently truncated. An oversized request fails explicitly.
-Compaction may remove only source-backed, covered assistant discussion.
+and guides are never silently truncated. The project input budget includes files,
+dependency summaries and research sources before preparation. Prompt selection
+removes duplicate discussion and, when needed, older assistant discussion,
+optional retrieved hints and old experiences, recording omission counts. It keeps
+original requirements, guides, accepted file identities and source receipts;
+the underlying messages and context snapshots remain unchanged.
+
+If required input still cannot fit, the latest project step is blocked explicitly.
+Once work is quiescent, the server stops the goal without spending further model
+calls on the same deterministic failure. Revision and pending-message checks
+prevent an old blockage from terminating newer user instructions. Accepted
+project revisions remain available after this failure.
 
 Required dependency overflow also fails explicitly. Optional context can remain
 bounded. Source revisions and conversation checks protect against racing user

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
+import aiosqlite
 import pytest
 
 from app.services.agent_dispatcher import AgentDispatchConflict
+from app.services.project_context import ProjectContextService
 from app.services.swarm_contracts import GoalCreateRequest, GoalStartRequest
+from app.services.writing_drafts import writing_payload as next_writing_payload
+from app.services.writing_drafts import writing_retry_provenance_locked
 from tests.test_goal_context_payloads import _CapturingEvaluator
 from tests.test_goal_runtime_recovery import _manager
 from tests.test_goal_writing import plan, register
 from tests.test_writing_failure_diagnostics import diagnostics
+from tests.test_writing_requirements import worker as worker  # noqa: PLC0414
 from tests.test_writing_requirements import writing_payload
 
 
@@ -19,11 +25,13 @@ from tests.test_writing_requirements import writing_payload
     "error,expected",
     [
         ("unsupported_citation", "unsupported_citation"),
+        ("invalid_output", "invalid_output"),
+        ("invalid_output: private generated text", "remote worker reported failure"),
         ("unsupported_citation: private generated text", "remote worker reported failure"),
     ],
 )
-async def test_unsupported_citation_reaches_evaluator_as_fixed_failure_only(
-    tmp_path: Path, error: str, expected: str
+async def test_closed_writing_code_reaches_evaluator_as_fixed_failure_only(
+    tmp_path: Path, worker: ModuleType, error: str, expected: str
 ) -> None:
     evaluator = _CapturingEvaluator()
     manager = await _manager(tmp_path / "writing.db", plan(), evaluator=evaluator)
@@ -54,6 +62,29 @@ async def test_unsupported_citation_reaches_evaluator_as_fixed_failure_only(
     detail = await manager.get_goal(goal["id"])
     assert detail is not None and detail["goal"]["status"] != "completed"
     assert detail["goal"]["model_call_count"] == 3  # One planner, worker and evaluator.
+    assert "private generated text" not in evaluator.contexts[0].model_dump_json()
+    if error == "invalid_output":
+        service = ProjectContextService(manager.db_path)
+        capsule = service.prompt_state(await service.refresh(goal["id"]))
+        experience = capsule["experiences"]["items"][0]
+        assert experience["source_id"] == node.node_id
+        assert experience["worker_job_id"] == job["id"]
+        assert experience["observation_kind"] == "reported_failure"
+        assert experience["applicability"] == "historical"
+        assert "invalid_output" in experience["summary"]
+        assert "No word-count or citation measurements" in experience["summary"]
+        payload = next_writing_payload(plan().objective, [], durable_context=capsule)
+        model_input, _schema = worker._model_input(worker.validate_payload(payload))
+        assert model_input["durable_context"]["experiences"]["items"][0] == experience
+        assert "previous_attempt_feedback" not in model_input
+        # A reported output-contract failure is not an authoritative measurement.
+        async with aiosqlite.connect(manager.db_path) as db:
+            with pytest.raises(ValueError):
+                await writing_retry_provenance_locked(db, goal["id"], 0, node.node_id)
+        after = await manager.get_goal(goal["id"])
+        assert after is not None
+        assert after["goal"]["model_call_count"] == 3
+        assert after["goal"]["step_count"] == detail["goal"]["step_count"]
 
 
 @pytest.mark.asyncio

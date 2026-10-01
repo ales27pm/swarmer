@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -406,8 +407,19 @@ class ProjectCompactionService:
         if not self.enabled:
             return payload
         state = await self.context.refresh(goal_id)
-        prepared = {**payload, "durable_context": self.context.prompt_state(state)}
-        conversation = payload.get("conversation", [])
+        # This is a prompt projection. Original messages, accepted files and
+        # context snapshots remain untouched, including when admission fails.
+        prepared = copy.deepcopy(payload)
+        prepared["durable_context"] = self.context.prompt_state(state)
+        conversation = prepared.get("conversation", [])
+        selection = {
+            "pinned_user_copies_omitted": 0,
+            "assistant_copies_omitted": 0,
+            "older_assistant_messages_omitted": 0,
+            "memory_items_omitted": 0,
+            "experiences_omitted": 0,
+            "summary_notes_omitted": 0,
+        }
         pinned_text = {item["text"] for item in state["requirements"]}
         last_user = next(
             (
@@ -417,20 +429,79 @@ class ProjectCompactionService:
             ),
             -1,
         )
-        prepared["conversation"] = [
-            message
-            for index, message in enumerate(conversation)
-            if index >= len(conversation) - 4
-            or index == last_user
-            or message.get("role") != "user"
-            or safe_context_text(
-                message.get("content", ""), max_chars=max(4000, len(message.get("content", "")))
-            )
-            not in pinned_text
-        ]
-        budget = self._budget(prepared)
+        selected = []
+        assistant_text: set[str] = set()
+        for index in range(len(conversation) - 1, -1, -1):
+            message = conversation[index]
+            text = message.get("content", "")
+            if (
+                message.get("role") == "user"
+                and index != last_user
+                and safe_context_text(text, max_chars=max(4000, len(text))) in pinned_text
+            ):
+                selection["pinned_user_copies_omitted"] += 1
+                continue
+            if message.get("role") == "assistant":
+                if text in assistant_text:
+                    selection["assistant_copies_omitted"] += 1
+                    continue
+                assistant_text.add(text)
+            selected.append(message)
+        prepared["conversation"] = list(reversed(selected))
+
         status: dict[str, Any] = {"status": "below_threshold", "fingerprint": state["fingerprint"]}
-        if budget["input_tokens"] * 4 >= budget["available_input_tokens"] * 3:
+
+        def measured() -> dict[str, Any]:
+            prepared["context_compaction"] = {**status, "selection": selection}
+            budget = self._budget(prepared)
+            # Include the diagnostic's own bytes, including the final count.
+            for _ in range(4):
+                prepared["context_compaction"]["token_budget"] = budget
+                final = self._budget(prepared)
+                if final == budget:
+                    break
+                budget = final
+            prepared["context_compaction"]["token_budget"] = budget
+            return budget
+
+        def trim_optional() -> bool:
+            history = prepared["conversation"]
+            last_assistant = next(
+                (i for i in range(len(history) - 1, -1, -1) if history[i]["role"] == "assistant"),
+                None,
+            )
+            for i, message in enumerate(history):
+                if message["role"] == "assistant" and i != last_assistant:
+                    history.pop(i)
+                    selection["older_assistant_messages_omitted"] += 1
+                    return True
+            memory = prepared.get("memory")
+            if memory and memory.get("items"):
+                memory["items"].pop()
+                selection["memory_items_omitted"] += 1
+                return True
+            experiences = prepared["durable_context"].get("experiences")
+            if experiences and experiences.get("items"):
+                experiences["items"].pop()
+                experiences["omitted_count"] += 1
+                selection["experiences_omitted"] += 1
+                return True
+            return False
+
+        budget = measured()
+        pruned = False
+        while budget["input_tokens"] > budget["available_input_tokens"] and trim_optional():
+            pruned = True
+            status["status"] = "bounded"
+            budget = measured()
+        if budget["input_tokens"] > budget["available_input_tokens"]:
+            # Summarization cannot shrink mandatory requirements/guides, accepted
+            # files/checks, source handoffs or the latest repair feedback. Do not
+            # charge a model merely to rediscover a deterministic size failure.
+            raise ProjectContextBudgetExceeded(
+                "project context exceeds input budget; pinned requirements preserved"
+            )
+        if not pruned and budget["input_tokens"] * 4 >= budget["available_input_tokens"] * 3:
             try:
                 status = await self.compact(goal_id, expected_fingerprint=state["fingerprint"])
             except (CompactionInvalid, httpx.HTTPError, TimeoutError) as exc:
@@ -456,12 +527,18 @@ class ProjectCompactionService:
                     )
                     not in covered_text
                 ]
-        prepared["context_compaction"] = {**status, "token_budget": budget}
-        final_budget = self._budget(prepared)
-        prepared["context_compaction"]["token_budget"] = final_budget
-        # Account for the final diagnostic too; one conservative serialized pass
-        # leaves no silent truncation path for pinned requirements.
-        if self._count(prepared) > final_budget["available_input_tokens"]:
+        budget = measured()
+        # A generated advisory summary can itself be larger than its source.
+        # Omit its oldest notes before displacing any further original context.
+        while budget["input_tokens"] > budget["available_input_tokens"] and status.get("notes"):
+            status["notes"].pop(0)
+            selection["summary_notes_omitted"] += 1
+            if not status["notes"]:
+                status["status"] = "omitted_for_budget"
+            budget = measured()
+        while budget["input_tokens"] > budget["available_input_tokens"] and trim_optional():
+            budget = measured()
+        if budget["input_tokens"] > budget["available_input_tokens"]:
             raise ProjectContextBudgetExceeded(
                 "project context exceeds input budget; pinned requirements preserved"
             )
