@@ -38,11 +38,13 @@ async def test_capsule_keeps_old_requirements_guide_and_same_project_observed_ou
 ) -> None:
     manager, detail, agent = await _project(tmp_path)
     gid = detail["goal"]["id"]
-    ids = await _messages(manager, gid, ["Never delete user records."] + ["Continue."] * 14)
     service = ProjectContextService(manager.db_path)
     before = await service.refresh(gid)
     assert before["experiences"] == {"items": [], "omitted_count": 0}
     job, _ = await _result(manager, agent, action="clarify", message="Ready to continue?")
+    # Later user requirements must retain the accepted historical observation.
+    # Do not make the still-unclaimed original job stale before recording it.
+    ids = await _messages(manager, gid, ["Never delete user records."] + ["Continue."] * 14)
     after = await service.refresh(gid)
     assert before["fingerprint"] != after["fingerprint"]
     capsule = service.prompt_state(after)
