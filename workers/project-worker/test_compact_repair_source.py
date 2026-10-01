@@ -7,6 +7,8 @@ import project_worker as worker
 import pytest
 from jsonschema import Draft202012Validator
 from test_project_model_budget import capture
+from test_project_read_progress import model_transport
+from test_project_worker import Runner, compact_step
 
 
 def diagnostic(path="tests/test_browser.py", line=40):
@@ -61,6 +63,127 @@ def repair_payload():
             ],
         },
     }
+
+
+def after_compact_read(data, path="tests/test_browser.py"):
+    data["focus_paths"] = [path]
+    data["conversation"].append(
+        {
+            "role": "assistant",
+            "content": f"Files requested for reading: {path}. No project files changed.",
+        }
+    )
+    return data
+
+
+def generator_64k():
+    generator = worker.ProjectGenerator(
+        "http://127.0.0.1:11434/v1", "local-model", context_tokens=64_000, prompt_max_bytes=50_000
+    )
+    generator.runtime_instruction = "x" * 992
+    return generator
+
+
+@pytest.mark.parametrize("after_read", [False, True])
+def test_small_diagnostic_file_is_complete_in_compact_recovery_without_expanding_context(
+    monkeypatch, after_read
+):
+    data = repair_payload()
+    data["files"][-1]["content"] = "".join(data["files"][-1]["content"].splitlines(True)[:60])
+    if after_read:
+        after_compact_read(data)
+    original = copy.deepcopy(data)
+    generator = generator_64k()
+    body = capture(monkeypatch, generator, data)
+    workspace = body["messages"][-1]["content"]
+    metadata, _ = json.JSONDecoder().raw_decode(workspace.removeprefix("Current workspace data:\n"))
+    source = data["files"][-1]
+
+    assert body["options"]["num_predict"] == 512
+    assert 10_000 < sum(len(message["content"].encode()) for message in body["messages"]) < 28_000
+    assert metadata["durable_project_requirements"] == data["durable_context"]
+    assert data["conversation"][0] in body["messages"]
+    assert workspace.count("SOURCE ") == 1
+    assert source["content"] in workspace
+    assert 'SOURCE {"path":"tests/test_browser.py","complete":true' in workspace
+    assert generator.last_visible_paths == {source["path"]}
+    assert len(metadata["editable_spans"]) == 1
+    address = metadata["editable_spans"][0]
+    assert address["path"] == source["path"] and address["start_line"] == 40
+    assert source["content"][address["start_character"] : address["end_character"]] == (
+        "    options.add_argument('--no-sandbox')\n"
+    )
+    assert data == original
+
+
+@pytest.mark.parametrize("after_read", [False, True])
+def test_small_complete_recovery_source_cannot_be_requested_again(monkeypatch, after_read):
+    data = repair_payload()
+    if after_read:
+        after_compact_read(data)
+    generator, requests = model_transport(
+        monkeypatch, compact_step(edits=[], focus_paths=["tests/test_browser.py"])
+    )
+    generator.context_tokens, generator.prompt_max_bytes = 64_000, 50_000
+    runner = Runner()
+
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+
+    assert len(requests) == 1 and runner.calls == 0
+    assert requests[0]["options"]["num_predict"] == 512
+    assert result["message"] == worker.REDUNDANT_READ_DIAGNOSTIC
+    assert result["focus_paths"] == []
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+
+
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_recovery_complete_source_ceiling_is_utf8_bytes(monkeypatch, extra_bytes):
+    data = after_compact_read(repair_payload())
+    source = "".join(data["files"][-1]["content"].splitlines(True)[:42])
+    count = worker.MAX_SPAN_BYTES + extra_bytes - len(source.encode()) - len("# é\n".encode())
+    data["files"][-1]["content"] = source + "# é" + "x" * count + "\n"
+    generator = generator_64k()
+    body = capture(monkeypatch, generator, data)
+    workspace = body["messages"][-1]["content"]
+    assert body["options"]["num_predict"] == 512
+    assert "options.add_argument('--no-sandbox')" in workspace
+    assert ("tests/test_browser.py" in generator.last_visible_paths) == (extra_bytes == 0)
+    if extra_bytes:
+        assert 'SOURCE {"path":"tests/test_browser.py","complete":false' in workspace
+        assert data["files"][-1]["content"] not in workspace
+    assert sum(len(message["content"].encode()) for message in body["messages"]) <= 50_000
+
+
+def test_compact_read_can_supply_a_different_existing_dependency_file(monkeypatch):
+    data = after_compact_read(repair_payload(), "requirements.txt")
+    generator = generator_64k()
+    body = capture(monkeypatch, generator, data)
+    workspace = body["messages"][-1]["content"]
+    assert body["options"]["num_predict"] == 512
+    assert generator.last_visible_paths == {"requirements.txt"}
+    assert workspace.count("SOURCE ") == 1 and "Flask==3.1.3" in workspace
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["new_user", "wrong_message", "ordinary_history", "foreign_focus", "multiple_focus", "passed"],
+)
+def test_compact_read_does_not_reuse_unrelated_or_unproven_recovery(monkeypatch, change):
+    data = after_compact_read(repair_payload())
+    if change == "new_user":
+        data["conversation"].append({"role": "user", "content": "Implement a new export module."})
+    elif change == "wrong_message":
+        data["conversation"][-1]["content"] += " Continue."
+    elif change == "ordinary_history":
+        data["conversation"][-2]["content"] = "A historical repair was attempted."
+    elif change == "foreign_focus":
+        data["focus_paths"] = ["other/tests/test_browser.py"]
+    elif change == "multiple_focus":
+        data["focus_paths"].append("requirements.txt")
+    else:
+        data["checks"][0].update(status="passed", exit_code=0)
+    body = capture(monkeypatch, generator_64k(), data)
+    assert body["options"]["num_predict"] == 2000
 
 
 @pytest.mark.parametrize("focused", [False, True])

@@ -403,6 +403,24 @@ def repair_follows_model_timeout(payload: dict[str, Any]) -> bool:
     return False
 
 
+def compact_repair_read_path(payload: dict[str, Any]) -> str | None:
+    """Honor one accepted read after timeout recovery without reopening normal context."""
+    focused = payload.get("focus_paths", [])
+    history = payload["conversation"]
+    if len(focused) != 1 or not history or focused[0] not in {
+        item["path"] for item in payload["files"]
+    }:
+        return None
+    if history[-1] != {
+        "role": "assistant",
+        "content": f"Files requested for reading: {focused[0]}. No project files changed.",
+    }:
+        return None
+    if not repair_follows_model_timeout({**payload, "conversation": history[:-1]}):
+        return None
+    return str(focused[0])
+
+
 def follows_model_rejection(payload: dict[str, Any]) -> bool:
     """Match only the latest assistant diagnostic, including its known pause wrapper."""
     for message in reversed(payload["conversation"]):
@@ -912,7 +930,7 @@ def visible_patch_spans(
             continue
         shown = item["content"]
         shown_start = item.get("start_character", 0)
-        if path in payload.get("focus_paths", []) and item not in fragments:
+        if path in payload.get("focus_paths", []) and item not in fragments and not diagnostic_first:
             fragment = source_fragment(item, payload, diagnostics)
             shown, shown_start = fragment["content"], fragment["start_character"]
         lines = physical_source_lines(shown)
@@ -1266,9 +1284,15 @@ def source_fragment(
 
 
 def compact_repair_source(
-    context: dict[str, Any], payload: dict[str, Any], diagnostics: str
+    context: dict[str, Any], payload: dict[str, Any], diagnostics: str,
+    *, read_path: str | None = None,
 ) -> dict[str, Any] | None:
     """Reserve one current repair target before applying the soft recovery budget."""
+    if read_path is not None:
+        original = next(item for item in payload["files"] if item["path"] == read_path)
+        if len(original["content"].encode("utf-8")) <= MAX_SPAN_BYTES:
+            return {**original, "complete": True}
+        return source_fragment(original, {**payload, "focus_paths": []}, diagnostics)
     located = [
         item
         for item in payload["files"]
@@ -1286,6 +1310,8 @@ def compact_repair_source(
         return None
     path = candidates[0]["path"]
     original = next(item for item in payload["files"] if item["path"] == path)
+    if located and len(original["content"].encode("utf-8")) <= MAX_SPAN_BYTES:
+        return {**original, "complete": True}
     # A prior focus rotates ordinary reads; a repair must retain its failing line.
     return source_fragment(original, {**payload, "focus_paths": []}, diagnostics)
 
@@ -1911,8 +1937,9 @@ class ProjectGenerator:
             )
             conversation = [item for item in conversation if item is not latest_user_message]
 
-        compact_repair = (
-            needs_repair and bool(payload["files"]) and repair_follows_model_timeout(payload)
+        repair_read_path = compact_repair_read_path(payload)
+        compact_repair = needs_repair and bool(payload["files"]) and (
+            repair_follows_model_timeout(payload) or repair_read_path is not None
         )
         bounded_rejection = bool(payload["files"]) and follows_model_rejection(payload)
         if bounded_rejection:
@@ -1944,10 +1971,12 @@ class ProjectGenerator:
                     context,
                     payload,
                     "\n".join(check["output"] for check in payload["checks"] if check["status"] == "failed"),
+                    read_path=repair_read_path,
                 )
                 if repair_source is not None:
-                    context["selected_complete_files"] = []
-                    context["selected_file_fragments"] = [repair_source]
+                    complete = repair_source["complete"]
+                    context["selected_complete_files"] = [repair_source] if complete else []
+                    context["selected_file_fragments"] = [] if complete else [repair_source]
                 current_task = (
                     "Fix one actual failure from the check receipts with one short patch or "
                     "small complete file. Read the necessary existing file first if it is "
@@ -2018,6 +2047,15 @@ class ProjectGenerator:
                 address_budget = max(500, address_budget - 1_000)
             elif removable is not None:
                 messages.pop(removable)
+            elif repair_source is not None:
+                # The accepted read must survive the soft limit as complete source,
+                # just as an ordinary compact repair must retain its diagnostic span.
+                if prompt_budget < self.prompt_max_bytes:
+                    prompt_budget = self.prompt_max_bytes
+                    continue
+                raise ProjectError(
+                    "project repair source and requirements exceed the local model context budget"
+                )
             elif context["selected_complete_files"]:
                 removed = context["selected_complete_files"].pop()
                 if (
@@ -2038,13 +2076,6 @@ class ProjectGenerator:
                         )
                     )
             elif context["selected_file_fragments"]:
-                if repair_source is not None:
-                    if prompt_budget < self.prompt_max_bytes:
-                        prompt_budget = self.prompt_max_bytes
-                        continue
-                    raise ProjectError(
-                        "project repair source and requirements exceed the local model context budget"
-                    )
                 context["selected_file_fragments"].pop()
             else:
                 if compact_repair and prompt_budget < self.prompt_max_bytes:
