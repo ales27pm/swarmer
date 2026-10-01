@@ -3020,11 +3020,12 @@ def test_compact_context_retains_valid_large_unicode_user_reply(
     data = compact_recovery_payload()
     data["objective"] = "Requirement " * 180
     data["conversation"][0]["content"] = "é" * 4_000
-    response = compact_step(edits=[], focus_paths=["app.py"])
+    response = compact_step()
     body = capture_project_request(monkeypatch, data, response)
     size = sum(len(m["content"].encode()) for m in body["messages"])
     assert worker.MAX_RECOVERY_PROMPT_BYTES < size <= worker.MAX_PROMPT_BYTES
     assert data["conversation"][0] in body["messages"]
+    assert "VALUE = 1\n" in body["messages"][-1]["content"]
     assert body["options"]["num_predict"] == 512
 
 

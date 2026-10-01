@@ -810,6 +810,14 @@ def project_traceback_line(path: str, diagnostics: str) -> int | None:
             + r":([1-9][0-9]*)(?::(?:[ \t][^\r\n]*)?)?[ \t]*\r?$",
             diagnostics,
         )
+    if match is None:
+        match = re.search(
+            r"(?m)^browser_sandbox_disabled: "
+            + re.escape(path)
+            + r":([1-9][0-9]*)\. Static browser preflight blocked execution; no tests ran\. "
+            r"Remove --no-sandbox and keep Chromium sandbox enabled\.$",
+            diagnostics,
+        )
     return int(match.group(1)) if match and int(match.group(1)) > 0 else None
 
 
@@ -877,7 +885,9 @@ def diagnostic_functions(item: dict[str, str], diagnostics: str) -> list[tuple[i
     return matches
 
 
-def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dict[str, list[str]]:
+def visible_patch_spans(
+    context: dict[str, Any], payload: dict[str, Any], *, diagnostic_first: bool = False
+) -> dict[str, list[str]]:
     original = {item["path"]: item["content"] for item in payload["files"]}
     requested = native_requested_paths(payload)
     diagnostics = "\n".join(item["output"] for item in payload["checks"])
@@ -931,9 +941,12 @@ def visible_patch_spans(context: dict[str, Any], payload: dict[str, Any]) -> dic
         if 0 <= target_index < len(lines):
             unique = unique_diagnostic_span(lines, target_index, original[path])
             if unique is not None:
-                # Retain the enclosing function before a lone failing line.
-                # A lifecycle repair may need both setup/close and assertions.
-                proposed.append(unique)
+                # Ordinary lifecycle repair keeps the enclosing function first;
+                # compact repair reserves the shorter exact failing target.
+                if diagnostic_first:
+                    proposed.insert(0, unique)
+                else:
+                    proposed.append(unique)
         for index in order:
             for count in (1, 2, 3):
                 proposed.append("".join(lines[index : index + count]))
@@ -1148,12 +1161,13 @@ def addressed_patch_spans(
     payload: dict[str, Any],
     *,
     max_bytes: int = MAX_ADDRESS_BYTES,
+    diagnostic_first: bool = False,
 ) -> dict[str, dict[str, Any]]:
     originals = {item["path"]: item["content"] for item in payload["files"]}
     base = snapshot_sha(payload["files"])
     remaining = max_bytes
     addresses: dict[str, dict[str, Any]] = {}
-    candidates = visible_patch_spans(context, payload)
+    candidates = visible_patch_spans(context, payload, diagnostic_first=diagnostic_first)
     for index in range(24):
         for path, spans in candidates.items():
             if index >= len(spans):
@@ -1249,6 +1263,31 @@ def source_fragment(
         "fragment_count": count,
         "complete": False,
     }
+
+
+def compact_repair_source(
+    context: dict[str, Any], payload: dict[str, Any], diagnostics: str
+) -> dict[str, Any] | None:
+    """Reserve one current repair target before applying the soft recovery budget."""
+    located = [
+        item
+        for item in payload["files"]
+        if (line := project_traceback_line(item["path"], diagnostics)) is not None
+        and line <= len(physical_source_lines(item["content"]))
+    ]
+    named = [
+        item
+        for item in payload["files"]
+        if re.search(r"(?<![\w./@-])" + re.escape(item["path"]) + r"(?![\w./@-])", diagnostics)
+    ]
+    selected = context["selected_file_fragments"] + context["selected_complete_files"]
+    candidates = located or named or selected
+    if not candidates:
+        return None
+    path = candidates[0]["path"]
+    original = next(item for item in payload["files"] if item["path"] == path)
+    # A prior focus rotates ordinary reads; a repair must retain its failing line.
+    return source_fragment(original, {**payload, "focus_paths": []}, diagnostics)
 
 
 def trim_dependency_evidence(context: dict[str, Any]) -> bool:
@@ -1879,6 +1918,7 @@ class ProjectGenerator:
         if bounded_rejection:
             instruction += "\n" + REJECTED_BATCH_INSTRUCTION
         prompt_budget = MAX_RECOVERY_PROMPT_BYTES if compact_repair else self.prompt_max_bytes
+        repair_source = None
         if compact_repair:
             instruction = REPAIR_RECOVERY_INSTRUCTION
             # Creation instructions already contain the exact latest request.
@@ -1900,6 +1940,14 @@ class ProjectGenerator:
                 if check["status"] == "failed"
             ]
             if not (needs_tests or needs_node_manifest or needs_node_tests):
+                repair_source = compact_repair_source(
+                    context,
+                    payload,
+                    "\n".join(check["output"] for check in payload["checks"] if check["status"] == "failed"),
+                )
+                if repair_source is not None:
+                    context["selected_complete_files"] = []
+                    context["selected_file_fragments"] = [repair_source]
                 current_task = (
                     "Fix one actual failure from the check receipts with one short patch or "
                     "small complete file. Read the necessary existing file first if it is "
@@ -1922,8 +1970,16 @@ class ProjectGenerator:
             addresses = (
                 {}
                 if test_creation_kind
-                else addressed_patch_spans(context, payload, max_bytes=address_budget)
+                else addressed_patch_spans(
+                    context,
+                    payload,
+                    max_bytes=address_budget,
+                    diagnostic_first=repair_source is not None,
+                )
             )
+            if repair_source is not None:
+                # One exact target is enough for the single-operation recovery contract.
+                addresses = dict(list(addresses.items())[:1])
             context["editable_spans"] = [
                 {key: value for key, value in item.items() if key != "old"}
                 for item in addresses.values()
@@ -1958,7 +2014,7 @@ class ProjectGenerator:
             )
             if trim_dependency_evidence(context):
                 pass
-            elif address_budget > 500:
+            elif address_budget > 500 and repair_source is None:
                 address_budget = max(500, address_budget - 1_000)
             elif removable is not None:
                 messages.pop(removable)
@@ -1982,6 +2038,13 @@ class ProjectGenerator:
                         )
                     )
             elif context["selected_file_fragments"]:
+                if repair_source is not None:
+                    if prompt_budget < self.prompt_max_bytes:
+                        prompt_budget = self.prompt_max_bytes
+                        continue
+                    raise ProjectError(
+                        "project repair source and requirements exceed the local model context budget"
+                    )
                 context["selected_file_fragments"].pop()
             else:
                 if compact_repair and prompt_budget < self.prompt_max_bytes:

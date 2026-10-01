@@ -160,6 +160,9 @@ def test_compact_repair_can_keep_required_capsule_above_old_budget(monkeypatch):
     assert 22_000 < size <= 50_000
     for requirement in requirements:
         assert requirement["text"] in body["messages"][-1]["content"]
+    assert 'SOURCE {"path":"app.py"' in body["messages"][-1]["content"]
+    assert "VALUE = 1\n" in body["messages"][-1]["content"]
+    assert "PATCH_TARGET " in body["messages"][-1]["content"]
     assert body["options"]["num_ctx"] == 64_000
     assert body["options"]["num_predict"] == 512
 
