@@ -521,6 +521,11 @@ class AgentDispatcher:
             row: aiosqlite.Row | None = None
             selection = None
             for candidate in rows:
+                if await self._cancel_stale_goal_jobs_locked(
+                    db, now=now, job_id=str(candidate["id"]), limit=1
+                ):
+                    quarantined += 1
+                    continue
                 if local_model_busy and requires_local_model_resource(
                     str(candidate["required_skill"])
                 ):
@@ -643,6 +648,117 @@ class AgentDispatcher:
         if record is None:
             raise RuntimeError("claimed job disappeared")
         return {**record, "claim_token": lease_token}
+
+    async def _cancel_stale_goal_jobs_locked(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        now: str,
+        goal_id: str | None = None,
+        job_id: str | None = None,
+        limit: int = 32,
+    ) -> int:
+        """Retire queued work whose exact owning node predates a user reply.
+
+        The caller holds BEGIN IMMEDIATE. The task source and node/task/skill
+        bindings prevent a shared worker queue from borrowing another goal's
+        revision. A null job binding is the queue-to-node-publication window.
+        Claimed/running jobs keep their existing lease and completion contract.
+        """
+        rows = await (
+            await db.execute(
+                """SELECT j.id,j.task_id,j.required_skill,n.id AS node_id,
+                    g.id AS goal_id,n.conversation_revision AS node_revision,
+                    g.conversation_revision AS goal_revision
+                FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
+                JOIN plan_nodes n ON n.task_id=j.task_id AND n.required_skill=j.required_skill
+                    AND (n.worker_job_id=j.id OR n.worker_job_id IS NULL)
+                JOIN goal_runs g ON g.id=n.goal_run_id AND t.source='goal:' || g.id
+                WHERE j.status='queued' AND t.status='queued' AND n.node_type='worker'
+                    AND n.status IN ('dispatched','running')
+                    AND n.conversation_revision<>g.conversation_revision
+                    AND (? IS NULL OR g.id=?) AND (? IS NULL OR j.id=?)
+                ORDER BY j.created_at,j.id LIMIT ?""",
+                (goal_id, goal_id, job_id, job_id, limit),
+            )
+        ).fetchall()
+        reason = "goal_conversation_changed_before_claim"
+        cancelled = 0
+        for row in rows:
+            await AgentJobStateMachine.transition_locked(
+                db,
+                job_id=str(row["id"]),
+                current="queued",
+                target="cancelled",
+                now=now,
+                updates={"completed_at": now, "last_failure_reason": reason, "error": reason},
+            )
+            await TaskStateMachine.transition_locked(
+                db,
+                task_id=str(row["task_id"]),
+                current="queued",
+                target="cancelled",
+                now=now,
+                error=reason,
+            )
+            cursor = await db.execute(
+                """UPDATE plan_nodes SET status='cancelled',updated_at=?,completed_at=?,
+                    error_summary=? WHERE id=? AND goal_run_id=? AND task_id=?
+                    AND status IN ('dispatched','running')""",
+                (now, now, reason, row["node_id"], row["goal_id"], row["task_id"]),
+            )
+            if cursor.rowcount != 1:
+                raise DistributedStateConflict("goal node changed during stale job cancellation")
+            await append_audit_event(
+                db,
+                "agent.job.cancelled",
+                {
+                    "job_id": row["id"],
+                    "node_id": row["node_id"],
+                    "goal_run_id": row["goal_id"],
+                    "node_revision": row["node_revision"],
+                    "goal_revision": row["goal_revision"],
+                    "reason": reason,
+                },
+                actor_type="control-plane",
+                actor_id="dispatcher",
+                task_id=str(row["task_id"]),
+                trace_id=str(row["goal_id"]),
+                created_at=now,
+            )
+            await self.outbox.enqueue_locked(
+                db,
+                aggregate_type="agent_job",
+                aggregate_id=str(row["id"]),
+                topic="tasks.status",
+                event_type="cancelled",
+                payload={"job_id": row["id"], "status": "cancelled"},
+                task_id=str(row["task_id"]),
+                message_id=str(row["id"]),
+                dedupe_key=f"agent-job:{row['id']}:stale-goal-cancelled",
+                created_at=now,
+            )
+            cancelled += 1
+        return cancelled
+
+    async def cancel_stale_goal_jobs(
+        self, goal_id: str, *, maintenance_guard: MaintenanceLeaseGuard | None = None
+    ) -> int:
+        """Allow pending replies to progress even when their old worker is offline."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            cancelled = await self._cancel_stale_goal_jobs_locked(
+                db, now=self._now().isoformat(), goal_id=goal_id
+            )
+            if maintenance_guard is not None:
+                await maintenance_guard.require_current_locked(db)
+            await db.commit()
+        if cancelled:
+            await self._drain_outbox()
+        return cancelled
 
     def _lease_matches(
         self,

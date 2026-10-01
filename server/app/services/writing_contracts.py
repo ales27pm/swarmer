@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.services.agent_capsule import validate_agent_capsule
+
 WRITING_SKILL = "writing.draft"
 MAX_WRITING_PAYLOAD_BYTES = 32_000
 MAX_WRITING_TEXT_BYTES = 24_000
@@ -449,6 +451,32 @@ def validate_writing_requirements(text: str, requirements: object, allowed_urls:
         raise WritingRequirementsError(failures)
 
 
+class WritingFailureDiagnostics(_StrictModel):
+    """Bounded worker measurements, never a delivered draft or semantic proof."""
+
+    schema_version: Literal["1.0"]
+    kind: Literal["writing_requirement_diagnostics"]
+    reason: Literal["writing_requirements_unmet"]
+    word_count: int = Field(ge=0, le=24_000)
+    min_words: int | None = Field(ge=1, le=100_000)
+    max_words: int | None = Field(ge=1, le=100_000)
+    citation_count: int = Field(ge=0, le=MAX_RESEARCH_SOURCES)
+    min_citations: int | None = Field(ge=0, le=5)
+    required_source_domains: list[str] = Field(max_length=5)
+    cited_source_domains: list[str] = Field(max_length=MAX_RESEARCH_SOURCES)
+    failures: list[
+        Literal["min_words", "max_words", "min_citations", "required_source_domains"]
+    ] = Field(min_length=1, max_length=4)
+
+
+class WritingPreviousAttemptFeedback(_StrictModel):
+    """An explicitly linked failed attempt; measurements are not accepted evidence."""
+
+    node_id: str = Field(pattern=r"^node_[A-Za-z0-9_-]+$", max_length=128)
+    worker_job_id: str = Field(pattern=r"^job_[A-Za-z0-9._:-]+$", max_length=200)
+    diagnostics: WritingFailureDiagnostics
+
+
 class WritingPayload(_StrictModel):
     schema_version: Literal["1.0"]
     objective: str = Field(min_length=1, max_length=MAX_WRITING_CONTEXT_CHARACTERS)
@@ -462,6 +490,22 @@ class WritingPayload(_StrictModel):
         default_factory=list, max_length=MAX_RESEARCH_SOURCES
     )
     requirements: WritingRequirements | None = None
+    durable_context: dict[str, Any] | None = None
+    previous_attempt_feedback: WritingPreviousAttemptFeedback | None = None
+
+    @field_validator("durable_context")
+    @classmethod
+    def validate_durable_context(cls, value: object) -> dict[str, Any]:
+        return validate_agent_capsule(value)
+
+    @field_validator("previous_attempt_feedback")
+    @classmethod
+    def validate_previous_attempt(
+        cls, value: WritingPreviousAttemptFeedback | None
+    ) -> WritingPreviousAttemptFeedback:
+        if value is None:
+            raise ValueError("previous attempt feedback must be an object when provided")
+        return value
 
     @field_validator("requirements")
     @classmethod
@@ -505,6 +549,8 @@ class WritingPayload(_StrictModel):
 
     @model_validator(mode="after")
     def validate_payload_size(self) -> WritingPayload:
+        if self.previous_attempt_feedback is not None:
+            _validate_diagnostics_for_task(self.previous_attempt_feedback.diagnostics, self)
         serialized_sources = [source.model_dump() for source in self.research_sources]
         count_limit, source_limit = research_source_limits(serialized_sources)
         if len(serialized_sources) > count_limit:
@@ -677,30 +723,10 @@ def validate_writing_result(value: object, *, payload: object = None) -> dict[st
         requirements = (
             task.requirements.model_dump(exclude_unset=True)
             if task.requirements is not None
-            else derive_writing_requirements(
-                task.objective, [m.model_dump() for m in task.conversation]
-            )
+            else derive_writing_requirements(task.objective, durable_writing_conversation(task))
         )
         validate_writing_requirements(result["text"], requirements, allowed)
     return result
-
-
-class WritingFailureDiagnostics(_StrictModel):
-    """Bounded worker measurements, never a delivered draft or semantic proof."""
-
-    schema_version: Literal["1.0"]
-    kind: Literal["writing_requirement_diagnostics"]
-    reason: Literal["writing_requirements_unmet"]
-    word_count: int = Field(ge=0, le=24_000)
-    min_words: int | None = Field(ge=1, le=100_000)
-    max_words: int | None = Field(ge=1, le=100_000)
-    citation_count: int = Field(ge=0, le=MAX_RESEARCH_SOURCES)
-    min_citations: int | None = Field(ge=0, le=5)
-    required_source_domains: list[str] = Field(max_length=5)
-    cited_source_domains: list[str] = Field(max_length=MAX_RESEARCH_SOURCES)
-    failures: list[
-        Literal["min_words", "max_words", "min_citations", "required_source_domains"]
-    ] = Field(min_length=1, max_length=4)
 
 
 def validate_writing_failure_diagnostics(value: object, *, payload: object) -> dict[str, Any]:
@@ -711,8 +737,14 @@ def validate_writing_failure_diagnostics(value: object, *, payload: object) -> d
     """
     report = WritingFailureDiagnostics.model_validate(value)
     task = WritingPayload.model_validate(payload)
+    return _validate_diagnostics_for_task(report, task)
+
+
+def _validate_diagnostics_for_task(
+    report: WritingFailureDiagnostics, task: WritingPayload
+) -> dict[str, Any]:
     requirements = task.requirements or WritingRequirements.model_validate(
-        derive_writing_requirements(task.objective, [m.model_dump() for m in task.conversation])
+        derive_writing_requirements(task.objective, durable_writing_conversation(task))
     )
     for key in ("min_words", "max_words", "min_citations", "required_source_domains"):
         if getattr(report, key) != getattr(requirements, key):
@@ -743,6 +775,14 @@ def validate_writing_failure_diagnostics(value: object, *, payload: object) -> d
     if report.failures != failures:
         raise ValueError("writing diagnostic failures do not match measurements")
     return report.model_dump()
+
+
+def durable_writing_conversation(task: WritingPayload) -> list[dict[str, str]]:
+    """Chronological source-backed user requirements precede current user updates."""
+    durable = task.durable_context or {}
+    return [
+        {"role": "user", "content": item["text"]} for item in durable.get("requirements", [])
+    ] + [message.model_dump() for message in task.conversation]
 
 
 def writing_failure_summary(validated: dict[str, Any]) -> str:

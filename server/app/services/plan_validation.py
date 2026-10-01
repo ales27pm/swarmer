@@ -360,6 +360,8 @@ def validate_swarm_plan(
     available_skills: Sequence[str] | None = None,
 ) -> ValidatedSwarmPlan:
     proposal = _coerce_model(SwarmPlanProposal, raw)
+    if any(node.retry_of_node_id is not None for node in proposal.nodes):
+        raise PlanValidationError("only evaluator extensions may reference a previous attempt")
     if len(proposal.nodes) > min(max_nodes, MAX_PLAN_NODES):
         raise PlanValidationError(
             f"plan exceeds the configured {max_nodes}-node budget", diagnostic_code="step_budget"
@@ -394,6 +396,13 @@ def validate_evaluation_decision(
         raise PlanValidationError("known node ids must be unique")
     if len(known) + len(decision.suggested_new_nodes) > MAX_PLAN_NODES:
         raise PlanValidationError("suggested nodes exceed the goal node budget")
+    repairs = [
+        node.retry_of_node_id
+        for node in decision.suggested_new_nodes
+        if node.retry_of_node_id is not None
+    ]
+    if not set(repairs).issubset(known) or len(repairs) != len(set(repairs)):
+        raise PlanValidationError("writing repairs require unique known previous attempts")
     order = _validate_node_graph(
         decision.suggested_new_nodes,
         policy=policy,

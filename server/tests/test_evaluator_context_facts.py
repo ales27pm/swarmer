@@ -36,7 +36,8 @@ def test_legacy_evaluator_context_does_not_invent_capability_or_node_facts() -> 
 def test_bounded_context_preserves_structural_facts(available: list[str]) -> None:
     raw = evaluation_context().model_dump(mode="json")
     raw["available_skills"] = available
-    raw["objective"] = "Crées une Application CRM en python " + "x" * 3_000
+    # Pressure comes from optional evidence; required goal text must fit whole.
+    raw["objective"] = "Crées une Application CRM en python"
     raw["node_results"][0].update(
         node_type="worker", required_skill="code.build_project", result_summary="x" * 4_000
     )

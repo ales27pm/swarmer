@@ -232,7 +232,12 @@ async def test_overflow_never_drops_pinned_requirements(tmp_path):
 @pytest.mark.asyncio
 async def test_prepare_threshold_compacts_only_covered_assistant_text(tmp_path):
     _, goal, context, provider, service = await setup(
-        tmp_path, context_tokens=4000, output_tokens=500, overhead_tokens=300
+        # Include the mandatory operating guide: 6.3KB before compaction,
+        # 3.6KB afterwards, with a conservative byte-based 5.2K input budget.
+        tmp_path,
+        context_tokens=6000,
+        output_tokens=500,
+        overhead_tokens=300,
     )
     state = await context.refresh(goal)
     original_proposal = state["proposals"][-1]["text"]
@@ -243,6 +248,8 @@ async def test_prepare_threshold_compacts_only_covered_assistant_text(tmp_path):
     assert provider.calls and result["context_compaction"]["status"] == "completed"
     assert len(result["conversation"]) < len(conversation)
     assert result["durable_context"] == context.prompt_state(state)
+    assert result["durable_context"]["operating_guidance"] == state["operating_guidance"]
+    assert service._count(result) <= 5200
     assert conversation[0]["content"] == original_proposal
 
 

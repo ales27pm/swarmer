@@ -7,6 +7,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from app.models import AgentCreate
 from app.services.context_builder import safe_context_text
 from app.services.goal_conversation import GoalConversationService
 from app.services.goal_limits import active_runtime_seconds, runtime_expired
@@ -178,6 +179,12 @@ async def test_running_job_keeps_reply_queued_until_iteration_boundary(tmp_path:
         GoalCreateRequest(objective="Inspect the repository"), actor_id="phone"
     )
     started = await manager.start_goal(goal["id"], GoalStartRequest())
+    agent = await manager.state_service.register_agent(
+        AgentCreate(name="reader", endpoint="http://127.0.0.1:1", skills=["workspace.list_dir"]),
+        "phone",
+    )
+    await manager.state_service.heartbeat_agent(agent["id"], "online", agent["credential"])
+    assert await manager.agent_dispatcher.claim(agent["id"]) is not None
     replied = await manager.reply_goal(
         goal["id"],
         GoalMessageRequest(message="Check README too", client_message_id="steer"),

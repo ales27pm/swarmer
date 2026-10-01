@@ -120,6 +120,11 @@ async def read_worker_context(
                     and context_bytes([*context, item]) <= MAX_DEPENDENCY_BYTES
                 ):
                     context.append(item)
+                elif node["dependency_type"] != "optional":
+                    # A hard dependency cannot disappear merely because earlier
+                    # summaries consumed the transport budget. Split the task or
+                    # reduce optional context before admitting this operation.
+                    raise ValueError("required dependency context exceeds its budget")
             if skill not in {"research.query", "research.collect"}:
                 continue
             candidates = (

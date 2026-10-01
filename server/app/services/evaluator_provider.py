@@ -162,6 +162,13 @@ failures). These describe a rejected draft, not a delivered document or verified
 source support. If budgets allow another writing step, carry the original limits
 and each measured deficiency into its step objective; reuse completed research
 dependencies when adequate. Never relax the user's constraints to make it pass.
+For a repair with measured worker_observation diagnostics from a failed writing.draft,
+set retry_of_node_id to that exact failed
+node_results.node_id. The server uses this explicit lineage to carry validated measurements
+into the next writer request. Keep completed research dependencies; do not make the failed
+draft a required evidence dependency. Use null or omit retry_of_node_id for an initial or
+different deliverable. Never attach an unrelated failure, or propose parallel repairs of
+the same attempt. A previously superseded attempt is not a new repair target.
 Connection, first-content, idle and wall timeouts are execution failures, not
 refusals or evidence of a document. Every retry remains a new budgeted step.
 available_skills is the control plane's current fresh online-or-busy, protocol-compatible,

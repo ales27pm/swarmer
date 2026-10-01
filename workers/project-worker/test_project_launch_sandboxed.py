@@ -88,6 +88,19 @@ def test_rejects_modified_source(release: Path, launcher: ModuleType) -> None:
         launcher.sandbox_command(release)
 
 
+def test_capsule_validator_is_pinned_and_bound_read_only(
+    release: Path, launcher: ModuleType
+) -> None:
+    relative = "workers/project-worker/agent_capsule.py"
+    assert relative in launcher.SOURCES
+    command, _ = launcher.sandbox_command(release)
+    binds = [command[i + 1 : i + 3] for i, arg in enumerate(command) if arg == "--ro-bind"]
+    assert [str(release / relative), "/app/" + relative] in binds
+    (release / relative).write_text("changed validator")
+    with pytest.raises(ValueError, match="manifest"):
+        launcher.sandbox_command(release)
+
+
 def test_passes_only_explicit_project_model_timeout(
     release: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

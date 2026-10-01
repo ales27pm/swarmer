@@ -7,9 +7,13 @@ application. AST validation checks syntax only; it does not prove correctness,
 safety, or successful tests. The server retains artifact review, approval, and
 execution authority.
 
-The exact job payload is `{"objective":"A Python application objective"}`,
-with a nonempty objective of at most 4,000 characters. No path, command, model,
-URL, credentials, or execution flags can come from a job. The exact result is:
+Legacy jobs use `{"objective":"A Python application objective"}`, with a
+nonempty objective of at most 4,000 characters. An optional `durable_context`
+contains the validated shared agent capsule: quoted requirements, source IDs,
+scoped project guidance, and explicitly historical experiences. It grants no
+execution authority. The complete payload is limited to 32,000 UTF-8 bytes.
+No path, command, model, URL, credentials, or execution flags can come from a
+job. The exact result is:
 
 ```json
 {"schema_version":"1.0","path":"app.py","content":"Python source","summary":"Proposal description; not executed or tested."}
@@ -22,6 +26,14 @@ fail the job. Relative imports are rejected because the proposal is one file.
 This static import check does not prove that dynamic runtime dependencies or
 every execution path are valid. There is no inference retry or fallback.
 Generated content remains an untrusted proposal even when validation succeeds.
+
+The complete objective and capsule reach the model as one JSON input. They are
+never shortened to make a request fit. Before any model request, a conservative
+UTF-8 byte estimate of messages and the response schema must fit the configured
+8,192-token model window with 512 tokens reserved for framing and at least 1,024
+tokens for output. Oversized inputs fail explicitly; the worker neither retries
+nor silently removes requirements. This bound can reject input that a particular
+tokenizer could fit, and is not a measured tokenizer count.
 
 The worker reuses `../file-worker/file_worker.py` for authenticated claims,
 opaque lease proof, background renewal, and result fencing. Deploy both sibling
@@ -39,8 +51,9 @@ python3 code_worker.py
 ```
 
 For a managed Ubuntu release, use `launch_sandboxed.py` instead. The release root
-must contain `release.json` with a `worker_sources` mapping from the two sibling
-source paths to their SHA-256 digests. The launcher verifies these hashes,
+must contain `release.json` with a `worker_sources` mapping from all fixed source
+paths in `launch_sandboxed.py`, including `agent_capsule.py`, to their SHA-256
+digests. The launcher verifies these hashes,
 mounts only those sources and `/usr` read-only, provides a private temporary
 directory and process namespace, and preserves loopback networking for the
 model and control plane. It forwards only the dedicated worker variables;

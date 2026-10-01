@@ -9,6 +9,7 @@ from pathlib import Path
 
 SOURCES = (
     "workers/code-worker/code_worker.py",
+    "workers/code-worker/agent_capsule.py",
     "workers/file-worker/file_worker.py",
 )
 REQUIRED_ENV = (

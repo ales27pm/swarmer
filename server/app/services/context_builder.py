@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import aiosqlite
 
+from app.services.agent_capsule import validate_agent_capsule
 from app.services.agent_card import SUPPORTED_AGENT_PROTOCOL, SUPPORTED_AGENT_SKILLS
 from app.services.agent_liveness import (
     DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
@@ -527,9 +528,24 @@ class ContextBuilder:
             if bounded.project_memory is not None
             else ()
         )
+        capsule_provenance: list[str] = []
+        if bounded.durable_context is not None:
+            # The capsule was validated during bounding. Index only explicit
+            # source fields, never IDs mentioned in guide or observation text.
+            capsule = bounded.durable_context
+            capsule_provenance.extend(item["source_id"] for item in capsule["requirements"])
+            if capsule["base_revision_id"] is not None:
+                capsule_provenance.append(capsule["base_revision_id"])
+            capsule_provenance.extend(
+                guide["source_revision_id"] for guide in capsule.get("project_guidance", [])
+            )
+            for item in capsule.get("experiences", {}).get("items", []):
+                capsule_provenance.extend((item["source_id"], item["worker_job_id"]))
+                if item["source_revision_id"] is not None:
+                    capsule_provenance.append(item["source_revision_id"])
         normalized_provenance = _stable_unique(
             _validated_identifier(item, "source_id")
-            for item in (*provenance_ids, *memory_provenance)
+            for item in (*provenance_ids, *memory_provenance, *capsule_provenance)
         )
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -1367,10 +1383,11 @@ def bound_evaluation_context(
 
     Node identifiers remain available for validating model-proposed dependency
     references. If the configured budget is too small even for the identifiers
-    and minimally redacted fields, evaluation fails closed instead of silently
-    exceeding the configured limit. The latest question and user answer remain
-    whole after redaction: older conversation is dropped before shrinking other
-    fields, and a budget too small for that exchange fails closed.
+    and complete required fields, evaluation fails closed instead of silently
+    exceeding the configured limit. The objective, completion criteria, latest
+    question and user answer remain whole after redaction: older conversation
+    is dropped before shrinking result details, and a budget too small for the
+    required context fails closed.
     """
 
     if not 64 <= max_tokens <= 32_768:
@@ -1379,6 +1396,20 @@ def bound_evaluation_context(
     def text(value: str, *, limit: int, fallback: str) -> str:
         bounded = safe_context_text(value, max_chars=max(1, limit))
         return bounded or safe_context_text(fallback, max_chars=max(1, limit)) or "…"
+
+    # Match protected planner cards: redact mandatory requirements once without
+    # truncation, then admit them whole or fail. Evidence summaries may be
+    # shortened below, but they must never displace the conditions they assess.
+    objective = _redacted_context_text(context.objective) or "redacted objective"
+    completion_criteria = [
+        _redacted_context_text(criterion) or "redacted criterion"
+        for criterion in context.completion_criteria
+    ]
+    durable_context = (
+        validate_agent_capsule(context.durable_context)
+        if context.durable_context is not None
+        else None
+    )
 
     def with_optional_memory(candidate: GoalEvaluationContext) -> GoalEvaluationContext:
         # Preserve the selected goal, conversation and execution evidence in
@@ -1463,17 +1494,11 @@ def bound_evaluation_context(
         return GoalEvaluationContext(
             schema_version="1.0",
             goal_run_id=context.goal_run_id,
-            objective=text(context.objective, limit=char_limit, fallback="redacted objective"),
+            objective=objective,
             conversation_revision=context.conversation_revision,
             conversation=conversation[conversation_start:],
-            completion_criteria=[
-                text(
-                    criterion,
-                    limit=min(char_limit, 500),
-                    fallback="redacted criterion",
-                )
-                for criterion in context.completion_criteria
-            ],
+            durable_context=durable_context,
+            completion_criteria=list(completion_criteria),
             node_results=nodes,
             known_node_ids=list(context.known_node_ids),
             available_skills=(

@@ -10,7 +10,9 @@ from typing import Any
 
 import aiosqlite
 
+from app.services.agent_guidance import accepted_project_guidance, operating_guidance
 from app.services.context_builder import safe_context_text
+from app.services.worker_experiences import read_worker_experiences
 
 
 class ProjectContextConflict(RuntimeError):
@@ -29,7 +31,7 @@ class ProjectContextService:
 
     async def _sources_locked(
         self, db: aiosqlite.Connection, goal_id: str
-    ) -> tuple[Any, Any, Any, str]:
+    ) -> tuple[Any, Any, Any, str, dict[str, Any], dict[str, str]]:
         goal = await (
             await db.execute(
                 """SELECT g.*, l.project_id FROM goal_runs g
@@ -60,8 +62,13 @@ class ProjectContextService:
                 (goal["project_id"],),
             )
         ).fetchone()
+        guide = operating_guidance()
+        experiences = await read_worker_experiences(db, str(goal["project_id"]))
         fingerprint = digest(
             {
+                "capsule_version": 2,
+                "operating_guidance_sha256": guide["sha256"],
+                "experiences": experiences,
                 "goal_id": goal_id,
                 "objective": goal["objective"],
                 "conversation_revision": goal["conversation_revision"],
@@ -69,7 +76,7 @@ class ProjectContextService:
                 "revision": [revision["id"], revision["sha256"]] if revision else None,
             }
         )
-        return goal, messages, revision, fingerprint
+        return goal, messages, revision, fingerprint, experiences, guide
 
     async def require_fingerprint_locked(
         self, db: aiosqlite.Connection, goal_id: str, fingerprint: str
@@ -84,7 +91,9 @@ class ProjectContextService:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
-            goal, messages, revision, fingerprint = await self._sources_locked(db, goal_id)
+            goal, messages, revision, fingerprint, experiences, guide = await self._sources_locked(
+                db, goal_id
+            )
             project_id = goal["project_id"]
             if expected_fingerprint is not None and fingerprint != expected_fingerprint:
                 raise ProjectContextConflict("project context changed")
@@ -97,7 +106,6 @@ class ProjectContextService:
             ).fetchone()
             if existing:
                 return json.loads(existing[0])  # type: ignore[no-any-return]
-            requirements: list[dict[str, Any]] = []
             by_text: dict[str, dict[str, Any]] = {}
             proposals: list[dict[str, str]] = []
             for message in messages:
@@ -107,7 +115,12 @@ class ProjectContextService:
                 if message["role"] == "user":
                     key = digest(text)
                     if key in by_text:
-                        by_text[key]["source_ids"].append(message["id"])
+                        # Deduplicate text, but keep the last reaffirmation's
+                        # chronological priority and every original source.
+                        item = by_text.pop(key)
+                        item["source_ids"].append(message["id"])
+                        item["source_id"] = message["id"]
+                        item["created_at"] = message["created_at"]
                     else:
                         item = {
                             "text": text,
@@ -115,11 +128,20 @@ class ProjectContextService:
                             "source_ids": [message["id"]],
                             "created_at": message["created_at"],
                         }
-                        by_text[key] = item
-                        requirements.append(item)
+                    by_text[key] = item
                 elif message["role"] == "assistant":
                     proposals.append({"text": text, "source_id": message["id"]})
+            requirements = list(by_text.values())
             snapshot = json.loads(revision["snapshot_json"]) if revision else {}
+            project_guides = (
+                accepted_project_guidance(snapshot.get("files", []), str(revision["id"]))
+                if revision
+                else []
+            )
+            for project_guide in project_guides:
+                project_guide["content"] = safe_context_text(
+                    project_guide["content"], max_chars=max(4000, len(project_guide["content"]))
+                )
             version_row = await (
                 await db.execute(
                     """SELECT COALESCE(MAX(version),0)+1
@@ -144,12 +166,22 @@ class ProjectContextService:
                 if revision
                 else None,
                 "verified_results": [
-                    {"source_id": revision["id"], **check} for check in snapshot.get("checks", [])
+                    {
+                        "source_id": revision["id"],
+                        **check,
+                        "applicability": "historical",
+                        "evidence_status": "recorded_check",
+                        "tested_revision_status": "not_established",
+                    }
+                    for check in snapshot.get("checks", [])
                 ]
                 if revision
                 else [],
                 "pending_work": snapshot.get("plan", []),
                 "source_count": len(messages),
+                "operating_guidance": guide,
+                "project_guidance": project_guides,
+                "experiences": experiences,
                 "method": "source_backed_extract",
                 "created_at": datetime.now(UTC).isoformat(),
             }
@@ -196,12 +228,21 @@ class ProjectContextService:
     def prompt_state(state: dict[str, Any]) -> dict[str, Any]:
         # Chronological quotations are requirements, never grants of tool authority.
         # Never silently remove this block when a generation exceeds its budget.
-        return {
-            "version": state["version"],
-            "fingerprint": state["fingerprint"],
-            "requirements": [
-                {"text": item["text"], "source_id": item["source_id"]}
-                for item in state["requirements"]
-            ],
-            "base_revision_id": state["base_revision_id"],
-        }
+        from app.services.agent_capsule import validate_agent_capsule
+
+        return validate_agent_capsule(
+            {
+                "version": state["version"],
+                "fingerprint": state["fingerprint"],
+                "requirements": [
+                    {"text": item["text"], "source_id": item["source_id"]}
+                    for item in state["requirements"]
+                ],
+                "base_revision_id": state["base_revision_id"],
+                **{
+                    key: state[key]
+                    for key in ("operating_guidance", "project_guidance", "experiences")
+                    if key in state
+                },
+            }
+        )

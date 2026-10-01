@@ -26,10 +26,11 @@ server/.env*
 # Runtime state / secrets
 data/
 server/data/
-# The public catalogue ships with the application; other data stays excluded.
+# The public catalogue and common agent guide ship with the application.
 !/server/app/data/
 /server/app/data/*
 !/server/app/data/activity_catalog.json
+!/server/app/data/AGENTS.md
 *.db
 *.db-shm
 *.db-wal

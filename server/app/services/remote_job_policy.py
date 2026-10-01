@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import PurePosixPath
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.models import CAPABILITY_ARGUMENT_MODELS
+from app.services.agent_capsule import validate_agent_capsule
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
 from app.services.research_contracts import ResearchCollectPayload
@@ -236,7 +238,7 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         except ValueError as exc:
             raise RemoteJobPolicyError("project iteration payload is invalid") from exc
     if required_skill == "code.generate_python":
-        _exact_fields(payload, frozenset({"objective"}))
+        _exact_fields(payload, frozenset({"objective", "durable_context"}))
         objective = payload.get("objective")
         if (
             not isinstance(objective, str)
@@ -249,5 +251,16 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
             objective.encode("utf-8")
         except UnicodeError as exc:
             raise RemoteJobPolicyError("code generation objective is invalid Unicode") from exc
-        return {"objective": objective.strip()}
+        code_payload: dict[str, Any] = {"objective": objective.strip()}
+        if "durable_context" in payload:
+            try:
+                code_payload["durable_context"] = validate_agent_capsule(payload["durable_context"])
+            except ValueError as exc:
+                raise RemoteJobPolicyError("code generation context is invalid") from exc
+            encoded = json.dumps(
+                code_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            )
+            if len(encoded.encode("utf-8")) > 32_000:
+                raise RemoteJobPolicyError("code generation payload exceeds its UTF-8 byte limit")
+        return code_payload
     return _review_payload(required_skill, payload)

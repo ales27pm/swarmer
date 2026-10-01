@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+_CAPSULE_PATH = Path(__file__).resolve().parent / "agent_capsule.py"
+_CAPSULE_SPEC = importlib.util.spec_from_file_location("mongars_project_capsule", _CAPSULE_PATH)
+if _CAPSULE_SPEC is None or _CAPSULE_SPEC.loader is None:
+    raise RuntimeError("the sibling agent capsule validator is required")
+capsule_contract = importlib.util.module_from_spec(_CAPSULE_SPEC)
+_CAPSULE_SPEC.loader.exec_module(capsule_contract)
 
 SKILL = "code.build_project"
 MAX_FILES = 80
@@ -451,30 +460,11 @@ def compaction_value(value: object) -> dict[str, Any] | None:
 def durable_context_value(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {
-        "version",
-        "fingerprint",
-        "requirements",
-        "base_revision_id",
-    }:
-        raise ProjectError("durable context has invalid fields")
-    if type(value["version"]) is not int or value["version"] < 1:
-        raise ProjectError("durable context version is invalid")
-    if not isinstance(value["fingerprint"], str) or not re.fullmatch(
-        r"[a-f0-9]{64}", value["fingerprint"]
-    ):
-        raise ProjectError("durable context fingerprint is invalid")
-    if not isinstance(value["requirements"], list) or len(value["requirements"]) > 10000:
-        raise ProjectError("durable context requirements are invalid")
-    for item in value["requirements"]:
-        if not isinstance(item, dict) or set(item) != {"text", "source_id"}:
-            raise ProjectError("durable requirement has invalid fields")
-        text_value(item["text"], 4000)
-        if not isinstance(item["source_id"], str) or not re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", item["source_id"]
-        ):
-            raise ProjectError("durable requirement source is invalid")
-    return value
+    try:
+        result: dict[str, Any] = capsule_contract.validate_agent_capsule(value)
+        return result
+    except ValueError as exc:
+        raise ProjectError("durable context has invalid fields or exceeds its limit") from exc
 
 
 def memory_value(value: object) -> dict[str, Any] | None:

@@ -51,6 +51,26 @@ async def test_duplicate_requests_share_sources_without_erasing_originals(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_repeated_requirement_keeps_its_latest_chronological_priority(tmp_path: Path) -> None:
+    manager, detail, _ = await _project(tmp_path)
+    goal_id = detail["goal"]["id"]
+    ids = await _messages(manager, goal_id, ["Use SQLite", "Use JSON", "Use SQLite"])
+    await _messages(manager, goal_id, [f"Discuss item {index}" for index in range(110)])
+    service = ProjectContextService(manager.db_path)
+    state = await service.refresh(goal_id)
+    choices = [item for item in state["requirements"] if item["text"] in {"Use SQLite", "Use JSON"}]
+    assert [item["text"] for item in choices] == ["Use JSON", "Use SQLite"]
+    assert choices[-1]["source_id"] == ids[-1]
+    assert choices[-1]["source_ids"] == [ids[0], ids[-1]]
+    assert service.prompt_state(state)["requirements"].index(
+        {"text": "Use SQLite", "source_id": ids[-1]}
+    ) > service.prompt_state(state)["requirements"].index(
+        {"text": "Use JSON", "source_id": ids[1]}
+    )
+    assert await ProjectContextService(manager.db_path).refresh(goal_id) == state
+
+
+@pytest.mark.asyncio
 async def test_long_source_requirement_is_not_silently_truncated(tmp_path: Path) -> None:
     manager, detail, _ = await _project(tmp_path)
     goal_id = detail["goal"]["id"]

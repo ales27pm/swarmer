@@ -3,8 +3,16 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
+from app.services.agent_capsule import validate_agent_capsule
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.project_contracts import ProjectMemoryContext
 
@@ -379,11 +387,16 @@ class SwarmPlanNodeProposal(BaseModel):
     priority: int = Field(strict=True, ge=0, le=100)
     preferred_agent_constraints: PreferredAgentConstraints | None = None
     worker_arguments: dict[str, Any] | None = None
+    retry_of_node_id: StableIdentifier | None = None
 
     @model_validator(mode="after")
     def validate_role_shape(self) -> SwarmPlanNodeProposal:
         from app.services.specialist_contracts import SPECIALIST_SKILLS
 
+        if self.retry_of_node_id is not None and (
+            self.node_type is not PlanNodeType.WORKER or self.required_skill != "writing.draft"
+        ):
+            raise ValueError("only writing repairs may reference a previous attempt")
         if self.required_skill in SPECIALIST_SKILLS and self.worker_arguments is None:
             raise ValueError("specialist workers require explicit operation arguments")
         if self.required_skill == "research.collect" and self.worker_arguments is None:
@@ -417,6 +430,12 @@ class SwarmPlanProposal(BaseModel):
     nodes: list[SwarmPlanNodeProposal] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     completion_criteria: list[ShortText] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     max_parallelism: int = Field(strict=True, ge=1, le=MAX_PLAN_PARALLELISM)
+
+    @model_validator(mode="after")
+    def prohibit_initial_repair_references(self) -> SwarmPlanProposal:
+        if any(node.retry_of_node_id is not None for node in self.nodes):
+            raise ValueError("only evaluator extensions may reference a previous attempt")
+        return self
 
 
 class EvaluationDecision(BaseModel):
@@ -479,6 +498,7 @@ class GoalEvaluationContext(BaseModel):
     conversation_revision: int = Field(default=0, strict=True, ge=0)
     conversation: list[EvaluationConversationMessage] = Field(default_factory=list, max_length=40)
     project_memory: ProjectMemoryContext | None = None
+    durable_context: dict[str, Any] | None = None
     completion_criteria: list[ShortText] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     node_results: list[EvaluationNodeResult] = Field(max_length=MAX_PLAN_NODES)
     known_node_ids: list[StableIdentifier] = Field(max_length=MAX_PLAN_NODES)
@@ -493,6 +513,11 @@ class GoalEvaluationContext(BaseModel):
         str,
         StringConstraints(pattern=r"^[a-f0-9]{64}$"),
     ]
+
+    @field_validator("durable_context")
+    @classmethod
+    def validate_durable_context(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return validate_agent_capsule(value) if value is not None else None
 
     @model_validator(mode="after")
     def validate_node_ids(self) -> GoalEvaluationContext:

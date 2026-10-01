@@ -263,7 +263,9 @@ async def test_source_utf8_budget_omits_whole_sources_instead_of_corrupting_prov
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("large", [False, True])
-async def test_dependency_count_and_utf8_aggregate_are_bounded(tmp_path: Path, large: bool) -> None:
+async def test_required_dependency_cannot_disappear_at_count_or_utf8_limit(
+    tmp_path: Path, large: bool
+) -> None:
     manager, goal, job, node, _ = await researched(tmp_path)
     await replace_dependency_result(
         manager.db_path,
@@ -272,19 +274,24 @@ async def test_dependency_count_and_utf8_aggregate_are_bounded(tmp_path: Path, l
         skill="workspace.read_text",
     )
     await duplicate_dependencies(manager.db_path, job["id"], node["id"], 10)
-    context, sources = await read_worker_context(manager.db_path, goal["id"], node["id"])
-    assert sources == []
-    assert encoded_bytes(context) <= 12000
-    if large:
-        assert 0 < len(context) < 8
-        next_item = {**context[0], "node_id": "node_context_09", "worker_job_id": "job_context_09"}
-        assert encoded_bytes([*context, next_item]) > 12000
-    else:
-        assert len(context) == 8
-    assert [item["node_id"] for item in context] == [
-        f"node_context_{index:02}" for index in range(len(context))
-    ]
-    assert all(item["content_trust"] == "untrusted" for item in context)
+    before = await database_rows(manager.db_path)
+    with pytest.raises(ValueError, match="required dependency context exceeds its budget"):
+        await read_worker_context(manager.db_path, goal["id"], node["id"])
+    assert await database_rows(manager.db_path) == before
+
+
+@pytest.mark.asyncio
+async def test_optional_dependency_stays_bounded_without_blocking_required_work(tmp_path: Path) -> None:
+    manager, goal, job, node, _ = await researched(tmp_path)
+    await duplicate_dependencies(manager.db_path, job["id"], node["id"], 10)
+    async with aiosqlite.connect(manager.db_path) as db:
+        await db.execute(
+            "UPDATE plan_edges SET dependency_type='optional' WHERE to_node_id=?",
+            (node["id"],),
+        )
+        await db.commit()
+    context, _ = await read_worker_context(manager.db_path, goal["id"], node["id"])
+    assert len(context) == 8 and encoded_bytes(context) <= 12000
 
 
 @pytest.fixture(scope="module")

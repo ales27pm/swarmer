@@ -25,7 +25,7 @@ def release(tmp_path: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatc
     hashes = {}
     for relative in launcher.SOURCES:
         path = tmp_path / relative
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# trusted application source\n")
         hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     (tmp_path / "release.json").write_text(json.dumps({"worker_sources": hashes}))
@@ -71,13 +71,19 @@ def test_isolates_fixed_source_and_dedicated_environment(
     ]
 
 
-def test_rejects_changed_source(release: Path, launcher: ModuleType) -> None:
-    (release / launcher.SOURCES[0]).write_text("# source changed after packaging\n")
+@pytest.mark.parametrize(
+    "relative", ["workers/code-worker/code_worker.py", "workers/code-worker/agent_capsule.py"]
+)
+def test_rejects_changed_source(release: Path, launcher: ModuleType, relative: str) -> None:
+    (release / relative).write_text("# source changed after packaging\n")
     with pytest.raises(ValueError, match="manifest"):
         launcher.sandbox_command(release)
 
 
-@pytest.mark.parametrize("relative", ["release.json", "workers/code-worker/code_worker.py"])
+@pytest.mark.parametrize(
+    "relative",
+    ["release.json", "workers/code-worker/code_worker.py", "workers/code-worker/agent_capsule.py"],
+)
 def test_rejects_symlinked_release_file(release: Path, launcher: ModuleType, relative: str) -> None:
     original = release / relative
     replacement = original.with_suffix(".replacement")

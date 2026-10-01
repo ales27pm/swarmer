@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 
 import aiosqlite
 
+from app.services.agent_capsule import required_capsule_identity, validate_agent_capsule
 from app.services.context_builder import safe_context_text
 from app.services.project_contracts import (
     PROJECT_SKILL,
@@ -30,8 +31,10 @@ from app.services.writing_contracts import (
     derive_writing_requirements,
     research_source_limits,
     unsupported_citation,
+    validate_writing_failure_diagnostics,
     validate_writing_requirements,
     validate_writing_result,
+    writing_failure_summary,
 )
 
 
@@ -49,14 +52,22 @@ def writing_payload(
     step_objective: str | None = None,
     research_sources: Sequence[Mapping[str, Any]] = (),
     dependency_context: Sequence[Mapping[str, str]] = (),
+    durable_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": "1.0",
         "objective": safe_context_text(objective, max_chars=4_000),
         "conversation": [],
     }
+    durable_messages: list[dict[str, str]] = []
+    if durable_context is not None:
+        payload["durable_context"] = validate_agent_capsule(durable_context)
+        durable_messages = [
+            {"role": "user", "content": item["text"]}
+            for item in payload["durable_context"]["requirements"]
+        ]
     requirements = derive_writing_requirements(
-        objective, [dict(message) for message in conversation]
+        objective, [*durable_messages, *(dict(message) for message in conversation)]
     )
     if requirements:
         payload["requirements"] = requirements
@@ -143,6 +154,137 @@ def writing_payload(
         if step[:low].strip():
             payload["step_objective"] = step[:low]
     return WritingPayload.model_validate(payload).model_dump(exclude_unset=True)
+
+
+def _retry_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+async def _writing_retry_record_locked(
+    db: aiosqlite.Connection, goal_id: str, revision: int, previous_node_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read only the explicitly named failed job, never a latest-failure heuristic."""
+    row = await (
+        await db.execute(
+            """SELECT j.id,j.payload_json,j.result_json,j.error,n.error_summary
+            FROM plan_nodes n JOIN goal_runs g ON g.id=n.goal_run_id
+            JOIN agent_jobs j ON j.id=n.worker_job_id AND j.task_id=n.task_id
+              AND j.required_skill=n.required_skill
+            JOIN tasks t ON t.id=j.task_id AND t.source=?
+            WHERE n.id=? AND n.goal_run_id=? AND n.node_type='worker'
+              AND n.required_skill='writing.draft' AND n.status='failed' AND j.status='failed'
+              AND n.conversation_revision=? AND g.conversation_revision=?
+              AND length(CAST(j.result_json AS BLOB))<=4096
+              AND length(CAST(j.payload_json AS BLOB))<=32000""",
+            (f"goal:{goal_id}", previous_node_id, goal_id, revision, revision),
+        )
+    ).fetchone()
+    if row is None:
+        raise ValueError("writing retry has no matching failed attempt")
+    previous = WritingPayload.model_validate_json(row[1]).model_dump(exclude_unset=True)
+    diagnostic = validate_writing_failure_diagnostics(json.loads(row[2]), payload=previous)
+    expected = writing_failure_summary(diagnostic)
+    if row[3] != expected or row[4] != expected:
+        raise ValueError("writing retry measurements are not authoritative")
+    feedback = {"node_id": previous_node_id, "worker_job_id": row[0], "diagnostics": diagnostic}
+    return feedback, previous
+
+
+async def writing_retry_provenance_locked(
+    db: aiosqlite.Connection, goal_id: str, revision: int, previous_node_id: str
+) -> dict[str, str]:
+    """Persist the selected receipt identity with an evaluator-created repair node."""
+    feedback, previous = await _writing_retry_record_locked(db, goal_id, revision, previous_node_id)
+    used = await (
+        await db.execute(
+            """SELECT 1 FROM plan_nodes WHERE goal_run_id=?
+            AND json_extract(planner_metadata_json,'$.retry_of_node_id')=? LIMIT 1""",
+            (goal_id, previous_node_id),
+        )
+    ).fetchone()
+    if used is not None:
+        raise ValueError("writing attempt already has a repair")
+    return {
+        "node_id": previous_node_id,
+        "worker_job_id": feedback["worker_job_id"],
+        "feedback_sha256": _retry_digest(feedback),
+        "payload_sha256": _retry_digest(previous),
+    }
+
+
+async def attach_writing_retry_feedback(
+    db_path: Path, goal_id: str, consumer_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Recheck explicit same-run/revision lineage and current admission before dispatch."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA query_only=ON")
+        await db.execute("BEGIN")
+        consumer = await (
+            await db.execute(
+                """SELECT n.planner_metadata_json,n.conversation_revision,g.conversation_revision
+                FROM plan_nodes n JOIN goal_runs g ON g.id=n.goal_run_id
+                WHERE n.id=? AND n.goal_run_id=? AND n.node_type='worker'
+                  AND n.required_skill='writing.draft'""",
+                (consumer_id, goal_id),
+            )
+        ).fetchone()
+        if consumer is None:
+            raise ValueError("writing retry consumer is unavailable")
+        metadata = json.loads(consumer[0])
+        if not isinstance(metadata, dict):
+            raise TypeError("writing retry metadata is invalid")
+        previous_id = metadata.get("retry_of_node_id")
+        if previous_id is None:
+            if "writing_retry" in metadata:
+                raise ValueError("writing retry provenance has no reference")
+            return payload
+        if (
+            not isinstance(previous_id, str)
+            or re.fullmatch(r"node_[A-Za-z0-9_-]+", previous_id) is None
+        ):
+            raise ValueError("writing retry reference is invalid")
+        if metadata.get("source") != "evaluator" or consumer[1] != consumer[2]:
+            raise ValueError("writing retry consumer is not a current evaluator repair")
+        feedback, previous = await _writing_retry_record_locked(
+            db, goal_id, consumer[1], previous_id
+        )
+        expected = {
+            "node_id": previous_id,
+            "worker_job_id": feedback["worker_job_id"],
+            "feedback_sha256": _retry_digest(feedback),
+            "payload_sha256": _retry_digest(previous),
+        }
+        if metadata.get("writing_retry") != expected:
+            raise ValueError("writing retry receipt changed")
+        sibling = await (
+            await db.execute(
+                """SELECT 1 FROM plan_nodes WHERE goal_run_id=? AND id<>?
+                AND json_extract(planner_metadata_json,'$.retry_of_node_id')=? LIMIT 1""",
+                (goal_id, consumer_id, previous_id),
+            )
+        ).fetchone()
+        if sibling is not None:
+            raise ValueError("writing retry lineage is ambiguous")
+        old, current = (
+            WritingPayload.model_validate(previous),
+            WritingPayload.model_validate(payload),
+        )
+        if (
+            old.objective != current.objective
+            or old.requirements != current.requirements
+            or old.conversation != current.conversation
+            or old.research_sources != current.research_sources
+            or required_capsule_identity(old.durable_context)
+            != required_capsule_identity(current.durable_context)
+        ):
+            raise ValueError("writing retry no longer matches admitted inputs")
+        checked = WritingPayload.model_validate(
+            {**payload, "previous_attempt_feedback": feedback}
+        ).model_dump(exclude_unset=True)
+        await db.rollback()
+        return checked
 
 
 async def writing_completion_valid_locked(db: aiosqlite.Connection, goal_id: str) -> bool:
@@ -323,7 +465,10 @@ async def writing_completion_failure_locked(db: aiosqlite.Connection, goal_id: s
             task = WritingPayload.model_validate(payload)
             result = validate_writing_result(
                 json.loads(row[0]),
-                payload={**task.model_dump(exclude_unset=True), "requirements": {}},
+                payload={
+                    **task.model_dump(exclude_unset=True, exclude={"previous_attempt_feedback"}),
+                    "requirements": {},
+                },
             )
         except (TypeError, ValueError):
             return "writing_evidence_invalid"

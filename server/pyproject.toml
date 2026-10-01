@@ -52,6 +52,7 @@ ignore_missing_imports = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "app/data/activity_catalog.json" = "app/data/activity_catalog.json"
+"app/data/AGENTS.md" = "app/data/AGENTS.md"
 
 [tool.ruff]
 line-length = 100

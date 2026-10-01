@@ -116,6 +116,8 @@ def worker_node_array_schema(
     # Put the capability first for both insertion-order and sorted decoders,
     # before branch-specific parameters can commit to an unrelated worker type.
     node_schema = deepcopy(node_schema)
+    retry_schema = node_schema["properties"]["retry_of_node_id"]
+    node_schema["properties"]["retry_of_node_id"] = {"type": "null"}
     # Default to server-derived payloads. Path-bearing reads and specialist
     # branches below explicitly expose bounded model-authored arguments.
     node_schema["properties"]["worker_arguments"] = {"type": "null"}
@@ -203,11 +205,21 @@ def worker_node_array_schema(
         )
         specialist["required"] = [*specialist["required"], "worker_arguments"]
         general_nodes.append(specialist)
+    if "writing.draft" in skills:
+        writing = deepcopy(node_schema)
+        writing["properties"]["node_type"] = {"type": "string", "const": "worker"}
+        writing["properties"]["00_required_skill"] = {"type": "string", "enum": ["writing.draft"]}
+        if allow_existing_node_dependencies:
+            writing["properties"]["retry_of_node_id"] = {
+                **retry_schema,
+                "description": "Exact failed writing node_results.node_id this repair replaces; null for a new deliverable. Never guess or choose an unrelated attempt.",
+            }
+        general_nodes.append(writing)
     if (
         general_skills := skills
         - PROJECT_BUILD_SKILLS
         - CODE_GENERATION_SKILLS
-        - {"research.query", "research.collect", "workspace.read_text"}
+        - {"research.query", "research.collect", "workspace.read_text", "writing.draft"}
         - SPECIALIST_SKILLS
     ):
         worker = deepcopy(node_schema)

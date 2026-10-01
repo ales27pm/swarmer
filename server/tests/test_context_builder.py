@@ -724,7 +724,7 @@ async def test_evaluator_payload_is_exactly_recorded_redacted_and_token_bounded(
         {
             "schema_version": "1.0",
             "goal_run_id": goal_id,
-            "objective": "Inspect password=evaluator-secret at /root/private " + "x" * 2_000,
+            "objective": "Inspect password=evaluator-secret at /root/private",
             "completion_criteria": ["Return verified evidence from /etc/private"],
             "node_results": [
                 {

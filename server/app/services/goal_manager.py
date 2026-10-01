@@ -112,9 +112,11 @@ from app.services.writing_contracts import (
     validate_writing_result,
 )
 from app.services.writing_drafts import (
+    attach_writing_retry_feedback,
     read_writing_draft,
     writing_completion_failure_locked,
     writing_payload,
+    writing_retry_provenance_locked,
 )
 
 logger = logging.getLogger(__name__)
@@ -440,17 +442,58 @@ class GoalManager:
             except (ValueError, TypeError) as exc:
                 raise GoalManagerConflict("Completed dependency evidence is unavailable.") from exc
         if node["required_skill"] == WRITING_SKILL:
+            from app.services.project_context import ProjectContextConflict
+
             goal_id = str(node["goal_run_id"])
             original = await self.graph.get_goal(goal_id)
             if original is None:
                 raise GoalManagerConflict("The writing goal is unavailable.")
-            return writing_payload(
-                str(original["objective"]),
-                await self.recent_conversation(goal_id, limit=100),
-                research_sources=sources,
-                dependency_context=dependency_context,
-                step_objective=str(node["objective"]) if node.get("id") else None,
-            )
+            try:
+                durable_context = None
+                if (
+                    self.project_applications is not None
+                    and self.project_applications.context is not None
+                ):
+                    durable = await self.project_applications.context.refresh(goal_id)
+                    durable_context = self.project_applications.context.prompt_state(durable)
+                payload = writing_payload(
+                    str(original["objective"]),
+                    await self.recent_conversation(goal_id, limit=100),
+                    research_sources=sources,
+                    dependency_context=dependency_context,
+                    step_objective=str(node["objective"]) if node.get("id") else None,
+                    durable_context=durable_context,
+                )
+            except (ProjectContextConflict, ValueError, TypeError) as exc:
+                raise GoalManagerConflict(
+                    "Writing context is unavailable or exceeds its required input budget."
+                ) from exc
+            if not node.get("id"):
+                return payload
+            try:
+                return await attach_writing_retry_feedback(
+                    self.db_path, goal_id, str(node["id"]), payload
+                )
+            except (ValueError, TypeError) as exc:
+                raise GoalManagerConflict("Writing repair feedback is unavailable.") from exc
+        if node["required_skill"] == CODE_PROPOSAL_SKILL:
+            from app.services.project_context import ProjectContextConflict
+
+            try:
+                payload = self._payload_for_node(node)
+                if (
+                    self.project_applications is not None
+                    and self.project_applications.context is not None
+                ):
+                    durable = await self.project_applications.context.refresh(str(goal["id"]))
+                    payload["durable_context"] = self.project_applications.context.prompt_state(
+                        durable
+                    )
+                return validate_remote_job(CODE_PROPOSAL_SKILL, payload)
+            except (ProjectContextConflict, ValueError, TypeError) as exc:
+                raise GoalManagerConflict(
+                    "Python generation context is unavailable or exceeds its required input budget."
+                ) from exc
         if node["required_skill"] != PROJECT_SKILL:
             return self._payload_for_node(node)
         if self.project_applications is None:
@@ -491,6 +534,10 @@ class GoalManager:
             goal = await self.graph.get_goal(goal_id)
             if goal is None:
                 return
+        if pending:
+            await self.agent_dispatcher.cancel_stale_goal_jobs(
+                goal_id, maintenance_guard=maintenance_guard
+            )
         nodes = await self.graph.list_nodes(goal_id)
         if any(
             node["status"] in {"dispatched", "running", "waiting_capability"}
@@ -3401,6 +3448,17 @@ class GoalManager:
         elapsed = int(active_runtime_seconds(goal))
         try:
             goal, project_memory = await self._shared_project_memory(goal, "evaluator")
+            durable_context = None
+            if (
+                self.project_applications is not None
+                and self.project_applications.context is not None
+            ):
+                durable = await self.project_applications.context.refresh(goal_run_id)
+                if int(durable["conversation_revision"]) != int(
+                    goal.get("conversation_revision") or 0
+                ):
+                    raise _ProjectMemoryContextChanged("goal changed while its context was read")
+                durable_context = self.project_applications.context.prompt_state(durable)
             builder = self.context_builder or ContextBuilder(self.db_path, max_tokens=2_048)
             result_summaries: dict[str, str | None] = {}
             writing_provenance: list[str] = []
@@ -3446,6 +3504,7 @@ class GoalManager:
                 available_skills=await self._available_worker_skills(),
                 conversation_revision=int(goal.get("conversation_revision") or 0),
                 project_memory=project_memory,
+                durable_context=durable_context,
                 conversation=[
                     EvaluationConversationMessage.model_validate(message)
                     for message in await self.recent_conversation(goal_run_id)
@@ -3870,6 +3929,19 @@ class GoalManager:
         known = {str(node["id"]) for node in existing}
         for proposal in proposals:
             node_id = by_temp[proposal.temporary_id]
+            retry_provenance = None
+            if proposal.retry_of_node_id is not None:
+                if proposal.required_skill != WRITING_SKILL:
+                    raise GoalManagerConflict("Only writing nodes may repair an attempt.")
+                try:
+                    retry_provenance = await writing_retry_provenance_locked(
+                        db,
+                        str(goal["id"]),
+                        int(goal.get("conversation_revision") or 0),
+                        proposal.retry_of_node_id,
+                    )
+                except (ValueError, TypeError) as exc:
+                    raise GoalManagerConflict("Writing repair lineage is invalid.") from exc
             hard_dependencies = sorted(by_temp.get(item, item) for item in proposal.dependencies)
             optional_dependencies = sorted(
                 by_temp.get(item, item) for item in proposal.optional_dependencies
@@ -3899,6 +3971,14 @@ class GoalManager:
                             "source": "evaluator",
                             "temporary_id": proposal.temporary_id,
                             "worker_arguments": proposal.worker_arguments,
+                            **(
+                                {
+                                    "retry_of_node_id": proposal.retry_of_node_id,
+                                    "writing_retry": retry_provenance,
+                                }
+                                if retry_provenance is not None
+                                else {}
+                            ),
                         },
                         separators=(",", ":"),
                     ),
@@ -4944,8 +5024,17 @@ class GoalManager:
                     """SELECT g.id FROM goal_runs g
                 WHERE g.status IN ('planning','running','waiting_permission')
                 AND (g.pending_message_revision>0 OR g.current_phase='project_continue')
-                AND NOT EXISTS (SELECT 1 FROM plan_nodes n WHERE n.goal_run_id=g.id
+                AND (NOT EXISTS (SELECT 1 FROM plan_nodes n WHERE n.goal_run_id=g.id
                     AND n.status IN ('dispatched','running','waiting_capability'))
+                    OR (g.pending_message_revision>0 AND EXISTS (
+                        SELECT 1 FROM plan_nodes n JOIN agent_jobs j
+                          ON j.task_id=n.task_id AND j.required_skill=n.required_skill
+                          AND (n.worker_job_id=j.id OR n.worker_job_id IS NULL)
+                        JOIN tasks t ON t.id=j.task_id AND t.source='goal:' || g.id
+                        WHERE n.goal_run_id=g.id AND n.node_type='worker'
+                          AND n.status IN ('dispatched','running')
+                          AND j.status='queued' AND t.status='queued'
+                          AND n.conversation_revision<>g.conversation_revision)))
                 AND NOT EXISTS (SELECT 1 FROM plan_nodes n
                     LEFT JOIN project_revisions r ON r.node_id=n.id
                     WHERE n.goal_run_id=g.id AND n.status='waiting_permission'
