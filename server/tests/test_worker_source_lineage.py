@@ -97,6 +97,109 @@ async def test_requested_pages_survive_omitted_edges_and_new_revision(
     assert await database_rows(manager.db_path) == before
 
 
+async def retain_dependencies(manager: Any, goal: Any, node: Any, previous: Any) -> None:
+    async with aiosqlite.connect(manager.db_path) as db:
+        await db.execute(
+            "UPDATE plan_nodes SET depends_on_json=? WHERE id=?",
+            (json.dumps(previous["depends_on"]), node["id"]),
+        )
+        await db.executemany(
+            "INSERT INTO plan_edges VALUES(?,?,?,'hard')",
+            [(goal["id"], source_id, node["id"]) for source_id in previous["depends_on"]],
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["writing.draft", "code.build_project"])
+async def test_retained_old_page_dependency_reuses_only_revalidated_requested_sources(
+    tmp_path: Path, skill: str
+) -> None:
+    manager, goal, _agents, research, writer, previous = await collected(tmp_path)
+    node = await consumer(manager, goal, previous, 1, skill)
+    await retain_dependencies(manager, goal, node, previous)
+    async with aiosqlite.connect(manager.db_path) as db:
+        # Historical ancestors are not a license to import their old context.
+        await db.execute(
+            "UPDATE plan_nodes SET depends_on_json='[\"old_unavailable_ancestor\"]' WHERE worker_job_id=?",
+            (research["id"],),
+        )
+        await db.commit()
+    before = await database_rows(manager.db_path)
+    context, sources = await read_worker_context(manager.db_path, goal["id"], node["id"])
+    assert context == []
+    assert sources == writer["payload"]["research_sources"]
+    assert [source["evidence"]["requested_url"] for source in sources] == URLS
+    assert all(source["worker_job_id"] == research["id"] for source in sources)
+    assert await database_rows(manager.db_path) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["excluded", "reread"])
+async def test_reusable_old_job_does_not_reintroduce_other_or_stale_url(
+    tmp_path: Path, change: str
+) -> None:
+    manager, goal, _agents, research, _writer, previous = await collected(tmp_path)
+    node = await consumer(manager, goal, previous, 1)
+    await retain_dependencies(manager, goal, node, previous)
+    async with aiosqlite.connect(manager.db_path) as db:
+        link = await (
+            await db.execute(
+                "SELECT conversation_id FROM goal_conversation_links WHERE goal_run_id=?",
+                (goal["id"],),
+            )
+        ).fetchone()
+        directive = "Ne lis plus " if change == "excluded" else "Lis à nouveau "
+        await db.execute(
+            "INSERT INTO goal_messages(id,conversation_id,goal_run_id,role,content,created_at) VALUES ('gmsg_current_read',?,?,'user',?,'2099-01-01T00:00:00+00:00')",
+            (link[0], goal["id"], directive + URLS[0]),
+        )
+        await db.commit()
+    context, sources = await read_worker_context(manager.db_path, goal["id"], node["id"])
+    assert context == []
+    assert [source["evidence"]["requested_url"] for source in sources] == [URLS[1]]
+    assert sources[0]["worker_job_id"] == research["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["no_request", "reread_all", "wrong_task", "other_skill", "forged_receipt"]
+)
+async def test_old_dependency_without_revalidated_page_evidence_remains_rejected(
+    tmp_path: Path, change: str
+) -> None:
+    manager, goal, _agents, research, _writer, previous = await collected(
+        tmp_path, explicit=change != "no_request"
+    )
+    node = await consumer(manager, goal, previous, 1)
+    await retain_dependencies(manager, goal, node, previous)
+    async with aiosqlite.connect(manager.db_path) as db:
+        if change == "reread_all":
+            await db.execute(
+                "UPDATE goal_messages SET created_at='2099-01-01T00:00:00+00:00' WHERE goal_run_id=?",
+                (goal["id"],),
+            )
+        elif change == "wrong_task":
+            await db.execute(
+                "UPDATE tasks SET source='goal:other' WHERE id=?", (research["task_id"],)
+            )
+        elif change == "other_skill":
+            await db.execute(
+                "UPDATE plan_nodes SET required_skill='research.query' WHERE worker_job_id=?",
+                (research["id"],),
+            )
+        elif change == "forged_receipt":
+            invalid = receipt()
+            invalid["pages"][0]["content_sha256"] = "0" * 64
+            await db.execute(
+                "UPDATE agent_jobs SET result_json=? WHERE id=?",
+                (json.dumps(invalid), research["id"]),
+            )
+        await db.commit()
+    with pytest.raises(ValueError, match="older instruction revision"):
+        await read_worker_context(manager.db_path, goal["id"], node["id"])
+
+
 @pytest.mark.asyncio
 async def test_synthesis_dependency_follows_only_its_named_research_ancestors(
     tmp_path: Path,

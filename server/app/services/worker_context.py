@@ -64,7 +64,12 @@ async def read_worker_context(
             await _explicit_read_sources(db, goal_id, consumer),
             required=True,
         )
-        for node in await _dependency_lineage(db, goal_id, consumer_id, consumer):
+        reusable_read_jobs = frozenset(
+            str(source["worker_job_id"]) for source in sources if source.get("evidence")
+        )
+        for node in await _dependency_lineage(
+            db, goal_id, consumer_id, consumer, reusable_read_jobs=reusable_read_jobs
+        ):
             dependency = str(node["id"])
             # Syntheses have no independent evidence; only their validated
             # worker ancestors can supply research sources.
@@ -139,7 +144,12 @@ async def read_worker_context(
 
 
 async def _dependency_lineage(
-    db: aiosqlite.Connection, goal_id: str, consumer_id: str, consumer: Any
+    db: aiosqlite.Connection,
+    goal_id: str,
+    consumer_id: str,
+    consumer: Any,
+    *,
+    reusable_read_jobs: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Traverse named ancestry only; failed drafts are never evidence."""
     roots = json.loads(consumer["depends_on_json"])
@@ -176,17 +186,20 @@ async def _dependency_lineage(
         links.extend((item, reference, False) for item in inherited)
     ordered: list[dict[str, Any]] = []
     visited: set[str] = set()
+    reused_reads: set[str] = set()
 
     async def visit(identity: str, child: str, direct: bool, ancestry: set[str]) -> None:
         if not isinstance(identity, str):
             raise TypeError("dependency identity is invalid")
         if identity in ancestry or identity == consumer_id:
             raise ValueError("dependency context contains a cycle")
+        if identity in reused_reads:
+            return
         if identity in visited:
             if direct:
                 next(item for item in ordered if item["id"] == identity)["direct_context"] = True
             return
-        if len(visited) >= 100:
+        if len(visited) + len(reused_reads) >= 100:
             raise ValueError("dependency lineage exceeds its bound")
         row = await (
             await db.execute(
@@ -203,6 +216,27 @@ async def _dependency_lineage(
                 return
             raise ValueError("required dependency is incomplete")
         if row["conversation_revision"] != consumer["conversation_revision"]:
+            if (
+                row["conversation_revision"] < consumer["conversation_revision"]
+                and row["node_type"] == "worker"
+                and row["required_skill"] == "research.collect"
+                and row["worker_job_id"] in reusable_read_jobs
+            ):
+                matching_job = await (
+                    await db.execute(
+                        """SELECT j.id FROM agent_jobs j
+                        JOIN tasks t ON t.id=j.task_id AND t.source=?
+                        WHERE j.id=? AND j.task_id=? AND j.required_skill='research.collect'
+                          AND j.status='completed'""",
+                        (f"goal:{goal_id}", row["worker_job_id"], row["task_id"]),
+                    )
+                ).fetchone()
+                if matching_job is not None:
+                    # Only the exact still-requested pages already revalidated
+                    # in this read snapshot are reusable across revisions. Do
+                    # not import this job's old summary, other pages, or ancestry.
+                    reused_reads.add(identity)
+                    return
             raise ValueError("dependency belongs to an older instruction revision")
         visited.add(identity)
         ordered.append({**dict(row), "direct_context": direct})
