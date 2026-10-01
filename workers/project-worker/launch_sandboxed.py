@@ -18,6 +18,7 @@ SOURCES = (
     "workers/project-worker/registry_proxy.py",
     "workers/code-worker/code_worker.py",
     "workers/file-worker/file_worker.py",
+    "workers/project-worker/browser-seccomp-v1.json",
 )
 REQUIRED_ENV = (
     "MONGARS_SERVER_URL",
@@ -31,6 +32,7 @@ REQUIRED_ENV = (
 OPTIONAL_ENV = (
     "MONGARS_JOB_HEARTBEAT_SECONDS",
     "MONGARS_PROJECT_MODEL_TIMEOUT_SECONDS",
+    "MONGARS_PROJECT_BROWSER_SANDBOX",
 )
 # Only this private tmpfs is used as HOME; Docker bind inputs use the host scratch.
 SANDBOX_HOME = "/tmp"  # nosec B108

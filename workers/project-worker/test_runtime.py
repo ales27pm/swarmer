@@ -148,6 +148,7 @@ def test_node_install_cache_uses_private_dependency_scratch_and_is_cleaned_on_fa
     ) -> tuple[int, str, int]:
         ensure_active()
         if runner.image in command and command[command.index(runner.image) + 1] == "npm":
+            assert "--engine-strict" in command
             # Exercise the real install assembly: cache belongs to this job's
             # writable dependency mount, not its small in-memory HOME or a host cache.
             cache = command[command.index("--cache") + 1]

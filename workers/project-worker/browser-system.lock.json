@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "base_image": "sha256:e3f3afcfd536422e962c3a58217eece5c4430ca46ed96ce06464cce8adf21082",
+  "platform": "linux/amd64",
+  "distribution": "debian",
+  "suite": "bookworm",
+  "snapshot": "20260930T000000Z",
+  "repositories": [
+    "https://snapshot.debian.org/archive/debian/20260930T000000Z/",
+    "https://snapshot.debian.org/archive/debian-security/20260930T000000Z/"
+  ],
+  "apt_packages": ["chromium", "chromium-driver", "fonts-liberation"],
+  "python_lock": "runtime-browser.lock",
+  "playwright_browser": "chromium",
+  "policy": "Frozen signed Debian snapshot resolves the full apt closure; the immutable base and final inventory retain all inherited packages. No host packages or service configuration are modified."
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,26 @@ CHECK_COMMANDS = {
 DEPENDENCY_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+\-]{0,99}")
 NODE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?")
 RECEIPT_PREFIX = "SWARMER_RUNNER_RECEIPT="
+BROWSER_SECCOMP_PATH = Path(__file__).resolve().with_name("browser-seccomp-v1.json")
+BROWSER_SECCOMP_SHA256 = "0f8bd34cf9980268f45c7f0a2a0d5dbff9559b3baf4d3cc4b464872e175a8c88"
+
+
+def browser_seccomp_bytes() -> bytes:
+    """Load only the operator-reviewed adjacent profile, never project data."""
+    try:
+        if (
+            BROWSER_SECCOMP_PATH.is_symlink()
+            or BROWSER_SECCOMP_PATH.resolve(strict=True) != BROWSER_SECCOMP_PATH
+            or not BROWSER_SECCOMP_PATH.is_file()
+        ):
+            raise ValueError("browser seccomp profile must be a regular adjacent file")
+        with BROWSER_SECCOMP_PATH.open("rb") as source:
+            data = source.read(64_001)
+    except OSError as exc:
+        raise ValueError("the reviewed browser seccomp profile is unavailable") from exc
+    if len(data) > 64_000 or hashlib.sha256(data).hexdigest() != BROWSER_SECCOMP_SHA256:
+        raise ValueError("browser seccomp profile does not match the reviewed SHA256")
+    return data
 
 
 class RuntimeError(ProjectError):
@@ -130,7 +151,9 @@ def parse_receipt(raw: str, mode: str, returncode: int) -> tuple[int, int, int]:
 
 
 class DockerRunner:
-    def __init__(self, image: str, *, timeout_seconds: float = 45) -> None:
+    def __init__(
+        self, image: str, *, timeout_seconds: float = 45, browser_sandbox: bool = False
+    ) -> None:
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
             raise ValueError("project runtime must be pinned to a local Docker image SHA256 ID")
         if not 5 <= timeout_seconds <= 120:
@@ -143,6 +166,83 @@ class DockerRunner:
         self.docker = str(Path(binary).resolve())
         self.image = image
         self.timeout_seconds = timeout_seconds
+        if type(browser_sandbox) is not bool:
+            raise ValueError("browser sandbox activation must be an explicit boolean")
+        self._browser_seccomp = browser_seccomp_bytes() if browser_sandbox else None
+
+    def probe_profile(self) -> dict[str, Any]:
+        """Cache bounded image facts; old images remain explicitly unqualified."""
+        cached = getattr(self, "_profile_cache", None)
+        if cached is not None and cached[0] == self.image:
+            return json.loads(json.dumps(cached[1]))  # type: ignore[no-any-return]
+        profile: dict[str, Any] = {
+            "schema_version": 1,
+            "status": "unknown",
+            "image_id": self.image,
+            "browser_execution": "not_qualified",
+            "pytest_plugin_autoload": False,
+            "async_tests": "unsupported",
+        }
+        with tempfile.TemporaryDirectory(prefix="swarmer-runtime-profile-") as temporary:
+            directory = Path(temporary)
+            name = "swarmer-runtime-profile-" + uuid.uuid4().hex
+            try:
+                command = self._base(name, "none") + [
+                    self.image,
+                    "python",
+                    "-I",
+                    "/opt/swarmer/check_harness.py",
+                    "runtime_profile",
+                ]
+                code, raw, _duration = self._process(command, directory, 10, lambda: None)
+                if code == 0 and len(raw.encode()) <= 16_000:
+                    value = json.loads(raw)
+                    if (
+                        isinstance(value, dict)
+                        and value.get("schema_version") == 1
+                        and value.get("status") == "observed"
+                        and value.get("browser_execution") == "not_qualified"
+                        and value.get("pytest_plugin_autoload") is False
+                        and value.get("async_tests") == "unsupported"
+                        and isinstance(value.get("python_version"), str)
+                        and re.fullmatch(
+                            r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", value["python_version"]
+                        )
+                    ):
+                        installed = value.get("installed_distributions")
+                        recipes = value.get("catalogue_requirements")
+                        binaries = value.get("binaries_present")
+                        if (
+                            isinstance(installed, dict)
+                            and isinstance(recipes, dict)
+                            and isinstance(binaries, dict)
+                            and len(installed) <= 100
+                            and len(recipes) <= 100
+                            and set(binaries)
+                            <= {"node", "chromium", "chromedriver", "firefox", "geckodriver"}
+                            and all(type(present) is bool for present in binaries.values())
+                            and all(
+                                isinstance(key, str)
+                                and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", key)
+                                and isinstance(text, str)
+                                and re.fullmatch(r"[A-Za-z0-9_.+\-=]{1,200}", text)
+                                for mapping in (installed, recipes)
+                                for key, text in mapping.items()
+                            )
+                        ):
+                            profile.update(
+                                status="observed",
+                                python_version=value["python_version"],
+                                installed_distributions=installed,
+                                catalogue_requirements=recipes,
+                                binaries_present=binaries,
+                            )
+            except (OSError, RuntimeError, ValueError, RecursionError, subprocess.TimeoutExpired):
+                pass
+            finally:
+                self._cleanup(["rm", "--force", name], directory)
+        self._profile_cache = (self.image, profile)
+        return json.loads(json.dumps(profile))  # type: ignore[no-any-return]
 
     def _base(self, name: str, network: str) -> list[str]:
         # This mount is a private tmpfs in each disposable container.
@@ -323,6 +423,7 @@ class DockerRunner:
                                 "npm",
                                 "install",
                                 "--ignore-scripts",
+                                "--engine-strict",
                                 "--no-audit",
                                 "--no-fund",
                                 # Keep registry downloads off the 256 MiB /tmp
@@ -386,10 +487,22 @@ class DockerRunner:
                         }
                 # Dependency containers and their egress proxy end before code runs.
                 self._cleanup(["rm", "--force", proxy], directory)
+                profile_path = None
+                if self._browser_seccomp is not None:
+                    profile_path = directory / "browser-seccomp-v1.json"
+                    # CLI reads the verified copy from private host scratch. It
+                    # is never exposed in the project's source/dependency mounts.
+                    with profile_path.open("xb") as profile_file:
+                        profile_file.write(self._browser_seccomp)
+                    profile_path.chmod(0o600)
                 for index, mode in enumerate(profiles):
                     name = identifier + f"-check-{index}"
                     containers.append(name)
-                    command = self._base(name, "none") + [
+                    command = self._base(name, "none")
+                    if profile_path is not None and mode in {"python_test", "node_test"}:
+                        command[command.index("--pids-limit") + 1] = "256"
+                        command.extend(["--security-opt", f"seccomp={profile_path}"])
+                    command += [
                         "--mount",
                         f"type=bind,source={source},target=/source,readonly",
                         "--mount",

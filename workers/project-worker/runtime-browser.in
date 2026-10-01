@@ -1,0 +1,6 @@
+# Additive test toolkit, Python 3.12 Linux. Resolved with runtime-tools.lock constraints.
+# This does not install application/framework packages or mutate worker/API venvs.
+selenium==4.50.0
+playwright==1.63.0
+pytest-asyncio==1.4.0
+hypothesis==6.168.3

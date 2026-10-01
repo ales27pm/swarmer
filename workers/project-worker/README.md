@@ -181,6 +181,17 @@ only source snapshots and bounded runner receipts return to the control plane.
 
 ## Checks and dependencies
 
+Before the first model request, the worker probes its exact image once and caches
+the bounded result by image ID. An old image with no profile endpoint is marked
+unknown. Installed packages, catalogue candidates and qualified browser execution
+are distinct facts. The profile never claims a browser works merely because its
+binary exists. Before pytest collection, a static import preflight reports missing
+required Python modules without executing project or dependency code; known import
+names include a reviewed exact-version recipe for the next ordinary correction.
+Unknown imports are not converted into guessed package installations.
+See [dependency profiles](../../docs/dependency-profiles.md) for the lockfiles,
+candidate browser builder, static-scan limits and separate runtime qualification.
+
 Python projects provide pytest-compatible tests and may declare exact
 `name==version` public PyPI dependencies in requirements.txt. Only wheels are
 accepted; source builds, URL/git/local dependencies and custom indexes are denied.
@@ -195,7 +206,7 @@ real API when no other check has failed. Skipped, cancelled, failing or ambiguou
 test reports stay on the normal repair path. These rules guide the next charged
 iteration; they do not prove
 feature completeness or bypass build/test checks and goal budgets.
-Dependency installation uses sanitized manifests, `npm --ignore-scripts`, and a
+Dependency installation uses sanitized manifests, `npm --ignore-scripts --engine-strict`, and a
 disposable internal Docker network. A credential-free proxy allows CONNECT only
 to public IPs for pypi.org, files.pythonhosted.org and registry.npmjs.org. No project
 source is mounted into the dependency-install container. Package lifecycle

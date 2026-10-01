@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "target": {
+    "python": "3.12",
+    "platform": "linux-x86_64"
+  },
+  "policy": "Known import names only. Versioned candidate recipes; successful resolution is not execution qualification. Never infer a distribution name for unknown imports. Do not overwrite project version pins. Browser binaries require a qualified runtime image.",
+  "python_imports": {
+    "selenium": {
+      "distribution": "selenium",
+      "version": "4.50.0",
+      "requirement": "selenium==4.50.0",
+      "profile": "browser",
+      "requires_browser_runtime": true
+    },
+    "playwright": {
+      "distribution": "playwright",
+      "version": "1.63.0",
+      "requirement": "playwright==1.63.0",
+      "profile": "browser",
+      "requires_browser_runtime": true
+    },
+    "pytest": {
+      "distribution": "pytest",
+      "version": "8.4.2",
+      "requirement": "pytest==8.4.2",
+      "profile": "python-test",
+      "requires_browser_runtime": false
+    },
+    "pytest_asyncio": {
+      "distribution": "pytest-asyncio",
+      "version": "1.4.0",
+      "requirement": "pytest-asyncio==1.4.0",
+      "profile": "python-test",
+      "requires_browser_runtime": false
+    },
+    "hypothesis": {
+      "distribution": "hypothesis",
+      "version": "6.168.3",
+      "requirement": "hypothesis==6.168.3",
+      "profile": "python-test",
+      "requires_browser_runtime": false
+    },
+    "flask": {
+      "distribution": "flask",
+      "version": "3.1.3",
+      "requirement": "flask==3.1.3",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "fastapi": {
+      "distribution": "fastapi",
+      "version": "0.142.2",
+      "requirement": "fastapi==0.142.2",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "httpx": {
+      "distribution": "httpx",
+      "version": "0.28.1",
+      "requirement": "httpx==0.28.1",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "requests": {
+      "distribution": "requests",
+      "version": "2.34.2",
+      "requirement": "requests==2.34.2",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "bs4": {
+      "distribution": "beautifulsoup4",
+      "version": "4.15.0",
+      "requirement": "beautifulsoup4==4.15.0",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "PIL": {
+      "distribution": "pillow",
+      "version": "12.3.0",
+      "requirement": "pillow==12.3.0",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "pydantic": {
+      "distribution": "pydantic",
+      "version": "2.13.5",
+      "requirement": "pydantic==2.13.5",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    },
+    "yaml": {
+      "distribution": "pyyaml",
+      "version": "6.0.3",
+      "requirement": "pyyaml==6.0.3",
+      "profile": "python-web",
+      "requires_browser_runtime": false
+    }
+  }
+}

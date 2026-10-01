@@ -111,7 +111,48 @@ def test_passes_only_explicit_project_model_timeout(
     assert "MONGARS_CODE_TIMEOUT_SECONDS" not in environment
 
 
-@pytest.mark.parametrize("relative", ["release.json", "workers/project-worker/runtime.py"])
+def test_browser_profile_is_pinned_and_only_bound_read_only(
+    release: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MONGARS_PROJECT_BROWSER_SANDBOX", raising=False)
+    relative = "workers/project-worker/browser-seccomp-v1.json"
+    assert launcher.SOURCES[-1] == relative
+    command, environment = launcher.sandbox_command(release)
+    position = command.index(str(release / relative))
+    assert command[position - 1 : position + 2] == [
+        "--ro-bind",
+        str(release / relative),
+        "/app/" + relative,
+    ]
+    assert command[position + 2] == "--chdir"
+    assert "MONGARS_PROJECT_BROWSER_SANDBOX" not in environment
+    (release / relative).write_text('{"defaultAction":"SCMP_ACT_ALLOW"}')
+    with pytest.raises(ValueError, match="manifest"):
+        launcher.sandbox_command(release)
+
+
+def test_browser_sandbox_flag_is_forwarded_only_when_explicit(
+    release: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MONGARS_PROJECT_BROWSER_SANDBOX", raising=False)
+    _, environment = launcher.sandbox_command(release)
+    assert "MONGARS_PROJECT_BROWSER_SANDBOX" not in environment
+    monkeypatch.setenv("MONGARS_PROJECT_BROWSER_SANDBOX", "1")
+    monkeypatch.setenv("MONGARS_PROJECT_BROWSER_SECCOMP_PATH", "/foreign/profile.json")
+    command, environment = launcher.sandbox_command(release)
+    assert environment["MONGARS_PROJECT_BROWSER_SANDBOX"] == "1"
+    assert "MONGARS_PROJECT_BROWSER_SECCOMP_PATH" not in environment
+    assert "/foreign/profile.json" not in command
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "release.json",
+        "workers/project-worker/runtime.py",
+        "workers/project-worker/browser-seccomp-v1.json",
+    ],
+)
 def test_rejects_symlinked_source(release: Path, launcher: ModuleType, relative: str) -> None:
     original = release / relative
     replacement = original.with_suffix(".replacement")

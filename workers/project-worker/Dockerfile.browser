@@ -1,0 +1,13 @@
+# Candidate only: never activates a service. Builder verifies the immutable local base.
+ARG BASE_IMAGE=sha256:e3f3afcfd536422e962c3a58217eece5c4430ca46ed96ce06464cce8adf21082
+FROM ${BASE_IMAGE}
+USER 0:0
+COPY browser-system.lock.json runtime-browser.lock runtime-tools.lock /opt/swarmer/
+COPY setup_browser_runtime.py browser_runtime_probe.py /opt/swarmer/
+COPY browser-seccomp-v1.json browser-seccomp-v1.provenance.json browser-seccomp-LICENSE /opt/swarmer/
+# Parent-owned reviewed harness/catalogue are part of this candidate, never host runtime files.
+COPY dependency-catalog.json check_harness.py /opt/swarmer/
+RUN SWARMER_BROWSER_IMAGE_BUILD=1 python -I /opt/swarmer/setup_browser_runtime.py install-image
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/swarmer/playwright-browsers SE_OFFLINE=true SE_AVOID_STATS=true
+USER 65532:65532
+WORKDIR /workspace

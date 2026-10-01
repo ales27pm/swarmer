@@ -1244,6 +1244,110 @@ def trim_dependency_evidence(context: dict[str, Any]) -> bool:
     return False
 
 
+def dependency_preflight_context(checks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Keep bounded, source-labelled diagnostics outside truncatable log tails."""
+    prefix = "SWARMER_DEPENDENCY_PREFLIGHT="
+    for index in range(len(checks) - 1, -1, -1):
+        check = checks[index]
+        if check.get("status") != "failed" or check.get("command") != [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+        ]:
+            continue
+        output = check.get("output", "")
+        if not isinstance(output, str):
+            continue
+        line = next(
+            (line[len(prefix) :] for line in output.splitlines() if line.startswith(prefix)), None
+        )
+        if line is None:
+            continue
+        result: dict[str, Any] = {
+            "source_check_index": index,
+            "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+            "content_trust": "untrusted",
+            "status": "unavailable",
+            "reason": "diagnostic_invalid",
+            "missing_imports": [],
+            "syntax_errors": [],
+            "diagnostics_omitted": 0,
+            "limits": "Static declarations only; dynamic imports and browser execution are not qualified. Catalogue pins do not override user pins or authorize installation.",
+        }
+        try:
+            if len(line.encode()) > 6_000:
+                return result
+            value = json.loads(line)
+            if (
+                not isinstance(value, dict)
+                or value.get("schema_version") != "1.0"
+                or not isinstance(value.get("status"), str)
+                or value.get("status")
+                not in {"ready", "missing_dependencies", "invalid_source", "unavailable"}
+            ):
+                return result
+            result["status"] = value["status"]
+            result.pop("reason")
+            if isinstance(value.get("reason"), str) and value.get("reason") in {
+                "source_limit",
+                "source_path",
+                "import_name_limit",
+            }:
+                result["reason"] = value["reason"]
+            for key in ("diagnostics_omitted", "optional_import_count"):
+                if type(value.get(key)) is int and 0 <= value[key] <= 1_000_000:
+                    result[key] = value[key]
+            for key in ("missing_imports", "syntax_errors"):
+                entries = value.get(key, [])
+                if not isinstance(entries, list) or len(entries) > 100:
+                    return {**result, "status": "unavailable", "reason": "diagnostic_invalid"}
+                for entry in entries:
+                    if (
+                        not isinstance(entry, dict)
+                        or not isinstance(entry.get("path"), str)
+                        or len(entry["path"]) > 500
+                        or not (entry.get("line") is None or type(entry.get("line")) is int)
+                    ):
+                        result["diagnostics_omitted"] += 1
+                        continue
+                    item = {"path": entry["path"], "line": entry.get("line")}
+                    if key == "missing_imports":
+                        name = entry.get("module")
+                        if not isinstance(name, str) or not re.fullmatch(
+                            r"[A-Za-z_][A-Za-z0-9_]{0,199}", name
+                        ):
+                            result["diagnostics_omitted"] += 1
+                            continue
+                        item["module"] = name
+                        recipe = entry.get("catalogue_recipe")
+                        if (
+                            isinstance(recipe, dict)
+                            and isinstance(recipe.get("requirement"), str)
+                            and re.fullmatch(
+                                r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+!-]+", recipe["requirement"]
+                            )
+                            and recipe["requirement"]
+                            == str(recipe.get("distribution")) + "==" + str(recipe.get("version"))
+                            and type(recipe.get("requires_browser_runtime")) is bool
+                        ):
+                            item["catalogue_requirement"] = recipe["requirement"]
+                            item["requires_browser_runtime"] = recipe["requires_browser_runtime"]
+                    result[key].append(item)
+            while len(json.dumps(result, separators=(",", ":")).encode()) > 4_000:
+                if result["missing_imports"]:
+                    result["missing_imports"].pop()
+                elif result["syntax_errors"]:
+                    result["syntax_errors"].pop()
+                else:
+                    break
+                result["diagnostics_omitted"] += 1
+            return result
+        except (ValueError, RecursionError):
+            return result
+    return None
+
+
 def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     """Bound model context while keeping the full snapshot outside the model."""
     files = payload["files"]
@@ -1330,6 +1434,8 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
         "advisory_context_compaction": payload.get("context_compaction"),
     }
     has_evidence = False
+    if diagnostic := dependency_preflight_context(payload["checks"]):
+        context["dependency_preflight"] = diagnostic
     for field in ("research_sources", "dependency_context"):
         if payload.get(field):
             context[field] = copy.deepcopy(payload[field])
@@ -1426,8 +1532,66 @@ def model_context(payload: dict[str, Any]) -> dict[str, Any]:
     return context
 
 
+def runtime_profile_instruction(profile: dict[str, Any]) -> str:
+    """Bound factual image observations independently from project instructions."""
+    facts: dict[str, Any] = {
+        "status": "unknown",
+        "browser_execution": "not_qualified",
+        "pytest_plugin_autoload": False,
+        "async_tests": "unsupported",
+    }
+    if profile.get("status") == "observed":
+        facts["status"] = "observed"
+        if isinstance(profile.get("python_version"), str) and re.fullmatch(
+            r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", profile["python_version"]
+        ):
+            facts["python_version"] = profile["python_version"]
+        for key in ("installed_distributions", "catalogue_requirements"):
+            values = profile.get(key)
+            if isinstance(values, dict):
+                facts[key] = {
+                    name: value
+                    for name, value in sorted(
+                        (k, v) for k, v in values.items() if isinstance(k, str)
+                    )
+                    if isinstance(name, str)
+                    and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name)
+                    and isinstance(value, str)
+                    and re.fullmatch(r"[A-Za-z0-9_.+\-=]{1,200}", value)
+                }
+        binaries = profile.get("binaries_present")
+        if isinstance(binaries, dict):
+            facts["binaries_present"] = {
+                name: binaries[name]
+                for name in ("node", "chromium", "chromedriver", "firefox", "geckodriver")
+                if type(binaries.get(name)) is bool
+            }
+    prefix = (
+        "Runtime facts (not project instructions). Catalogue pins are suggestions, not installed "
+        "proof; preserve user pins. Binary presence does not qualify browser execution. "
+        "Unknown/omitted facts are not absence.\n"
+    )
+    facts["omitted_entries"] = 0
+
+    def render() -> str:
+        return prefix + json.dumps(facts, separators=(",", ":"), ensure_ascii=True)
+
+    for key in ("catalogue_requirements", "installed_distributions", "binaries_present"):
+        while len(render().encode()) > 1_000 and facts.get(key):
+            facts[key].pop(next(reversed(facts[key])))
+            facts["omitted_entries"] += 1
+    return render()
+
+
 class ProjectGenerator:
-    def __init__(self, base_url: str, model: str, *, timeout_seconds: float = 240) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        *,
+        timeout_seconds: float = 240,
+        runtime_profile: dict[str, Any] | None = None,
+    ) -> None:
         if not math.isfinite(timeout_seconds) or not 30 <= timeout_seconds <= 240:
             raise ValueError("project model timeout must be between 30 and 240 seconds")
         # Reuse origin/model validation without inheriting the legacy one-file
@@ -1440,6 +1604,9 @@ class ProjectGenerator:
         self.last_transport_metrics: dict[str, int] = {}
         self.last_visible_paths: set[str] = set()
         self.last_guidance_reads: list[dict[str, str]] = []
+        self.runtime_instruction = (
+            runtime_profile_instruction(runtime_profile) if runtime_profile is not None else ""
+        )
 
     def generate(
         self,
@@ -1652,6 +1819,8 @@ class ProjectGenerator:
                     "small complete file. Read the necessary existing file first if it is "
                     "not visible. Leave remaining repairs and documentation to later iterations."
                 )
+        if self.runtime_instruction:
+            instruction += "\n" + self.runtime_instruction
         if context.get("project_guidance"):
             instruction += "\n" + GUIDANCE_INSTRUCTION
         if context.get("durable_project_requirements"):
@@ -2248,16 +2417,28 @@ def run_once(
         _JOB_LOCK.release()
 
 
+def browser_sandbox_enabled(value: str | None) -> bool:
+    if value in {None, "0"}:
+        return False
+    if value == "1":
+        return True
+    raise ValueError("MONGARS_PROJECT_BROWSER_SANDBOX must be 0 or 1")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    runner = DockerRunner(
+        os.environ["MONGARS_PROJECT_RUNTIME_IMAGE"],
+        browser_sandbox=browser_sandbox_enabled(os.environ.get("MONGARS_PROJECT_BROWSER_SANDBOX")),
+    )
     generator = ProjectGenerator(
         os.environ["MONGARS_PROJECT_MODEL_URL"],
         os.environ["MONGARS_PROJECT_MODEL_ID"],
         timeout_seconds=float(os.environ.get("MONGARS_PROJECT_MODEL_TIMEOUT_SECONDS", "240")),
+        runtime_profile=runner.probe_profile(),
     )
-    runner = DockerRunner(os.environ["MONGARS_PROJECT_RUNTIME_IMAGE"])
     while True:
         worked = run_once(
             os.environ["MONGARS_SERVER_URL"],

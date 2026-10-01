@@ -1,0 +1,187 @@
+{
+  "added_rules": [
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_MASKED_EQ",
+          "value": 235012096,
+          "valueTwo": 0
+        }
+      ],
+      "comment": "Candidate amd64: permit USER/PID/NET namespace subsets; kernel capability checks still apply. NEWNS/NEWCGROUP/NEWUTS/NEWIPC remain excluded.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "clone"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 268435456
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 536870912
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 1073741824
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 805306368
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 1342177280
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 1610612736
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "op": "SCMP_CMP_EQ",
+          "value": 1879048192
+        }
+      ],
+      "comment": "Candidate only: exact subset of USER/PID/NET; kernel permission checks still apply.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "unshare"
+      ]
+    },
+    {
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Chromium sandbox only: no capability added; kernel CAP_SYS_CHROOT check in current user namespace still applies.",
+      "includes": {
+        "arches": [
+          "amd64"
+        ]
+      },
+      "names": [
+        "chroot"
+      ]
+    }
+  ],
+  "added_rules_canonical_sha256": "8caaeb8a693633e628fa9cb701dc47322670d457992f544d6f30dc35eb52a506",
+  "docker_git_commit": "3ce5872b7950c63ba2ffbc5123101019ff3e6682",
+  "docker_version": "29.8.0",
+  "license": "Apache-2.0",
+  "license_file": "browser-seccomp-LICENSE",
+  "mode": "browser-seccomp-v1",
+  "module_version": "github.com/moby/profiles/seccomp v0.2.3",
+  "pids_limit": 256,
+  "policy": "Explicit opt-in for all processes in a network-none test container. All upstream rules and default EPERM retained. Only amd64 clone USER/PID/NET subsets, exact unshare subsets, and chroot added. Kernel namespace capability checks, docker-default AppArmor, cap-drop ALL, no-new-privileges, read-only root, 1GiB and 2CPU remain. setns/clone3, AF_ALG/AF_VSOCK socket rules unchanged. Upstream ptrace/process_vm allow rules and 32bit socketcall remain; this is not a claim that every inherited syscall is blocked.",
+  "qualified_platform": "linux/amd64",
+  "schema_version": 1,
+  "sha256": "0f8bd34cf9980268f45c7f0a2a0d5dbff9559b3baf4d3cc4b464872e175a8c88",
+  "source_name": "browser-seccomp-v1.json",
+  "unchanged_rules": 33,
+  "upstream": "Moby profiles seccomp",
+  "upstream_canonical_sha256": "9da637d2ab0a204fcbd91bd88f1be9e004a3acab61c571a9f5b8870e588a17d2",
+  "upstream_sha256": "536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74",
+  "upstream_url": "https://raw.githubusercontent.com/moby/moby/3ce5872b7950c63ba2ffbc5123101019ff3e6682/vendor/github.com/moby/profiles/seccomp/default.json"
+}

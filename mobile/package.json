@@ -57,7 +57,7 @@
     "jest": "~29.7.0",
     "jest-expo": "~55.0.22",
     "test-renderer": "1.2.0",
-    "typescript": "latest"
+    "typescript": "5.9.3"
   },
   "jest": {
     "preset": "jest-expo",

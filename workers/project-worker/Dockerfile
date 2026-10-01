@@ -8,7 +8,7 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/swarmer/runtime-tools.lock \
     && mkdir -p /opt/swarmer /workspace /dependencies
-COPY check_harness.py registry_proxy.py /opt/swarmer/
+COPY check_harness.py registry_proxy.py dependency-catalog.json /opt/swarmer/
 RUN printf '[pytest]\n' > /opt/swarmer/pytest.ini \
     && chmod -R a-w /opt/swarmer
 ENV PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 HOME=/tmp

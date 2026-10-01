@@ -71,6 +71,9 @@ if [ "$preflight_failed" -ne 0 ]; then
   exit 1
 fi
 
+printf 'check: auditing locked dependency recipes and mobile manifest alignment\n'
+"$SERVER_BIN/python" "$ROOT/scripts/audit_dependency_catalog.py"
+
 printf 'check: validating installed mobile dependencies\n'
 (
   cd "$MOBILE_DIR"
