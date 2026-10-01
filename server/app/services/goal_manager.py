@@ -3761,7 +3761,11 @@ class GoalManager:
                 )
                 if exceeds_replans or exceeds_steps:
                     terminal_status = "budget_exhausted"
-                    terminal_reason = "goal replan budget exhausted"
+                    terminal_reason = (
+                        "goal replan budget exhausted"
+                        if exceeds_replans
+                        else "goal step budget exhausted"
+                    )
                 else:
                     await self._insert_evaluator_nodes_locked(
                         db,

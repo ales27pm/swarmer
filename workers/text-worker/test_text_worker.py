@@ -798,10 +798,15 @@ def test_run_once_preserves_transport_failure_code_without_private_text(
     assert not worker._MODEL_LOCK.locked()
 
 
+@pytest.mark.parametrize(
+    "unknown_code",
+    ["wall_timeout: private arbitrary diagnostic", "unsupported_citation: private generated text"],
+)
 def test_run_once_redacts_unknown_failure_code_and_exception_text(
     worker: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    unknown_code: str,
 ) -> None:
     client = FakeClient()
     monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
@@ -809,7 +814,7 @@ def test_run_once_redacts_unknown_failure_code_and_exception_text(
 
     def unknown_failure(*args: Any, **kwargs: Any) -> Any:
         error = worker.GenerationError("private exception credential-secret")
-        error.reason_code = "wall_timeout: private arbitrary diagnostic"
+        error.reason_code = unknown_code
         raise error
 
     monkeypatch.setattr(generator, "generate", unknown_failure)
@@ -858,7 +863,7 @@ def test_startup_requires_operator_model_and_uses_native_loopback_endpoint(
 
 
 @pytest.mark.parametrize("unchecked_generator", [False, True])
-def test_unsupported_citation_is_not_submitted_or_logged(
+def test_unsupported_citation_text_is_not_submitted_or_logged(
     worker: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -871,13 +876,15 @@ def test_unsupported_citation_is_not_submitted_or_logged(
         **draft(),
         "text": "PRIVATE-DRAFT-SENTINEL https://www.ville.sorel-tracy.qc.ca/contact",
     }
-    generator, _ = generator_for(worker, monkeypatch, stream({**value, "source_ids": []}))
+    generator, connection = generator_for(worker, monkeypatch, stream({**value, "source_ids": []}))
     if unchecked_generator:
         monkeypatch.setattr(generator, "generate", lambda *args, **kwargs: value)
     assert worker.run_once("http://127.0.0.1", "agent", "secret", generator)
-    assert client.submitted == [
-        {"status": "failed", "error": "Text draft generation failed validation"}
-    ]
+    assert client.submitted == [{"status": "failed", "error": "unsupported_citation"}]
+    assert client.renewals == 2
+    assert len([call for call in connection.calls if call[0] == "POST"]) == (
+        0 if unchecked_generator else 1
+    )
     assert client.renewals == 2
     assert "reason=unsupported_citation" in caplog.text
     assert "PRIVATE-DRAFT-SENTINEL" not in caplog.text

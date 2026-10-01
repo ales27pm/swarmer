@@ -216,6 +216,7 @@ async def test_running_job_may_finish_under_policy_snapshot_from_claim(tmp_path:
         ("writing.draft", None, "model_http_error", "model_http_error"),
         ("writing.draft", None, "writing_requirements_unmet", "writing_requirements_unmet"),
         ("writing.draft", None, "writing_budget_exceeded", "writing_budget_exceeded"),
+        ("writing.draft", None, "unsupported_citation", "unsupported_citation"),
         ("writing.draft", None, None, "remote worker reported failure"),
         (
             "writing.draft",
@@ -231,6 +232,14 @@ async def test_running_job_may_finish_under_policy_snapshot_from_claim(tmp_path:
         ),
         ("writing.draft", {}, "wall_timeout", "remote worker reported failure"),
         ("workspace.list_dir", None, "wall_timeout", "remote worker reported failure"),
+        (
+            "writing.draft",
+            None,
+            "unsupported_citation: private generated text and credential",
+            "remote worker reported failure",
+        ),
+        ("writing.draft", {}, "unsupported_citation", "remote worker reported failure"),
+        ("workspace.list_dir", None, "unsupported_citation", "remote worker reported failure"),
     ],
 )
 async def test_writing_failure_preserves_only_safe_resultless_diagnostics(

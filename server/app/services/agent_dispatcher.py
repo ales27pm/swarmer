@@ -949,6 +949,7 @@ class AgentDispatcher:
                     "model_http_error",
                     "writing_requirements_unmet",
                     "writing_budget_exceeded",
+                    "unsupported_citation",
                 }
             ):
                 # Fixed diagnostic codes only, never arbitrary remote error text.

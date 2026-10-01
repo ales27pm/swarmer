@@ -15,6 +15,48 @@ from tests.test_writing_requirements import writing_payload
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        ("unsupported_citation", "unsupported_citation"),
+        ("unsupported_citation: private generated text", "remote worker reported failure"),
+    ],
+)
+async def test_unsupported_citation_reaches_evaluator_as_fixed_failure_only(
+    tmp_path: Path, error: str, expected: str
+) -> None:
+    evaluator = _CapturingEvaluator()
+    manager = await _manager(tmp_path / "writing.db", plan(), evaluator=evaluator)
+    agent = await register(manager)
+    goal = await manager.create_goal(
+        GoalCreateRequest(objective=plan().objective), actor_id="phone"
+    )
+    await manager.start_goal(goal["id"], GoalStartRequest())
+    job = await manager.agent_dispatcher.claim(agent)
+    assert job is not None
+    result, changed = await manager.agent_dispatcher.submit_result(
+        agent,
+        job["id"],
+        job["claim_token"],
+        status="failed",
+        result=None,
+        error=error,
+        lease_id=job["lease_id"],
+        lease_generation=job["lease_generation"],
+    )
+
+    assert changed and result["status"] == "failed" and result["result"] is None
+    await manager.on_job_result(result)
+    assert len(evaluator.contexts) == 1
+    node = evaluator.contexts[0].node_results[0]
+    assert node.status.value == "failed" and node.result_summary is None
+    assert node.failure_reason == expected
+    detail = await manager.get_goal(goal["id"])
+    assert detail is not None and detail["goal"]["status"] != "completed"
+    assert detail["goal"]["model_call_count"] == 3  # One planner, worker and evaluator.
+
+
+@pytest.mark.asyncio
 async def test_rejected_draft_measurements_reach_evaluator_and_stay_failed(tmp_path: Path) -> None:
     evaluator = _CapturingEvaluator()
     proposal = plan().model_copy(update={"objective": writing_payload()["objective"]})

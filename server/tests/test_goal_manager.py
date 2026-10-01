@@ -473,6 +473,87 @@ async def test_goal_manager_rejects_plan_that_exceeds_goal_step_budget(tmp_path:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evaluation_status,max_steps,max_replans,expected_reason",
+    [
+        (EvaluationStatus.CONTINUE, 2, 1, "goal step budget exhausted"),
+        (EvaluationStatus.REPLAN, 2, 1, "goal step budget exhausted"),
+        (EvaluationStatus.REPLAN, 3, 0, "goal replan budget exhausted"),
+        (EvaluationStatus.REPLAN, 2, 0, "goal replan budget exhausted"),
+        (EvaluationStatus.CONTINUE, 3, 0, None),
+        (EvaluationStatus.REPLAN, 3, 1, None),
+    ],
+)
+async def test_evaluator_node_admission_reports_the_binding_budget_without_changing_caps(
+    tmp_path: Path,
+    evaluation_status: EvaluationStatus,
+    max_steps: int,
+    max_replans: int,
+    expected_reason: str | None,
+) -> None:
+    await _seed_goal_graph(tmp_path / "state.db")
+    manager = await _manager(tmp_path, _parallel_plan())
+    async with aiosqlite.connect(manager.db_path) as db:
+        await db.execute(
+            """UPDATE goal_runs SET max_steps=?,max_replans=?,step_count=2,
+            started_at=?,current_phase='evaluator_model' WHERE id='goal_graph'""",
+            (max_steps, max_replans, manager._now()),
+        )
+        await db.execute("UPDATE plan_nodes SET status='completed',result_summary='Evidence'")
+        await db.commit()
+    goal = await manager.graph.get_goal("goal_graph")
+    nodes = await manager.graph.list_nodes("goal_graph")
+    assert goal is not None
+    call_id = await manager._reserve_model_call(
+        "goal_graph",
+        role="evaluator",
+        context_id=None,
+        input_digest="a" * 64,
+        provider_source="test",
+    )
+    decision = EvaluationDecision(
+        schema_version="1.0",
+        status=evaluation_status,
+        reason_summary="An additional bounded evidence step is required.",
+        missing_requirements=[],
+        invalid_results=[],
+        suggested_new_nodes=[
+            _parallel_plan()
+            .nodes[0]
+            .model_copy(update={"temporary_id": "next", "dependencies": ["node_b"]})
+        ],
+    )
+    arguments = {
+        "decision_fingerprint": "budget-decision",
+        "state_fingerprint": manager._state_fingerprint(nodes),
+        "model_call_id": call_id,
+    }
+
+    await manager._apply_evaluation(goal, nodes, decision, **arguments)
+
+    recorded = await manager.graph.get_goal("goal_graph")
+    assert recorded is not None
+    assert (recorded["max_steps"], recorded["max_replans"]) == (max_steps, max_replans)
+    if expected_reason is not None:
+        assert recorded["status"] == "budget_exhausted"
+        assert recorded["failure_reason"] == expected_reason
+        assert recorded["step_count"] == 2 and recorded["replan_count"] == 0
+        assert len(await manager.graph.list_nodes("goal_graph")) == 2
+    else:
+        assert recorded["status"] == "running"
+        assert recorded["step_count"] == 3
+        assert recorded["replan_count"] == int(evaluation_status is EvaluationStatus.REPLAN)
+        assert len(await manager.graph.list_nodes("goal_graph")) == 3
+    with pytest.raises(GoalManagerConflict, match="expired or was fenced"):
+        await manager._apply_evaluation(goal, nodes, decision, **arguments)
+    assert await manager.graph.get_goal("goal_graph") == recorded
+    async with aiosqlite.connect(manager.db_path) as db:
+        assert await (
+            await db.execute("SELECT COUNT(*) FROM goal_evaluations WHERE goal_run_id='goal_graph'")
+        ).fetchone() == (1,)
+
+
+@pytest.mark.asyncio
 async def test_manual_goal_dispatches_only_one_node_per_explicit_start(tmp_path: Path) -> None:
     manager = await _manager(tmp_path, _parallel_plan())
     goal = await manager.create_goal(

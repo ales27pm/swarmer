@@ -1519,6 +1519,7 @@ def run_once(
                         "model_http_error",
                         "writing_requirements_unmet",
                         "writing_budget_exceeded",
+                        "unsupported_citation",
                     }
                     else "Text draft generation failed validation"
                 ),
