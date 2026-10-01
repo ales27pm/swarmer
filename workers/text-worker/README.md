@@ -112,9 +112,14 @@ redundant source selection. The decoder still independently checks the
 response, citation use and the meaning of a clarification question.
 
 Inference uses one native Ollama `/api/chat` request and an absolute wall budget
-of 1–120 seconds. `think: false` requests final structured content for every
-operator alias; reasoning support is not guessed from a model's name. No internal
-reasoning stream is stored as the delivered draft. The output allowance adapts
+of 120 seconds by default. Operators can set `MONGARS_TEXT_TIMEOUT_SECONDS` to
+a finite value from 1 to 600 seconds after qualifying the workload. This budget
+includes connection setup, any model-server queue, model loading, prompt processing,
+and generation; it also sets the socket inactivity timeout. Increasing it does
+not change token/byte bounds, cancellation, validation, or retry behavior. Jobs
+and model output cannot override it. `think: false` requests final structured
+content for every operator alias; reasoning support is not guessed from a model's
+name. No internal reasoning stream is stored as the delivered draft. The output allowance adapts
 to explicit word bounds with a
 512-token JSON/summary reserve, between 1,024 and 8,192 tokens. With no explicit
 length, 600 words size the allowance without imposing a word-count target. The
@@ -152,8 +157,12 @@ The worker reuses `../code-worker/code_worker.py` for URL/model validation and
 heartbeats, and result submission. Deploy those three source files together.
 The lease is checked before, during, and after generation and synchronously
 renewed before submission. Losing the lease closes the connection and suppresses
-the result. A supervised transport enforces the wall budget even if headers or
-a slowly arriving body would keep resetting a socket inactivity timeout. A
+the result. Background heartbeats continue during generation (10 seconds by default).
+The server's renewable job lease (60 seconds by default) is not a total job-time
+limit; generation may continue beyond it while renewals succeed. The goal's runtime
+and cancellation fences still apply. A supervised transport enforces the wall
+budget even if headers or a slowly arriving body would keep resetting a socket
+inactivity timeout. A
 transport that has not finished closing prevents another model request.
 
 Register using `writing.draft`, `max_concurrency: 1`, and the configured model ID.

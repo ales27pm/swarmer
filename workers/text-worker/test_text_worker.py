@@ -339,7 +339,7 @@ def test_transport_rejects_cloud_and_invalid_identifiers(worker: ModuleType, mod
         worker.TextGenerator("http://127.0.0.1:11434", model)
 
 
-@pytest.mark.parametrize("seconds", [0, 121, float("nan"), float("inf")])
+@pytest.mark.parametrize("seconds", [0, 601, float("nan"), float("inf")])
 def test_invalid_time_budget(worker: ModuleType, seconds: float) -> None:
     with pytest.raises(ValueError):
         worker.TextGenerator("http://127.0.0.1:11434", "local:7b", timeout_seconds=seconds)
@@ -759,6 +759,63 @@ def test_transport_failures_keep_safe_diagnostic_classification(
         generator.generate(payload(), ensure_active=lambda: None)
     assert failed.value.reason_code == ("model_http_error" if http_error else "transport_error")
     assert connection.initial_sock.closed.is_set()
+
+
+@pytest.mark.parametrize("reason", ["wall_timeout", "transport_error", "model_http_error"])
+def test_run_once_preserves_transport_failure_code_without_private_text(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    reason: str,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    generator, connection = generator_for(worker, monkeypatch, stream())
+    if reason == "wall_timeout":
+        connection.header_stall = True
+    elif reason == "model_http_error":
+        connection.response.status = 503
+    else:
+
+        def unavailable() -> Any:
+            raise OSError("private transport address and credential")
+
+        monkeypatch.setattr(connection, "getresponse", unavailable)
+
+    assert worker.run_once("http://127.0.0.1", "agent", "credential-secret", generator)
+    assert client.submitted == [{"status": "failed", "error": reason}]
+    assert client.renewals == 2
+    assert f"reason={reason}" in caplog.text
+    assert "private" not in caplog.text
+    assert "credential-secret" not in caplog.text
+    assert "opaque-proof" not in caplog.text
+    assert len([call for call in connection.calls if call[0] == "POST"]) == 1
+    assert connection.initial_sock.closed.is_set()
+    assert not worker._MODEL_LOCK.locked()
+
+
+def test_run_once_redacts_unknown_failure_code_and_exception_text(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(worker.protocol, "ControlPlaneClient", lambda *args: client)
+    generator, _ = generator_for(worker, monkeypatch, stream())
+
+    def unknown_failure(*args: Any, **kwargs: Any) -> Any:
+        error = worker.GenerationError("private exception credential-secret")
+        error.reason_code = "wall_timeout: private arbitrary diagnostic"
+        raise error
+
+    monkeypatch.setattr(generator, "generate", unknown_failure)
+    assert worker.run_once("http://127.0.0.1", "agent", "credential-secret", generator)
+    assert client.submitted == [
+        {"status": "failed", "error": "Text draft generation failed validation"}
+    ]
+    assert "reason=invalid_output" in caplog.text
+    assert "private" not in caplog.text
+    assert "credential-secret" not in caplog.text
 
 
 def test_failure_reason_cannot_leak_exception_text_or_unrecognized_code(

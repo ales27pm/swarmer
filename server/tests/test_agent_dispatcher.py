@@ -205,6 +205,90 @@ async def test_running_job_may_finish_under_policy_snapshot_from_claim(tmp_path:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "skill,result,error,expected",
+    [
+        ("writing.draft", None, "wall_timeout", "wall_timeout"),
+        ("writing.draft", None, "transport_error", "transport_error"),
+        ("writing.draft", None, "model_http_error", "model_http_error"),
+        ("writing.draft", None, "writing_requirements_unmet", "writing_requirements_unmet"),
+        ("writing.draft", None, "writing_budget_exceeded", "writing_budget_exceeded"),
+        ("writing.draft", None, None, "remote worker reported failure"),
+        (
+            "writing.draft",
+            None,
+            "Text draft generation failed validation",
+            "remote worker reported failure",
+        ),
+        (
+            "writing.draft",
+            None,
+            "wall_timeout: private worker details",
+            "remote worker reported failure",
+        ),
+        ("writing.draft", {}, "wall_timeout", "remote worker reported failure"),
+        ("workspace.list_dir", None, "wall_timeout", "remote worker reported failure"),
+    ],
+)
+async def test_writing_failure_preserves_only_safe_resultless_diagnostics(
+    tmp_path: Path,
+    skill: str,
+    result: dict[str, object] | None,
+    error: str | None,
+    expected: str,
+) -> None:
+    state = StateService(tmp_path / "state.db")
+    await state.initialize()
+    task = await state.create_task(
+        TaskRecord.new(TaskCreate(input="Write a note"), source="device")
+    )
+    agent = await state.register_agent(
+        AgentCreate(name="worker", endpoint="http://127.0.0.1:1", skills=[skill]),
+        "device",
+    )
+    assert await state.heartbeat_agent(agent["id"], "online", agent["credential"])
+    dispatcher = AgentDispatcher(state.db_path, MessageBoardService(state.db_path))
+    payload = (
+        {"schema_version": "1.0", "objective": "Write a note", "conversation": []}
+        if skill == "writing.draft"
+        else {"path": "."}
+    )
+    await dispatcher.queue_job(task.id, skill, payload)
+    claimed = await dispatcher.claim(agent["id"])
+    assert claimed is not None
+
+    recorded, changed = await dispatcher.submit_result(
+        agent["id"],
+        claimed["id"],
+        claimed["claim_token"],
+        lease_id=claimed["lease_id"],
+        lease_generation=claimed["lease_generation"],
+        status="failed",
+        result=result,
+        error=error,
+    )
+
+    assert changed and recorded["status"] == "failed"
+    assert recorded["error"] == expected
+    persisted = await dispatcher.get_job(claimed["id"])
+    assert persisted is not None and persisted["error"] == expected
+    failed_task = await state.get_task(task.id)
+    assert failed_task is not None and failed_task.status.value == "failed"
+    assert failed_task.error_json == {"message": expected}
+    repeated, changed = await dispatcher.submit_result(
+        agent["id"],
+        claimed["id"],
+        claimed["claim_token"],
+        lease_id=claimed["lease_id"],
+        lease_generation=claimed["lease_generation"],
+        status="failed",
+        result=result,
+        error="private replacement error",
+    )
+    assert not changed and repeated["error"] == expected
+
+
+@pytest.mark.asyncio
 async def test_atomic_policy_reload_quarantines_queued_job_and_retains_last_valid_rules(
     tmp_path: Path,
 ) -> None:

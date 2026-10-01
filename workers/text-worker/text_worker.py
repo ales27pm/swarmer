@@ -1020,12 +1020,18 @@ class TextGenerator:
         # Operator configuration only; jobs cannot alter compute placement.
         if type(gpu_layers) is not int or not 0 <= gpu_layers <= MAX_GPU_LAYERS:
             raise ValueError(f"GPU layers must be an integer from 0 to {MAX_GPU_LAYERS}")
-        # Reuse the strict numeric-loopback URL and local-model identifier rules.
-        validated = transport.CodeGenerator(base_url, model, timeout_seconds=timeout_seconds)
+        if (
+            type(timeout_seconds) not in (int, float)
+            or not 1 <= timeout_seconds <= 600
+            or not math.isfinite(timeout_seconds)
+        ):
+            raise ValueError("text generation timeout must be between 1 and 600 seconds")
+        # Reuse strict URL/model validation without the legacy code worker's time cap.
+        validated = transport.CodeGenerator(base_url, model)
         parsed = urlsplit(validated.url)
         self.url = f"{parsed.scheme}://{parsed.netloc}/api/chat"
         self.model = validated.model
-        self.timeout_seconds = validated.timeout_seconds
+        self.timeout_seconds = timeout_seconds
         self.gpu_layers = gpu_layers
 
     def _connection(self) -> http.client.HTTPConnection:
@@ -1298,13 +1304,20 @@ def run_once(
                 else {"status": "completed", "result": result}
             )
         except (GenerationError, OSError, TypeError, UnicodeError, ValueError) as exc:
-            LOGGER.warning("text draft generation failed: reason=%s", failure_reason(exc))
+            reason = failure_reason(exc)
+            LOGGER.warning("text draft generation failed: reason=%s", reason)
             result_body = {
                 "status": "failed",
                 "error": (
-                    failure_reason(exc)
-                    if failure_reason(exc)
-                    in {"writing_requirements_unmet", "writing_budget_exceeded"}
+                    reason
+                    if reason
+                    in {
+                        "wall_timeout",
+                        "transport_error",
+                        "model_http_error",
+                        "writing_requirements_unmet",
+                        "writing_budget_exceeded",
+                    }
                     else "Text draft generation failed validation"
                 ),
             }

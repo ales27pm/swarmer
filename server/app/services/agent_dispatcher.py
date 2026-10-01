@@ -910,7 +910,14 @@ class AgentDispatcher:
                 status == "failed"
                 and row["required_skill"] == "writing.draft"
                 and result is None
-                and error in {"writing_requirements_unmet", "writing_budget_exceeded"}
+                and error
+                in {
+                    "wall_timeout",
+                    "transport_error",
+                    "model_http_error",
+                    "writing_requirements_unmet",
+                    "writing_budget_exceeded",
+                }
             ):
                 # Fixed diagnostic codes only, never arbitrary remote error text.
                 public_error = error
