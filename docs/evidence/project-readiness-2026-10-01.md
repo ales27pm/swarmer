@@ -80,7 +80,7 @@ of 39,273 and 40,750 bytes. No terminal token counters were received for those
 attempts. Configuring 64,000 tokens did not resolve this workflow failure and
 these measurements do not demonstrate use of the whole context window.
 
-Independent Selenium checks on an exact copy of revision
+Independent Playwright/Chromium checks on an exact copy of revision
 `revision_c7ba4ef8b1cd4e438ffaa8ac6204a4b1` ran in the existing immutable Ubuntu
 browser image. Five assertions pass, four fail: the failures expose two defects
 and their persistence after reload. Toggling Bravo in the filtered active list
@@ -104,7 +104,77 @@ removed from the test-creation instruction.
   dependency context and both failed receipts are preserved exactly.
 - Ruff, mypy and `git diff --check` pass.
 
-The bootstrap correction is locally verified; deployment and the next real
-qualification remain pending. The current looping qualification is being
-stopped explicitly, with its evidence preserved, rather than counted as an
-autonomous completion.
+The looping qualification was explicitly cancelled through the public API at
+19:40:08 UTC; a separate GET confirmed cancellation. Five completed jobs and the
+sixth cancelled job remain recorded. Read-only follow-up confirms no active
+job/node, descendant or pending automatic continuation. This is an interrupted
+qualification, not an autonomous completion.
+
+Bootstrap implementation commit `27b4705ea1fec8e29b1ad068771f93c3959e8fc8`
+is pushed and deployed as worker `project-bootstrap-beb1785dbd38c4208414`.
+Only `project_worker.py` changes in the runtime. Independent verification at
+19:47:14 UTC confirms six active services, five fresh worker heartbeats,
+11 exact host sources / 10 mounted sources, unchanged runtime configuration,
+and 52 strictly identical protected fingerprints. The API release is unchanged.
+
+- Fresh deployment baseline:
+  `f83fc370ce7b72aff63b28e3bdeb529176eebc2606a11d268e181163bf498257`.
+- Independent verification receipt SHA-256:
+  `4254300221425e38f9612177bec7610f7619274112610e7c8e4b176ee5c80f83`.
+
+The subsequent qualification `goal_db24e06625744158a194adadb79e4ed3`
+(TODO-BOOTSTRAP-0101) was created with HTTP 201. It has the same objective,
+criteria, limits and manual initial plan, except for its unique marker; no
+corrected application or independently authored test is injected into it.
+It was started with HTTP 200 and reached the targeted bootstrap branch:
+
+- First model call: **185.702 s**, 20,494 message bytes, 4,829 input / 1,092
+  output tokens; it produced only `index.html` (3,271 bytes).
+- Second model call: **236.632 s**, 26,284 message bytes / 1,507 schema bytes,
+  6,589 input / 987 output tokens. It produced `tests/test_todo.py` rather than
+  repeatedly patching the HTML. The targeted creation behavior is now observed
+  through the real server API, not just the local regression fixture.
+- Real dependency preflight identified missing Flask and provided its pinned
+  catalogue recipe to the next job. It executed **zero tests**. This proves
+  detection and transmission, not successful autonomous dependency repair.
+- The generated test includes explicit `--no-sandbox` despite the objective,
+  does not set the requested browser/driver paths, and has fixture/lifecycle
+  defects. It is not an acceptable test suite.
+- Independent Playwright/Chromium checks on the new HTML again find the same
+  two UI defects: five assertions pass and four fail (including persistence).
+
+The qualification was cancelled through the public API at 19:57:57 UTC before
+further execution. Read-only verification at 19:59:33 confirms two completed
+jobs, the third cancelled, no descendant or pending continuation, and no later
+revision/check. The third model call was cancelled after 213.818 s without any
+content; its request had grown to 48,474 message bytes / 14,194 schema bytes.
+No worker-launched browser is evidenced in the recorded operations. This is
+not exhaustive process telemetry; the independent browser run is separate.
+
+The test confirms the bootstrap correction and exposes a further adherence
+gap: the browser Docker profile does not inspect Chromium options in generated
+tests. A scoped static preflight now rejects recognized
+explicit sandbox-disabling calls before installation/execution and return a
+repair diagnostic. It must not be described as enforcement against dynamically
+constructed arguments or arbitrary generated code.
+
+## Explicit browser configuration preflight
+
+The worker now checks recognized Python Selenium and Playwright calls before
+any install/build/test subprocess when the browser profile is enabled. It
+resolves supported imports/aliases and unambiguous bindings, rather than
+matching an argument name anywhere in the source. A rejection preserves the
+proposed files and becomes a failed `swarmer project-checks` receipt with
+`browser_sandbox_disabled`, path and line, and zero executed tests. The normal
+repair loop receives this diagnostic; source is not silently rewritten.
+
+This remains a scoped adherence check. Classes, ambiguous/rebound names,
+dynamic arguments and unsupported forms are not established as safe. Container
+isolation stays unchanged; neither an ignored expression nor passing this
+preflight proves that an arbitrary browser process is sandboxed.
+
+Local validation: **747 passed, 5 skipped** across the worker suite; **21**
+targeted policy tests cover actual known call forms, false positives, aliases,
+shadowing, bounded failure handling, no subprocess on rejection, and propagation
+to a failed project check. Ruff, mypy and `git diff --check` pass. Deployment and
+the static probe against the exact generated test remain pending.

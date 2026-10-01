@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -54,6 +55,233 @@ def browser_seccomp_bytes() -> bytes:
 
 class RuntimeError(ProjectError):
     """The isolated project runtime could not establish a valid check result."""
+
+
+def check_explicit_browser_policy(files: list[dict[str, str]]) -> None:
+    """Reject recognized sandbox-disabling calls without importing project code.
+
+    This is an adherence check for explicit Python browser configuration, not
+    execution-time enforcement or analysis of dynamically constructed arguments.
+    The independent container isolation remains necessary.
+    """
+
+    def inspect_source(item: dict[str, str]) -> None:
+        if not item["path"].endswith(".py"):
+            return
+        try:
+            tree = ast.parse(item["content"], filename=item["path"])
+        except (SyntaxError, ValueError, RecursionError):
+            # Existing build/dependency preflight reports invalid Python source.
+            return
+        # Only unique lexical bindings establish provenance. Rebinding, function
+        # parameters, wildcard imports and unsupported assignments are unknown;
+        # a familiar variable or method name alone never identifies a browser.
+        bindings: dict[int, dict[str, list[tuple[str, str | ast.AST | None]]]] = {}
+        parents: dict[int, int | None] = {}
+        scopes: dict[int, int] = {}
+
+        def bind(scope: int, name: str, kind: str, value: str | ast.AST | None) -> None:
+            bindings[scope].setdefault(name, []).append((kind, value))
+
+        def collect(node: ast.AST, scope: int) -> None:
+            if isinstance(node, ast.ClassDef):
+                # Class namespaces/descriptors need different name lookup.
+                # Keep them outside this explicit, conservative check.
+                bind(scope, node.name, "unknown", None)
+                return
+            if isinstance(
+                node,
+                (
+                    ast.Module,
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.Lambda,
+                ),
+            ):
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    bind(scope, node.name, "unknown", None)
+                parent = scope if not isinstance(node, ast.Module) else None
+                scope = id(node)
+                parents[scope] = parent
+                bindings[scope] = {}
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ):
+                    for arg in (
+                        *node.args.posonlyargs,
+                        *node.args.args,
+                        *node.args.kwonlyargs,
+                    ):
+                        bind(scope, arg.arg, "unknown", None)
+                    for optional_arg in (node.args.vararg, node.args.kwarg):
+                        if optional_arg is not None:
+                            bind(scope, optional_arg.arg, "unknown", None)
+            scopes[id(node)] = scope
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    bind(
+                        scope,
+                        alias.asname or alias.name.split(".")[0],
+                        "import",
+                        alias.name if alias.asname else alias.name.split(".")[0],
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    bind(
+                        scope,
+                        name,
+                        "import" if not node.level and name != "*" else "unknown",
+                        f"{node.module}.{alias.name}",
+                    )
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                for target in targets:
+                    for child in ast.walk(target):
+                        if isinstance(child, ast.Name) and isinstance(
+                            child.ctx, ast.Store
+                        ):
+                            bind(
+                                scope,
+                                child.id,
+                                "assign" if target is child else "unknown",
+                                node.value,
+                            )
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for entry in node.items:
+                    if entry.optional_vars is not None:
+                        for child in ast.walk(entry.optional_vars):
+                            if isinstance(child, ast.Name) and isinstance(
+                                child.ctx, ast.Store
+                            ):
+                                bind(
+                                    scope,
+                                    child.id,
+                                    "manager"
+                                    if entry.optional_vars is child
+                                    else "unknown",
+                                    entry.context_expr,
+                                )
+            elif isinstance(
+                node,
+                (
+                    ast.For,
+                    ast.AsyncFor,
+                    ast.comprehension,
+                    ast.AugAssign,
+                    ast.NamedExpr,
+                ),
+            ):
+                for child in ast.walk(node.target):
+                    if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                        bind(scope, child.id, "unknown", None)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                for name in node.names:
+                    bind(scope, name, "unknown", None)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bind(scope, node.name, "unknown", None)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Del):
+                bind(scope, node.id, "unknown", None)
+            elif isinstance(node, ast.MatchAs) and node.name:
+                bind(scope, node.name, "unknown", None)
+            for child in ast.iter_child_nodes(node):
+                collect(child, scope)
+
+        try:
+            collect(tree, id(tree))
+        except RecursionError:
+            return
+        options = {
+            "selenium.webdriver.ChromeOptions",
+            "selenium.webdriver.chrome.options.Options",
+        }
+        managers = {
+            "playwright.sync_api.sync_playwright",
+            "playwright.async_api.async_playwright",
+        }
+
+        def origin(
+            node: ast.AST, scope: int, seen: frozenset[tuple[int, str]] = frozenset()
+        ) -> str | None:
+            if len(seen) > 24:
+                return None
+            if isinstance(node, ast.Name):
+                current: int | None = scope
+                while current is not None:
+                    values = bindings[current]
+                    if "*" in values:
+                        return None
+                    if node.id in values:
+                        key = (current, node.id)
+                        if len(values[node.id]) != 1 or key in seen:
+                            return None
+                        kind, value = values[node.id][0]
+                        if kind == "import" and isinstance(value, str):
+                            return value
+                        if kind == "assign" and isinstance(value, ast.AST):
+                            return origin(value, current, seen | {key})
+                        if (
+                            kind == "manager"
+                            and isinstance(value, ast.Call)
+                            and origin(value.func, current, seen | {key}) in managers
+                        ):
+                            return "@playwright-manager"
+                        return None
+                    current = parents[current]
+                return None
+            if isinstance(node, ast.Attribute):
+                receiver = origin(node.value, scope, seen)
+                return receiver + "." + node.attr if receiver else None
+            if isinstance(node, ast.Call) and origin(node.func, scope, seen) in options:
+                return "@selenium-options"
+            return None
+
+        for node in ast.walk(tree):
+            if id(node) not in scopes:
+                continue
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            try:
+                receiver = origin(node.func.value, scopes[id(node)])
+            except RecursionError:
+                # Chained aliases can exceed recursion depth across otherwise
+                # shallow ASTs. Unknown provenance must not crash the worker.
+                continue
+            disabled = (
+                receiver == "@selenium-options"
+                and node.func.attr == "add_argument"
+                and any(
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and arg.value.partition("=")[0] == "--no-sandbox"
+                    for arg in node.args
+                )
+            )
+            disabled |= (
+                receiver == "@playwright-manager.chromium"
+                and node.func.attr in {"launch", "launch_persistent_context"}
+                and any(
+                    keyword.arg == "chromium_sandbox"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is False
+                    for keyword in node.keywords
+                )
+            )
+            if disabled:
+                raise RuntimeError(
+                    f"browser_sandbox_disabled: {item['path']}:{node.lineno}. "
+                    "Static browser preflight blocked execution; no tests ran. "
+                    "Remove --no-sandbox and keep Chromium sandbox enabled."
+                )
+
+    for item in files:
+        inspect_source(item)
 
 
 def dependency_manifests(files: list[dict[str, str]]) -> tuple[str, dict[str, Any] | None]:
@@ -364,6 +592,8 @@ class DockerRunner:
         ensure_active: Callable[[], None],
     ) -> dict[str, Any]:
         files = files_value(files)
+        if self._browser_seccomp is not None:
+            check_explicit_browser_policy(files)
         profiles = profiles_for(runtime, requested_checks)
         requirements, package = dependency_manifests(files)
         checks: list[dict[str, Any]] = []
