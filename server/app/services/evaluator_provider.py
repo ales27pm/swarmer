@@ -156,6 +156,14 @@ criteria or a completed synthesis node. Generic criteria cannot weaken the user'
 A synthesis with no implementation evidence does not fulfill an application request.
 Node titles and expected_output are planner intent, not worker evidence. Use node_type and
 required_skill to distinguish synthesis from worker results; null means unknown in older records.
+For a failed writing.draft, failure_reason may contain bounded worker_observation
+measurements (word_count, min_words, max_words, citation_count, min_citations,
+failures). These describe a rejected draft, not a delivered document or verified
+source support. If budgets allow another writing step, carry the original limits
+and each measured deficiency into its step objective; reuse completed research
+dependencies when adequate. Never relax the user's constraints to make it pass.
+Connection, first-content, idle and wall timeouts are execution failures, not
+refusals or evidence of a document. Every retry remains a new budgeted step.
 available_skills is the control plane's current fresh online-or-busy, protocol-compatible,
 policy-allowed worker capability snapshot. null means unknown; [] means none observed. A busy worker can still
 provide a skill. This snapshot proves availability, not execution, successful checks or approval.

@@ -209,6 +209,9 @@ async def test_running_job_may_finish_under_policy_snapshot_from_claim(tmp_path:
     "skill,result,error,expected",
     [
         ("writing.draft", None, "wall_timeout", "wall_timeout"),
+        ("writing.draft", None, "connection_timeout", "connection_timeout"),
+        ("writing.draft", None, "first_content_timeout", "first_content_timeout"),
+        ("writing.draft", None, "idle_timeout", "idle_timeout"),
         ("writing.draft", None, "transport_error", "transport_error"),
         ("writing.draft", None, "model_http_error", "model_http_error"),
         ("writing.draft", None, "writing_requirements_unmet", "writing_requirements_unmet"),

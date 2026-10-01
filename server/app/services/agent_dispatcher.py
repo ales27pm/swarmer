@@ -23,6 +23,10 @@ from app.services.distributed_state import (
 )
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.message_board import MessageBoard
+from app.services.model_resource_admission import (
+    active_local_model_work_locked,
+    requires_local_model_resource,
+)
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.remote_job_policy import validate_remote_job
@@ -37,8 +41,10 @@ from app.services.worker_skill_policy import WorkerSkillPolicyStore
 from app.services.writing_contracts import (
     UnsupportedCitationError,
     WritingRequirementsError,
+    validate_writing_failure_diagnostics,
     validate_writing_non_delivery_result,
     validate_writing_result,
+    writing_failure_summary,
 )
 
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "quarantined"})
@@ -488,6 +494,9 @@ class AgentDispatcher:
                 else:
                     await db.rollback()
                 return None
+            local_model_busy = any(requires_local_model_resource(skill) for skill in skills) and (
+                await active_local_model_work_locked(db, now=claimed_at)
+            )
             placeholders = ",".join("?" for _ in skills)
             rows = await (
                 await db.execute(
@@ -512,6 +521,12 @@ class AgentDispatcher:
             row: aiosqlite.Row | None = None
             selection = None
             for candidate in rows:
+                if local_model_busy and requires_local_model_resource(
+                    str(candidate["required_skill"])
+                ):
+                    # Keep it queued without spending an attempt or owning a
+                    # worker lease while a different local model is active.
+                    continue
                 candidate_payload = json.loads(str(candidate["payload_json"]))
                 if "project_revision" in candidate_payload:
                     try:
@@ -891,6 +906,20 @@ class AgentDispatcher:
                 status == "failed"
                 and row["required_skill"] == "writing.draft"
                 and isinstance(result, dict)
+                and result.get("kind") == "writing_requirement_diagnostics"
+            ):
+                try:
+                    diagnostics = validate_writing_failure_diagnostics(
+                        result, payload=native_payload
+                    )
+                except (TypeError, ValueError):
+                    await db.rollback()
+                    raise AgentDispatchConflict("invalid_writing_diagnostics") from None
+                public_error = writing_failure_summary(diagnostics)
+            elif (
+                status == "failed"
+                and row["required_skill"] == "writing.draft"
+                and isinstance(result, dict)
                 and "outcome" in result
             ):
                 try:
@@ -913,6 +942,9 @@ class AgentDispatcher:
                 and error
                 in {
                     "wall_timeout",
+                    "connection_timeout",
+                    "first_content_timeout",
+                    "idle_timeout",
                     "transport_error",
                     "model_http_error",
                     "writing_requirements_unmet",

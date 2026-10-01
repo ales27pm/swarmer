@@ -70,6 +70,10 @@ def stream(value: dict[str, Any] | None = None) -> list[bytes]:
 class FakeSocket:
     def __init__(self) -> None:
         self.closed = threading.Event()
+        self.timeouts: list[float] = []
+
+    def settimeout(self, seconds: float) -> None:
+        self.timeouts.append(seconds)
 
     def shutdown(self, how: int) -> None:
         self.closed.set()

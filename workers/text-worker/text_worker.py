@@ -108,14 +108,23 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 def _model_response_schema() -> dict[str, Any]:
     """Constrain generation to the same outcome shapes accepted by the decoder."""
     branches = []
-    for outcome in ("delivered", "declined", "needs_clarification", "insufficient_sources"):
+    for outcome in (
+        "delivered",
+        "declined",
+        "needs_clarification",
+        "insufficient_sources",
+    ):
         properties = {
             "outcome": {"type": "string", "const": outcome},
             **RESPONSE_SCHEMA["properties"],
         }
         required = ["outcome", *RESPONSE_SCHEMA["required"]]
         if outcome == "needs_clarification":
-            properties["question"] = {"type": "string", "minLength": 12, "maxLength": 800}
+            properties["question"] = {
+                "type": "string",
+                "minLength": 12,
+                "maxLength": 800,
+            }
             required.append("question")
         branches.append(
             {
@@ -163,9 +172,16 @@ For every non-delivery, no source markers may appear.
 class GenerationError(ValueError):
     """No complete, bounded text draft could be accepted."""
 
-    def __init__(self, message: str, *, reason: str = "invalid_output") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "invalid_output",
+        diagnostics: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason if reason in _FAILURE_REASONS else "invalid_output"
+        self.diagnostics = diagnostics
 
 
 _FAILURE_REASONS = frozenset(
@@ -181,6 +197,9 @@ _FAILURE_REASONS = frozenset(
         "non_stop_finish",
         "incomplete_stream",
         "response_limit",
+        "connection_timeout",
+        "first_content_timeout",
+        "idle_timeout",
         "wall_timeout",
         "request_busy",
         "unsupported_citation",
@@ -508,29 +527,120 @@ def writing_word_count(text: str) -> int:
     return len(re.findall(r"[^\W_]+(?:['’−-][^\W_]+)*", text, flags=re.UNICODE))
 
 
+def _measurement_failures(value: dict[str, Any]) -> list[str]:
+    failures = []
+    if value["min_words"] is not None and value["word_count"] < value["min_words"]:
+        failures.append("min_words")
+    if value["max_words"] is not None and value["word_count"] > value["max_words"]:
+        failures.append("max_words")
+    if value["min_citations"] is not None and value["citation_count"] < value["min_citations"]:
+        failures.append("min_citations")
+    if any(
+        not any(
+            host == domain or host.endswith("." + domain) for host in value["cited_source_domains"]
+        )
+        for domain in value["required_source_domains"]
+    ):
+        failures.append("required_source_domains")
+    return failures
+
+
+def _validate_requirement_diagnostics(
+    value: object, spec: dict[str, Any], allowed_urls: set[str]
+) -> dict[str, Any]:
+    fields = {
+        "schema_version",
+        "kind",
+        "reason",
+        "word_count",
+        "min_words",
+        "max_words",
+        "citation_count",
+        "min_citations",
+        "required_source_domains",
+        "cited_source_domains",
+        "failures",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != fields
+        or value["schema_version"] != "1.0"
+        or value["kind"] != "writing_requirement_diagnostics"
+        or value["reason"] != "writing_requirements_unmet"
+    ):
+        raise GenerationError("invalid writing failure diagnostics")
+    for field, maximum in (("word_count", MAX_TEXT_BYTES), ("citation_count", 6)):
+        if type(value[field]) is not int or not 0 <= value[field] <= maximum:
+            raise GenerationError("invalid writing failure measurement")
+    for field in ("min_words", "max_words", "min_citations"):
+        if (value[field] is not None and type(value[field]) is not int) or value[field] != spec.get(
+            field
+        ):
+            raise GenerationError("writing failure bounds do not match request")
+    required = value["required_source_domains"]
+    hosts = value["cited_source_domains"]
+    allowed_hosts = {(urlsplit(url).hostname or "").lower() for url in allowed_urls}
+    if (
+        not isinstance(required, list)
+        or required != spec.get("required_source_domains", [])
+        or not isinstance(hosts, list)
+        or len(hosts) > 6
+        or any(
+            not isinstance(host, str) or not 1 <= len(host) <= 253 or host not in allowed_hosts
+            for host in hosts
+        )
+        or hosts != sorted(set(hosts))
+        or len(hosts) > value["citation_count"]
+        or value["citation_count"]
+        > sum((urlsplit(url).hostname or "").lower() in hosts for url in allowed_urls)
+        or bool(hosts) != bool(value["citation_count"])
+    ):
+        raise GenerationError("invalid writing failure source domains")
+    failures = _measurement_failures(value)
+    if not failures or value["failures"] != failures:
+        raise GenerationError("invalid writing failure labels")
+    return {
+        **value,
+        "required_source_domains": list(required),
+        "cited_source_domains": list(hosts),
+        "failures": list(failures),
+    }
+
+
+def validate_failure_diagnostics(value: object, payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate measured failure metadata against the admitted request, never draft text."""
+    return _validate_requirement_diagnostics(
+        value,
+        payload_requirements(payload),
+        {source["url"] for source in payload.get("research_sources", [])},
+    )
+
+
 def validate_writing_requirements(text: str, requirements: object, allowed_urls: set[str]) -> None:
     """Check length, distinct supplied citations and domain coverage, not semantics."""
     spec = _requirements(requirements)
-    failures: list[str] = []
-    count = writing_word_count(text)
-    minimum = spec.get("min_words")
-    maximum = spec.get("max_words")
-    citations = spec.get("min_citations")
-    if minimum is not None and count < minimum:
-        failures.append("min_words")
-    if maximum is not None and count > maximum:
-        failures.append("max_words")
     cited = cited_research_urls(text, allowed_urls)
-    if citations is not None and len(cited) < citations:
-        failures.append("min_citations")
-    hosts = {(urlsplit(url).hostname or "").lower() for url in cited}
-    if any(
-        not any(host == domain or host.endswith("." + domain) for host in hosts)
-        for domain in spec.get("required_source_domains", [])
-    ):
-        failures.append("required_source_domains")
+    diagnostics = {
+        "schema_version": "1.0",
+        "kind": "writing_requirement_diagnostics",
+        "reason": "writing_requirements_unmet",
+        "word_count": writing_word_count(text),
+        "min_words": spec.get("min_words"),
+        "max_words": spec.get("max_words"),
+        "citation_count": len(cited),
+        "min_citations": spec.get("min_citations"),
+        "required_source_domains": spec.get("required_source_domains", []),
+        "cited_source_domains": sorted({(urlsplit(url).hostname or "").lower() for url in cited}),
+    }
+    failures = _measurement_failures(diagnostics)
     if failures:
-        raise GenerationError("writing_requirements_unmet", reason="writing_requirements_unmet")
+        diagnostics["failures"] = failures
+        safe = _validate_requirement_diagnostics(diagnostics, spec, allowed_urls)
+        raise GenerationError(
+            "writing_requirements_unmet",
+            reason="writing_requirements_unmet",
+            diagnostics=safe,
+        )
 
 
 def meaningful_writing_question(value: str) -> bool:
@@ -682,7 +792,14 @@ def _research_sources(value: object) -> list[dict[str, Any]]:
             or set(item)
             not in (
                 {"content_trust", "worker_job_id", "title", "url", "snippet"},
-                {"content_trust", "worker_job_id", "title", "url", "snippet", "evidence"},
+                {
+                    "content_trust",
+                    "worker_job_id",
+                    "title",
+                    "url",
+                    "snippet",
+                    "evidence",
+                },
             )
             or item["content_trust"] != "untrusted"
         ):
@@ -1008,6 +1125,58 @@ def _abort_connection(connection: http.client.HTTPConnection) -> None:
     connection.close()
 
 
+class _GenerationDeadlines:
+    """One absolute budget and phase budgets; transport chatter is not progress."""
+
+    def __init__(self, total: float, connect: float, first_content: float, idle: float) -> None:
+        now = time.monotonic()
+        self.absolute = now + total
+        self.phase_deadline = now + connect
+        self.reason = "connection_timeout"
+        self.first_content = first_content
+        self.idle = idle
+        self.lock = threading.Lock()
+
+    def _check_locked(self, now: float) -> None:
+        reason = "wall_timeout" if now >= self.absolute else self.reason
+        if now >= min(self.absolute, self.phase_deadline):
+            raise GenerationError("local text model exceeded a generation deadline", reason=reason)
+
+    def check(self) -> None:
+        with self.lock:
+            self._check_locked(time.monotonic())
+
+    def connected(self) -> None:
+        with self.lock:
+            now = time.monotonic()
+            self._check_locked(now)
+            self.reason = "first_content_timeout"
+            self.phase_deadline = now + self.first_content
+
+    def content(self) -> None:
+        with self.lock:
+            now = time.monotonic()
+            self._check_locked(now)
+            self.reason = "idle_timeout"
+            self.phase_deadline = now + self.idle
+
+    def remaining(self) -> float:
+        with self.lock:
+            now = time.monotonic()
+            self._check_locked(now)
+            return min(self.absolute, self.phase_deadline) - now
+
+    def socket_timeout_reason(self) -> str:
+        with self.lock:
+            return "wall_timeout" if time.monotonic() >= self.absolute else self.reason
+
+
+def _timeout_setting(value: float, name: str) -> float:
+    if type(value) not in (int, float) or not 1 <= value <= 600 or not math.isfinite(value):
+        raise ValueError(f"{name} timeout must be between 1 and 600 seconds")
+    return float(value)
+
+
 class TextGenerator:
     def __init__(
         self,
@@ -1015,23 +1184,25 @@ class TextGenerator:
         model: str,
         *,
         timeout_seconds: float = 120,
+        connect_timeout_seconds: float = 10,
+        first_content_timeout_seconds: float = 120,
+        idle_timeout_seconds: float = 30,
         gpu_layers: int = 0,
     ) -> None:
         # Operator configuration only; jobs cannot alter compute placement.
         if type(gpu_layers) is not int or not 0 <= gpu_layers <= MAX_GPU_LAYERS:
             raise ValueError(f"GPU layers must be an integer from 0 to {MAX_GPU_LAYERS}")
-        if (
-            type(timeout_seconds) not in (int, float)
-            or not 1 <= timeout_seconds <= 600
-            or not math.isfinite(timeout_seconds)
-        ):
-            raise ValueError("text generation timeout must be between 1 and 600 seconds")
+        self.timeout_seconds = _timeout_setting(timeout_seconds, "text generation")
+        self.connect_timeout_seconds = _timeout_setting(connect_timeout_seconds, "connection")
+        self.first_content_timeout_seconds = _timeout_setting(
+            first_content_timeout_seconds, "first content"
+        )
+        self.idle_timeout_seconds = _timeout_setting(idle_timeout_seconds, "idle")
         # Reuse strict URL/model validation without the legacy code worker's time cap.
         validated = transport.CodeGenerator(base_url, model)
         parsed = urlsplit(validated.url)
         self.url = f"{parsed.scheme}://{parsed.netloc}/api/chat"
         self.model = validated.model
-        self.timeout_seconds = timeout_seconds
         self.gpu_layers = gpu_layers
 
     def _connection(self) -> http.client.HTTPConnection:
@@ -1039,13 +1210,18 @@ class TextGenerator:
         cls = (
             http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
         )
-        return cls(parsed.hostname or "", parsed.port, timeout=self.timeout_seconds)
+        return cls(
+            parsed.hostname or "",
+            parsed.port,
+            timeout=min(self.timeout_seconds, self.connect_timeout_seconds),
+        )
 
     def _stream(
         self,
         connection: http.client.HTTPConnection,
         payload: dict[str, Any],
         check: Callable[[], None],
+        deadlines: _GenerationDeadlines,
     ) -> dict[str, str]:
         budget = output_token_budget(payload)
         model_payload, response_schema = _model_input(payload)
@@ -1088,6 +1264,9 @@ class TextGenerator:
         # HTTPConnection may clear .sock after Connection: close headers while
         # HTTPResponse still owns its file descriptor. Retain it for cancellation.
         connection._text_worker_socket = connection.sock  # type: ignore[attr-defined]
+        deadlines.connected()
+        if connection.sock is not None:
+            connection.sock.settimeout(deadlines.remaining())
         check()
         connection.request(
             "POST",
@@ -1134,6 +1313,8 @@ class TextGenerator:
                     reason="invalid_stream",
                 )
             content = message["content"]
+            if content:
+                deadlines.content()
             content_bytes += len(content.encode("utf-8"))
             if content_bytes > MAX_RESPONSE_BYTES:
                 raise GenerationError(
@@ -1154,6 +1335,9 @@ class TextGenerator:
         try:
             while True:
                 check()
+                sock = connection.sock or getattr(connection, "_text_worker_socket", None)
+                if sock is not None:
+                    sock.settimeout(deadlines.remaining())
                 chunk = response.read1(min(16_384, MAX_RESPONSE_BYTES - total + 1))
                 check()
                 if not chunk:
@@ -1194,25 +1378,41 @@ class TextGenerator:
                 "a prior model request is still being closed", reason="request_busy"
             )
         try:
+            deadlines = _GenerationDeadlines(
+                self.timeout_seconds,
+                self.connect_timeout_seconds,
+                self.first_content_timeout_seconds,
+                self.idle_timeout_seconds,
+            )
             connection = self._connection()
         except Exception:
             _MODEL_LOCK.release()
             raise
         cancelled = threading.Event()
-        deadline = time.monotonic() + self.timeout_seconds
         result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
 
         def check() -> None:
             ensure_active()
-            if cancelled.is_set() or time.monotonic() >= deadline:
+            if cancelled.is_set():
                 raise GenerationError(
                     "local text model exceeded its wall-time limit",
                     reason="wall_timeout",
                 )
+            deadlines.check()
 
         def request() -> None:
             try:
-                result.put_nowait((True, self._stream(connection, payload, check)))
+                result.put_nowait((True, self._stream(connection, payload, check, deadlines)))
+            except TimeoutError:
+                result.put_nowait(
+                    (
+                        False,
+                        GenerationError(
+                            "local text model exceeded a socket deadline",
+                            reason=deadlines.socket_timeout_reason(),
+                        ),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 - propagate all thread failures to supervisor
                 result.put_nowait((False, exc))
             finally:
@@ -1231,9 +1431,7 @@ class TextGenerator:
             while True:
                 check()
                 try:
-                    accepted, value = result.get(
-                        timeout=min(0.05, max(0, deadline - time.monotonic()))
-                    )
+                    accepted, value = result.get(timeout=min(0.05, deadlines.remaining()))
                 except queue.Empty:
                     continue
                 check()
@@ -1282,6 +1480,7 @@ def run_once(
         heartbeat = protocol.LeaseHeartbeat(client, job_id, lease, heartbeat_interval_seconds)
         client.heartbeat_agent("busy")
         heartbeat.start()
+        payload = None
         try:
             payload = parse_job(job)
             heartbeat.ensure_active()
@@ -1313,6 +1512,9 @@ def run_once(
                     if reason
                     in {
                         "wall_timeout",
+                        "connection_timeout",
+                        "first_content_timeout",
+                        "idle_timeout",
                         "transport_error",
                         "model_http_error",
                         "writing_requirements_unmet",
@@ -1321,6 +1523,17 @@ def run_once(
                     else "Text draft generation failed validation"
                 ),
             }
+            if (
+                isinstance(exc, GenerationError)
+                and reason == "writing_requirements_unmet"
+                and payload is not None
+            ):
+                try:
+                    diagnostics = validate_failure_diagnostics(exc.diagnostics, payload)
+                except (GenerationError, TypeError, ValueError):
+                    pass  # Malformed metadata never leaves the worker.
+                else:
+                    result_body["result"] = diagnostics
         heartbeat.ensure_active()
         # Renew synchronously after generation as the final cancellation fence.
         client.heartbeat_job(job_id, lease)
@@ -1351,6 +1564,11 @@ def main() -> None:
         os.environ.get("MONGARS_TEXT_MODEL_URL", "http://127.0.0.1:11434"),
         os.environ["MONGARS_TEXT_MODEL_ID"],
         timeout_seconds=float(os.environ.get("MONGARS_TEXT_TIMEOUT_SECONDS", "120")),
+        connect_timeout_seconds=float(os.environ.get("MONGARS_TEXT_CONNECT_TIMEOUT_SECONDS", "10")),
+        first_content_timeout_seconds=float(
+            os.environ.get("MONGARS_TEXT_FIRST_CONTENT_TIMEOUT_SECONDS", "120")
+        ),
+        idle_timeout_seconds=float(os.environ.get("MONGARS_TEXT_IDLE_TIMEOUT_SECONDS", "30")),
         gpu_layers=int(os.environ.get("MONGARS_TEXT_GPU_LAYERS", "0")),
     )
     while True:

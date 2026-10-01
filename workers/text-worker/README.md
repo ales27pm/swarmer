@@ -74,7 +74,16 @@ repaired or retried.
 Failed generation logs only fixed reason codes, such as `token_limit`,
 `wall_timeout`, `invalid_json`, or `transport_error`. Generated text, model error
 bodies, user inputs, credentials, and exception messages are never logged.
-The control-plane failure response remains fixed and contains no partial draft.
+The control-plane failure response contains no partial draft. Deadline failures use
+the closed codes `connection_timeout`, `first_content_timeout`, `idle_timeout`, and
+`wall_timeout`. Failed measurable requirements can include the closed
+`writing_requirement_diagnostics` result: observed prose word count, nullable requested
+word/citation bounds, distinct admitted-URL count, normalized required/cited domains,
+and recomputed failure labels. It contains no draft, summary, URL, credential, or
+raw exception. The worker validates this object against the admitted request before
+submission; malformed metadata is discarded. These observations explain rejection,
+and do not establish factual support or mark a draft delivered. The server must
+support this failed-result contract before this worker is activated.
 
 The optional `requirements` object has strict integer `min_words`/`max_words`
 (1–100,000), `min_citations` (0–5), and up to five distinct lowercase public
@@ -115,8 +124,18 @@ Inference uses one native Ollama `/api/chat` request and an absolute wall budget
 of 120 seconds by default. Operators can set `MONGARS_TEXT_TIMEOUT_SECONDS` to
 a finite value from 1 to 600 seconds after qualifying the workload. This budget
 includes connection setup, any model-server queue, model loading, prompt processing,
-and generation; it also sets the socket inactivity timeout. Increasing it does
-not change token/byte bounds, cancellation, validation, or retry behavior. Jobs
+and generation. Separate operator settings bound connection setup
+(`MONGARS_TEXT_CONNECT_TIMEOUT_SECONDS`, default 10), time from connection until
+first nonempty final-content event (`MONGARS_TEXT_FIRST_CONTENT_TIMEOUT_SECONDS`,
+default 120), and time since the last nonempty final-content event
+(`MONGARS_TEXT_IDLE_TIMEOUT_SECONDS`, default 30). Each accepts a finite value from
+1 to 600 seconds and is always capped by the remaining absolute budget. The
+first-content window includes request upload, headers, model-server queue/loading
+and prompt processing; those stages cannot be distinguished from response content.
+Only nonempty assistant `content` events reset the idle window. Transport bytes,
+empty events and reasoning-only events do not count as progress. Increasing the
+total budget does not silently increase these phase settings or change token/byte
+bounds, cancellation, validation, or retry behavior. Jobs
 and model output cannot override it. `think: false` requests final structured
 content for every operator alias; reasoning support is not guessed from a model's
 name. No internal reasoning stream is stored as the delivered draft. The output allowance adapts
@@ -160,9 +179,10 @@ renewed before submission. Losing the lease closes the connection and suppresses
 the result. Background heartbeats continue during generation (10 seconds by default).
 The server's renewable job lease (60 seconds by default) is not a total job-time
 limit; generation may continue beyond it while renewals succeed. The goal's runtime
-and cancellation fences still apply. A supervised transport enforces the wall
-budget even if headers or a slowly arriving body would keep resetting a socket
-inactivity timeout. A
+and cancellation fences still apply. A supervised transport enforces both phase and
+absolute budgets even if headers or a slowly arriving body would keep resetting a
+socket timeout. Socket operations use the remaining active budget, and lease checks
+continue while they block. A
 transport that has not finished closing prevents another model request.
 
 Register using `writing.draft`, `max_concurrency: 1`, and the configured model ID.

@@ -685,6 +685,77 @@ def validate_writing_result(value: object, *, payload: object = None) -> dict[st
     return result
 
 
+class WritingFailureDiagnostics(_StrictModel):
+    """Bounded worker measurements, never a delivered draft or semantic proof."""
+
+    schema_version: Literal["1.0"]
+    kind: Literal["writing_requirement_diagnostics"]
+    reason: Literal["writing_requirements_unmet"]
+    word_count: int = Field(ge=0, le=24_000)
+    min_words: int | None = Field(ge=1, le=100_000)
+    max_words: int | None = Field(ge=1, le=100_000)
+    citation_count: int = Field(ge=0, le=MAX_RESEARCH_SOURCES)
+    min_citations: int | None = Field(ge=0, le=5)
+    required_source_domains: list[str] = Field(max_length=5)
+    cited_source_domains: list[str] = Field(max_length=MAX_RESEARCH_SOURCES)
+    failures: list[
+        Literal["min_words", "max_words", "min_citations", "required_source_domains"]
+    ] = Field(min_length=1, max_length=4)
+
+
+def validate_writing_failure_diagnostics(value: object, *, payload: object) -> dict[str, Any]:
+    """Bind every reported threshold/host to admitted inputs; accept no free text.
+
+    Counts are worker observations of rejected output. They aid a budgeted next
+    attempt, but cannot establish correctness, source support, or completion.
+    """
+    report = WritingFailureDiagnostics.model_validate(value)
+    task = WritingPayload.model_validate(payload)
+    requirements = task.requirements or WritingRequirements.model_validate(
+        derive_writing_requirements(task.objective, [m.model_dump() for m in task.conversation])
+    )
+    for key in ("min_words", "max_words", "min_citations", "required_source_domains"):
+        if getattr(report, key) != getattr(requirements, key):
+            raise ValueError("writing diagnostics do not match admitted requirements")
+    urls = {source.url for source in task.research_sources}
+    hosts = {(urlsplit(url).hostname or "").lower() for url in urls}
+    cited = report.cited_source_domains
+    if cited != sorted(set(cited)) or not set(cited).issubset(hosts):
+        raise ValueError("writing diagnostic domains are not admitted")
+    available_cited_urls = sum((urlsplit(url).hostname or "").lower() in cited for url in urls)
+    if (
+        bool(cited) != bool(report.citation_count)
+        or not len(cited) <= report.citation_count <= available_cited_urls
+    ):
+        raise ValueError("writing diagnostic citation count is inconsistent")
+    failures: list[str] = []
+    if report.min_words is not None and report.word_count < report.min_words:
+        failures.append("min_words")
+    if report.max_words is not None and report.word_count > report.max_words:
+        failures.append("max_words")
+    if report.min_citations is not None and report.citation_count < report.min_citations:
+        failures.append("min_citations")
+    if any(
+        not any(host == domain or host.endswith("." + domain) for host in cited)
+        for domain in report.required_source_domains
+    ):
+        failures.append("required_source_domains")
+    if report.failures != failures:
+        raise ValueError("writing diagnostic failures do not match measurements")
+    return report.model_dump()
+
+
+def writing_failure_summary(validated: dict[str, Any]) -> str:
+    """Fixed-format error that fits the node's 500-character evaluator boundary."""
+    parts = ["writing_requirements_unmet: worker_observation"]
+    for key in ("word_count", "min_words", "max_words", "citation_count", "min_citations"):
+        value = validated[key]
+        if value is not None:
+            parts.append(f"{key}={value}")
+    parts.append("failures=" + ",".join(validated["failures"]))
+    return "; ".join(parts)
+
+
 def validate_writing_non_delivery_result(
     value: object, *, payload: object = None
 ) -> dict[str, Any]:

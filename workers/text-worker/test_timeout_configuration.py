@@ -5,7 +5,6 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-
 from test_text_worker import FakeClient, FakeConnection, draft, payload, stream
 from test_text_worker import worker as worker  # noqa: PLC0414
 
@@ -18,7 +17,7 @@ def test_writer_accepts_operator_timeout_without_legacy_code_worker_cap(
         "http://localhost:11434/v1", "installed:writer", timeout_seconds=seconds
     )
     assert generator.timeout_seconds == seconds
-    assert generator._connection().timeout == seconds
+    assert generator._connection().timeout == min(10, seconds)
     assert generator.url == "http://127.0.0.1:11434/api/chat"
     assert generator.model == "installed:writer"
 
@@ -30,7 +29,19 @@ def test_writer_default_timeout_stays_120_seconds(worker: ModuleType) -> None:
 
 @pytest.mark.parametrize(
     "seconds",
-    [-1, 0, 0.5, 601, True, False, float("nan"), float("inf"), -float("inf"), "300", None],
+    [
+        -1,
+        0,
+        0.5,
+        601,
+        True,
+        False,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        "300",
+        None,
+    ],
 )
 def test_writer_rejects_invalid_or_unbounded_timeout(worker: ModuleType, seconds: object) -> None:
     with pytest.raises(ValueError, match="timeout"):
@@ -107,7 +118,11 @@ def test_extended_timeout_keeps_heartbeats_and_cancellation_without_retry(
     monkeypatch.setattr(generator, "_connection", lambda: connection)
 
     assert worker.run_once(
-        "http://127.0.0.1", "agent", "credential", generator, heartbeat_interval_seconds=0.01
+        "http://127.0.0.1",
+        "agent",
+        "credential",
+        generator,
+        heartbeat_interval_seconds=0.01,
     )
     assert client.renewals >= 3
     assert client.submitted == ([] if lease_lost else [{"status": "completed", "result": draft()}])

@@ -140,6 +140,7 @@ class GoalConversationService:
         actor_id: str,
         planning_mode: Literal["automatic", "iphone_local"] = "automatic",
         internal_checkpoint: bool = False,
+        expected_replan_state: tuple[str, int, int] | None = None,
     ) -> str:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
@@ -187,6 +188,16 @@ class GoalConversationService:
             ).fetchone()
             if goal is None:
                 raise GoalConversationConflict("active goal not found")
+            if expected_replan_state is not None and (
+                goal["status"] not in {"running", "waiting_permission"}
+                or (
+                    active_id,
+                    int(goal["conversation_revision"]),
+                    int(goal["replan_count"]),
+                )
+                != expected_replan_state
+            ):
+                raise GoalConversationConflict("goal changed before deferred replan")
             audit_task_id = str(goal["root_task_id"])
             terminal = goal["status"] in {"completed", "failed", "cancelled", "budget_exhausted"}
             awaiting_local_plan = (

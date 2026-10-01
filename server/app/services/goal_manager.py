@@ -44,6 +44,7 @@ from app.services.goal_state import (
     public_plan_node,
 )
 from app.services.maintenance_lease import MaintenanceLeaseGuard
+from app.services.model_resource_admission import active_local_model_work_locked
 from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
     PlanValidationError,
@@ -165,6 +166,10 @@ _PLANNER_FAILURE_DETAILS = {
 
 class GoalManagerConflict(RuntimeError):
     """An authoritative goal invariant rejected a requested transition."""
+
+
+class _LocalModelResourceBusy(GoalManagerConflict):
+    """Admission deferred before an inference attempt or budget debit exists."""
 
 
 class _PlannerProposalRejected(GoalManagerConflict):
@@ -1164,9 +1169,15 @@ class GoalManager:
                 await self._assert_local_memory_current(goal_run_id, memory_fingerprint)
             else:
                 await self._resume_evaluator_retry(goal_run_id, maintenance_guard=maintenance_guard)
-                await self._resume_pending_conversation(
-                    goal_run_id, maintenance_guard=maintenance_guard
-                )
+                try:
+                    await self._resume_pending_conversation(
+                        goal_run_id, maintenance_guard=maintenance_guard
+                    )
+                except _LocalModelResourceBusy:
+                    waiting = await self.get_goal(goal_run_id)
+                    if waiting is None:
+                        raise GoalManagerConflict("goal disappeared while waiting for local model")
+                    return waiting
             goal = await self.graph.get_goal(goal_run_id)
             if goal is None:
                 raise GoalManagerConflict("goal not found")
@@ -1207,11 +1218,17 @@ class GoalManager:
                     if waiting is None:
                         raise GoalManagerConflict("goal disappeared while waiting for workers")
                     return waiting
-                proposal, source, call_id = await self._obtain_plan(
-                    goal,
-                    request,
-                    maintenance_guard=maintenance_guard,
-                )
+                try:
+                    proposal, source, call_id = await self._obtain_plan(
+                        goal,
+                        request,
+                        maintenance_guard=maintenance_guard,
+                    )
+                except _LocalModelResourceBusy:
+                    waiting = await self.get_goal(goal_run_id)
+                    if waiting is None:
+                        raise GoalManagerConflict("goal disappeared while waiting for local model")
+                    return waiting
                 refreshed_goal = await self.graph.get_goal(goal_run_id)
                 if refreshed_goal is None:
                     raise GoalManagerConflict("goal disappeared while its plan was generated")
@@ -1666,12 +1683,16 @@ class GoalManager:
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> str:
         call_id = f"gmc_{uuid4().hex}"
-        now_dt = datetime.now(UTC)
-        now = now_dt.isoformat()
-        lease_expires_at = (now_dt + timedelta(seconds=self.model_call_lease_seconds)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            # Resource/lease expiry must be checked against time observed after
+            # write-lock contention, never a timestamp sampled before it.
+            now_dt = datetime.now(UTC)
+            now = now_dt.isoformat()
+            lease_expires_at = (
+                now_dt + timedelta(seconds=self.model_call_lease_seconds)
+            ).isoformat()
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             row = await (
@@ -1724,6 +1745,13 @@ class GoalManager:
                     error_category='lease_expired' WHERE id=? AND status='started'""",
                     (now, str(pending["id"])),
                 )
+            if provider_source == PlannerSource.UBUNTU_LOCAL.value and (
+                await active_local_model_work_locked(db, now=now_dt)
+            ):
+                # No model call or budget credit exists yet. Reconciliation may
+                # try admission later without classifying contention as failure.
+                await db.rollback()
+                raise _LocalModelResourceBusy("local model resource is busy")
             generation_row = await (
                 await db.execute(
                     "SELECT COALESCE(MAX(lease_generation),0)+1 FROM goal_model_calls WHERE goal_run_id=?",
@@ -4356,11 +4384,14 @@ class GoalManager:
                 plan_proposal=request.plan_proposal,
                 planner_source=request.planner_source,
             )
-            proposal, source, call_id = await self._obtain_plan(
-                goal,
-                start_request,
-                user_guidance=request.reason,
-            )
+            try:
+                proposal, source, call_id = await self._obtain_plan(
+                    goal,
+                    start_request,
+                    user_guidance=request.reason,
+                )
+            except _LocalModelResourceBusy:
+                return await self._defer_replan_for_resource(goal, request)
             refreshed_goal = await self.graph.get_goal(goal_run_id)
             if refreshed_goal is None:
                 raise GoalManagerConflict("goal disappeared while replanning")
@@ -4432,6 +4463,41 @@ class GoalManager:
             if result is None:
                 raise RuntimeError("replanned goal disappeared")
             return result
+
+    async def _defer_replan_for_resource(
+        self, goal: Mapping[str, Any], request: GoalReplanRequest
+    ) -> dict[str, Any]:
+        """Reuse durable conversation reconciliation without duplicating a request."""
+        reason = request.reason or (
+            "[Server-recorded replan request] Replan the current goal using its existing "
+            "objective and requirements."
+        )
+        request_key = hashlib.sha256(
+            json.dumps(
+                [str(goal["id"]), int(goal["replan_count"]), reason],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        try:
+            active_id = await self.conversations.append(
+                str(goal["id"]),
+                message=reason,
+                client_message_id=f"deferred_replan_{request_key}",
+                reply_to_message_id=None,
+                actor_id="goal-replan",
+                expected_replan_state=(
+                    str(goal["id"]),
+                    int(goal["conversation_revision"]),
+                    int(goal["replan_count"]),
+                ),
+            )
+        except GoalConversationConflict as exc:
+            raise GoalManagerConflict(str(exc)) from exc
+        detail = await self.get_goal(active_id)
+        if detail is None:
+            raise GoalManagerConflict("goal disappeared while waiting for local model")
+        return detail
 
     async def _append_replan_nodes(
         self,
