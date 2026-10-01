@@ -101,6 +101,39 @@ Both retained seccomp filtering and `docker-default` AppArmor enforcement.
 The final image layer only aligns trusted tool files and inventory; it does not
 repeat package downloads or alter the selected browser binaries.
 
+## Final DockerRunner and guarded activation
+
+The final image also passed through the actual `DockerRunner` inside the
+worker's bubblewrap command, using a private fixture rather than a production
+job. The build retained the default seccomp policy and 64-PID limit. The
+offline test used the verified private profile copy and 256-PID limit. One
+pytest test passed in 1.45 seconds, covering nine assertions for sandbox
+properties and Selenium page, click, storage and reload behavior. No model
+chose or generated that fixture.
+
+Source commit `00360f58d7f5f7b6dea45dd50226a9212c21ff9e` was pushed to
+`origin/main`. The guarded lane activated only the project worker as
+`project-dependencies-1ad81b1d7471c82e419c`, with the qualified image above and
+`MONGARS_PROJECT_BROWSER_SANDBOX=1`. The API release, model settings, GPU
+settings and generation deadlines were preserved. The lane retained a SQLite
+backup and rollback path; no database restoration was needed.
+
+The independent read-only check at 12:02 UTC confirmed six active services,
+five online workers with heartbeat ages between 1.286 and 5.0 seconds, the new
+worker process and release, the exact image and profile, and ten exact mounted
+source files. All 52 protected data fingerprints matched the fresh baseline;
+schema and worker registrations were unchanged and admission was idle. This
+check did not create a project or execute an iPhone scenario.
+
+Retained receipt identifiers:
+
+- Fresh baseline SHA256:
+  `9c52e9ee5bd3376f55b2f64a13d9c9a74fb496c1befb20250e3188b09da151bd`.
+- DockerRunner qualification SHA256:
+  `1930fbb298ea85bbd7d0f63d3f3e393e9c4796c214636896b5190b25967e9778`.
+- Independent deployment receipt SHA256:
+  `dee8ddb1a4100f5b360824a158d70e8e5ec9e6433165b66ca7566fa0693a5f19`.
+
 ## Limits
 
 Static import analysis does not prove dynamic imports, browser startup, native
@@ -109,6 +142,11 @@ remains disabled; installing pytest-asyncio alone does not enable async tests.
 The operator recipes lock complete Python dependency closures. Generated
 projects still do not persist their entire transitive installation closure as
 a reusable project lock.
+
+The deployed detection, structured feedback and isolated installation paths
+are qualified separately. A complete agent-generated project in which the
+model autonomously chooses a dependency correction and finishes successfully
+has not yet been demonstrated by these receipts.
 
 Private receipts are retained under the local SwarmerQualification directory:
 `runtime-dependencies-20261001` and `browser-toolkit-20261001T092200`.
