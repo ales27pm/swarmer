@@ -1235,6 +1235,7 @@ class GoalManager:
             if goal["status"] in self.graph.GOAL_TERMINAL:
                 raise GoalManagerConflict("terminal goal cannot be started")
             memory_fingerprint = request.memory_context_fingerprint
+            initial_manual_revision = None
             if goal["current_phase"] == "awaiting_local_plan" and (
                 request.planner_source != "iphone_local"
                 or request.plan_proposal is None
@@ -1245,19 +1246,36 @@ class GoalManager:
                 await self._assert_local_memory_current(goal_run_id, memory_fingerprint)
             else:
                 await self._resume_evaluator_retry(goal_run_id, maintenance_guard=maintenance_guard)
-                try:
-                    await self._resume_pending_conversation(
-                        goal_run_id, maintenance_guard=maintenance_guard
-                    )
-                except _LocalModelResourceBusy:
-                    waiting = await self.get_goal(goal_run_id)
-                    if waiting is None:
-                        raise GoalManagerConflict("goal disappeared while waiting for local model")
-                    return waiting
+                if (
+                    request.plan_proposal is not None
+                    and request.planner_source == PlannerSource.MANUAL.value
+                    and goal["status"] == "planning"
+                    and not await self.graph.list_nodes(goal_run_id)
+                ):
+                    # An explicit initial plan already supplies the routing decision.
+                    # Do not invoke the automatic planner for its pending reply first.
+                    # Fence this decision to the conversation observed at admission.
+                    initial_manual_revision = int(goal["conversation_revision"])
+                else:
+                    try:
+                        await self._resume_pending_conversation(
+                            goal_run_id, maintenance_guard=maintenance_guard
+                        )
+                    except _LocalModelResourceBusy:
+                        waiting = await self.get_goal(goal_run_id)
+                        if waiting is None:
+                            raise GoalManagerConflict("goal disappeared while waiting for local model")
+                        return waiting
             goal = await self.graph.get_goal(goal_run_id)
             if goal is None:
                 raise GoalManagerConflict("goal not found")
             nodes = await self.graph.list_nodes(goal_run_id)
+            if initial_manual_revision is not None and (
+                nodes
+                or goal["status"] != "planning"
+                or int(goal["conversation_revision"]) != initial_manual_revision
+            ):
+                raise GoalManagerConflict("goal changed before its manual plan could start")
             if memory_fingerprint is not None and (
                 nodes or goal["status"] != "planning" or goal["started_at"] is not None
             ):
@@ -1332,6 +1350,7 @@ class GoalManager:
                         source=source,
                         model_call_id=call_id,
                         memory_context_fingerprint=memory_fingerprint,
+                        expected_conversation_revision=initial_manual_revision,
                         maintenance_guard=maintenance_guard,
                     )
                 except _PlannerProposalRejected as exc:
@@ -2136,6 +2155,7 @@ class GoalManager:
         source: PlannerSource,
         model_call_id: str | None,
         memory_context_fingerprint: str | None = None,
+        expected_conversation_revision: int | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
         output_digest = self._model_output_digest(proposal.model_dump(mode="json"))
@@ -2172,6 +2192,12 @@ class GoalManager:
             if current is None or str(current["status"]) != "planning":
                 await db.rollback()
                 raise GoalManagerConflict("goal changed while its plan was generated")
+            if (
+                expected_conversation_revision is not None
+                and int(current["conversation_revision"]) != expected_conversation_revision
+            ):
+                await db.rollback()
+                raise GoalManagerConflict("conversation changed while its manual plan was validated")
             if self._runtime_expired(dict(current)):
                 await db.rollback()
                 raise GoalManagerConflict("goal runtime budget exhausted")
