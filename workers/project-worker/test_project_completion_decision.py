@@ -7,12 +7,158 @@ import io
 import json
 from typing import Any
 
-import project_worker as worker
 import pytest
 from jsonschema import Draft202012Validator
+
+import project_worker as worker
 from project_contract import snapshot_sha
 from runtime import CHECK_COMMANDS, RECEIPT_PREFIX, profiles_for
 from test_project_worker import Generator, Runner, capture_project_request, step
+
+
+@pytest.mark.parametrize("operation", ["edits", "patches", "deletions"])
+@pytest.mark.parametrize("action", ["continue", "complete"])
+def test_completion_decision_cannot_mutate_even_when_grammar_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, operation: str, action: str,
+) -> None:
+    data = validated_payload()
+    before = copy.deepcopy(data)
+    source = data["files"][0]
+    response = {**check_step(action=action), "requested_checks": []}
+    response[operation] = {
+        "edits": [{"path": source["path"], "content": source["content"] + "# artificial\n"}],
+        "patches": [{"path": source["path"], "old": source["content"], "new": "VALUE = 1\n"}],
+        "deletions": [source["path"]],
+    }[operation]
+    schema = worker.constrained_step_schema(worker.STEP_SCHEMA, worker.model_context(data), data)
+    assert not Draft202012Validator(schema).is_valid(response)
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 0 and result["action"] == "continue"
+    assert result["message"] == worker.COMPLETION_DECISION_DIAGNOSTIC
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+    assert data == before
+    if operation == "patches":
+        response[operation] = [{"path": source["path"], "span_id": "invented", "new": "VALUE = 1\n"}]
+    with pytest.raises(worker.ModelStepError, match="explicit completion decision"):
+        capture_compact_decision(monkeypatch, data, response)
+
+
+def test_completion_decision_can_request_visible_source_for_a_real_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = validated_payload()
+    read = {
+        **check_step(action="continue"), "requested_checks": [],
+        "focus_paths": ["calculator.py"], "message": "Division by zero still needs an explicit ValueError.",
+    }
+    body, generator, parsed = capture_compact_decision(monkeypatch, data, read)
+    assert "calculator.py" in generator.last_visible_paths
+    assert Draft202012Validator(body["format"]).is_valid(read)
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(parsed), runner, lambda: None)
+    assert runner.calls == 0 and result["files"] == data["files"]
+    focused = {
+        **data, "focus_paths": result["focus_paths"], "iteration": data["iteration"] + 1,
+        # The server replaces the model's read message with a generic notice.
+        # The transition relies on focus + source/requirements, not that wording.
+        "conversation": [{"role": "assistant", "content": "Files requested for the next iteration: calculator.py"}],
+    }
+    assert not worker.completion_decision_evidence(focused)
+    replacement = {
+        "path": "calculator.py", "content": "def divide(a, b):\n    if b == 0:\n        raise ValueError('zero')\n    return a / b\n",
+    }
+    edit = {**check_step(action="continue"), "requested_checks": [], "edits": [replacement]}
+    body = capture_project_request(monkeypatch, focused, edit)
+    assert Draft202012Validator(body["format"]).is_valid(edit)
+    repaired = worker.run_iteration(focused, Generator(edit), runner, lambda: None)
+    assert runner.calls == 1 and replacement in repaired["files"]
+    assert repaired["checks"] != data["checks"] and repaired["action"] == "continue"
+    with pytest.raises(worker.ModelStepError, match="already fully visible"):
+        capture_project_request(monkeypatch, focused, read)
+
+
+def test_tiny_complete_source_patch_uses_full_extent_and_cannot_duplicate_body() -> None:
+    from project_contract import merge_files
+
+    data = validated_payload()
+    source = 'def divide(a, b):\n    if b == 0:\n        raise ValueError("Division by zero")\n    return a / b\n'
+    data["files"][0]["content"] = source
+    data["base_sha256"] = snapshot_sha(data["files"])
+    # A real authoring iteration still needs safe patch coordinates.
+    data["focus_paths"] = ["calculator.py"]
+    context = worker.model_context(data)
+    addresses = worker.addressed_patch_spans(context, data, max_bytes=500)
+    identifier, address = next((key, value) for key, value in addresses.items() if value["path"] == "calculator.py")
+    assert address["old"] == source
+    assert (address["start_line"], address["end_line"]) == (1, 4)
+    response = {
+        **check_step(action="continue"), "requested_checks": [],
+        "patches": [{"path": "calculator.py", "span_id": identifier, "new": source}],
+    }
+    with pytest.raises(worker.ProjectError, match="identical"):
+        worker.resolve_model_patches(response, addresses)
+    replacement = source.replace("Division by zero", "Zero denominator")
+    response["patches"][0]["new"] = replacement
+    merged = merge_files(data["files"], worker.resolve_model_patches(response, addresses))
+    assert next(item["content"] for item in merged if item["path"] == "calculator.py") == replacement
+
+
+@pytest.mark.parametrize("case", ["continue_without_operation", "complete_without_checks", "absent_focus", "multiple_focus"])
+def test_decision_requires_one_supported_transition(case: str) -> None:
+    data = validated_payload()
+    response = {**check_step(action="continue"), "requested_checks": []}
+    if case == "complete_without_checks":
+        response["action"] = "complete"
+    elif case == "absent_focus":
+        response["focus_paths"] = ["absent.py"]
+    elif case == "multiple_focus":
+        response["focus_paths"] = [item["path"] for item in data["files"]]
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 0 and result["message"] == worker.COMPLETION_DECISION_DIAGNOSTIC
+    assert result["files"] == data["files"] and result["checks"] == data["checks"]
+
+
+def test_larger_complete_source_keeps_fine_patch_spans() -> None:
+    data = validated_payload()
+    data["files"][0]["content"] += "# Additional source context.\n" * 40
+    data["base_sha256"] = snapshot_sha(data["files"])
+    data["focus_paths"] = ["calculator.py"]
+    context = worker.model_context(data)
+    spans = worker.visible_patch_spans(context, data)
+    assert spans["calculator.py"][0] == "def divide(a, b):\n"
+    assert data["files"][0]["content"] not in spans["calculator.py"]
+
+
+def test_focused_repair_does_not_revive_unrelated_historical_runtime_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = validated_payload()
+    data["checks"] += unrelated_failures("node")
+    data["focus_paths"] = ["calculator.py"]
+    replacement = {
+        "path": "calculator.py", "content": "def divide(a, b):\n    if not b:\n        raise ValueError('zero')\n    return a / b\n",
+    }
+    response = {**check_step(action="continue"), "requested_checks": [], "edits": [replacement]}
+    body = capture_project_request(monkeypatch, data, response)
+    assert Draft202012Validator(body["format"]).is_valid(response)
+    task = body["messages"][-1]["content"].split("YOUR TASK FOR THIS ITERATION:", 1)[1]
+    assert "package.json" not in task and "collected NO TESTS" not in task
+    assert not worker.completion_decision_evidence(data)
+    evidence = worker.material_runtime_evidence(data)
+    assert evidence["python"]["ignored_profiles"] == profiles_for("node", [])
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 1 and replacement in result["files"]
+    assert result["checks"] != data["checks"] and result["action"] == "continue"
+    for case in ("real_failure", "changed_source"):
+        invalid = copy.deepcopy(data)
+        if case == "real_failure":
+            invalid["checks"][:2] = unrelated_failures("python")
+        else:
+            invalid["files"][0]["content"] += "# newer source\n"
+        assert worker.material_runtime_evidence(invalid) == {}
 
 
 def passing_check(profile: str, *, count: int | None = None) -> dict[str, Any]:
@@ -295,6 +441,8 @@ def test_ignoring_unrelated_profiles_does_not_hide_real_or_unknown_failures(case
 
 def test_material_runtime_can_change_through_real_authoring() -> None:
     data = validated_payload()
+    # After the decision selects a source to prepare the actual runtime change.
+    data["focus_paths"] = ["calculator.py"]
     response = {
         **check_step("python_node", "continue"), "requested_checks": [],
         "edits": [{"path": "package.json", "content": '{"scripts":{"build":"tsc"}}'}],
@@ -307,7 +455,7 @@ def test_material_runtime_can_change_through_real_authoring() -> None:
     assert response["edits"][0] in result["files"]
 
 
-def test_new_user_requirement_keeps_real_edits_and_clarification_available() -> None:
+def test_new_user_requirement_can_prepare_real_edits_or_clarify() -> None:
     data = validated_payload()
     data["conversation"] = [
         {"role": "assistant", "content": "Prior checks passed."},
@@ -320,10 +468,15 @@ def test_new_user_requirement_keeps_real_edits_and_clarification_available() -> 
     schema = worker.constrained_step_schema(worker.STEP_SCHEMA, worker.model_context(data), data)
     validator = Draft202012Validator(schema)
     response = {**check_step(action="continue"), "requested_checks": [], "edits": [replacement]}
-    assert validator.is_valid(response)
+    assert not validator.is_valid(response)
     assert validator.is_valid({**check_step(action="clarify"), "requested_checks": []})
+    read = {**check_step(action="continue"), "requested_checks": [], "focus_paths": ["calculator.py"]}
+    assert validator.is_valid(read)
     runner = Runner()
-    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    prepared = worker.run_iteration(data, Generator(read), runner, lambda: None)
+    assert runner.calls == 0 and prepared["files"] == data["files"]
+    focused = {**data, "focus_paths": prepared["focus_paths"]}
+    result = worker.run_iteration(focused, Generator(response), runner, lambda: None)
     assert runner.calls == 1 and result["action"] == "continue"
     assert replacement in result["files"]
 
@@ -457,7 +610,7 @@ def test_validated_snapshot_uses_compact_decision_even_without_a_failed_current_
     validator = Draft202012Validator(body["format"])
     assert validator.is_valid(check_step())
     assert validator.is_valid({**check_step(action="clarify"), "requested_checks": []})
-    assert validator.is_valid({
+    assert not validator.is_valid({
         **check_step(action="continue"), "requested_checks": [],
         "edits": [{"path": "calculator.py", "content": "def divide(a, b):\n    return a / b\n"}],
     })
@@ -489,7 +642,7 @@ def test_validation_timeout_never_demands_an_artificial_edit(
     assert result["files"] == data["files"] and result["checks"] == data["checks"]
 
 
-def test_compact_completion_can_read_omitted_source_and_author_real_changes(
+def test_compact_completion_can_read_omitted_source_before_real_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = validated_payload()
@@ -504,7 +657,8 @@ def test_compact_completion_can_read_omitted_source_and_author_real_changes(
         **check_step(action="continue"), "requested_checks": [],
         "edits": [{"path": "calculator.py", "content": "def divide(a, b):\n    return a / b if b else 0\n"}],
     }
-    body, _, result = capture_compact_decision(monkeypatch, data, edit)
+    focused = {**data, "focus_paths": result["focus_paths"]}
+    body, _, result = capture_compact_decision(monkeypatch, focused, edit)
     assert result["action"] == "continue" and result["edits"] == edit["edits"]
     assert Draft202012Validator(body["format"]).is_valid(edit)
 

@@ -101,8 +101,9 @@ COMPLETION_DECISION_DIAGNOSTIC = (
     "The current snapshot already has passing build and nonempty test receipts for this runtime. "
     "An explicit completion decision is required before repeating these checks. "
     "If all user requirements are implemented, use complete with requested_checks; the runner "
-    "must validate again. Otherwise implement the remaining work, read omitted source, or ask "
-    "a necessary clarification. No changes or checks were accepted; no completion was inferred."
+    "must validate again. Otherwise request one existing focus_path to prepare the remaining "
+    "work in a separate iteration, or ask a necessary clarification. This decision phase "
+    "cannot edit, patch or delete files. No changes or checks were accepted; no completion was inferred."
 )
 VALIDATION_RUNTIME_DIAGNOSTIC = (
     "A check-only operation must use the runtime of the unchanged files. "
@@ -330,19 +331,18 @@ If all requirements are implemented, choose complete with requested_checks and b
 run_instructions, without file edits. The runner must rerun every runtime build/test
 profile and execute nonempty tests before accepting completion.
 Do not return continue just to repeat these checks. Never invent an edit to finish or claim unperformed checks.
-Otherwise choose one concrete operation: an edit, addressed patch, deletion, or read
-of needed omitted source. Use continue while work remains. For a real unresolved
+This phase decides readiness without changing source: edits, patches and deletions
+MUST be empty. If work remains or source is missing, choose continue with one existing
+focus_path and no requested_checks to prepare a separate authoring iteration. You may
+select a fully visible file here to prepare an actual repair or missing functionality;
+the next charged iteration can make the necessary change using source and requirements.
+Do not request a preparation read unless work or inspection is needed. For a real unresolved
 ambiguity, use clarify with every operation array empty. Do not ask already answered questions.
-Each operation array has at most one item; only one may be nonempty. Unmentioned files
-are preserved. edits uses {path,content} for one COMPLETE file at most 800 characters;
-never replace a partial, unseen or larger file. patches uses {path,span_id,new} with
-an exact visible editable_spans ID and at most 800 characters of actual replacement.
-PATCH_TARGET is exactly the replaced text; preserve indentation and surrounding source.
-Read omitted/partial source with focus_paths and empty edit/check arrays. Never reread
-a fully visible source file. Preserve working behavior, required tests and dependencies.
+Each operation array has at most one item; only one may be nonempty. Preserve working
+behavior, required tests and dependencies. No source change is accepted in this phase.
 Runtime for check-only validation MUST match completion_decision.prior_runtime_evidence.
 Ignored profiles belong to unrelated historical runtimes and require no new scaffolding.
-For an actual runtime change, implement its source/manifests first. Python static web
+For an actual runtime change, request preparation of its source/manifests first. Python static web
 assets alone do not require Node. Use Python3.12/pytest8.4.2 or Node22/node:test,
 exact dependency versions and real tests. No fake tests or weakened assertions.
 requested_checks permits only the listed runtime commands; all profiles run automatically.
@@ -1061,9 +1061,12 @@ def visible_patch_spans(
                 {"path": path, "content": original[path]}, diagnostics
             )
         ]
-        if path in requested and shown == original[path] and len(shown.encode()) <= 2_000:
-            # A small requested file is fully visible: offer its actual full extent
-            # before header-only spans that could accidentally duplicate its body.
+        if shown == original[path] and (
+            (len(shown) <= MAX_RECOVERY_EDIT_CHARACTERS and target is None and not proposed)
+            or (path in requested and len(shown.encode()) <= 2_000)
+        ):
+            # A tiny fully visible file is a safer replacement target than just
+            # its header; expanding a header into the whole file duplicates its body.
             proposed.insert(0, shown)
         if 0 <= target_index < len(lines):
             unique = unique_diagnostic_span(lines, target_index, original[path])
@@ -1168,18 +1171,22 @@ def fully_visible_paths(context: dict[str, Any], payload: dict[str, Any]) -> set
 
 
 def completion_decision_evidence(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """A preparation read opens authoring without invalidating historical evidence."""
+    return {} if payload.get("focus_paths") else material_runtime_evidence(payload)
+
+
+def material_runtime_evidence(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Identify covered runtimes, not semantic completeness or fresh verification.
 
     The control plane binds prior worker receipts to this exact base snapshot.
     Never infer execution from prose, a passed status alone, filenames, or memory.
-    This evidence only restricts redundant check-only decisions; complete still
-    requires the runner below to execute every check again.
+    This evidence selects a read-only readiness decision, not approval. Remaining
+    work can request focused preparation; complete still runs every check again.
     """
     revision, sha = payload.get("base_revision_id"), payload.get("base_sha256")
     if (
         not payload["files"]
         or native_project(payload)
-        or payload.get("focus_paths")
         or not isinstance(revision, str)
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", revision)
         or sha != snapshot_sha(payload["files"])
@@ -1242,13 +1249,25 @@ def completion_decision_evidence(payload: dict[str, Any]) -> dict[str, dict[str,
 
 
 def enforce_completion_decision(payload: dict[str, Any], step: dict[str, Any]) -> None:
+    decision = completion_decision_evidence(payload)
+    if decision:
+        if any(step[field] for field in ("edits", "patches", "deletions")):
+            raise ModelStepError(COMPLETION_DECISION_DIAGNOSTIC)
+        if step["action"] == "continue" and not step["requested_checks"]:
+            if len(step["focus_paths"]) == 1 and step["focus_paths"][0] in {
+                item["path"] for item in payload["files"]
+            }:
+                return
+            raise ModelStepError(COMPLETION_DECISION_DIAGNOSTIC)
+        if step["action"] == "complete" and not step["requested_checks"]:
+            raise ModelStepError(COMPLETION_DECISION_DIAGNOSTIC)
     if not step["requested_checks"] or any(
         step[field] for field in ("edits", "patches", "deletions", "focus_paths")
     ) or native_project(payload):
         return
     if payload["files"] and step["runtime"] != runtime_for_files(payload["files"]):
         raise ModelStepError(VALIDATION_RUNTIME_DIAGNOSTIC)
-    if step["action"] == "continue" and step["runtime"] in completion_decision_evidence(payload):
+    if step["action"] == "continue" and step["runtime"] in decision:
         raise ModelStepError(COMPLETION_DECISION_DIAGNOSTIC)
 
 
@@ -1258,6 +1277,7 @@ def constrained_step_schema(
     payload: dict[str, Any],
     addresses: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    decision_runtimes = completion_decision_evidence(payload)
     mutation = copy.deepcopy(schema)
     allowed_actions = schema["properties"]["action"]["enum"]
     mutation["properties"]["action"]["enum"] = [
@@ -1286,10 +1306,13 @@ def constrained_step_schema(
         }
     else:
         mutation["properties"]["patches"]["maxItems"] = 0
+    if decision_runtimes:
+        for field in ("edits", "patches", "deletions"):
+            mutation["properties"][field]["maxItems"] = 0
     branches = [mutation]
     if (
         not native_project(payload)
-        and not completion_decision_evidence(payload)
+        and not material_runtime_evidence(payload)
         and missing_node_manifest(payload)
     ):
         node = copy.deepcopy(mutation)
@@ -1306,7 +1329,10 @@ def constrained_step_schema(
         python["properties"]["runtime"]["enum"] = ["python"]
         branches = [node, python]
     visible = fully_visible_paths(context, payload)
-    readable = [item["path"] for item in payload["files"] if item["path"] not in visible]
+    readable = [
+        item["path"] for item in payload["files"]
+        if decision_runtimes or item["path"] not in visible
+    ]
     if (
         readable
         and "continue" in allowed_actions
@@ -1315,6 +1341,8 @@ def constrained_step_schema(
         read = copy.deepcopy(schema)
         read["properties"]["action"]["enum"] = ["continue"]
         read["properties"]["focus_paths"]["minItems"] = 1
+        if decision_runtimes:
+            read["properties"]["focus_paths"]["maxItems"] = 1
         read["properties"]["focus_paths"]["items"] = {
             "type": "string",
             "enum": readable,
@@ -1337,7 +1365,6 @@ def constrained_step_schema(
             clarify["properties"][field]["maxItems"] = 0
         branches.append(clarify)
     disjoint = []
-    decision_runtimes = completion_decision_evidence(payload)
     for branch in branches:
         properties = branch["properties"]
         if properties["focus_paths"].get("minItems") or properties["action"]["enum"] == ["clarify"]:
@@ -2005,15 +2032,17 @@ class ProjectGenerator:
             for check in payload["checks"]
         )
         native = native_project(payload)
+        current_runtime_evidence = material_runtime_evidence(payload)
         requested_paths = native_requested_paths(payload)
         if native:
             # These are historical non-native receipts, not instructions to
             # replace a Swift project with Python/Node repair scaffolding.
             needs_repair = needs_tests = needs_node_manifest = needs_node_tests = False
-        elif context.get("completion_decision"):
+        elif current_runtime_evidence:
             # The complete material runtime already passed. Known failures in
             # an unrelated lane must not force new tests/manifests for that lane.
-            # Remaining user requirements still require an explicit decision.
+            # A focused authoring turn keeps that evidence, even though it may
+            # now implement remaining requirements rather than decide readiness.
             needs_repair = needs_tests = needs_node_manifest = needs_node_tests = False
         test_creation_kind = (
             ("node" if needs_node_tests else "python" if needs_tests else None)
@@ -2055,6 +2084,14 @@ class ProjectGenerator:
                 "a real ambiguity. Do not return continue just to repeat these checks. "
                 "Any ignored_profiles are historical checks outside the current runtime, "
                 "not a reason to add unrelated source, manifests or tests."
+            )
+        elif current_runtime_evidence:
+            instruction += (
+                "\nThis focused authoring iteration follows checks of the exact supplied snapshot. "
+                "The current runtime evidence is " + json.dumps(current_runtime_evidence) + ". "
+                "Ignore failures in its ignored_profiles: they belong to other runtimes, "
+                "not missing source, manifests or tests. Implement remaining user requirements "
+                "using the focused source; these historical checks do not prove completeness."
             )
         if native or re.search(
             r"\b(swift|ios|xcode|swiftpm)\b", payload["objective"], re.IGNORECASE
@@ -2224,8 +2261,9 @@ class ProjectGenerator:
             current_task = (
                 "Compare the current source with every supplied user requirement. "
                 "If ready, choose complete and request fresh checks for the existing runtime; "
-                "otherwise return necessary work, read needed source or clarify an ambiguity. "
-                "Do not modify files merely to obtain completion."
+                "otherwise request one existing focus_path to prepare necessary work or "
+                "inspection in a separate iteration, or clarify an ambiguity. "
+                "This decision cannot modify files."
             )
         elif compact_repair:
             instruction = REPAIR_RECOVERY_INSTRUCTION
@@ -2279,7 +2317,7 @@ class ProjectGenerator:
             refresh_project_guidance(context, payload)
             addresses = (
                 {}
-                if test_creation_kind
+                if test_creation_kind or compact_completion
                 else addressed_patch_spans(
                     context,
                     payload,
@@ -2591,12 +2629,15 @@ class ProjectGenerator:
             value = transport._parse_json(content)
             if compact_completion:
                 value = validate_bounded_rejection(value, payload)
+                enforce_completion_decision(payload, value)
             elif compact_repair:
                 value = expand_compact_repair(value, payload)
             elif bounded_rejection:
                 value = validate_bounded_rejection(value, payload)
             step = parse_step(resolve_model_patches(value, addresses))
-            if any(path in self.last_visible_paths for path in step["focus_paths"]):
+            if not compact_completion and any(
+                path in self.last_visible_paths for path in step["focus_paths"]
+            ):
                 # Native model grammars are advisory: enforce the final-prompt
                 # source boundary locally too, without another model call.
                 raise ModelStepError(REDUNDANT_READ_DIAGNOSTIC)

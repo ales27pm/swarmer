@@ -5,9 +5,10 @@ import io
 import json
 from typing import Any
 
-import project_worker as worker
 import pytest
 from jsonschema import Draft202012Validator
+
+import project_worker as worker
 from project_contract import ProjectError, snapshot_sha
 
 
@@ -1343,7 +1344,10 @@ def test_addressed_overlapping_patches_still_fail_atomically() -> None:
     files = [{"path": "app.py", "content": "first = 1\nsecond = 2\nthird = 3\n"}]
     data = {**payload(), "files": files}
     addresses = worker.addressed_patch_spans(worker.model_context(data), data)
-    selected = [item for item in addresses.values() if item["start_line"] == 1][:2]
+    selected = sorted(
+        (item for item in addresses.values() if item["start_line"] == 1),
+        key=lambda item: item["end_line"],
+    )[:2]
     assert len(selected) == 2 and selected[0]["end_line"] < selected[1]["end_line"]
     raw = step(
         edits=[],
