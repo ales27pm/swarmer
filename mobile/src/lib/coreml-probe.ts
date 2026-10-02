@@ -8,6 +8,7 @@ export const COREML_PROBE_FIXTURES = [
   "dolphin-attention-int4-block32", "dolphin-attention-int4-perchannel",
   "dolphin-attention-int4-perchannel-cache28",
   "dolphin-attention-int4-perchannel-cache28-two-blocks",
+  "dolphin-attention-int4-perchannel-cache28-slot1",
 ] as const;
 export type CoreMLProbeFixture = typeof COREML_PROBE_FIXTURES[number];
 const STAGES = ["resolve", "compile", "load", "plan", "predict", "compare", "complete"] as const;

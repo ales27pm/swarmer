@@ -70,6 +70,8 @@ describe("application API contract", () => {
     { fixtureID: "dolphin-attention-int4-perchannel-cache28", computeUnits: "cpuAndNeuralEngine" },
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks", computeUnits: "cpuOnly" },
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks", computeUnits: "cpuAndNeuralEngine" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28-slot1", computeUnits: "cpuOnly" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28-slot1", computeUnits: "cpuAndNeuralEngine" },
   ])("restricts Core ML probe $fixtureID/$computeUnits to its native diagnostic capability", async (input) => {
     jest.mocked(native.probeCoreMLFixture).mockResolvedValue({ schemaVersion: 1, ...input, outcome: "passed", stage: "complete",
       loadMilliseconds: 1, predictionMilliseconds: 1, preferredDeviceCounts: { cpu: 0, gpu: 0, neuralEngine: 1, unknown: 0 },

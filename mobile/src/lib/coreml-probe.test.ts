@@ -13,13 +13,14 @@ const result = {
 const parse = (v: unknown) => parseCoreMLProbeReport(JSON.stringify(v), fixtureID, computeUnits);
 
 describe("bounded Core ML fixture receipts", () => {
-  it("preserves the seven existing fixtures and adds only the two-block attention ablation", () => {
+  it("preserves the eight existing fixtures and adds only the slot-one attention ablation", () => {
     expect(COREML_PROBE_FIXTURES).toEqual([
       "attention-stateful-fused", "attention-stateful-decomposed",
       "attention-stateless-fused", "attention-stateless-decomposed",
       "dolphin-attention-int4-block32", "dolphin-attention-int4-perchannel",
       "dolphin-attention-int4-perchannel-cache28",
       "dolphin-attention-int4-perchannel-cache28-two-blocks",
+      "dolphin-attention-int4-perchannel-cache28-slot1",
     ]);
   });
   it.each([
@@ -27,6 +28,8 @@ describe("bounded Core ML fixture receipts", () => {
     { cacheFixture: "dolphin-attention-int4-perchannel-cache28", units: "cpuAndNeuralEngine" },
     { cacheFixture: "dolphin-attention-int4-perchannel-cache28-two-blocks", units: "cpuOnly" },
     { cacheFixture: "dolphin-attention-int4-perchannel-cache28-two-blocks", units: "cpuAndNeuralEngine" },
+    { cacheFixture: "dolphin-attention-int4-perchannel-cache28-slot1", units: "cpuOnly" },
+    { cacheFixture: "dolphin-attention-int4-perchannel-cache28-slot1", units: "cpuAndNeuralEngine" },
   ] as const)("accepts $cacheFixture receipts for $units without asserting hardware execution", ({ cacheFixture, units }) => {
     const receipt = { ...result, fixtureID: cacheFixture, computeUnits: units };
     expect(parseCoreMLProbeReport(JSON.stringify(receipt), cacheFixture, units)).toEqual(receipt);
