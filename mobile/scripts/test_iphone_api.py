@@ -728,6 +728,58 @@ class CommandTests(unittest.TestCase):
             ["call", "--session", "private.json", "app.status", *extra]
         )
 
+    def test_hyphenated_catalog_commands_reach_normal_command_transport(self):
+        for command in (
+            "goals.memory-usage",
+            "goals.writing-draft",
+            "websites.prepare-publication",
+        ):
+            with self.subTest(command=command):
+                args = self.args("--idempotency-key", "command-contract-123")
+                args.command = command
+                bound_session = session()
+                with (
+                    mock.patch.object(API, "load_session", return_value=bound_session),
+                    mock.patch.object(
+                        API, "request", return_value=(200, job("succeeded"))
+                    ) as request,
+                ):
+                    response, code = API.execute(args)
+                self.assertEqual((response["job"]["state"], code), ("succeeded", 0))
+                request.assert_called_once_with(
+                    bound_session,
+                    "POST",
+                    "/v1/commands",
+                    {
+                        "command": command,
+                        "input": {},
+                        "idempotencyKey": "command-contract-123",
+                        "instanceId": "abc123",
+                    },
+                )
+
+    def test_invalid_command_names_are_rejected_before_transport(self):
+        for command in (
+            "goals/memory-usage",
+            "goals.memory usage",
+            "goals.memory-usage\n",
+            "goals.memory?usage",
+            "Goals.memory-usage",
+            "-goals.memory-usage",
+            "a" * 97,
+            "",
+        ):
+            with self.subTest(command=command):
+                args = self.args()
+                args.command = command
+                with (
+                    mock.patch.object(API, "load_session", return_value=session()),
+                    mock.patch.object(API, "request") as request,
+                    self.assertRaisesRegex(API.ClientError, "Invalid command name"),
+                ):
+                    API.execute(args)
+                request.assert_not_called()
+
     def test_wait_posts_once_then_only_polls_same_job(self):
         responses = [
             (202, job()),

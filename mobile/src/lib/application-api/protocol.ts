@@ -112,7 +112,8 @@ export function createApplicationProtocol(
     try { value = JSON.parse(request.body) as unknown; } catch { return failure(400, "invalid_json", "JSON invalide."); }
     if (!object(value) || Object.keys(value).sort().join(",") !== "command,idempotencyKey,input,instanceId"
       || typeof value.idempotencyKey !== "string" || !KEY.test(value.idempotencyKey)
-      || typeof value.command !== "string" || !/^[a-z][a-zA-Z0-9_.]{0,95}$/.test(value.command)
+      || typeof value.command !== "string" || value.command.trim() !== value.command
+      || !/^[a-z][a-zA-Z0-9_.-]{0,95}$/.test(value.command)
       || !object(value.input)) return failure(400, "invalid_request", "command, input, instanceId et idempotencyKey sont requis.");
     if (value.instanceId !== instanceId) return failure(409, "session_changed", "Le runtime a changé ; les anciennes commandes ne doivent pas être relancées automatiquement.");
     // Bound recursion before canonicalizing an untrusted JSON tree.

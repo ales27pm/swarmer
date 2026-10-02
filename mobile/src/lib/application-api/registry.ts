@@ -4,6 +4,7 @@ import Constants from "expo-constants";
 import { AppState, Platform } from "react-native";
 import type { GoalCreateInput, GoalFeedbackInput, TaskMode, TaskStatus } from "@/lib/api/types";
 import * as inference from "@/lib/local-inference";
+import { COREML_PROBE_FIXTURES, type CoreMLProbeFixture } from "@/lib/coreml-probe";
 import * as embeddings from "@/lib/local-embeddings";
 import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
@@ -69,7 +70,7 @@ const taskMode = choice("normal", "commandant", "review", "autonome");
 const taskStatus = choice("created", "planned", "queued", "running", "blocked", "waiting_permission", "completed", "failed", "cancelled");
 const idInput = object({ id: identifier });
 const noInput = object();
-type NativeOperation = { kind: "load" | "unload" | "generate" | "download" | "import"; cancelled: boolean; owner?: symbol };
+type NativeOperation = { kind: "load" | "unload" | "generate" | "download" | "import" | "probe"; cancelled: boolean; owner?: symbol };
 let nativeOperation: NativeOperation | null = null;
 
 async function withNativeOperation<T>(kind: NativeOperation["kind"], operation: (assertActive: () => void) => Promise<T>, owner?: symbol): Promise<T> {
@@ -253,7 +254,29 @@ register<{ runtime: inference.LocalInferenceRuntime }>("models.import", object({
   { ...device, ...mutation, requiresForeground: true, osInteraction: true });
 register<Parameters<typeof inference.loadLocalModel>[0]>("models.load", object({
   runtime, modelId: text(200), revision: { ...text(40), pattern: "^[a-fA-F0-9]{40}$" },
-}, ["runtime", "modelId"]), (input) => withNativeOperation("load", () => inference.loadLocalModel(input)), { ...device, ...mutation, requiresForeground: true });
+  ...(inference.isCoreMLDiagnosticsAvailable() ? { coreMLComputeUnits: choice("all", "cpuOnly", "cpuAndGPU", "cpuAndNeuralEngine") } : {}),
+}, ["runtime", "modelId"]), (input) => {
+  if (input.coreMLComputeUnits !== undefined && (!inference.isCoreMLDiagnosticsAvailable() || input.runtime !== "coreml")) {
+    throw new ApplicationApiError("invalid_arguments", "Le diagnostic est réservé à Core ML en développement.");
+  }
+  return withNativeOperation("load", () => inference.loadLocalModel(input));
+}, { ...device, ...mutation, requiresForeground: true });
+if (inference.isCoreMLDiagnosticsAvailable()) {
+  register<{ fixtureID: CoreMLProbeFixture; computeUnits: inference.CoreMLComputeUnits }>("models.coreml-probe", object({
+    fixtureID: choice(...COREML_PROBE_FIXTURES), computeUnits: choice("all", "cpuOnly", "cpuAndGPU", "cpuAndNeuralEngine"),
+  }), (input) => {
+    if (!inference.isCoreMLDiagnosticsAvailable()) throw new ApplicationApiError("unavailable", "Diagnostic réservé à la version de développement.");
+    return withNativeOperation("probe", () => inference.probeCoreMLFixture(input));
+  }, { ...device, ...mutation, requiresForeground: true });
+}
+if (inference.isCoreMLDiagnosticImportAvailable()) {
+  register("models.coreml-import", noInput, (_, context) => withNativeOperation("import", async (assertActive) => {
+    if (!inference.isCoreMLDiagnosticImportAvailable()) throw new ApplicationApiError("unavailable", "Import diagnostique indisponible.");
+    assertActive();
+    if (context.shouldAccept && !context.shouldAccept()) throw new ApplicationApiError("cancelled", "Importation annulée.");
+    return inference.importCoreMLDiagnosticCandidate();
+  }), { ...device, ...mutation, requiresForeground: true });
+}
 register("models.unload", noInput, () => withNativeOperation("unload", () => inference.unloadLocalModel()), { ...device, ...mutation, requiresForeground: true });
 register<{ preset: "dolphin-gguf" }>("models.download", object({ preset: choice("dolphin-gguf") }),
   () => withNativeOperation("download", () => inference.downloadLocalGgufModel(LOCAL_MODEL_PRESETS["llama.cpp"].download!)), { ...device, ...mutation, requiresForeground: true });

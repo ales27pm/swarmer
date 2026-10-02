@@ -1,3 +1,5 @@
+import type { CoreMLLoadDiagnostic } from "../../../src/lib/coreml-load-diagnostics";
+export type { CoreMLComputeUnits, CoreMLLoadDiagnostic } from "../../../src/lib/coreml-load-diagnostics";
 export type LocalInferenceRuntime = "coreml" | "mlx" | "llama.cpp";
 
 export type LocalInferenceCapabilities = {
@@ -32,6 +34,7 @@ export type LocalInferenceStatus = {
   modelId: string | null;
   revision: string | null;
   message?: string;
+  coreMLLoadDiagnostic?: CoreMLLoadDiagnostic;
 };
 
 export type LocalGenerationResult = {

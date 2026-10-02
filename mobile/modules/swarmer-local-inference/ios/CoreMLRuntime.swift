@@ -1,6 +1,9 @@
 import CoreML
 import Foundation
 import Tokenizers
+#if DEBUG
+import CryptoKit
+#endif
 
 @available(iOS 18.0, *)
 actor CoreMLRuntime {
@@ -96,40 +99,62 @@ actor CoreMLRuntime {
   private var cancelRequested = false
   private var generating = false
 
-  func load(modelURL: URL, tokenizerURL: URL) async throws {
+  func load(
+    modelURL: URL, tokenizerURL: URL, diagnosticUnits: CoreMLDiagnosticComputeUnits? = nil
+  ) async throws -> CoreMLLoadDiagnostic? {
+    let units = try CoreMLDiagnosticComputeUnits.requested(diagnosticUnits?.rawValue, runtime: "coreml")
     guard !generating else { throw LocalInferenceError.generationInProgress }
-    cancelRequested = false
-    let ext = modelURL.pathExtension.lowercased()
-    guard ["mlmodel", "mlpackage", "mlmodelc"].contains(ext) else {
-      throw LocalInferenceError.unsupportedModel("unsupported Core ML extension")
-    }
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var stage = CoreMLLoadDiagnostic.Stage.validateArtifact
+    do {
+      cancelRequested = false
+      let ext = modelURL.pathExtension.lowercased()
+      guard ["mlmodel", "mlpackage", "mlmodelc"].contains(ext) else {
+        throw LocalInferenceError.unsupportedModel("unsupported Core ML extension")
+      }
 
-    let compiledURL: URL
-    if ext == "mlmodelc" {
-      compiledURL = modelURL
-    } else {
-      compiledURL = try await MLModel.compileModel(at: modelURL)
-    }
-    try checkCancellation()
+      let compiledURL: URL
+      if ext == "mlmodelc" {
+        compiledURL = modelURL
+      } else {
+        stage = .compile
+        compiledURL = try await MLModel.compileModel(at: modelURL)
+      }
+      try checkCancellation()
 
-    let configuration = MLModelConfiguration()
-    configuration.computeUnits = .all
-    let loadedModel = try await MLModel.load(contentsOf: compiledURL, configuration: configuration)
-    try checkCancellation()
-    let loadedContract = try Self.validate(model: loadedModel)
-    let loadedTokenizer = try await AutoTokenizer.from(modelFolder: tokenizerURL, strict: true)
-    var loadedStopTokenIDs = try CoreMLDolphinSupport.configuredStopTokenIDs(in: tokenizerURL)
-    if let eosTokenID = loadedTokenizer.eosTokenId { loadedStopTokenIDs.insert(eosTokenID) }
-    if loadedContract.dolphinCausalMask {
-      loadedStopTokenIDs.formUnion(CoreMLDolphinSupport.stopTokenIDs)
-    }
-    try checkCancellation()
+      let configuration = MLModelConfiguration()
+      switch units ?? .all {
+      case .all: configuration.computeUnits = .all
+      case .cpuOnly: configuration.computeUnits = .cpuOnly
+      case .cpuAndGPU: configuration.computeUnits = .cpuAndGPU
+      case .cpuAndNeuralEngine: configuration.computeUnits = .cpuAndNeuralEngine
+      }
+      stage = .load
+      let loadedModel = try await MLModel.load(contentsOf: compiledURL, configuration: configuration)
+      try checkCancellation()
+      stage = .validateContract
+      let loadedContract = try Self.validate(model: loadedModel)
+      stage = .tokenizer
+      let loadedTokenizer = try await AutoTokenizer.from(modelFolder: tokenizerURL, strict: true)
+      var loadedStopTokenIDs = try CoreMLDolphinSupport.configuredStopTokenIDs(in: tokenizerURL)
+      if let eosTokenID = loadedTokenizer.eosTokenId { loadedStopTokenIDs.insert(eosTokenID) }
+      if loadedContract.dolphinCausalMask {
+        loadedStopTokenIDs.formUnion(CoreMLDolphinSupport.stopTokenIDs)
+      }
+      try checkCancellation()
 
-    stopTokenIDs = loadedStopTokenIDs
-    model = LoadedModel(loadedModel)
-    contract = loadedContract
-    tokenizer = loadedTokenizer
-    cancelRequested = false
+      stopTokenIDs = loadedStopTokenIDs
+      model = LoadedModel(loadedModel)
+      contract = loadedContract
+      tokenizer = loadedTokenizer
+      cancelRequested = false
+      return units.map { .capture(units: $0, stage: .complete, startedAt: startedAt) }
+    } catch {
+      guard let units else { throw error }
+      throw CoreMLDiagnosticLoadFailure(diagnostic: .capture(
+        units: units, stage: stage, startedAt: startedAt, error: error
+      ))
+    }
   }
 
   func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> RuntimeGenerationResult {
@@ -463,3 +488,349 @@ actor CoreMLRuntime {
     return scaled.count - 1
   }
 }
+
+#if DEBUG
+// Small, immutable app resources only. Device preferences describe Core ML's
+// compute plan; they are not measurements of hardware execution.
+@available(iOS 18.0, *)
+enum CoreMLFixtureProbe {
+  static let fixtureIDs: Set<String> = [
+    "attention-stateful-fused", "attention-stateful-decomposed",
+    "attention-stateless-fused", "attention-stateless-decomposed",
+    "dolphin-attention-int4-block32", "dolphin-attention-int4-perchannel",
+  ]
+  static let timeoutSeconds: UInt64 = 90
+  private static let maximumElements = 1_000_000
+  private static let maximumPackageBytes = 32 * 1024 * 1024
+
+  private struct Manifest: Decodable {
+    let schemaVersion: Int
+    let fixtures: [Fixture]
+  }
+  private struct FileReference: Decodable {
+    let path: String
+    let sha256: String
+  }
+  private struct TensorReference: Decodable {
+    let name: String
+    let shape: [Int]
+    let dtype: String?
+    let path: String
+    let sha256: String
+  }
+  private struct Step: Decodable {
+    let label: String
+    let resetState: Bool
+    let inputs: [TensorReference]
+    let outputs: [TensorReference]
+  }
+  private struct Fixture: Decodable {
+    let id: String
+    let modelPath: String
+    let modelFiles: [FileReference]
+    let stateful: Bool
+    let steps: [Step]
+    let absoluteTolerance: Double
+    let relativeTolerance: Double
+  }
+  struct DeviceCounts: Codable, Sendable {
+    var cpu = 0
+    var gpu = 0
+    var neuralEngine = 0
+    var unknown = 0
+
+    mutating func add(_ device: MLComputeDevice?) {
+      switch device {
+      case .cpu?: cpu += 1
+      case .gpu?: gpu += 1
+      case .neuralEngine?: neuralEngine += 1
+      case nil: unknown += 1
+      @unknown default: unknown += 1
+      }
+    }
+  }
+  struct Report: Encodable, Sendable {
+    let schemaVersion = 1
+    let fixtureID: String
+    let computeUnits: String
+    var outcome = "failed"
+    var stage = "resolve"
+    var loadMilliseconds: Double = 0
+    var predictionMilliseconds: Double = 0
+    var preferredDeviceCounts = DeviceCounts()
+    var supportedDeviceCounts = DeviceCounts()
+    var maxAbsoluteError: Double?
+    var elementsCompared = 0
+    var errors: [CoreMLLoadDiagnostic.Failure] = []
+    let hardwareExecutionMeasured = false
+
+    private enum CodingKeys: String, CodingKey {
+      case schemaVersion, fixtureID, computeUnits, outcome, stage
+      case loadMilliseconds, predictionMilliseconds, preferredDeviceCounts, supportedDeviceCounts
+      case maxAbsoluteError, elementsCompared, errors, hardwareExecutionMeasured
+    }
+    func encode(to encoder: any Encoder) throws {
+      var container = encoder.container(keyedBy: CodingKeys.self)
+      try container.encode(schemaVersion, forKey: .schemaVersion)
+      try container.encode(fixtureID, forKey: .fixtureID)
+      try container.encode(computeUnits, forKey: .computeUnits)
+      try container.encode(outcome, forKey: .outcome)
+      try container.encode(stage, forKey: .stage)
+      try container.encode(loadMilliseconds, forKey: .loadMilliseconds)
+      try container.encode(predictionMilliseconds, forKey: .predictionMilliseconds)
+      try container.encode(preferredDeviceCounts, forKey: .preferredDeviceCounts)
+      try container.encode(supportedDeviceCounts, forKey: .supportedDeviceCounts)
+      if let maxAbsoluteError { try container.encode(maxAbsoluteError, forKey: .maxAbsoluteError) }
+      else { try container.encodeNil(forKey: .maxAbsoluteError) }
+      try container.encode(elementsCompared, forKey: .elementsCompared)
+      try container.encode(errors, forKey: .errors)
+      try container.encode(hardwareExecutionMeasured, forKey: .hardwareExecutionMeasured)
+    }
+    func json() throws -> String {
+      String(decoding: try JSONEncoder().encode(self), as: UTF8.self)
+    }
+  }
+
+  // Core ML owns these objects. This wrapper stays within one probe task, which
+  // performs serial predictions and never shares a state with another request.
+  private final class PredictionSession: @unchecked Sendable {
+    let model: MLModel
+    var state: MLState?
+    init(model: MLModel, stateful: Bool) {
+      self.model = model
+      state = stateful ? model.makeState() : nil
+    }
+    func reset() { state = model.makeState() }
+    func predict(_ inputs: [String: MLTensor]) async throws -> [String: MLTensor] {
+      if let state { return try await model.prediction(from: inputs, using: state) }
+      return try await model.prediction(from: inputs)
+    }
+  }
+
+  static func run(fixtureID: String, units: CoreMLDiagnosticComputeUnits) async -> Report {
+    var report = Report(fixtureID: fixtureID, computeUnits: units.rawValue)
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var phaseStarted = startedAt
+    var compiledURL: URL?
+    defer { if let compiledURL { try? FileManager.default.removeItem(at: compiledURL) } }
+    do {
+      try checkpoint(startedAt)
+      guard fixtureIDs.contains(fixtureID),
+            let root = Bundle.main.url(forResource: "CoreMLProbeFixtures", withExtension: nil) else {
+        throw invalidResource()
+      }
+      let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+      guard rootValues.isDirectory == true, rootValues.isSymbolicLink == false else { throw invalidResource() }
+      let manifestURL = try resourceURL("manifest.json", root: root, directory: false)
+      let manifestData = try boundedData(manifestURL, maximumBytes: 128 * 1024)
+      let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
+      guard manifest.schemaVersion == 1, (1...10).contains(manifest.fixtures.count),
+            Set(manifest.fixtures.map(\.id)).count == manifest.fixtures.count,
+            manifest.fixtures.allSatisfy({ fixtureIDs.contains($0.id) }),
+            let fixture = manifest.fixtures.first(where: { $0.id == fixtureID }),
+            (1...3).contains(fixture.steps.count),
+            fixture.absoluteTolerance.isFinite, (0...0.1).contains(fixture.absoluteTolerance),
+            fixture.relativeTolerance.isFinite, (0...0.1).contains(fixture.relativeTolerance) else {
+        throw invalidResource()
+      }
+      let package = try resourceURL(fixture.modelPath, root: root, directory: true)
+      guard package.pathExtension == "mlpackage" else { throw invalidResource() }
+      try verifyPackage(package, files: fixture.modelFiles)
+      // Validate every tensor before asking Core ML to compile anything.
+      var totalElements = 0
+      for step in fixture.steps {
+        guard (1...16).contains(step.inputs.count), (1...4).contains(step.outputs.count),
+              Set(step.inputs.map(\.name)).count == step.inputs.count,
+              Set(step.outputs.map(\.name)).count == step.outputs.count else { throw invalidResource() }
+        for input in step.inputs {
+          guard input.dtype == "float16" || input.dtype == "int32" else { throw invalidResource() }
+        }
+        for tensor in step.inputs + step.outputs {
+          let values = try tensorValues(tensor, root: root)
+          totalElements += values.count
+          guard totalElements <= maximumElements else { throw invalidResource() }
+        }
+      }
+      try checkpoint(startedAt)
+      report.stage = "compile"
+      let compiled = try await MLModel.compileModel(at: package)
+      compiledURL = compiled
+      try checkpoint(startedAt)
+      let configuration = MLModelConfiguration()
+      switch units {
+      case .all: configuration.computeUnits = .all
+      case .cpuOnly: configuration.computeUnits = .cpuOnly
+      case .cpuAndGPU: configuration.computeUnits = .cpuAndGPU
+      case .cpuAndNeuralEngine: configuration.computeUnits = .cpuAndNeuralEngine
+      }
+      report.stage = "load"
+      phaseStarted = ProcessInfo.processInfo.systemUptime
+      let model = try await MLModel.load(contentsOf: compiled, configuration: configuration)
+      report.loadMilliseconds = elapsed(since: phaseStarted)
+      try checkpoint(startedAt)
+      let session = PredictionSession(model: model, stateful: fixture.stateful)
+      report.stage = "plan"
+      let plan = try await MLComputePlan.load(contentsOf: compiled, configuration: configuration)
+      var operationCount = 0
+      try countDevices(plan.modelStructure, plan: plan, report: &report, count: &operationCount)
+      guard operationCount > 0 else { throw invalidResource() }
+      try checkpoint(startedAt)
+      var matches = true
+      for step in fixture.steps {
+        if fixture.stateful && step.resetState { session.reset() }
+        var inputs: [String: MLTensor] = [:]
+        for input in step.inputs {
+          let values = try tensorValues(input, root: root)
+          if input.dtype == "int32" {
+            guard values.allSatisfy({ $0.rounded() == $0 && Double($0) >= Double(Int32.min)
+              && Double($0) <= Double(Int32.max) }) else { throw invalidResource() }
+            inputs[input.name] = MLTensor(shape: input.shape, scalars: values.map { Int32($0) })
+          } else {
+            let half = values.map { Float16($0) }
+            guard half.allSatisfy(\.isFinite) else { throw invalidResource() }
+            inputs[input.name] = MLTensor(shape: input.shape, scalars: half)
+          }
+        }
+        report.stage = "predict"
+        phaseStarted = ProcessInfo.processInfo.systemUptime
+        let outputs = try await session.predict(inputs)
+        report.predictionMilliseconds += elapsed(since: phaseStarted)
+        try checkpoint(startedAt)
+        report.stage = "compare"
+        for expected in step.outputs {
+          guard let output = outputs[expected.name], output.shape == expected.shape else { throw invalidResource() }
+          let actual = await output.cast(to: Float.self).shapedArray(of: Float.self).scalars
+          let reference = try tensorValues(expected, root: root)
+          guard actual.count == reference.count, actual.allSatisfy(\.isFinite) else { throw invalidResource() }
+          for (value, target) in zip(actual, reference) {
+            let error = abs(Double(value) - Double(target))
+            report.maxAbsoluteError = max(report.maxAbsoluteError ?? 0, error)
+            if error > fixture.absoluteTolerance + fixture.relativeTolerance * abs(Double(target)) { matches = false }
+          }
+          report.elementsCompared += reference.count
+        }
+        try checkpoint(startedAt)
+      }
+      if matches && report.elementsCompared > 0 {
+        report.outcome = "passed"
+        report.stage = "complete"
+      }
+    } catch {
+      if report.stage == "load" { report.loadMilliseconds = elapsed(since: phaseStarted) }
+      if report.stage == "predict" { report.predictionMilliseconds += elapsed(since: phaseStarted) }
+      let cancelled = error is CancellationError || Task.isCancelled
+      report.outcome = cancelled ? "cancelled" : "failed"
+      let safeError: any Error = cancelled
+        ? NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError) : error
+      report.errors = CoreMLLoadDiagnostic.capture(
+        units: units, stage: .load, startedAt: startedAt, error: safeError
+      ).errors
+    }
+    return report
+  }
+
+  private static func elapsed(since start: TimeInterval) -> Double {
+    let value = (ProcessInfo.processInfo.systemUptime - start) * 1000
+    return value.isFinite ? min(86_400_000, max(0, value)) : 0
+  }
+  private static func checkpoint(_ start: TimeInterval) throws {
+    try Task.checkCancellation()
+    guard ProcessInfo.processInfo.systemUptime - start < Double(timeoutSeconds) else { throw CancellationError() }
+  }
+  private static func invalidResource() -> NSError {
+    NSError(domain: NSCocoaErrorDomain, code: NSFileReadCorruptFileError)
+  }
+  private static func resourceURL(_ relative: String, root: URL, directory: Bool) throws -> URL {
+    let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+    guard !parts.isEmpty, relative.utf8.count <= 512, parts.count <= 16,
+          parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".."
+            && $0.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil }) else {
+      throw invalidResource()
+    }
+    var url = root
+    for part in parts {
+      url.appendPathComponent(String(part))
+      guard try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == false else { throw invalidResource() }
+    }
+    let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+    guard directory ? values.isDirectory == true : values.isRegularFile == true else { throw invalidResource() }
+    return url
+  }
+  private static func boundedData(_ url: URL, maximumBytes: Int) throws -> Data {
+    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1
+    guard size >= 0, size <= maximumBytes else { throw invalidResource() }
+    let data = try Data(contentsOf: url)
+    guard data.count == size else { throw invalidResource() }
+    return data
+  }
+  private static func checkedData(_ url: URL, hash: String, maximumBytes: Int) throws -> Data {
+    guard hash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else { throw invalidResource() }
+    let data = try boundedData(url, maximumBytes: maximumBytes)
+    guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == hash else { throw invalidResource() }
+    return data
+  }
+  private static func tensorValues(_ tensor: TensorReference, root: URL) throws -> [Float] {
+    guard !tensor.name.isEmpty, tensor.name.utf8.count <= 128, (1...6).contains(tensor.shape.count) else { throw invalidResource() }
+    var count = 1
+    for dimension in tensor.shape {
+      guard dimension > 0, dimension <= maximumElements, count <= maximumElements / dimension else { throw invalidResource() }
+      count *= dimension
+    }
+    let data = try checkedData(resourceURL(tensor.path, root: root, directory: false), hash: tensor.sha256,
+                               maximumBytes: maximumElements * 4)
+    guard data.count == count * 4 else { throw invalidResource() }
+    let values: [Float] = data.withUnsafeBytes { bytes in
+      (0..<count).map { Float(bitPattern: UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self))) }
+    }
+    guard values.allSatisfy(\.isFinite) else { throw invalidResource() }
+    return values
+  }
+  private static func verifyPackage(_ package: URL, files: [FileReference]) throws {
+    guard (1...512).contains(files.count), Set(files.map(\.path)).count == files.count,
+          let enumerator = FileManager.default.enumerator(at: package,
+            includingPropertiesForKeys: [.isSymbolicLinkKey, .isRegularFileKey, .isDirectoryKey]) else { throw invalidResource() }
+    var actual = Set<String>()
+    var entries = 0
+    for case let url as URL in enumerator {
+      entries += 1
+      let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .isDirectoryKey])
+      guard entries <= 1024, values.isSymbolicLink == false,
+            values.isRegularFile == true || values.isDirectory == true else { throw invalidResource() }
+      if values.isRegularFile == true { actual.insert(String(url.path.dropFirst(package.path.count + 1))) }
+    }
+    guard actual == Set(files.map(\.path)) else { throw invalidResource() }
+    var total = 0
+    for file in files {
+      let data = try checkedData(resourceURL(file.path, root: package, directory: false), hash: file.sha256,
+                                 maximumBytes: maximumPackageBytes - total)
+      total += data.count
+    }
+  }
+  private static func countDevices(_ structure: MLModelStructure, plan: MLComputePlan,
+                                   report: inout Report, count: inout Int) throws {
+    // The fixed fixtures are ML Programs. Do not silently report zero placement
+    // evidence for an unexpected format.
+    guard case .program(let program) = structure else { throw invalidResource() }
+    for function in program.functions.values {
+      try countBlock(function.block, plan: plan, report: &report, count: &count, depth: 0)
+    }
+  }
+  private static func countBlock(_ block: MLModelStructure.Program.Block, plan: MLComputePlan,
+                                report: inout Report, count: inout Int, depth: Int) throws {
+    guard depth <= 16 else { throw invalidResource() }
+    for operation in block.operations {
+      count += 1
+      guard count <= 100_000 else { throw invalidResource() }
+      let usage = plan.deviceUsage(for: operation)
+      report.preferredDeviceCounts.add(usage?.preferred)
+      if let usage {
+        guard usage.supported.count <= 10 else { throw invalidResource() }
+        for device in usage.supported { report.supportedDeviceCounts.add(device) }
+      } else { report.supportedDeviceCounts.add(nil) }
+      for nested in operation.blocks {
+        try countBlock(nested, plan: plan, report: &report, count: &count, depth: depth + 1)
+      }
+    }
+  }
+}
+#endif

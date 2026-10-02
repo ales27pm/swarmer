@@ -8,9 +8,14 @@ import type {
   LocalInferenceStatus,
   LocalModel,
   LocalModelDownloadInput,
+  CoreMLComputeUnits,
 } from "./SwarmerLocalInference.types";
 
 declare class SwarmerLocalInferenceModule extends NativeModule {
+  readonly coreMLDiagnosticsAvailable?: boolean;
+  readonly coreMLDiagnosticImportAvailable?: boolean;
+  importCoreMLDiagnosticCandidate?(): Promise<LocalModel>;
+  probeCoreMLFixture?(fixtureID: string, computeUnits: CoreMLComputeUnits): Promise<string>;
   capabilities(): Promise<LocalInferenceCapabilities>;
   embeddingStatus(): Promise<LocalEmbeddingStatus>;
   loadEmbedder(input: LocalEmbeddingLoadInput): Promise<LocalEmbeddingStatus>;
@@ -29,6 +34,7 @@ declare class SwarmerLocalInferenceModule extends NativeModule {
     runtime: LocalInferenceRuntime;
     modelId: string;
     revision?: string;
+    coreMLComputeUnits?: CoreMLComputeUnits;
   }): Promise<LocalInferenceStatus>;
   status(): Promise<LocalInferenceStatus>;
   generate(input: {

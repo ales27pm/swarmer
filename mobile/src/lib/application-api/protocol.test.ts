@@ -6,6 +6,30 @@ const request = (command = "models.status", input = {}, key = "12345678-1234-123
 const create = (dispatcher: Parameters<typeof createApplicationProtocol>[0]) => createApplicationProtocol(dispatcher, () => new Date(), "testinstance");
 const getJob = (api: ReturnType<typeof createApplicationProtocol>, id = "job_testinstance_1") => api.handle({ method: "GET", path: `/v1/jobs/${id}`, body: "" }).body;
 
+test.each(["goals.memory-usage", "goals.writing-draft", "websites.prepare-publication"])(
+  "dispatches the catalog command %s through HTTP and retains its receipt",
+  async (command) => {
+    const execute = jest.fn(async () => ({ data: { available: true } }));
+    const api = create({ execute, catalog: () => ({}) });
+    expect(api.handle(request(command, { id: "goal_test" })).status).toBe(202);
+    await Promise.resolve();
+    expect(execute).toHaveBeenCalledWith(command, { id: "goal_test" });
+    expect(getJob(api)).toMatchObject({ job: { state: "succeeded", command } });
+    expect(api.handle(request(command, { id: "goal_test" })).status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each(["goals/memory-usage", "goals.memory usage", "goals.memory-usage\n", "goals.memory?usage"])(
+  "rejects malformed command names without dispatch: %s",
+  (command) => {
+    const execute = jest.fn(async () => null);
+    const api = create({ execute, catalog: () => ({}) });
+    expect(api.handle(request(command)).status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+  },
+);
+
 test("lost responses and concurrent retries execute a mutation once", async () => {
   let finish!: (value: unknown) => void;
   const execute = jest.fn(() => new Promise((resolve) => { finish = resolve; }));

@@ -10,6 +10,7 @@ actor LocalInferenceCoordinator {
   private struct LoadOutcome: Sendable {
     let handle: Handle
     let revision: String?
+    let diagnostic: CoreMLLoadDiagnostic?
   }
 
   private struct LoadOperation: Sendable {
@@ -33,6 +34,15 @@ actor LocalInferenceCoordinator {
   private let store = LocalModelStore()
   private let embedder = MLXEmbeddingRuntime()
   private var embeddingReserved = false
+  private var diagnosticReserved = false
+  #if DEBUG
+  private struct FixtureProbeOperation: Sendable {
+    let id: UUID
+    let task: Task<CoreMLFixtureProbe.Report, Never>
+  }
+  private var fixtureProbeOperation: FixtureProbeOperation?
+  private var diagnosticImportID: UUID?
+  #endif
   private var embeddingEpoch = 0
   private var handle: Handle?
   private var loadOperation: LoadOperation?
@@ -43,6 +53,7 @@ actor LocalInferenceCoordinator {
   private var currentRevision: String?
   private var state = "idle"
   private var message: String?
+  private var coreMLLoadDiagnostic: CoreMLLoadDiagnostic?
   private var lifecycleEpoch = 0
   private var activity = GenerationActivityFence()
 
@@ -51,7 +62,7 @@ actor LocalInferenceCoordinator {
   func loadEmbedder(options: LoadEmbedderOptions) async throws -> EmbeddingStatusRecord {
     let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
     guard !snapshot.inactive else { throw LocalInferenceError.generationInProgress }
-    guard !embeddingReserved, !activity.isSuspended, handle == nil,
+    guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended, handle == nil,
           state == "idle" || state == "failed",
           loadOperation == nil, generationOperation == nil, importOperation == nil else {
       throw LocalInferenceError.generationInProgress
@@ -66,7 +77,7 @@ actor LocalInferenceCoordinator {
   func embed(options: EmbedOptions) async throws -> EmbeddingResultRecord {
     let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
     guard !snapshot.inactive else { throw LocalInferenceError.generationInProgress }
-    guard embeddingReserved, !activity.isSuspended else { throw LocalInferenceError.modelNotLoaded }
+    guard !diagnosticReserved, embeddingReserved, !activity.isSuspended else { throw LocalInferenceError.modelNotLoaded }
     return try await embedder.embed(options: options)
   }
 
@@ -82,6 +93,97 @@ actor LocalInferenceCoordinator {
     CapabilitiesRecord()
   }
 
+  #if DEBUG
+  func importCoreMLDiagnosticCandidate() async throws -> LocalModelRecord {
+    let manifest = try CoreMLDiagnosticCandidate.bundledManifest()
+    let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
+    guard !snapshot.inactive, !activity.isSuspended, !diagnosticReserved, !embeddingReserved,
+          handle == nil, state == "idle" || state == "failed", importOperation == nil,
+          loadOperation == nil, generationOperation == nil else { throw LocalInferenceError.generationInProgress }
+    let id = UUID()
+    diagnosticReserved = true
+    diagnosticImportID = id
+    defer {
+      if diagnosticImportID == id {
+        diagnosticImportID = nil
+        diagnosticReserved = false
+      }
+    }
+    let store = self.store
+    let task = Task.detached(priority: .utility) {
+      try await store.importCoreMLDiagnosticCandidate(manifest: manifest)
+    }
+    return try await withTaskCancellationHandler {
+      try await finishImport(task, operationId: id, isDownload: false)
+    } onCancel: {
+      task.cancel()
+    }
+  }
+
+  func probeCoreMLFixture(fixtureID: String, computeUnits: String) async throws -> String {
+    guard CoreMLFixtureProbe.fixtureIDs.contains(fixtureID),
+          let units = try CoreMLDiagnosticComputeUnits.requested(computeUnits, runtime: "coreml") else {
+      throw CoreMLDiagnosticOptionError()
+    }
+    let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
+    guard !snapshot.inactive, !activity.isSuspended, !diagnosticReserved, !embeddingReserved,
+          handle == nil, state == "idle" || state == "failed", importOperation == nil,
+          loadOperation == nil, generationOperation == nil else { throw LocalInferenceError.generationInProgress }
+    let id = UUID()
+    diagnosticReserved = true
+    state = "loading"
+    message = nil
+    currentRuntime = nil
+    currentModelId = nil
+    currentRevision = nil
+    coreMLLoadDiagnostic = nil
+    let task = Task.detached(priority: .userInitiated) {
+      await CoreMLFixtureProbe.run(fixtureID: fixtureID, units: units)
+    }
+    fixtureProbeOperation = FixtureProbeOperation(id: id, task: task)
+    let watchdog = Task {
+      do {
+        try await Task.sleep(nanoseconds: CoreMLFixtureProbe.timeoutSeconds * 1_000_000_000)
+        await self.cancelFixtureProbe(id: id)
+      } catch { /* The completed probe cancels its watchdog. */ }
+    }
+    defer { watchdog.cancel() }
+    var report = await withTaskCancellationHandler {
+      await task.value
+    } onCancel: {
+      task.cancel()
+    }
+    // A cancellation racing with completion must never publish success. Keep
+    // exclusive admission until the Core ML task has actually returned.
+    if task.isCancelled || Task.isCancelled {
+      report.outcome = "cancelled"
+      report.errors = [CoreMLLoadDiagnostic.Failure(
+        domain: NSCocoaErrorDomain, code: NSUserCancelledError, executionPlanCode: nil
+      )]
+    }
+    if fixtureProbeOperation?.id == id {
+      fixtureProbeOperation = nil
+      diagnosticReserved = false
+      state = "idle"
+      message = nil
+    }
+    return try report.json()
+  }
+
+  private func cancelFixtureProbe(id: UUID) async {
+    guard let operation = fixtureProbeOperation, operation.id == id else { return }
+    state = "cancelling"
+    operation.task.cancel()
+    _ = await operation.task.value
+    if fixtureProbeOperation?.id == id {
+      fixtureProbeOperation = nil
+      diagnosticReserved = false
+      state = "idle"
+      message = nil
+    }
+  }
+  #endif
+
   func importModel(options: ImportModelOptions) async throws -> LocalModelRecord {
     try await importModel(
       runtimeValue: options.runtime,
@@ -96,7 +198,7 @@ actor LocalInferenceCoordinator {
     displayName: String?
   ) async throws -> LocalModelRecord {
     let runtime = try LocalRuntime(wireValue: runtimeValue)
-    guard !embeddingReserved, !activity.isSuspended,
+    guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended,
           importOperation == nil,
           loadOperation == nil,
           generationOperation == nil,
@@ -123,7 +225,7 @@ actor LocalInferenceCoordinator {
       sizeBytes: options.sizeBytes,
       displayName: options.displayName
     )
-    guard !embeddingReserved, !activity.isSuspended,
+    guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended,
           importOperation == nil,
           loadOperation == nil,
           generationOperation == nil,
@@ -171,12 +273,16 @@ actor LocalInferenceCoordinator {
   }
 
   func loadModel(options: LoadModelOptions) async throws -> StatusRecord {
-    guard !embeddingReserved, !activity.isSuspended,
+    guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended,
           importOperation == nil,
           state != "loading", state != "generating", state != "cancelling" else {
       throw LocalInferenceError.generationInProgress
     }
     let requestedRuntime = try LocalRuntime(wireValue: options.runtime)
+    // Reject diagnostics in Release, and for other engines, before unloading a model.
+    let diagnosticUnits = try CoreMLDiagnosticComputeUnits.requested(
+      options.coreMLComputeUnits, runtime: requestedRuntime.rawValue
+    )
     let requestedId = options.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !requestedId.isEmpty, requestedId.count <= 200 else {
       throw LocalInferenceError.modelNotFound(options.modelId)
@@ -189,6 +295,7 @@ actor LocalInferenceCoordinator {
     currentModelId = requestedId
     currentRevision = nil
     message = nil
+    coreMLLoadDiagnostic = nil
 
     if let previous = handle {
       handle = nil
@@ -203,7 +310,8 @@ actor LocalInferenceCoordinator {
         store: store,
         runtime: requestedRuntime,
         modelId: requestedId,
-        revision: options.revision
+        revision: options.revision,
+        diagnosticUnits: diagnosticUnits
       )
     }
     loadOperation = LoadOperation(id: operationId, epoch: loadEpoch, task: task)
@@ -219,6 +327,7 @@ actor LocalInferenceCoordinator {
       loadOperation = nil
       handle = outcome.handle
       currentRevision = outcome.revision
+      coreMLLoadDiagnostic = outcome.diagnostic
       state = "ready"
       message = nil
       return status()
@@ -230,6 +339,10 @@ actor LocalInferenceCoordinator {
         handle = nil
         state = "failed"
         message = error.localizedDescription
+        coreMLLoadDiagnostic = (error as? CoreMLDiagnosticLoadFailure)?.diagnostic
+      }
+      if (error as? CoreMLDiagnosticLoadFailure)?.diagnostic.outcome == .cancelled {
+        throw CancellationError()
       }
       throw error
     }
@@ -241,13 +354,14 @@ actor LocalInferenceCoordinator {
       runtime: currentRuntime,
       modelId: currentModelId,
       revision: currentRevision,
-      message: message
+      message: message,
+      coreMLLoadDiagnostic: coreMLLoadDiagnostic
     )
   }
 
   func generate(options: GenerateOptions) async throws -> GenerationRecord {
     guard let handle else { throw LocalInferenceError.modelNotLoaded }
-    guard !activity.isSuspended, importOperation == nil, state == "ready", generationOperation == nil else {
+    guard !diagnosticReserved, !activity.isSuspended, importOperation == nil, state == "ready", generationOperation == nil else {
       throw LocalInferenceError.generationInProgress
     }
     let prompt = try LocalInferenceValidation.prompt(options.prompt)
@@ -338,6 +452,12 @@ actor LocalInferenceCoordinator {
   }
 
   func cancel() async {
+    #if DEBUG
+    if let operation = fixtureProbeOperation {
+      await cancelFixtureProbe(id: operation.id)
+      return
+    }
+    #endif
     guard let operation = generationOperation else { return }
     await cancel(operationId: operation.id)
   }
@@ -359,6 +479,9 @@ actor LocalInferenceCoordinator {
   func unload() async {
     lifecycleEpoch += 1
     let invalidatedEpoch = lifecycleEpoch
+    #if DEBUG
+    if let operation = fixtureProbeOperation { await cancelFixtureProbe(id: operation.id) }
+    #endif
     if importOperation != nil || loadOperation != nil || generationOperation != nil {
       state = "cancelling"
     }
@@ -400,6 +523,7 @@ actor LocalInferenceCoordinator {
     currentRevision = nil
     state = "idle"
     message = nil
+    coreMLLoadDiagnostic = nil
   }
 
   func shutdown() async {
@@ -409,6 +533,10 @@ actor LocalInferenceCoordinator {
   }
 
   func prepareForInactivity() async {
+    #if DEBUG
+    if diagnosticImportID != nil { await cancelImport() }
+    if let operation = fixtureProbeOperation { await cancelFixtureProbe(id: operation.id) }
+    #endif
     if embeddingReserved { await unloadEmbedder() }
     await reconcileActivity(cancelAllWhenInactive: false)
   }
@@ -421,6 +549,16 @@ actor LocalInferenceCoordinator {
     let epoch = activity.begin()
     let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
     guard activity.reconcile(inactive: snapshot.inactive, epoch: epoch), snapshot.inactive else { return }
+    #if DEBUG
+    if diagnosticImportID != nil {
+      await cancelImport()
+      guard activity.isCurrent(epoch), activity.isSuspended else { return }
+    }
+    if let operation = fixtureProbeOperation {
+      await cancelFixtureProbe(id: operation.id)
+      guard activity.isCurrent(epoch), activity.isSuspended else { return }
+    }
+    #endif
     let cancelAll = snapshot.shouldCancelAll(requested: cancelAllWhenInactive)
     if let operation = generationOperation, case .mlx = operation.handle {
       let admitted = await BackgroundGenerationController.shared.mayContinue(operationId: operation.id)
@@ -460,9 +598,12 @@ actor LocalInferenceCoordinator {
     store: LocalModelStore,
     runtime: LocalRuntime,
     modelId: String,
-    revision: String?
+    revision: String?,
+    diagnosticUnits: CoreMLDiagnosticComputeUnits?
   ) async throws -> LoadOutcome {
     var loading: Handle?
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    var diagnosticStage = CoreMLLoadDiagnostic.Stage.resolve
     do {
       let resolved: ResolvedLocalModel?
       do {
@@ -474,6 +615,7 @@ actor LocalInferenceCoordinator {
 
       let loaded: Handle
       var resolvedRevision: String?
+      var diagnostic: CoreMLLoadDiagnostic?
       if let resolved {
         guard resolved.stored.runtime == runtime else {
           throw LocalInferenceError.runtimeMismatch
@@ -489,7 +631,9 @@ actor LocalInferenceCoordinator {
           let runtime = CoreMLRuntime()
           loaded = .coreML(runtime)
           loading = loaded
-          try await runtime.load(modelURL: resolved.runtimeURL, tokenizerURL: tokenizerURL)
+          diagnostic = try await runtime.load(
+            modelURL: resolved.runtimeURL, tokenizerURL: tokenizerURL, diagnosticUnits: diagnosticUnits
+          )
         case .mlx:
           let runtime = MLXRuntime()
           loaded = .mlx(runtime)
@@ -516,12 +660,18 @@ actor LocalInferenceCoordinator {
         try await runtime.loadRemote(modelId: modelId, revision: immutableRevision, store: store)
       }
 
+      diagnosticStage = .complete
       try Task.checkCancellation()
-      return LoadOutcome(handle: loaded, revision: resolvedRevision)
+      return LoadOutcome(handle: loaded, revision: resolvedRevision, diagnostic: diagnostic)
     } catch {
       if let loading {
         await Self.cancel(loading)
         await Self.unload(loading)
+      }
+      if let units = diagnosticUnits, !(error is CoreMLDiagnosticLoadFailure) {
+        throw CoreMLDiagnosticLoadFailure(diagnostic: .capture(
+          units: units, stage: diagnosticStage, startedAt: startedAt, error: error
+        ))
       }
       throw error
     }

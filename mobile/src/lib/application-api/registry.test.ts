@@ -15,6 +15,7 @@ import { localSwarmSnapshot } from "@/lib/state/replica";
 import { AppState } from "react-native";
 import { getDocumentAsync } from "expo-document-picker";
 import { createApplicationProtocol } from "./protocol";
+import { invokeApplicationCommand } from "./registry";
 
 jest.mock("expo/fetch", () => ({ fetch: jest.fn() }));
 jest.mock("expo-document-picker", () => ({ getDocumentAsync: jest.fn() }));
@@ -33,12 +34,15 @@ jest.mock("@/lib/api/client", () => ({
 jest.mock("@/lib/local-inference", () => ({
   ...jest.requireActual<typeof import("@/lib/local-inference")>("@/lib/local-inference"),
   generateLocalProposal: jest.fn(), loadLocalModel: jest.fn(), cancelLocalGeneration: jest.fn(), unloadLocalModel: jest.fn(), downloadLocalGgufModel: jest.fn(),
-  importLocalModel: jest.fn(),
+  importLocalModel: jest.fn(), probeCoreMLFixture: jest.fn(), importCoreMLDiagnosticCandidate: jest.fn(),
   getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(),
+  isCoreMLDiagnosticsAvailable: jest.fn(() => true),
+  isCoreMLDiagnosticImportAvailable: jest.fn(() => true),
 }));
 
+const developmentGlobal = globalThis as typeof globalThis & { __DEV__: boolean };
 describe("application API contract", () => {
-  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); });
+  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true); });
 
   it("publishes versioned real commands with no placeholder implementations", () => {
     const catalog = applicationApi.catalog();
@@ -60,6 +64,22 @@ describe("application API contract", () => {
     expect(() => JSON.stringify(catalog)).not.toThrow();
   });
 
+  it("restricts Core ML probes to bundled fixtures and the native diagnostic capability", async () => {
+    const input = { fixtureID: "attention-stateful-fused", computeUnits: "cpuAndNeuralEngine" };
+    jest.mocked(native.probeCoreMLFixture).mockResolvedValue({ schemaVersion: 1, ...input, outcome: "passed", stage: "complete",
+      loadMilliseconds: 1, predictionMilliseconds: 1, preferredDeviceCounts: { cpu: 0, gpu: 0, neuralEngine: 1, unknown: 0 },
+      supportedDeviceCounts: { cpu: 1, gpu: 0, neuralEngine: 1, unknown: 0 }, maxAbsoluteError: 0, elementsCompared: 1,
+      errors: [], hardwareExecutionMeasured: false } as Awaited<ReturnType<typeof native.probeCoreMLFixture>>);
+    await applicationApi.execute("models.coreml-probe", input);
+    expect(native.probeCoreMLFixture).toHaveBeenCalledTimes(1);
+    for (const bad of [{ ...input, fixtureID: "../../private" }, { ...input, url: "https://untrusted.invalid/model" }, { ...input, computeUnits: "aneOnly" }]) {
+      await expect(applicationApi.execute("models.coreml-probe", bad)).rejects.toMatchObject({ code: "invalid_arguments" });
+    }
+    jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(false);
+    await expect(applicationApi.execute("models.coreml-probe", input)).rejects.toMatchObject({ code: "unavailable" });
+    expect(native.probeCoreMLFixture).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes background status through the existing model status command without adding execution authority", async () => {
     const commandsBefore = applicationApi.catalog().commands;
     const status: native.LocalInferenceStatus = { state: "ready", runtime: "mlx", modelId: "test/dolphin", revision: null,
@@ -71,6 +91,27 @@ describe("application API contract", () => {
     expect(applicationApi.catalog().commands.find((command) => command.name === "models.status")).toMatchObject({ effect: "read", output: { dataType: "LocalInferenceStatus", validation: "existing_parser" } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(native.loadLocalModel).not.toHaveBeenCalled();
+  });
+
+  it("allows diagnostic import only with native capability and no caller-supplied path", async () => {
+    const model: native.LocalModel = { modelId: "diagnostic-new-id", runtime: "coreml", purpose: "generation",
+      displayName: "Diagnostic", source: "CoreMLDiagnosticCandidate", sizeBytes: 100, importedAt: "2026-10-02T00:00:00Z" };
+    jest.mocked(native.importCoreMLDiagnosticCandidate).mockResolvedValue(model);
+    expect((await applicationApi.execute("models.coreml-import", {})).data).toEqual(model);
+    expect(applicationApi.catalog().commands.find(c => c.name === "models.coreml-import")).toMatchObject({
+      effect: "mutation", requiresForeground: true, output: { validation: "existing_parser" },
+    });
+    for (const bad of [{ uri: "file:///private/model" }, { path: "../model" }, { url: "https://invalid/model" }, { modelId: "replace-original" }]) {
+      await expect(applicationApi.execute("models.coreml-import", bad)).rejects.toMatchObject({ code: "invalid_arguments" });
+    }
+    jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(false);
+    await expect(applicationApi.execute("models.coreml-import", {})).rejects.toMatchObject({ code: "unavailable" });
+    expect(native.importCoreMLDiagnosticCandidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not import a diagnostic candidate after its API session is cancelled", async () => {
+    await expect(invokeApplicationCommand("models.coreml-import", {}, { shouldAccept: () => false })).rejects.toMatchObject({ code: "cancelled" });
+    expect(native.importCoreMLDiagnosticCandidate).not.toHaveBeenCalled();
   });
 
   it("preserves an admitted CPU fallback in the same read-only models.status contract", async () => {
@@ -448,13 +489,48 @@ describe("application API contract", () => {
     jest.mocked(native.generateLocalProposal).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
     const pending = generateLocalProposal({ prompt: "Réponds en JSON", maxTokens: 32 });
     await expect(applicationApi.execute("models.load", { runtime: "mlx", modelId: "test" })).rejects.toMatchObject({ code: "busy" });
+    await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: "test", coreMLComputeUnits: "cpuAndNeuralEngine" }))
+      .rejects.toMatchObject({ code: "busy" });
     expect(native.loadLocalModel).not.toHaveBeenCalled();
+    expect(native.unloadLocalModel).not.toHaveBeenCalled();
     await applicationApi.execute("inference.cancel", {});
     expect(native.cancelLocalGeneration).toHaveBeenCalledTimes(1);
     finish({ text: "", tokenCount: 0, finishReason: "cancelled" });
     await pending;
     await expect(applicationApi.execute("inference.cancel", {})).rejects.toMatchObject({ code: "not_running" });
     expect(native.generateLocalProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits native Debug diagnostics with embedded production JS without inventing ANE placement", async () => {
+    const input = { runtime: "coreml", modelId: "test", coreMLComputeUnits: "cpuAndNeuralEngine" };
+    const status = { state: "ready", runtime: "coreml", modelId: "test", revision: null } as const;
+    jest.mocked(native.loadLocalModel).mockResolvedValue(status);
+    const dev = __DEV__;
+    try {
+      developmentGlobal.__DEV__ = false;
+      expect(applicationApi.catalog().commands.find((c) => c.name === "models.load")?.inputSchema)
+        .toMatchObject({ properties: { coreMLComputeUnits: { enum: ["all", "cpuOnly", "cpuAndGPU", "cpuAndNeuralEngine"] } } });
+      expect((await applicationApi.execute("models.load", input)).data).toEqual(status);
+    } finally { developmentGlobal.__DEV__ = dev; }
+    expect(native.loadLocalModel).toHaveBeenCalledTimes(1);
+    expect(native.loadLocalModel).toHaveBeenCalledWith(input);
+    expect(native.unloadLocalModel).not.toHaveBeenCalled();
+    expect(native.generateLocalProposal).not.toHaveBeenCalled();
+  });
+
+  it("rejects diagnostic options for other engines and release mode before native side effects", async () => {
+    await expect(applicationApi.execute("models.load", { runtime: "mlx", modelId: "test", coreMLComputeUnits: "all" }))
+      .rejects.toMatchObject({ code: "invalid_arguments" });
+    const dev = __DEV__;
+    try {
+      developmentGlobal.__DEV__ = false;
+      jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(false);
+      await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: "test", coreMLComputeUnits: "all" }))
+        .rejects.toMatchObject({ code: "invalid_arguments" });
+    } finally { developmentGlobal.__DEV__ = dev; }
+    expect(native.loadLocalModel).not.toHaveBeenCalled();
+    expect(native.unloadLocalModel).not.toHaveBeenCalled();
+    expect(native.cancelLocalGeneration).not.toHaveBeenCalled();
   });
 
   it("only cancels the generation owned by a closing UI session, never a newer API operation", async () => {

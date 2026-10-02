@@ -26,7 +26,18 @@ public final class SwarmerLocalInferenceModule: Module {
     }
 
     #if DEBUG
-    Constants(["automationAvailable": true])
+    Constants([
+      "automationAvailable": true, "coreMLDiagnosticsAvailable": true, "coreMLFixtureProbeAvailable": true,
+      "coreMLDiagnosticImportAvailable": CoreMLDiagnosticCandidate.isAvailable
+    ])
+
+    AsyncFunction("importCoreMLDiagnosticCandidate") { [coordinator] () async throws -> LocalModelRecord in
+      try await coordinator.importCoreMLDiagnosticCandidate()
+    }
+
+    AsyncFunction("probeCoreMLFixture") { [coordinator] (fixtureID: String, computeUnits: String) async throws -> String in
+      try await coordinator.probeCoreMLFixture(fixtureID: fixtureID, computeUnits: computeUnits)
+    }
 
     OnCreate { [weak self] in
       guard let self else { return }
@@ -69,7 +80,7 @@ public final class SwarmerLocalInferenceModule: Module {
       await automationServer.stop()
     }
     #else
-    Constants(["automationAvailable": false])
+    Constants(["automationAvailable": false, "coreMLDiagnosticsAvailable": false, "coreMLFixtureProbeAvailable": false])
 
     AsyncFunction("startAutomationServer") { () -> AutomationStartRecord in
       AutomationStartRecord(enabled: false, reason: "debug_build_required")

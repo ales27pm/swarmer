@@ -71,6 +71,7 @@ struct LoadModelOptions: Record, Sendable {
   @Field var runtime: String = ""
   @Field var modelId: String = ""
   @Field var revision: String? = nil
+  @Field var coreMLComputeUnits: String? = nil
 }
 
 struct GenerateOptions: Record, Sendable {
@@ -127,18 +128,59 @@ struct StatusRecord: Record, Sendable {
   @Field var modelId: String? = nil
   @Field var revision: String? = nil
   @Field var message: String = ""
+  #if DEBUG
+  @Field var coreMLLoadDiagnostic: CoreMLLoadDiagnosticRecord? = nil
+  #endif
 
   init() {}
 
-  init(state: String, runtime: LocalRuntime?, modelId: String?, revision: String?, message: String?) {
+  init(state: String, runtime: LocalRuntime?, modelId: String?, revision: String?, message: String?,
+       coreMLLoadDiagnostic: CoreMLLoadDiagnostic? = nil) {
     self.init()
     self.state = state
     self.runtime = runtime?.rawValue
     self.modelId = modelId
     self.revision = revision
     self.message = message ?? ""
+    #if DEBUG
+    self.coreMLLoadDiagnostic = coreMLLoadDiagnostic.map(CoreMLLoadDiagnosticRecord.init)
+    #endif
   }
 }
+
+#if DEBUG
+struct CoreMLLoadErrorRecord: Record, Sendable {
+  @Field var domain: String = "other"
+  @Field var code: Int = 0
+  @Field var executionPlanCode: Int? = nil
+  init() {}
+  init(_ value: CoreMLLoadDiagnostic.Failure) {
+    self.init()
+    domain = value.domain
+    code = value.code
+    executionPlanCode = value.executionPlanCode
+  }
+}
+
+struct CoreMLLoadDiagnosticRecord: Record, Sendable {
+  @Field var computeUnits: String = "all"
+  @Field var stage: String = "resolve"
+  @Field var outcome: String = "failed"
+  @Field var elapsedMilliseconds: Double = 0
+  @Field var errors: [CoreMLLoadErrorRecord] = []
+  @Field var errorsTruncated: Bool = false
+  init() {}
+  init(_ value: CoreMLLoadDiagnostic) {
+    self.init()
+    computeUnits = value.computeUnits
+    stage = value.stage.rawValue
+    outcome = value.outcome.rawValue
+    elapsedMilliseconds = value.elapsedMilliseconds
+    errors = value.errors.map(CoreMLLoadErrorRecord.init)
+    errorsTruncated = value.errorsTruncated
+  }
+}
+#endif
 
 struct GenerationRecord: Record, Sendable {
   @Field var text: String = ""

@@ -732,7 +732,7 @@ def execute(args):
         raise ClientError(
             "Idempotency key must contain 16–128 letters, digits or _ . : -."
         )
-    if not re.fullmatch(r"[a-z][a-zA-Z0-9_.]{0,95}", args.command):
+    if not re.fullmatch(r"[a-z][a-zA-Z0-9_.-]{0,95}", args.command):
         raise ClientError("Invalid command name.")
     try:
         if args.input_file == "-":

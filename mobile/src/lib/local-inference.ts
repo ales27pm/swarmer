@@ -3,6 +3,9 @@ import { requireOptionalNativeModule } from "expo";
 import type { ToolProposalInput } from "@/lib/api/types";
 import { MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import type { GgufDownload } from "@/lib/local-model-presets";
+import { assertCoreMLDiagnosticRequest, parseCoreMLLoadDiagnostic, type CoreMLComputeUnits, type CoreMLLoadDiagnostic } from "./coreml-load-diagnostics";
+import { COREML_PROBE_FIXTURES, parseCoreMLProbeReport, type CoreMLProbeFixture, type CoreMLProbeReport } from "./coreml-probe";
+export type { CoreMLComputeUnits, CoreMLLoadDiagnostic } from "./coreml-load-diagnostics";
 
 export const LOCAL_INFERENCE_MODULE_NAME = "SwarmerLocalInference";
 
@@ -35,6 +38,8 @@ export type LocalInferenceStatus = {
   message?: string;
   /** Optional for compatibility with native versions without background reporting. */
   backgroundExecution?: BackgroundExecutionStatus;
+  /** Present only for an explicitly requested development Core ML load diagnostic. */
+  coreMLLoadDiagnostic?: CoreMLLoadDiagnostic;
 };
 
 const BACKGROUND_STATES = ["idle", "requesting", "active", "foreground_only", "expiring", "completed", "cancelled", "failed"] as const;
@@ -68,6 +73,10 @@ export type NoToolProposal = {
 export type LocalToolProposal = ToolProposalInput | NoToolProposal;
 
 type NativeLocalInferenceModule = {
+  coreMLDiagnosticsAvailable?: boolean;
+  coreMLDiagnosticImportAvailable?: boolean;
+  importCoreMLDiagnosticCandidate?(): Promise<unknown>;
+  probeCoreMLFixture?(fixtureID: string, computeUnits: CoreMLComputeUnits): Promise<string>;
   capabilities(): Promise<unknown>;
   importModel(input: {
     runtime: LocalInferenceRuntime;
@@ -82,6 +91,7 @@ type NativeLocalInferenceModule = {
     runtime: LocalInferenceRuntime;
     modelId: string;
     revision?: string;
+    coreMLComputeUnits?: CoreMLComputeUnits;
   }): Promise<unknown>;
   status(): Promise<unknown>;
   getBackgroundExecutionStatus?(): Promise<unknown>;
@@ -97,6 +107,17 @@ type NativeLocalInferenceModule = {
 const nativeModule = requireOptionalNativeModule<NativeLocalInferenceModule>(
   LOCAL_INFERENCE_MODULE_NAME,
 );
+
+// The native Debug automation build embeds JS with --dev false. Native
+// capability, not the Metro development flag, controls this diagnostic.
+export function isCoreMLDiagnosticsAvailable(): boolean {
+  return nativeModule?.coreMLDiagnosticsAvailable === true;
+}
+
+export function isCoreMLDiagnosticImportAvailable(): boolean {
+  return isCoreMLDiagnosticsAvailable() && nativeModule?.coreMLDiagnosticImportAvailable === true
+    && typeof nativeModule.importCoreMLDiagnosticCandidate === "function";
+}
 
 const RUNTIMES = new Set<unknown>(["coreml", "mlx", "llama.cpp"]);
 const TOP_LEVEL_PROPOSAL_KEYS = ["arguments", "summary", "tool_name"] as const;
@@ -504,6 +525,8 @@ function parseStatus(value: unknown): LocalInferenceStatus {
     modelId,
     revision,
     ...(typeof value.message === "string" ? { message: value.message } : {}),
+    ...(isCoreMLDiagnosticsAvailable() && runtime === "coreml" && value.coreMLLoadDiagnostic != null
+      ? { coreMLLoadDiagnostic: parseCoreMLLoadDiagnostic(value.coreMLLoadDiagnostic) } : {}),
   };
 }
 
@@ -568,6 +591,18 @@ export async function importLocalModel(input: {
   return parseLocalModel(await requireModule().importModel(input));
 }
 
+/** Imports only the candidate whose manifest is embedded in the diagnostic build. */
+export async function importCoreMLDiagnosticCandidate(): Promise<LocalModel> {
+  if (!isCoreMLDiagnosticImportAvailable()) {
+    throw new Error("L’import diagnostique nécessite la version de développement et son manifeste signé.");
+  }
+  const value = parseLocalModel(await requireModule().importCoreMLDiagnosticCandidate!());
+  if (value.runtime !== "coreml" || value.purpose !== "generation") {
+    throw new Error("Le modèle diagnostique retourné est invalide.");
+  }
+  return value;
+}
+
 export async function pickAndImportLocalModelDirectory(
   runtime: "coreml" | "mlx",
 ): Promise<LocalModel> {
@@ -596,8 +631,20 @@ export async function loadLocalModel(input: {
   runtime: LocalInferenceRuntime;
   modelId: string;
   revision?: string;
+  coreMLComputeUnits?: CoreMLComputeUnits;
 }): Promise<LocalInferenceStatus> {
-  return parseStatus(await requireModule().loadModel(input));
+  assertCoreMLDiagnosticRequest(input, isCoreMLDiagnosticsAvailable());
+  const module = requireModule();
+  return parseStatus(await module.loadModel(input));
+}
+
+export async function probeCoreMLFixture(input: { fixtureID: CoreMLProbeFixture; computeUnits: CoreMLComputeUnits }): Promise<CoreMLProbeReport> {
+  assertCoreMLDiagnosticRequest({ runtime: "coreml", coreMLComputeUnits: input.computeUnits }, isCoreMLDiagnosticsAvailable());
+  const module = requireModule();
+  if (!COREML_PROBE_FIXTURES.includes(input.fixtureID) || typeof module.probeCoreMLFixture !== "function") {
+    throw new Error("Le diagnostic nécessite les fixtures et la version iOS de développement correspondantes.");
+  }
+  return parseCoreMLProbeReport(await module.probeCoreMLFixture(input.fixtureID, input.computeUnits), input.fixtureID, input.computeUnits);
 }
 
 export async function getLocalInferenceStatus(): Promise<LocalInferenceStatus> {

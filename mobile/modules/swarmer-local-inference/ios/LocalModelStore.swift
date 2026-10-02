@@ -161,6 +161,35 @@ actor LocalModelStore {
     uri: String,
     displayName: String?
   ) async throws -> StoredLocalModel {
+    try await importModel(runtime: runtime, uri: uri, displayName: displayName, expectedArtifacts: nil)
+  }
+
+  #if DEBUG
+  /// The coordinator supplies only the application's bundled manifest. No caller path
+  /// is accepted, and normal import creates a new UUID without replacing existing data.
+  func importCoreMLDiagnosticCandidate(
+    manifest: CoreMLDiagnosticCandidate.Manifest,
+    afterVerification: (@Sendable () async -> Void)? = nil
+  ) async throws -> StoredLocalModel {
+    let source = try CoreMLDiagnosticCandidate.verify(
+      documentsURL: documentsModelsURL.deletingLastPathComponent(), manifest: manifest
+    )
+    // Deterministic race injection for native tests; the coordinator never supplies it.
+    if let afterVerification { await afterVerification() }
+    try Task.checkCancellation()
+    return try await importModel(
+      runtime: .coreML, uri: source.absoluteString, displayName: manifest.displayName,
+      expectedArtifacts: manifest.expectedArtifacts
+    )
+  }
+  #endif
+
+  private func importModel(
+    runtime: LocalRuntime,
+    uri: String,
+    displayName: String?,
+    expectedArtifacts: [StoredModelArtifact]?
+  ) async throws -> StoredLocalModel {
     try prepareDirectories()
     let existingRecords = try list()
     try Task.checkCancellation()
@@ -208,7 +237,15 @@ actor LocalModelStore {
         withIntermediateDirectories: false,
         attributes: Self.protectionAttributes
       )
-      try copy(plan: plan, into: payloadURL)
+      let copiedArtifacts = try copy(plan: plan, into: payloadURL, recordDigests: expectedArtifacts != nil)
+      if let expectedArtifacts {
+        // The source can change between initial verification and plan creation.
+        // Recheck the exact bytes copied before validation, promotion or index write.
+        guard copiedArtifacts.sorted(by: { $0.filename < $1.filename })
+                == expectedArtifacts.sorted(by: { $0.filename < $1.filename }) else {
+          throw LocalInferenceError.sourceChangedDuringImport
+        }
+      }
       try Task.checkCancellation()
       try rejectSymbolicLinks(in: payloadURL)
 
