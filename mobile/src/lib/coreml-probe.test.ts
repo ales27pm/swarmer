@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
-import { parseCoreMLProbeReport } from "./coreml-probe";
+import { COREML_PROBE_FIXTURES, parseCoreMLProbeReport } from "./coreml-probe";
 
 const fixtureID = "attention-stateful-fused";
 const computeUnits = "cpuAndNeuralEngine";
@@ -13,6 +13,21 @@ const result = {
 const parse = (v: unknown) => parseCoreMLProbeReport(JSON.stringify(v), fixtureID, computeUnits);
 
 describe("bounded Core ML fixture receipts", () => {
+  it("preserves the six existing fixtures and adds only the cache28 attention ablation", () => {
+    expect(COREML_PROBE_FIXTURES).toEqual([
+      "attention-stateful-fused", "attention-stateful-decomposed",
+      "attention-stateless-fused", "attention-stateless-decomposed",
+      "dolphin-attention-int4-block32", "dolphin-attention-int4-perchannel",
+      "dolphin-attention-int4-perchannel-cache28",
+    ]);
+  });
+  it.each(["cpuOnly", "cpuAndNeuralEngine"] as const)("accepts cache28 receipts for %s without asserting hardware execution", (units) => {
+    const cacheFixture = "dolphin-attention-int4-perchannel-cache28";
+    const receipt = { ...result, fixtureID: cacheFixture, computeUnits: units };
+    expect(parseCoreMLProbeReport(JSON.stringify(receipt), cacheFixture, units)).toEqual(receipt);
+    expect(() => parseCoreMLProbeReport(JSON.stringify({ ...receipt, fixtureID: "dolphin-attention-int4-perchannel" }), cacheFixture, units)).toThrow();
+    expect(() => parseCoreMLProbeReport(JSON.stringify({ ...receipt, hardwareExecutionMeasured: true }), cacheFixture, units)).toThrow();
+  });
   it("keeps model plan assignment distinct from actual hardware telemetry", () => {
     expect(parse(result)).toEqual(result);
     expect(() => parse({ ...result, hardwareExecutionMeasured: true })).toThrow();

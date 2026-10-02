@@ -64,8 +64,11 @@ describe("application API contract", () => {
     expect(() => JSON.stringify(catalog)).not.toThrow();
   });
 
-  it("restricts Core ML probes to bundled fixtures and the native diagnostic capability", async () => {
-    const input = { fixtureID: "attention-stateful-fused", computeUnits: "cpuAndNeuralEngine" };
+  it.each([
+    { fixtureID: "attention-stateful-fused", computeUnits: "cpuAndNeuralEngine" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28", computeUnits: "cpuOnly" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28", computeUnits: "cpuAndNeuralEngine" },
+  ])("restricts Core ML probe $fixtureID/$computeUnits to its native diagnostic capability", async (input) => {
     jest.mocked(native.probeCoreMLFixture).mockResolvedValue({ schemaVersion: 1, ...input, outcome: "passed", stage: "complete",
       loadMilliseconds: 1, predictionMilliseconds: 1, preferredDeviceCounts: { cpu: 0, gpu: 0, neuralEngine: 1, unknown: 0 },
       supportedDeviceCounts: { cpu: 1, gpu: 0, neuralEngine: 1, unknown: 0 }, maxAbsoluteError: 0, elementsCompared: 1,
