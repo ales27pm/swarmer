@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+
 from model_transport import (
     build_model_transport_receipt,
     new_model_attempt_id,
@@ -157,6 +158,7 @@ def test_unknown_fields_strings_and_identifiers_cannot_leak_content() -> None:
             "headers": {"Authorization": secret},
             "url": secret,
             "compact_completion": secret,
+            "compact_authoring": secret,
         },
         terminal_envelope={
             "done": True,
@@ -174,6 +176,7 @@ def test_unknown_fields_strings_and_identifiers_cannot_leak_content() -> None:
     assert result["ollama"]["done_reason"] is None
     assert result["failure_category"] is None
     assert result["request"]["compact_completion"] is None
+    assert result["request"]["compact_authoring"] is None
 
 
 @pytest.mark.parametrize(
@@ -181,14 +184,15 @@ def test_unknown_fields_strings_and_identifiers_cannot_leak_content() -> None:
     [(True, True), (False, False), (1, True), (0, False), (None, None),
      ("true", None), (2, None), (-1, None), (1.0, None), ({"prompt": "private"}, None)],
 )
+@pytest.mark.parametrize("flag", ["compact_completion", "compact_authoring"])
 def test_compact_completion_flag_is_bounded_and_does_not_imply_success(
-    value: object, expected: bool | None,
+    value: object, expected: bool | None, flag: str,
 ) -> None:
     result = receipt(
         outcome="timeout",
-        transport_metrics={"compact_completion": value, "compact_repair": 0},
+        transport_metrics={flag: value, "compact_repair": 0},
     )
-    assert result["request"]["compact_completion"] is expected
+    assert result["request"][flag] is expected
     assert result["request"]["compact_repair"] is False
     assert result["outcome"] == "timeout"
     assert result["ollama"]["done"] is None

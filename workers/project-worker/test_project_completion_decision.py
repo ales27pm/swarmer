@@ -161,6 +161,185 @@ def test_focused_repair_does_not_revive_unrelated_historical_runtime_failures(
         assert worker.material_runtime_evidence(invalid) == {}
 
 
+def focused_review_payload() -> dict[str, Any]:
+    from test_project_agent_capsule import capsule
+
+    data = validated_payload()
+    tail = '    if b == 0:\n        raise ValueError("Division by zero")\n    return a / b\n'
+    data["files"][0]["content"] = "def divide(a, b):\n" + tail * 3
+    data["base_sha256"] = snapshot_sha(data["files"])
+    data["checks"] += unrelated_failures("node")
+    data["focus_paths"] = ["calculator.py"]
+    data["durable_context"] = capsule()
+    data["durable_context"]["requirements"] = [
+        {"text": f"Requirement {index}: " + "Preserve every specified behavior. " * 100, "source_id": f"message_{index}"}
+        for index in range(4)
+    ]
+    data["conversation"] = [{
+        "role": "user", "content": "Review all requirements; repair only if necessary, otherwise validate without editing.",
+    }, {
+        "role": "assistant", "content": "Files requested for the next iteration: calculator.py",
+    }]
+    return data
+
+
+def test_prepared_review_keeps_compact_bounds_and_accepts_fresh_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = focused_review_payload()
+    original = copy.deepcopy(data)
+    body, generator, parsed = capture_compact_decision(monkeypatch, data, check_step())
+    assert sum(len(item["content"].encode()) for item in body["messages"]) < 24_000
+    assert len(json.dumps(body["format"], separators=(",", ":")).encode()) < 6_000
+    assert body["options"]["num_predict"] == 768
+    assert generator.last_transport_metrics["compact_authoring"] == 1
+    assert generator.last_transport_metrics["compact_completion"] == 0
+    assert generator.last_transport_metrics["compact_repair"] == 0
+    workspace = body["messages"][-1]["content"]
+    metadata = json.loads(workspace.split("Current workspace data:\n", 1)[1].split("\n\n", 1)[0])
+    assert metadata["durable_project_requirements"] == data["durable_context"]
+    assert generator.last_visible_paths == {item["path"] for item in data["files"]}
+    assert all(item["content"] in workspace for item in data["files"])
+    assert data["conversation"][0] in body["messages"]
+    assert data["base_sha256"] in workspace
+    assert Draft202012Validator(body["format"]).is_valid(check_step())
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(parsed), runner, lambda: None)
+    assert result["action"] == "complete" and runner.calls == 1
+    assert result["files"] == data["files"] and result["checks"] != data["checks"]
+    assert data == original
+
+
+def test_prepared_review_accepts_a_real_patch_but_rejects_redundant_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = focused_review_payload()
+    context = worker.model_context(data, context_tokens=64_000, prompt_max_bytes=48_000)
+    addresses = worker.addressed_patch_spans(context, data, max_bytes=500)
+    identifier = next(key for key, value in addresses.items() if value["path"] == "calculator.py")
+    source = data["files"][0]["content"]
+    corrected = source[:source.index("    if b == 0:", source.index("    return a / b") + 1)]
+    patch = {
+        **check_step(action="continue"), "requested_checks": [],
+        "patches": [{"path": "calculator.py", "span_id": identifier, "new": corrected}],
+    }
+    body, generator, parsed = capture_compact_decision(monkeypatch, data, patch)
+    assert Draft202012Validator(body["format"]).is_valid(patch)
+    assert generator.last_transport_metrics["compact_authoring"] == 1
+    runner = Runner()
+    result = worker.run_iteration(data, Generator(parsed), runner, lambda: None)
+    assert runner.calls == 1 and result["action"] == "continue"
+    assert next(item["content"] for item in result["files"] if item["path"] == "calculator.py") == corrected
+    assert result["checks"] != data["checks"]
+    read = {**check_step(action="continue"), "requested_checks": [], "focus_paths": ["calculator.py"]}
+    assert not Draft202012Validator(body["format"]).is_valid(read)
+    with pytest.raises(worker.ModelStepError, match="already fully visible"):
+        capture_compact_decision(monkeypatch, data, read)
+
+
+@pytest.mark.parametrize("case", ["stale", "failed"])
+def test_prepared_review_compaction_requires_current_passing_evidence(
+    monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    data = validated_payload()
+    data["focus_paths"] = ["calculator.py"]
+    if case == "stale":
+        data["base_sha256"] = "0" * 64
+    else:
+        data["checks"] = unrelated_failures("python")
+    response = {
+        **check_step(action="continue"), "requested_checks": [],
+        "edits": [{"path": "calculator.py", "content": "def divide(a, b):\n    return a / b if b else 0\n"}],
+    }
+    body, generator, _ = capture_compact_decision(monkeypatch, data, response)
+    assert not worker.material_runtime_evidence(data)
+    assert not generator.last_transport_metrics["compact_authoring"]
+    assert body["options"]["num_predict"] == worker.MAX_OUTPUT_TOKENS
+
+
+@pytest.mark.parametrize("failure", ["failed_check", "zero_tests"])
+def test_prepared_review_complete_still_rejects_fresh_failure(
+    monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    data = focused_review_payload()
+    _, _, parsed = capture_compact_decision(monkeypatch, data, check_step())
+    runner = Runner(fail=failure == "failed_check", count=0 if failure == "zero_tests" else 2)
+    result = worker.run_iteration(data, Generator(parsed), runner, lambda: None)
+    assert runner.calls == 1 and result["action"] == "continue"
+    assert result["files"] == data["files"] and result["checks"] != data["checks"]
+
+
+def test_prepared_review_keeps_pinned_source_or_fails_before_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = focused_review_payload()
+    data["durable_context"]["requirements"][0]["text"] += "Mandatory detail. " * 500
+    before = copy.deepcopy(data)
+    calls = []
+
+    class Opener:
+        def open(self, request: Any, **kwargs: Any) -> None:
+            calls.append(request)
+            raise AssertionError("An oversized focused review must not reach the model")
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator(
+        "http://127.0.0.1:11434/v1", "qwen3-coder:30b", context_tokens=64_000, prompt_max_bytes=48_000,
+    )
+    with pytest.raises(worker.ProjectError, match="review source.*context budget"):
+        generator.generate(data)
+    assert calls == [] and data == before
+
+
+def test_prepared_review_drops_unfocused_fragment_before_rejecting_pinned_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = focused_review_payload()
+    data["files"].append({"path": "legacy.py", "content": "# filler content\n" * 3_500})
+    data["base_sha256"] = snapshot_sha(data["files"])
+    data["checks"][-1]["output"] = "legacy.py\n" + data["checks"][-1]["output"]
+    body, generator, parsed = capture_compact_decision(monkeypatch, data, check_step())
+    assert sum(len(item["content"].encode()) for item in body["messages"]) < 24_000
+    assert generator.last_visible_paths == {"calculator.py", "tests/test_calculator.py"}
+    workspace = body["messages"][-1]["content"]
+    metadata = json.loads(workspace.split("Current workspace data:\n", 1)[1].split("\n\n", 1)[0])
+    assert metadata["durable_project_requirements"] == data["durable_context"]
+    assert any(item["path"] == "legacy.py" for item in metadata["file_manifest"])
+    assert parsed["action"] == "complete" and data["files"][0]["content"] in workspace
+
+
+def test_prepared_review_timeout_does_not_demand_an_artificial_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = focused_review_payload()
+
+    class Opener:
+        def open(self, request: Any, **kwargs: Any) -> None:
+            raise TimeoutError("private endpoint")
+
+    monkeypatch.setattr(worker.urllib.request, "build_opener", lambda *args: Opener())
+    generator = worker.ProjectGenerator(
+        "http://127.0.0.1:11434/v1", "qwen3-coder:30b", context_tokens=64_000, prompt_max_bytes=48_000,
+    )
+    runner = Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert generator.last_transport_receipt["request"]["compact_authoring"] is True
+    assert generator.last_transport_receipt["outcome"] == "timeout"
+    assert result["message"] == worker.VALIDATION_TIMEOUT_DIAGNOSTIC
+    assert runner.calls == 0 and result["files"] == data["files"] and result["checks"] == data["checks"]
+
+
+def test_prepared_review_ignored_grammar_cannot_bypass_source_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = {
+        **check_step(action="continue"), "requested_checks": [],
+        "edits": [{"path": "calculator.py", "content": "#" * 801}],
+    }
+    with pytest.raises(worker.ModelStepError, match="source exceeds"):
+        capture_compact_decision(monkeypatch, focused_review_payload(), response)
+
+
 def passing_check(profile: str, *, count: int | None = None) -> dict[str, Any]:
     return {
         "command": CHECK_COMMANDS[profile][:],

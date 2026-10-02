@@ -145,6 +145,7 @@ def build_model_transport_receipt(
             "output_token_limit": _counter(metrics.get("output_token_limit")),
             "compact_repair": _flag(metrics.get("compact_repair")),
             "compact_completion": _flag(metrics.get("compact_completion")),
+            "compact_authoring": _flag(metrics.get("compact_authoring")),
             "wall_timeout_seconds": _seconds(wall_timeout_seconds),
             "read_timeout_seconds": _seconds(read_timeout_seconds),
         },
