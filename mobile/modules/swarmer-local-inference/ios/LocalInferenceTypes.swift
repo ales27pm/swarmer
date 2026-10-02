@@ -37,6 +37,7 @@ struct StoredLocalModel: Codable, Equatable, Sendable {
   let tokenizerRelativePath: String?
   // Optional for indexes written before durable Hub models were introduced.
   var remoteOrigin: StoredRemoteModelOrigin? = nil
+  var downloadOrigin: StoredModelDownloadOrigin? = nil
   var purpose: LocalModelPurpose? = nil
 }
 
@@ -65,6 +66,38 @@ struct DownloadModelOptions: Record, Sendable {
   @Field var sha256: String = ""
   @Field var sizeBytes: Int64 = 0
   @Field var displayName: String = ""
+}
+
+struct HuggingFaceModelFileOptions: Record, Sendable {
+  @Field var path: String = ""
+  @Field var sizeBytes: Int64 = 0
+  @Field var sha256: String? = nil
+  @Field var gitBlobSha1: String? = nil
+}
+
+struct HuggingFaceModelDownloadOptions: Record, Sendable {
+  @Field var runtime: String = ""
+  @Field var repoId: String = ""
+  @Field var revision: String = ""
+  @Field var displayName: String = ""
+  @Field var files: [HuggingFaceModelFileOptions] = []
+}
+
+struct ModelDownloadProgressRecord: Record, Sendable {
+  @Field var state: String = "idle"
+  @Field var downloadedBytes: Int64 = 0
+  @Field var totalBytes: Int64 = 0
+  @Field var completedFiles: Int = 0
+  @Field var totalFiles: Int = 0
+
+  init() {}
+  init(_ value: ModelDownloadProgress) {
+    state = value.state
+    downloadedBytes = value.downloadedBytes
+    totalBytes = value.totalBytes
+    completedFiles = value.completedFiles
+    totalFiles = value.totalFiles
+  }
 }
 
 struct LoadModelOptions: Record, Sendable {
@@ -256,11 +289,11 @@ enum LocalInferenceError: LocalizedError, Sendable {
     case .invalidDisplayName:
       return "The model display name is invalid."
     case .invalidDownloadMetadata:
-      return "Model downloads require a Hugging Face repository, a full commit SHA, one GGUF filename, and a SHA-256 checksum."
+      return "Model downloads require a Hugging Face repository, a full commit SHA, safe model files, and exact sizes and checksums."
     case .downloadSizeMismatch:
       return "The downloaded model does not match its pinned file size."
     case .downloadChecksumMismatch:
-      return "The downloaded model failed SHA-256 verification."
+      return "The downloaded model failed checksum verification."
     case .modelDownloadFailed:
       return "Hugging Face could not deliver the pinned model file."
     case .immutableRevisionRequired:

@@ -3,7 +3,7 @@ import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { invokeApplicationCommand } from "./registry";
 import { ApplicationApiError } from "./schema";
 
-export type { LocalInferenceRuntime, LocalInferenceCapabilities, LocalModel, LocalInferenceStatus, BackgroundExecutionStatus,
+export type { LocalInferenceRuntime, LocalInferenceCapabilities, LocalModel, ModelDownloadProgress, LocalInferenceStatus, BackgroundExecutionStatus,
   LocalGenerationResult, NoToolProposal, LocalToolProposal } from "@/lib/local-inference";
 export { LOCAL_INFERENCE_MODULE_NAME, assertUnambiguousJson, parseLocalToolProposal, isActionableToolProposal,
   buildLocalProposalPrompt, isImmutableHuggingFaceRevision, isHuggingFaceModelId, isLocalInferenceAvailable } from "@/lib/local-inference";
@@ -39,6 +39,10 @@ export function createLocalGenerationSession() {
   };
 }
 export const cancelLocalModelDownload: typeof adapter.cancelLocalModelDownload = () => call("models.download.cancel");
+// User-selected Hub downloads stay local to the UI; the remote API keeps its preset-only contract.
+export const downloadHuggingFaceModel: typeof adapter.downloadHuggingFaceModel = (plan) => adapter.downloadHuggingFaceModel(plan);
+export const getModelDownloadProgress: typeof adapter.getModelDownloadProgress = () => adapter.getModelDownloadProgress();
+export const cancelHuggingFaceModelDownload: typeof adapter.cancelHuggingFaceModelDownload = () => adapter.cancelHuggingFaceModelDownload();
 export const downloadLocalGgufModel: typeof adapter.downloadLocalGgufModel = (input) => {
   if (JSON.stringify(input) !== JSON.stringify(LOCAL_MODEL_PRESETS["llama.cpp"].download)) {
     // Arbitrary downloads are not a network API capability; the existing imported-model UI remains available.

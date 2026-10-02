@@ -3,6 +3,7 @@ import { requireOptionalNativeModule } from "expo";
 import type { ToolProposalInput } from "@/lib/api/types";
 import { MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import type { GgufDownload } from "@/lib/local-model-presets";
+import type { HuggingFaceDownloadPlan } from "@/lib/hugging-face-models";
 import { assertCoreMLDiagnosticRequest, parseCoreMLLoadDiagnostic, type CoreMLComputeUnits, type CoreMLLoadDiagnostic } from "./coreml-load-diagnostics";
 import { COREML_PROBE_FIXTURES, parseCoreMLProbeReport, type CoreMLProbeFixture, type CoreMLProbeReport } from "./coreml-probe";
 export type { CoreMLComputeUnits, CoreMLLoadDiagnostic } from "./coreml-load-diagnostics";
@@ -28,6 +29,15 @@ export type LocalModel = {
   importedAt: string;
   /** Older native records omit this; those are normalized to generation by the adapter. */
   purpose?: "generation" | "embeddings";
+};
+
+const MODEL_DOWNLOAD_STATES = ["idle", "downloading", "verifying", "importing", "completed", "cancelled", "failed"] as const;
+export type ModelDownloadProgress = {
+  state: typeof MODEL_DOWNLOAD_STATES[number];
+  downloadedBytes: number;
+  totalBytes: number;
+  completedFiles: number;
+  totalFiles: number;
 };
 
 export type LocalInferenceStatus = {
@@ -84,7 +94,10 @@ type NativeLocalInferenceModule = {
     displayName?: string;
   }): Promise<unknown>;
   downloadAndImportModel(input: GgufDownload): Promise<unknown>;
-  cancelModelDownload(): Promise<unknown>;
+  downloadHuggingFaceModel?(input: HuggingFaceDownloadPlan): Promise<unknown>;
+  getModelDownloadProgress?(): Promise<unknown>;
+  cancelHuggingFaceModelDownload?(): Promise<unknown>;
+  cancelModelDownload?(): Promise<unknown>;
   pickAndImportDirectory(runtime: "coreml" | "mlx"): Promise<unknown>;
   listModels(): Promise<unknown>;
   loadModel(input: {
@@ -497,6 +510,25 @@ function parseLocalModel(value: unknown): LocalModel {
   };
 }
 
+function parseModelDownloadProgress(value: unknown): ModelDownloadProgress {
+  const countKeys = ["downloadedBytes", "totalBytes", "completedFiles", "totalFiles"] as const;
+  if (!isRecord(value) || !hasExactKeys(value, ["state", ...countKeys])
+      || !MODEL_DOWNLOAD_STATES.some((state) => state === value.state)
+      || !countKeys.every((key) => Number.isSafeInteger(value[key]) && Number(value[key]) >= 0)) {
+    throw new Error("La progression native du téléchargement est invalide.");
+  }
+  const downloadedBytes = Number(value.downloadedBytes);
+  const totalBytes = Number(value.totalBytes);
+  const completedFiles = Number(value.completedFiles);
+  const totalFiles = Number(value.totalFiles);
+  if (downloadedBytes > totalBytes || completedFiles > totalFiles
+      || (value.state === "idle" && countKeys.some((key) => value[key] !== 0))
+      || (value.state === "completed" && (totalFiles === 0 || downloadedBytes !== totalBytes || completedFiles !== totalFiles))) {
+    throw new Error("La progression native du téléchargement est incohérente.");
+  }
+  return { state: value.state as ModelDownloadProgress["state"], downloadedBytes, totalBytes, completedFiles, totalFiles };
+}
+
 function parseStatus(value: unknown): LocalInferenceStatus {
   if (!isRecord(value)) throw new Error("État natif invalide.");
   const states = new Set<unknown>([
@@ -617,8 +649,40 @@ export async function downloadLocalGgufModel(input: GgufDownload): Promise<Local
   return parseLocalModel(await module.downloadAndImportModel(input));
 }
 
+/** Downloads a resolved, immutable plan locally; native validation remains authoritative. */
+export async function downloadHuggingFaceModel(input: HuggingFaceDownloadPlan): Promise<LocalModel> {
+  const module = requireModule();
+  if (typeof module.downloadHuggingFaceModel !== "function") {
+    throw new Error("Mets à jour la version iOS de Swarmer pour télécharger un modèle Hugging Face dans l’app.");
+  }
+  const expectedRuntime = input.runtime;
+  const model = parseLocalModel(await module.downloadHuggingFaceModel(input));
+  if (model.runtime !== expectedRuntime) throw new Error("Le modèle téléchargé ne correspond pas au moteur demandé.");
+  return model;
+}
+
+export async function getModelDownloadProgress(): Promise<ModelDownloadProgress> {
+  const module = requireModule();
+  if (typeof module.getModelDownloadProgress !== "function") {
+    throw new Error("Mets à jour la version iOS de Swarmer pour suivre les téléchargements de modèles.");
+  }
+  return parseModelDownloadProgress(await module.getModelDownloadProgress());
+}
+
+export async function cancelHuggingFaceModelDownload(): Promise<void> {
+  const module = requireModule();
+  if (typeof module.cancelHuggingFaceModelDownload !== "function") {
+    throw new Error("Mets à jour la version iOS de Swarmer pour annuler un téléchargement Hugging Face.");
+  }
+  await module.cancelHuggingFaceModelDownload();
+}
+
 export async function cancelLocalModelDownload(): Promise<void> {
-  await requireModule().cancelModelDownload();
+  const module = requireModule();
+  if (typeof module.cancelModelDownload !== "function") {
+    throw new Error("Mets à jour la version iOS de Swarmer pour annuler un téléchargement de modèle.");
+  }
+  await module.cancelModelDownload();
 }
 
 export async function listLocalModels(): Promise<LocalModel[]> {

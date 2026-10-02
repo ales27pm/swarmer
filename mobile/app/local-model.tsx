@@ -4,6 +4,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { KeyboardInputGroup, KeyboardTextInput, ScreenShell } from "@/components/screen-shell";
 import { LocalModelPresets } from "@/components/local-model-presets";
+import { HuggingFaceModelDownload } from "@/components/hugging-face-model-download";
 import {
   ActionButton,
   Card,
@@ -58,7 +59,7 @@ const RUNTIMES: readonly {
   { value: "llama.cpp", label: "llama.cpp", detail: "Fichier GGUF importé" },
 ];
 
-type BusyAction = "initial" | "import" | "download" | "save" | "load" | "generate" | "cancel" | "unload" | "submit";
+type BusyAction = "initial" | "import" | "download" | "hugging-face" | "save" | "load" | "generate" | "cancel" | "unload" | "submit";
 
 function BackgroundExecutionCard({ status }: { status: BackgroundExecutionStatus | undefined }) {
   let description = "Disponibilité non confirmée. Garde l’app au premier plan pendant la génération.";
@@ -906,6 +907,24 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         disabled={locked || loaded || !selectedRuntimeSupported}
         onApply={applyMlxPreset}
         onError={setError}
+      />
+
+      <HuggingFaceModelDownload
+        key={runtime}
+        runtime={runtime}
+        disabled={locked || loaded || !selectedRuntimeSupported}
+        onBusyChange={(active) => setBusy((current) => active ? "hugging-face" : current === "hugging-face" ? null : current)}
+        onImported={(model) => {
+          setModels((current) => [model, ...current.filter((item) => item.modelId !== model.modelId)]);
+          if (model.purpose === "embeddings") {
+            setNotice(`${model.displayName} est importé pour les embeddings. Le modèle de génération sélectionné est conservé.`);
+            return;
+          }
+          setModelId(model.modelId);
+          setRevision("");
+          invalidateProposal();
+          setNotice(`${model.displayName} est téléchargé et sélectionné. Tu peux maintenant charger le modèle.`);
+        }}
       />
 
       <SectionTitle title="Modèle" />

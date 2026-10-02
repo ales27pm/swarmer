@@ -48,6 +48,8 @@ actor LocalInferenceCoordinator {
   private var loadOperation: LoadOperation?
   private var generationOperation: GenerationOperation?
   private var importOperation: ImportOperation?
+  private var modelDownloadProgress = ModelDownloadProgressTracker()
+  private var huggingFaceDownloadID: UUID?
   private var currentRuntime: LocalRuntime?
   private var currentModelId: String?
   private var currentRevision: String?
@@ -241,6 +243,39 @@ actor LocalInferenceCoordinator {
 
   func cancelModelDownload() async {
     guard importOperation?.isDownload == true else { return }
+    await cancelImport()
+  }
+
+  func downloadHuggingFaceModel(options: HuggingFaceModelDownloadOptions) async throws -> LocalModelRecord {
+    let download = try HuggingFaceModelDownload(
+      runtime: LocalRuntime(wireValue: options.runtime), repoId: options.repoId, revision: options.revision,
+      displayName: options.displayName, files: options.files.map {
+        HuggingFaceModelFile(path: $0.path, sizeBytes: $0.sizeBytes, sha256: $0.sha256, gitBlobSha1: $0.gitBlobSha1)
+      }
+    )
+    guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended,
+          importOperation == nil, loadOperation == nil, generationOperation == nil, state != "cancelling" else {
+      throw LocalInferenceError.generationInProgress
+    }
+    let progress = ModelDownloadProgressTracker(totalBytes: download.totalBytes, totalFiles: download.origin.files.count)
+    modelDownloadProgress = progress
+    let operationId = UUID()
+    let task = Task.detached(priority: .utility) { [store] in
+      try await download.downloadAndImport(into: store, progress: progress)
+    }
+    huggingFaceDownloadID = operationId
+    defer { if huggingFaceDownloadID == operationId { huggingFaceDownloadID = nil } }
+    return try await withTaskCancellationHandler {
+      try await finishImport(task, operationId: operationId, isDownload: true)
+    } onCancel: { task.cancel() }
+  }
+
+  func getModelDownloadProgress() -> ModelDownloadProgressRecord {
+    ModelDownloadProgressRecord(modelDownloadProgress.snapshot)
+  }
+
+  func cancelHuggingFaceModelDownload() async {
+    guard let id = huggingFaceDownloadID, importOperation?.id == id else { return }
     await cancelImport()
   }
 

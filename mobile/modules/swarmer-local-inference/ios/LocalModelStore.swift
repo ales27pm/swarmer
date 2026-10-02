@@ -184,11 +184,31 @@ actor LocalModelStore {
   }
   #endif
 
+  func importDownloadedModel(
+    runtime: LocalRuntime,
+    source: URL,
+    displayName: String,
+    origin: StoredModelDownloadOrigin,
+    expectedArtifacts: [StoredModelArtifact]
+  ) async throws -> StoredLocalModel {
+    let plan = try HuggingFaceModelDownload(runtime: runtime, repoId: origin.repoId, revision: origin.revision,
+      displayName: displayName, files: origin.files)
+    guard expectedArtifacts.count == plan.localPaths.count,
+          zip(expectedArtifacts, plan.localPaths).allSatisfy({ $0.filename == $1 }),
+          zip(expectedArtifacts, origin.files).allSatisfy({ $0.sizeBytes == $1.sizeBytes }),
+          expectedArtifacts.allSatisfy({ $0.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil }) else {
+      throw LocalInferenceError.invalidDownloadMetadata
+    }
+    return try await importModel(runtime: runtime, uri: source.absoluteString, displayName: displayName,
+      expectedArtifacts: expectedArtifacts, downloadOrigin: plan.origin)
+  }
+
   private func importModel(
     runtime: LocalRuntime,
     uri: String,
     displayName: String?,
-    expectedArtifacts: [StoredModelArtifact]?
+    expectedArtifacts: [StoredModelArtifact]?,
+    downloadOrigin: StoredModelDownloadOrigin? = nil
   ) async throws -> StoredLocalModel {
     try prepareDirectories()
     let existingRecords = try list()
@@ -258,11 +278,12 @@ actor LocalModelStore {
         modelId: modelId,
         runtime: runtime,
         displayName: name,
-        source: source.lastPathComponent,
+        source: downloadOrigin.map { "https://huggingface.co/\($0.repoId)/tree/\($0.revision)" } ?? source.lastPathComponent,
         sizeBytes: plan.totalBytes,
         importedAt: Date(),
         runtimeRelativePath: resolved.runtimeURL.path(relativeTo: stagingURL),
         tokenizerRelativePath: resolved.tokenizerURL?.path(relativeTo: stagingURL),
+        downloadOrigin: downloadOrigin,
         purpose: runtime == .mlx
           ? LocalModelPurpose.mlx(configuration: try readJSONObject(resolved.runtimeURL.appendingPathComponent("config.json")))
           : .generation
@@ -584,6 +605,15 @@ actor LocalModelStore {
             record.tokenizerRelativePath.map(isSafeRelativePath) ?? true,
             record.sizeBytes >= 0 else {
         throw LocalInferenceError.metadataCorrupt
+      }
+      if let origin = record.downloadOrigin {
+        do {
+          let plan = try HuggingFaceModelDownload(runtime: record.runtime, repoId: origin.repoId,
+            revision: origin.revision, displayName: record.displayName, files: origin.files)
+          guard record.remoteOrigin == nil, plan.origin == origin, plan.totalBytes == record.sizeBytes else {
+            throw LocalInferenceError.metadataCorrupt
+          }
+        } catch { throw LocalInferenceError.metadataCorrupt }
       }
       if let origin = record.remoteOrigin {
         _ = try durableModelRoot(repositoryId: origin.repositoryId, revision: origin.revision)
