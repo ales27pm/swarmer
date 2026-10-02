@@ -7,7 +7,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from model_transport import build_model_transport_receipt, new_model_attempt_id, utc_timestamp
+from model_transport import (
+    build_model_transport_receipt,
+    new_model_attempt_id,
+    utc_timestamp,
+)
 
 _GOAL = "goal_6fc92c9fa71d42b7ab478417486467ae"
 _JOB = "job_8fb6db328150431283da3d3ffb526c7d"
@@ -149,7 +153,11 @@ def test_unknown_fields_strings_and_identifiers_cannot_leak_content() -> None:
         finished_at=secret,
         outcome=secret,
         failure_category=secret,
-        transport_metrics={"headers": {"Authorization": secret}, "url": secret},
+        transport_metrics={
+            "headers": {"Authorization": secret},
+            "url": secret,
+            "compact_completion": secret,
+        },
         terminal_envelope={
             "done": True,
             "done_reason": secret,
@@ -165,6 +173,26 @@ def test_unknown_fields_strings_and_identifiers_cannot_leak_content() -> None:
     assert result["started_at"] is None and result["finished_at"] is None
     assert result["ollama"]["done_reason"] is None
     assert result["failure_category"] is None
+    assert result["request"]["compact_completion"] is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(True, True), (False, False), (1, True), (0, False), (None, None),
+     ("true", None), (2, None), (-1, None), (1.0, None), ({"prompt": "private"}, None)],
+)
+def test_compact_completion_flag_is_bounded_and_does_not_imply_success(
+    value: object, expected: bool | None,
+) -> None:
+    result = receipt(
+        outcome="timeout",
+        transport_metrics={"compact_completion": value, "compact_repair": 0},
+    )
+    assert result["request"]["compact_completion"] is expected
+    assert result["request"]["compact_repair"] is False
+    assert result["outcome"] == "timeout"
+    assert result["ollama"]["done"] is None
+    assert "private" not in json.dumps(result, allow_nan=False)
 
 
 def test_independent_attempts_do_not_reuse_success_metrics_after_timeout() -> None:

@@ -8,7 +8,7 @@ import aiosqlite
 import pytest
 
 from app.models import AgentCreate
-from app.services.execution_engine import ExecutionEngine
+from app.services.execution_engine import AuthenticatedRequester, ExecutionEngine
 from app.services.goal_manager import GoalManager
 from app.services.goal_project import GoalProjectService
 from app.services.swarm_contracts import GoalCreateRequest, GoalMessageRequest, GoalStartRequest
@@ -62,6 +62,7 @@ async def _result(
     action: str,
     message: str = "Implementing customer management",
     receive: bool = True,
+    check_output: str = "Ran 1 test",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     claimed = await manager.agent_dispatcher.claim(agent_id)
     assert claimed is not None
@@ -92,7 +93,7 @@ async def _result(
                     "command": ["python3", "-m", "unittest"],
                     "status": "passed",
                     "exit_code": 0,
-                    "output": "Ran 1 test",
+                    "output": check_output,
                     "duration_ms": 30,
                 }
             ],
@@ -145,6 +146,73 @@ async def test_project_question_reply_resumes_with_snapshot_and_history(tmp_path
     assert sum(n["status"] == "waiting_permission" for n in ready["nodes"]) == 1
     assert SOURCE not in json.dumps(ready)
     assert await manager.on_job_result(job) == ready
+
+
+@pytest.mark.asyncio
+async def test_project_fresh_validation_completes_unchanged_snapshot_without_successor(
+    tmp_path: Path,
+) -> None:
+    manager, detail, agent = await _project(tmp_path)
+    goal_id = detail["goal"]["id"]
+    original_goal = await manager.graph.get_goal(goal_id)
+    assert original_goal is not None
+    first_job, first_payload = await _result(manager, agent, action="continue")
+    service = manager.project_applications
+    assert service is not None
+    first = await service.get_project(goal_id)
+    assert first is not None
+
+    # A new claimed job reports checks run against its unchanged input snapshot.
+    # Worker tests cover actually rerunning checks rather than replaying old receipts.
+    final_job, final_payload = await _result(
+        manager,
+        agent,
+        action="complete",
+        check_output="Ran 1 test on the current unchanged snapshot",
+    )
+    assert final_job["id"] != first_job["id"]
+    assert final_payload["base_revision_id"] == first["revision_id"]
+    assert final_payload["base_sha256"] == first["sha256"]
+    assert final_payload["objective"] == first_payload["objective"]
+    assert final_payload["conversation"][0] == first_payload["conversation"][0]
+
+    ready = await manager.get_goal(goal_id)
+    assert ready is not None
+    assert ready["goal"]["status"] == "waiting_permission"
+    assert ready["goal"]["current_phase"] == "project_ready"
+    assert len(ready["nodes"]) == 2
+    assert sorted(node["status"] for node in ready["nodes"]) == [
+        "completed",
+        "waiting_permission",
+    ]
+    final = await service.get_project(goal_id)
+    assert final is not None and final["state"] == "ready"
+    assert final["revision"] == first["revision"] + 1
+    assert final["revision_id"] != first["revision_id"]
+    assert final["sha256"] == first["sha256"]
+    assert final["files"] == first["files"]
+    assert final["checks"][0]["output"] == "Ran 1 test on the current unchanged snapshot"
+    current_goal = await manager.graph.get_goal(goal_id)
+    assert current_goal is not None
+    assert current_goal["conversation_revision"] == original_goal["conversation_revision"]
+    assert current_goal["completion_criteria"] == original_goal["completion_criteria"]
+
+    # Reconciliation and a duplicate delivery must not enqueue another construction.
+    await manager.reconcile()
+    await manager.on_job_result(final_job)
+    assert await manager.agent_dispatcher.claim(agent) is None
+    assert len(await manager.graph.list_nodes(goal_id)) == 2
+    assert not list((tmp_path / "workspace").iterdir())
+
+    # Successful validation still requires a separate approval to publish files.
+    call = await service.apply(
+        goal_id,
+        final["revision_id"],
+        AuthenticatedRequester(id="phone", name="Test phone"),
+        final["sha256"],
+    )
+    assert call["status"] == "waiting_permission"
+    assert not list((tmp_path / "workspace").iterdir())
 
 
 @pytest.mark.asyncio

@@ -2773,6 +2773,108 @@ def test_no_op_cannot_promote_passing_submodule_checks_to_completion() -> None:
     assert result["plan"] == data["plan"]
 
 
+def validation_only_payload() -> dict[str, Any]:
+    files = [
+        {"path": "calculator.py", "content": "def divide(a, b):\n    return a / b\n"},
+        {
+            "path": "tests/test_calculator.py",
+            "content": "from calculator import divide\ndef test_divide():\n    assert divide(10, 2) == 5\n",
+        },
+    ]
+    return {
+        **payload(),
+        "files": files,
+        "plan": ["Implement division", "Validate division"],
+        "base_revision_id": "revision_accepted",
+        "base_sha256": snapshot_sha(files),
+        "checks": [{**Runner().run(files)["checks"][0], "output": "historical receipt"}],
+    }
+
+
+@pytest.mark.parametrize("answered", [False, True])
+def test_validation_only_completion_runs_fresh_checks_without_changing_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    answered: bool,
+) -> None:
+    data = validation_only_payload()
+    if answered:
+        data["conversation"] = [
+            {"role": "assistant", "content": "Keep the current division behavior?"},
+            {"role": "user", "content": "Yes. Validate the existing implementation."},
+        ]
+    before = copy.deepcopy(data)
+    response = step(
+        edits=[],
+        patches=[],
+        focus_paths=[],
+        plan=[],
+        requested_checks=[["python", "-m", "pytest", "-q"]],
+    )
+    body = capture_project_request(monkeypatch, data, response)
+    instruction = body["messages"][0]["content"]
+    assert "the next step must contain real file edits" not in instruction
+    assert "Make actual file changes" not in instruction
+    assert "without file edits" in instruction
+    assert Draft202012Validator(body["format"]).is_valid(response)
+    generator = worker.ProjectGenerator("http://127.0.0.1:11434/v1", "qwen3-coder:30b")
+    runner = Runner()
+    result = worker.run_iteration(data, generator, runner, lambda: None)
+    assert runner.calls == 1 and runner.files == before["files"]
+    assert result["action"] == "complete"
+    assert result["checks"] != before["checks"]
+    assert result["checks"][0]["output"] == "runner output"
+    assert snapshot_sha(result["files"]) == before["base_sha256"]
+    for field in ("plan", "base_revision_id", "base_sha256"):
+        assert result[field] == before[field]
+    assert data == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "zero_tests",
+        "test_failure",
+        "build_failure",
+        "empty_checks",
+        "skipped_check",
+        "instructions",
+        "plan",
+        "runtime_error",
+    ],
+)
+def test_validation_only_completion_cannot_reuse_old_success(failure: str) -> None:
+    data = validation_only_payload()
+    response = step(edits=[], plan=[], requested_checks=[["python", "-m", "pytest", "-q"]])
+    if failure == "instructions":
+        response["run_instructions"] = "   "
+    if failure == "plan":
+        data["plan"] = []
+
+    class ValidationRunner(Runner):
+        def run(self, files: list[dict[str, str]], *args: Any) -> dict[str, Any]:
+            evidence = super().run(files, *args)
+            if failure == "runtime_error":
+                raise worker.ProjectRuntimeError("isolated runner unavailable")
+            if failure == "zero_tests":
+                evidence["tests_executed"] = 0
+            elif failure == "test_failure":
+                evidence["test_failures"] = 1
+            elif failure == "build_failure":
+                evidence["build_passed"] = False
+            elif failure == "empty_checks":
+                evidence["checks"] = []
+            elif failure == "skipped_check":
+                evidence["checks"][0].update(status="skipped", exit_code=None)
+            return evidence
+
+    runner = ValidationRunner()
+    result = worker.run_iteration(data, Generator(response), runner, lambda: None)
+    assert runner.calls == 1
+    assert result["action"] == "continue"
+    assert result["files"] == data["files"]
+    assert result["checks"] != data["checks"]
+
+
 def test_new_user_request_takes_priority_over_missing_readme(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
