@@ -54,23 +54,36 @@ translated. The [integration evidence](../evidence/goal-memory-admission-2026-10
 distinguishes passing local checks from real-provider qualification and the
 schema/client rollout still required before production activation.
 
-The conceptual module supplies deterministic contracts. The schema-30 candidate
-connects those contracts to scoped SQL concepts, multilingual labels, proposals,
-exact original-source bindings and explicit relations, exposed through paired
-API routes. It does not yet use those proposals in agent retrieval or promote
-them to validated lessons. There is no production dual-vector index, RRF fusion,
-conceptual merge, automatic lesson promotion or historical backfill in this slice.
+The conceptual module supplies deterministic contracts. Schema 30 connects those
+contracts to scoped SQL concepts, multilingual labels, proposals, exact
+original-source bindings and explicit relations, exposed through paired API
+routes. It does not yet use those proposals in agent retrieval or promote them
+to validated lessons.
+
+The locally qualified schema-31 candidate adds current original/pivot vectors,
+scoped lexical/semantic rank fusion and bounded explicit backfill. The
+[semantic retrieval evidence](../evidence/memory-dual-view-semantic-2026-10-03.md)
+records the exact candidate depths, revision fences and remaining performance
+limits. The [coverage endpoint](../evidence/memory-index-coverage-2026-10-03.md)
+separately reports current, missing, mismatched and invalid vectors; completed
+outbox work is not treated as proof of coverage. These are implemented local
+behaviors, not a claim of production activation or measured FR/EN relevance.
+Concept-assisted retrieval, trusted promotion, dependency freshness and
+chronological quality evaluation remain outstanding. There is no automatic
+cross-language merge or startup backfill.
 
 ## Integration sequence
 
-The schema-29 candidate implements the SQL portion of step 2: immutable original
-and canonical view revisions, a current head/tombstone, and transactional index
-intents. Its bounded consumer still writes only the existing canonical/legacy
-SQLite vector channel. Writes and explicit backfill consume these intents; there
-is no autonomous startup drain. An interrupted request is not retried merely
-because its lease expired. See the [implementation evidence and rollout
-boundary](../evidence/memory-versioned-projections-2026-10-03.md). This candidate
-has not been deployed, and the existing schema-28 rollback kit cannot deploy it.
+Schema 29 established the SQL portion of step 2: immutable original and canonical
+view revisions, a current head/tombstone, and transactional index intents. Schema
+31 extends projection to every qualified current view, while retaining the old
+index-view-only cache for compatibility. Writes and explicit backfill consume
+these intents; there is no autonomous startup drain. An interrupted request is
+not retried merely because its lease expired. The
+[earlier implementation evidence](../evidence/memory-versioned-projections-2026-10-03.md)
+remains historical; the schema-31 receipts supersede its single-vector boundary.
+The new schema needs its own qualified candidate, compatible recovery binary and
+rollout guard; raising an older kit's version ceiling is insufficient.
 
 1. Finish qualification of the pivot write/search/display path, including the
    actual local provider and fixed model-call budgets. Keep rejected attempts as

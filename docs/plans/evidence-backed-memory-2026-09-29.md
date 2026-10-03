@@ -10,7 +10,7 @@ Les consignes de confiance restent dans le chemin de configuration et le contrat
 
 Les épisodes déjà enregistrés ne sont pas promus rétroactivement en connaissances vérifiées. Un statut `completed`, une note d’évaluateur ou une phrase « les tests passent » ne prouve pas un test exécuté. Une preuve d’exécution reste limitée à sa commande, à ses artefacts, à son environnement et aux critères qu’elle couvre.
 
-Exigence linguistique ajoutée par l’utilisateur : les souvenirs réutilisables sont canoniques en anglais, après traduction vérifiée des sources françaises. Les originaux restent des sources référencées, pas une seconde entrée vectorielle. Le [contrat de normalisation anglaise](english-canonical-memory-2026-09-29.md) précise déduplication, littéraux protégés, ambiguïtés, correction concurrente et migration progressive.
+Exigence linguistique initiale : les souvenirs réutilisables utilisent un pivot anglais, après traduction vérifiée des sources françaises. La précision ultérieure de l’utilisateur conserve trois représentations d’une même identité : original, vue linguistique et concepts/claims. Le [plan multilingue symbolique](multilingual-symbolic-memory-2026-09-29.md) remplace donc la restriction initiale à un seul vecteur anglais : les vues originale et pivot peuvent avoir leurs propres projections, sans créer deux souvenirs. Le [contrat de normalisation anglaise](english-canonical-memory-2026-09-29.md) conserve ses exigences de littéraux protégés, ambiguïtés, révisions et absence de fusion fondée sur la seule traduction.
 
 ## Raccordement au produit existant
 

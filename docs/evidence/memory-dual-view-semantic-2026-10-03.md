@@ -47,7 +47,7 @@ The optimization validates vectors through C-backed iteration, normalizes each q
 
 The scan is still O(rows × dimensions), and roughly 2.9 seconds at this size is above the proposed 250 ms target. This is a qualified exact-search baseline, not production latency qualification. Real embeddings, larger bilingual corpora and an indexed alternative still need measured evaluation. Receipts and unchanged source/database hashes are under the sibling `dual-view-semantic-optimized-20261003/` directory, including `proof-receipt.json` and `paired-math-results.json`.
 
-Queue health is also not vector coverage: migration creates empty per-view storage without enqueuing model calls. A completed historical outbox does not prove the new views are indexed. Explicit backfill is supported; dedicated scoped coverage/lag reporting remains follow-up work.
+Queue health is also not vector coverage: migration creates empty per-view storage without enqueuing model calls. A completed historical outbox does not prove the new views are indexed. Explicit backfill is supported. The subsequent `8fefb0a` change adds [scoped read-only coverage reporting](memory-index-coverage-2026-10-03.md); it does not establish provider readiness, retrieval quality or a globally consistent snapshot across pages.
 
 ## Deployment boundary
 
