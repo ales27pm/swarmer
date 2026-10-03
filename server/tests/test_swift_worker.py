@@ -246,7 +246,7 @@ def test_stop_reaps_zombie_then_accepts_disappeared_group(monkeypatch):
     worker._stop(process)
 
     assert signals == [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL]
-    assert process.polls == 1 and process.waits == 0
+    assert process.polls == 1 and process.waits == 1
 
 
 @pytest.mark.parametrize("returncode", [None, 0])
@@ -288,6 +288,32 @@ def test_stop_still_signals_descendants_after_reaping_leader(monkeypatch):
 
     assert signals == [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL]
     assert process.polls == 1 and process.waits == 1
+
+
+def test_stop_accepts_zombie_disappearance_during_kill_escalation(monkeypatch):
+    class ExitsAfterTermDeadline(StoppingProcess):
+        def wait(self, *, timeout):
+            self.waits += 1
+            if self.waits == 1:
+                raise worker.subprocess.TimeoutExpired("fixture", timeout)
+            return 0
+
+    process = ExitsAfterTermDeadline(0)
+    signals = []
+
+    def killpg(pid, sig):
+        assert pid == process.pid
+        signals.append(sig)
+        if len(signals) == 2:
+            raise PermissionError("leader became a zombie before escalation")
+        if len(signals) > 2:
+            raise ProcessLookupError("group disappeared after reaping")
+
+    monkeypatch.setattr(worker.os, "killpg", killpg)
+    worker._stop(process)
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL, signal.SIGKILL, signal.SIGKILL]
+    assert process.polls == 1 and process.waits == 2
 
 
 @pytest.mark.parametrize("group_refuses", [False, True])

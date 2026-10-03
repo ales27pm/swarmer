@@ -63,15 +63,18 @@ def source_digest(root: Path) -> str:
 
 
 def _signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
-    try:
-        os.killpg(process.pid, sig)
-    except PermissionError:
-        # Darwin can return EPERM for a group containing only the unreaped
-        # zombie leader. Reap it, then retry once so surviving descendants are
-        # still signalled. A live child or a persistent refusal must fail closed.
-        if process.poll() is None:
-            raise
-        os.killpg(process.pid, sig)
+    for attempt in range(2):
+        try:
+            os.killpg(process.pid, sig)
+            return
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            # Darwin can return EPERM for a group containing only the unreaped
+            # zombie leader. Reap it, then retry once so surviving descendants
+            # are still signalled. A live child or persistent refusal fails closed.
+            if attempt or process.poll() is None:
+                raise
 
 
 def _stop(process: subprocess.Popen[bytes]) -> None:
@@ -81,13 +84,8 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
     except subprocess.TimeoutExpired:
         _signal_group(process, signal.SIGKILL)
         process.wait(timeout=2)
-    except ProcessLookupError:
-        pass
     finally:
-        try:
-            _signal_group(process, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _signal_group(process, signal.SIGKILL)
 
 
 def run_command(

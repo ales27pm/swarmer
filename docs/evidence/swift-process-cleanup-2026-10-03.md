@@ -26,5 +26,12 @@ Verification:
 - A separate native zombie check succeeded with the changed `_stop`, reaping
   exit code 0; Ruff, formatting and `git diff --check` passed.
 
+A final review added the case where the leader exits between the TERM deadline
+and KILL escalation. The shared signal helper also accepts ESRCH at that point,
+while keeping both waits bounded and permission refusals explicit. After this
+delta, all 24 non-compilation Swift cases passed in 0.32 seconds. The real SwiftPM
+case passed in the preceding full Swift run; no native runtime deployment is
+inferred from either result.
+
 This is a local worker correction, separate from the memory integration. These
 results do not establish a production Swift-worker deployment.
