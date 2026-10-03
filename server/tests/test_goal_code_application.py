@@ -29,6 +29,7 @@ from app.services.swarm_contracts import (
     GoalStartRequest,
     SwarmPlanProposal,
 )
+from tests.test_agent_leases import restore_schema30_memory_fixture
 from tests.test_goal_runtime_recovery import _manager, _worker_plan
 
 CONTENT = '"""Private generated application marker."""\nprint("CRM prototype")\n'
@@ -390,6 +391,7 @@ async def test_v020_upgrade_adds_code_proposals_without_changing_goal_budget(
     detail = await _start(manager)
     before = await manager.graph.get_goal(str(detail["goal"]["id"]))
     async with aiosqlite.connect(manager.db_path) as db:
+        await restore_schema30_memory_fixture(db)
         await db.execute("DROP TABLE goal_code_proposals")
         await db.execute("PRAGMA user_version=20")
         await db.commit()

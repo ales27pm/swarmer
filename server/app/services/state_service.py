@@ -33,6 +33,7 @@ from app.services.approval_binding import (
     public_tool_call,
 )
 from app.services.audit_log import append_audit_event
+from app.services.direct_model_admission import LocalGPUUnavailable
 from app.services.distributed_state import (
     AgentJobStateMachine,
     DistributedStateConflict,
@@ -64,10 +65,10 @@ from app.services.memory_search_presentation import (
     finalize_memory_search,
 )
 from app.services.memory_search_views import (
-    FILTER_SQL,
     lexical_candidates,
     qualify_search_rows,
 )
+from app.services.memory_semantic_search import fuse_rankings, semantic_candidates
 from app.services.memory_symbolic_store import (
     MemorySymbolicStore,
     forget_symbolic_memory_locked,
@@ -88,7 +89,8 @@ from app.services.memory_text_views import (
     retry_known_projection_failure,
     text_view_sha256,
 )
-from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
+from app.services.memory_vectors import embedding_identity, memory_vector
+from app.services.memory_view_vector_schema import migrate_memory_view_vectors
 from app.services.model_request_execution import (
     MEMORY_MODEL_ROLES,
     ModelExecutionControlError,
@@ -100,7 +102,7 @@ from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.project_evidence_schema import migrate_project_evidence
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 _LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 _MEMORY_MODEL_ROLE_CHECK = (
     "CHECK(role IN ("
@@ -1199,6 +1201,7 @@ class StateService:
                 await self._migrate_memory_text_views(db)
             if version < 30:
                 await self._migrate_symbolic_memory(db)
+            await migrate_memory_view_vectors(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():
@@ -2900,24 +2903,53 @@ class StateService:
         ]
         provider = self.embedding_service
         identity = embedding_identity(provider, self.embedding_model_revision) if provider else None
-        query_vector: list[float] | None = None
+        query_vectors: dict[str, list[float]] = {}
         if provider is not None:
             try:
-                vectors = (
-                    await provider.embed([query])
-                    if model_executor is None
-                    else await provider.embed([query], model_executor=model_executor)
+                # One admitted request carries both languages. Equal texts
+                # share an input vector; no duplicate provider call is needed.
+                texts = list(dict.fromkeys((request.query, query)))
+                admission = (
+                    self.embedding_admission()
+                    if model_executor is None and self.embedding_admission is not None
+                    else nullcontext()
                 )
-                if len(vectors) == 1:
-                    query_vector = memory_vector(vectors[0], getattr(provider, "dimensions", None))
+                async with admission:
+                    assert_query_current()
+                    if provider is self.embedding_service and identity == embedding_identity(
+                        self.embedding_service, self.embedding_model_revision
+                    ):
+                        vectors = (
+                            await provider.embed(texts)
+                            if model_executor is None
+                            else await provider.embed(texts, model_executor=model_executor)
+                        )
+                        valid = [
+                            memory_vector(vector, getattr(provider, "dimensions", None))
+                            for vector in vectors
+                        ]
+                        if (
+                            len(valid) == len(texts)
+                            and all(vector is not None for vector in valid)
+                            and len({len(vector) for vector in valid if vector is not None}) == 1
+                        ):
+                            by_text = dict(zip(texts, valid, strict=True))
+                            query_vectors = {
+                                role: vector
+                                for role, text in (
+                                    ("original", request.query),
+                                    ("canonical", query),
+                                )
+                                if (vector := by_text[text]) is not None
+                            }
             except ModelExecutionControlError:
                 raise
-            except EmbeddingServiceError:
+            except (EmbeddingServiceError, LocalGPUUnavailable):
                 pass
             if provider is not self.embedding_service or identity != embedding_identity(
                 self.embedding_service, self.embedding_model_revision
             ):
-                query_vector = None
+                query_vectors = {}
         # Read authoritative memories after provider I/O. A delete or update
         # during that call must not leak stale text from an earlier snapshot.
         filters = (
@@ -2938,37 +2970,14 @@ class StateService:
                 filters=filters,
                 term_channels=term_channels,
             )
-            # There is still one existing canonical/legacy vector channel.
-            # Its bounded recent pool is independent of lexical discovery, so
-            # an old exact lexical hit remains eligible even outside that pool.
-            if query_vector is not None:
-                item_rows = await (
-                    await db.execute(
-                        f"""SELECT m.* FROM memory_items m WHERE {FILTER_SQL}
-                        ORDER BY m.pinned DESC,m.updated_at DESC,m.id LIMIT 500""",
-                        filters,
-                    )
-                ).fetchall()
-                candidates.update(await qualify_search_rows(db, list(item_rows)))
-            rows = (
-                await (
-                    await db.execute(
-                        """SELECT e.* FROM memory_embeddings e
-                    JOIN memory_items m ON m.id=e.memory_id
-                    WHERE e.provider=? AND e.updated_at=m.updated_at
-                    AND e.memory_id IN (SELECT value FROM json_each(?))""",
-                        (identity, json.dumps(list(candidates))),
-                    )
-                ).fetchall()
-                if query_vector is not None
-                else []
+            semantic, vector_candidates = await semantic_candidates(
+                db,
+                filters=filters,
+                query_vectors=query_vectors,
+                provider=identity or "",
             )
-        items = [self._memory_from_row(item.row) for item in candidates.values()]
+            candidates.update(vector_candidates)
         assert_query_current()
-        lexical = [
-            {**self._memory_from_row(item.row), "score": score, "search_kind": "lexical"}
-            for item, score in hits
-        ]
 
         async def finalize(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
             selected = found[: request.limit]
@@ -2988,7 +2997,7 @@ class StateService:
 
             def assert_search_current() -> None:
                 assert_query_current()
-                if any(item["search_kind"] == "hybrid" for item in selected) and (
+                if any(item["score_kind"] == "rrf" for item in selected) and (
                     provider is not self.embedding_service
                     or identity
                     != embedding_identity(self.embedding_service, self.embedding_model_revision)
@@ -3046,46 +3055,11 @@ class StateService:
                     raise MemoryNormalizationError("source_conflict", "memory_presenter_changed")
             return result
 
-        if (
-            query_vector is None
-            or not rows
-            or provider is not self.embedding_service
-            or identity != embedding_identity(self.embedding_service, self.embedding_model_revision)
+        if provider is not self.embedding_service or identity != embedding_identity(
+            self.embedding_service, self.embedding_model_revision
         ):
-            return await finalize(lexical)
-        lexical_scores = {str(item["id"]): float(item["score"]) for item in lexical}
-        item_by_id = {str(item["id"]): item for item in items}
-        # Union, not intersection: missing embeddings must never remove valid
-        # lexical matches from a partially indexed collection.
-        combined = {str(item["id"]): {**item, "score": 0.35 * item["score"]} for item in lexical}
-        for row in rows:
-            memory_id = str(row["memory_id"])
-            candidate = item_by_id.get(memory_id)
-            if (
-                candidate is None
-                or (request.scope and candidate["scope"] != request.scope)
-                or (request.kind and candidate["kind"] != request.kind)
-            ):
-                continue
-            try:
-                vector = memory_vector(json.loads(row["vector_json"]), len(query_vector))
-            except (ValueError, TypeError):
-                vector = None
-            if vector is None or row["dimensions"] != len(query_vector):
-                continue
-            vector_score = max(0.0, memory_cosine(query_vector, vector))
-            lexical_score = lexical_scores.get(memory_id, 0.0)
-            if vector_score > 0 or lexical_score > 0:
-                combined[memory_id] = {
-                    **candidate,
-                    "score": 0.65 * vector_score + 0.35 * lexical_score,
-                    "search_kind": "hybrid",
-                }
-        return await finalize(
-            sorted(
-                combined.values(), key=lambda item: (-item["score"], not item["pinned"], item["id"])
-            )
-        )
+            semantic = {}
+        return await finalize(fuse_rankings(hits, semantic))
 
     async def drain_memory_projections(
         self, *, limit: int = 1, memory_id: str | None = None
@@ -3094,6 +3068,14 @@ class StateService:
         return await self.memory_projection_worker.drain(limit=limit, memory_id=memory_id)
 
     async def index_memory(self, memory_id: str, *, retry_known_failure: bool = True) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            head = await (
+                await db.execute(
+                    "SELECT revision FROM memory_text_heads WHERE memory_id=?", (memory_id,)
+                )
+            ).fetchone()
+        if head is None:
+            return False
         # Only an explicit indexing request may shorten known-failure backoff.
         # Automatic create/update calls retain the scheduled retry boundary.
         if retry_known_failure and self.embedding_service is not None:
@@ -3101,8 +3083,11 @@ class StateService:
                 self.db_path,
                 memory_id=memory_id,
                 provider=embedding_identity(self.embedding_service, self.embedding_model_revision),
+                revision=head[0],
             )
-        report = await self.drain_memory_projections(limit=1, memory_id=memory_id)
+        report = await self.memory_projection_worker.drain(
+            limit=2, memory_id=memory_id, revision=head[0]
+        )
         return report.projected > 0
 
     async def _store_embedding(
@@ -3135,13 +3120,11 @@ class StateService:
         limit: int = 24,
         dimensions: int | None = None,
     ) -> dict[str, Any]:
-        """Rebuild one explicit scope/page; the caller persists the returned cursor.
+        """Backfill one logical-memory page, with at most 100 views per request.
 
-        No startup task or request automatically invokes this operator seam.
-        One provider call handles at most 100 rows. Each stored vector uses a
-        source-version check. A failed/conflicted page retains its cursor so a
-        retry can skip successful rows without losing unfinished work. Starting
-        another pass handles memories inserted before the cursor meanwhile.
+        Only fully qualified per-view vectors count as current. A partial page
+        retains its cursor and successful views, so an explicit retry can finish
+        missing work without sending those views again. Startup never calls this.
         """
         if not scope.strip() or len(scope) > 100 or not 1 <= limit <= 100:
             raise ValueError("invalid memory backfill scope or batch size")
@@ -3159,46 +3142,122 @@ class StateService:
         expected_dimensions = dimensions or declared_dimensions
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN")
             rows = list(
                 await (
                     await db.execute(
-                        """SELECT m.*,e.vector_json,e.dimensions AS vector_dimensions,
-                e.updated_at AS vector_updated_at,h.revision AS projection_revision,
-                h.index_view_id AS projection_view_id,
-                h.source_sha256 AS projection_source_sha256 FROM memory_items m
-                JOIN memory_text_heads h ON h.memory_id=m.id AND h.deleted=0
-                    AND h.item_revision=m.updated_at
-                LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.provider=?
-                WHERE m.scope=? AND m.id>? ORDER BY m.id LIMIT ?""",
-                        (identity, scope, after_id or "", limit + 1),
+                        """SELECT * FROM memory_items WHERE scope=? AND id>?
+                        ORDER BY id LIMIT ?""",
+                        (scope, after_id or "", limit + 1),
                     )
                 ).fetchall()
             )
-        page = [dict(row) for row in rows[:limit]]
+            page = rows[:limit]
+            qualified = await qualify_search_rows(db, page)
+            views = list(
+                await (
+                    await db.execute(
+                        """SELECT v.*,h.item_revision,
+                        e.source_id AS vector_source_id,e.source_sha256 AS vector_source_sha256,
+                        e.view_sha256 AS vector_view_sha256,
+                        e.pipeline_signature AS vector_pipeline_signature,
+                        e.item_revision AS vector_item_revision,
+                        e.dimensions AS vector_dimensions,e.vector_json
+                        FROM memory_text_views v
+                        JOIN memory_text_heads h ON h.memory_id=v.memory_id
+                            AND h.revision=v.revision
+                        LEFT JOIN memory_view_embeddings e ON e.memory_id=v.memory_id
+                            AND e.revision=v.revision AND e.view_id=v.id AND e.provider=?
+                        WHERE v.memory_id IN (SELECT value FROM json_each(?))
+                        ORDER BY v.memory_id,v.role,v.id""",
+                        (identity, json.dumps([row["id"] for row in page])),
+                    )
+                ).fetchall()
+            )
+        by_memory: dict[str, list[aiosqlite.Row]] = {}
+        for view in views:
+            by_memory.setdefault(view["memory_id"], []).append(view)
         pending: list[dict[str, Any]] = []
+        needed: dict[str, int] = {}
+        stored_counts: dict[str, int] = {}
+        conflicted: set[str] = set()
+        failed: set[str] = set()
+        unchanged_views = 0
         for item in page:
-            try:
-                vector = memory_vector(json.loads(item["vector_json"]), expected_dimensions)
-            except (ValueError, TypeError):
-                vector = None
+            memory_id = item["id"]
+            current = qualified.get(memory_id)
             if (
-                vector is None
-                or item["vector_dimensions"] != len(vector)
-                or item["vector_updated_at"] != item["updated_at"]
+                current is None
+                or current.view_token is None
+                or current.original is None
+                or not by_memory.get(memory_id)
             ):
-                pending.append(item)
+                # Do not silently page past missing/stale heads or bad receipts.
+                conflicted.add(memory_id)
+                continue
+            for view in by_memory[memory_id]:
+                try:
+                    vector = memory_vector(json.loads(view["vector_json"]), expected_dimensions)
+                except (ValueError, TypeError):
+                    vector = None
+                if (
+                    vector is not None
+                    and view["vector_dimensions"] == len(vector)
+                    and view["vector_source_id"] == view["source_id"]
+                    and view["vector_source_sha256"] == view["source_sha256"]
+                    and view["vector_view_sha256"] == view["text_sha256"]
+                    and view["vector_pipeline_signature"] == view["pipeline_signature"]
+                    and view["vector_item_revision"] == item["updated_at"]
+                ):
+                    unchanged_views += 1
+                    continue
+                pending.append(
+                    {
+                        **dict(item),
+                        "content": view["content"],
+                        "summary": view["summary"],
+                        "projection_revision": view["revision"],
+                        "projection_view_id": view["id"],
+                        "projection_source_sha256": view["source_sha256"],
+                    }
+                )
+                needed[memory_id] = needed.get(memory_id, 0) + 1
         report: dict[str, Any] = {
             "provider_identity": identity,
             "scanned": len(page),
             "indexed": 0,
-            "unchanged": len(page) - len(pending),
+            "unchanged": len(page) - len(needed) - len(conflicted),
             "failed": 0,
             "conflicted": 0,
             "next_after_id": page[-1]["id"] if page else after_id,
             "complete": len(rows) <= limit,
+            "views_indexed": 0,
+            "views_unchanged": unchanged_views,
+            "batches": 0,
         }
-        if not pending:
+
+        def finish_report() -> dict[str, Any]:
+            report["indexed"] = sum(
+                stored_counts.get(memory_id, 0) == count and memory_id not in conflicted | failed
+                for memory_id, count in needed.items()
+            )
+            report["failed"] = len(failed)
+            report["conflicted"] = len(conflicted)
+            if failed or conflicted:
+                report.update(complete=False, next_after_id=after_id)
             return report
+
+        def stop_remaining(*, failure: bool = False) -> dict[str, Any]:
+            target = failed if failure else conflicted
+            target.update(
+                memory_id
+                for memory_id, count in needed.items()
+                if stored_counts.get(memory_id, 0) != count and memory_id not in conflicted | failed
+            )
+            return finish_report()
+
+        if not pending:
+            return finish_report()
         async with self.embedding_admission() if self.embedding_admission else nullcontext():
 
             def provider_current() -> bool:
@@ -3207,86 +3266,82 @@ class StateService:
                 )
 
             if not provider_current():
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
-            # Admission may have waited while sources were edited or forgotten.
-            # Reserve this entire current page, not its stale pre-admission text.
-            claims = await reserve_projection_batch(
-                self.db_path,
-                "memory-backfill-" + uuid4().hex,
-                snapshots=pending,
-                provider=identity,
-            )
-            if not claims:
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
+                return stop_remaining()
+            for offset in range(0, len(pending), 100):
+                batch = pending[offset : offset + 100]
+                # Reserve only the next request, after admission and after any
+                # previous request settled. Unknown requests fence later batches.
+                if not provider_current():
+                    return stop_remaining()
+                claims = await reserve_projection_batch(
+                    self.db_path,
+                    "memory-backfill-" + uuid4().hex,
+                    snapshots=batch,
+                    provider=identity,
+                )
+                if not claims:
+                    return stop_remaining()
 
-            async def fail_claims(category: str) -> None:
-                for claim in claims:
-                    await fail_projection_claim(self.db_path, claim, error_category=category)
+                async def fail_claims(
+                    category: str, batch_claims: list[ProjectionClaim] = claims
+                ) -> None:
+                    for claim in batch_claims:
+                        await fail_projection_claim(self.db_path, claim, error_category=category)
 
-            texts: list[str] = []
-            for claim, item in zip(claims, pending, strict=True):
-                source = await read_projection_source(self.db_path, claim)
-                if (
-                    source is None
-                    or source.scope != scope
-                    or source.kind != item["kind"]
-                    or source.sensitivity != item["sensitivity"]
-                ):
+                texts: list[str] = []
+                for claim, batch_item in zip(claims, batch, strict=True):
+                    source = await read_projection_source(self.db_path, claim)
+                    if (
+                        source is None
+                        or source.scope != scope
+                        or source.kind != batch_item["kind"]
+                        or source.sensitivity != batch_item["sensitivity"]
+                    ):
+                        await fail_claims("source_conflict")
+                        return stop_remaining()
+                    texts.append(f"{source.content} {source.summary or ''}")
+                if not provider_current():
+                    await fail_claims("provider_changed")
+                    return stop_remaining()
+                if not await mark_projection_batch_dispatched(self.db_path, claims):
                     await fail_claims("source_conflict")
-                    report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                    return report
-                texts.append(f"{source.content} {source.summary or ''}")
-            if not provider_current():
-                await fail_claims("provider_changed")
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
-            # The durable uncertainty marker and final source/receipt check are
-            # committed together before the one batch request crosses HTTP.
-            if not await mark_projection_batch_dispatched(self.db_path, claims):
-                await fail_claims("source_conflict")
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
-            if not provider_current():
-                # No request was made; this particular outcome is known.
-                await mark_projection_batch_response_received(self.db_path, claims)
-                await fail_claims("provider_changed")
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
-            try:
-                returned = await provider.embed(texts)
-            except EmbeddingServiceError as exc:
-                if exc.request_outcome_known:
+                    return stop_remaining()
+                if not provider_current():
+                    # This outcome is known: the request was never sent.
                     await mark_projection_batch_response_received(self.db_path, claims)
-                    await fail_claims("provider_unavailable")
-                # Transport ambiguity remains in_flight after lease expiry.
-                # Cancellation also propagates without clearing that marker.
-                report.update(failed=len(pending), complete=False, next_after_id=after_id)
-                return report
-            if not await mark_projection_batch_response_received(self.db_path, claims):
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
-            vectors = [memory_vector(value, expected_dimensions) for value in returned]
-            if (
-                len(vectors) != len(pending)
-                or any(vector is None for vector in vectors)
-                or len({len(vector) for vector in vectors if vector is not None}) != 1
-            ):
-                await fail_claims("invalid_vector")
-                report.update(failed=len(pending), complete=False, next_after_id=after_id)
-                return report
-            if not provider_current():
-                await fail_claims("provider_changed")
-                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-                return report
-            valid_vectors = [vector for vector in vectors if vector is not None]
-            for claim, vector in zip(claims, valid_vectors, strict=True):
-                stored = await self._store_embedding(claim, vector, identity, provider)
-                report["indexed" if stored else "conflicted"] += 1
-            if report["conflicted"]:
-                report.update(complete=False, next_after_id=after_id)
-        return report
+                    await fail_claims("provider_changed")
+                    return stop_remaining()
+                try:
+                    report["batches"] += 1
+                    returned = await provider.embed(texts)
+                except EmbeddingServiceError as exc:
+                    if exc.request_outcome_known:
+                        await mark_projection_batch_response_received(self.db_path, claims)
+                        await fail_claims("provider_unavailable")
+                    # Ambiguous transport and cancellation retain durable in_flight.
+                    return stop_remaining(failure=True)
+                if not await mark_projection_batch_response_received(self.db_path, claims):
+                    return stop_remaining()
+                vectors = [memory_vector(value, expected_dimensions) for value in returned]
+                if (
+                    len(vectors) != len(batch)
+                    or any(vector is None for vector in vectors)
+                    or len({len(vector) for vector in vectors if vector is not None}) != 1
+                ):
+                    await fail_claims("invalid_vector")
+                    return stop_remaining(failure=True)
+                if not provider_current():
+                    await fail_claims("provider_changed")
+                    return stop_remaining()
+                valid_vectors = [vector for vector in vectors if vector is not None]
+                expected_dimensions = len(valid_vectors[0])
+                for claim, vector in zip(claims, valid_vectors, strict=True):
+                    if await self._store_embedding(claim, vector, identity, provider):
+                        stored_counts[claim.memory_id] = stored_counts.get(claim.memory_id, 0) + 1
+                        report["views_indexed"] += 1
+                    else:
+                        conflicted.add(claim.memory_id)
+        return finish_report()
 
     async def update_memory(
         self, memory_id: str, request: MemoryUpdate, actor_id: str

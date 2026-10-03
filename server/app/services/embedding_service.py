@@ -6,6 +6,7 @@ from typing import Protocol
 
 import httpx
 
+from app.services.memory_vectors import MAX_MEMORY_DIMENSIONS
 from app.services.model_request_execution import ModelExecutionControlError, ModelRequestExecutor
 
 
@@ -56,6 +57,7 @@ class HttpEmbeddingService:
         endpoint = f"{self.base_url}/embeddings"
         model = self.model
         request_body = {"model": model, "input": list(texts)}
+        input_count = len(request_body["input"])
 
         async def request() -> list[list[float]]:
             try:
@@ -74,18 +76,35 @@ class HttpEmbeddingService:
             if not isinstance(body, dict):
                 raise EmbeddingServiceError("invalid embedding response")
             data = body.get("data")
-            if not isinstance(data, list):
+            if not isinstance(data, list) or len(data) != input_count:
                 raise EmbeddingServiceError("invalid embedding response")
-            vectors = [item.get("embedding") for item in data if isinstance(item, dict)]
-            if len(vectors) != len(texts) or not all(
-                isinstance(vector, list)
-                and all(isinstance(value, (int, float)) for value in vector)
-                for vector in vectors
-            ):
-                raise EmbeddingServiceError("invalid embedding vectors")
-            return [
-                [float(value) for value in vector] for vector in vectors if isinstance(vector, list)
-            ]
+            # Batch responses identify their inputs by index, not array order.
+            # A singleton needs no positional inference; retain that legacy
+            # response shape while refusing ambiguous unindexed batches.
+            ordered: dict[int, list[float]] = {}
+            for item in data:
+                if not isinstance(item, dict):
+                    raise EmbeddingServiceError("invalid embedding response")
+                index = item.get("index", 0 if input_count == 1 else None)
+                if type(index) is not int or not 0 <= index < input_count or index in ordered:
+                    raise EmbeddingServiceError("invalid embedding response indices")
+                vector = item.get("embedding")
+                if (
+                    not isinstance(vector, list)
+                    or not 1 <= len(vector) <= MAX_MEMORY_DIMENSIONS
+                    or not all(type(value) in (int, float) for value in vector)
+                ):
+                    raise EmbeddingServiceError("invalid embedding vectors")
+                try:
+                    converted = [float(value) for value in vector]
+                except (ValueError, OverflowError) as exc:
+                    raise EmbeddingServiceError("invalid embedding vectors") from exc
+                if not all(math.isfinite(value) for value in converted) or not any(converted):
+                    raise EmbeddingServiceError("invalid embedding vectors")
+                ordered[index] = converted
+            if len({len(vector) for vector in ordered.values()}) > 1:
+                raise EmbeddingServiceError("inconsistent embedding dimensions")
+            return [ordered[index] for index in range(input_count)]
 
         if model_executor is not None:
             return await model_executor.execute(

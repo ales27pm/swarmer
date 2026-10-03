@@ -95,14 +95,30 @@ async def schema29_fixture(tmp_path: Path, monkeypatch) -> StateService:
 
     with monkeypatch.context() as patch:
         patch.setattr(StateService, "_migrate_symbolic_memory", staticmethod(leave_schema29))
+        patch.setattr(state_service, "migrate_memory_view_vectors", leave_schema29)
         await state.initialize()
-    await state.create_memory(
-        MemoryCreate(content="Keep the existing source.", scope="project:p"), "phone"
-    )
+        # Construct a historical schema29 write, which had only the index-view
+        # intention and no schema31 table to purge.
+        record = state_service.record_text_views_locked
+
+        async def historical_record(db, **kwargs):
+            await record(db, **kwargs, migration_seed=True)
+
+        patch.setattr(state_service, "record_text_views_locked", historical_record)
+        await state.create_memory(
+            MemoryCreate(content="Keep the existing source.", scope="project:p"), "phone"
+        )
     state.embedding_service = NoModelCalls()
     state.memory_normalizer = NoModelCalls()
     state.memory_presenter = NoModelCalls()
     return state
+
+
+async def migrate_symbolic_prefix(state):
+    # Keep this proof about the unchanged 29->30 migration; the complete
+    # startup chain through31 has separate integration coverage.
+    async with aiosqlite.connect(state.db_path) as db:
+        await state._migrate_symbolic_memory(db)
 
 
 @pytest.mark.asyncio
@@ -113,7 +129,7 @@ async def test_schema29_to30_preserves_all_existing_rows_columns_sql_and_sequenc
     before = await database_snapshot(state.db_path)
     assert before["version"] == (29,) and len(before["tables"]) == 66
     assert not set(SYMBOLIC_TABLES) & set(before["tables"])
-    await state.initialize()
+    await migrate_symbolic_prefix(state)
     after = await database_snapshot(state.db_path)
     assert after["version"] == (30,)
     assert set(after["tables"]) - set(before["tables"]) == set(SYMBOLIC_TABLES)
@@ -128,7 +144,7 @@ async def test_schema29_to30_preserves_all_existing_rows_columns_sql_and_sequenc
         == state.memory_presenter.calls
         == 0
     )
-    await state.initialize()
+    await migrate_symbolic_prefix(state)
     assert await database_snapshot(state.db_path) == after
 
 
@@ -145,9 +161,9 @@ async def test_symbolic_migration_failure_rolls_back_new_schema_and_version(tmp_
     with monkeypatch.context() as patch:
         patch.setattr(state_service, "initialize_symbolic_schema_locked", fail_after_ddl)
         with pytest.raises(InjectedFault):
-            await state.initialize()
+            await migrate_symbolic_prefix(state)
     assert await database_snapshot(state.db_path) == before
-    await state.initialize()
+    await migrate_symbolic_prefix(state)
     assert (await database_snapshot(state.db_path))["version"] == (30,)
 
 

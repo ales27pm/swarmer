@@ -227,7 +227,10 @@ async def test_http_embedding_one_call_for_actual_batch_and_strict_parse(
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(
-            200, json={"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0, 1]}]}
+            200,
+            json={
+                "data": [{"index": 0, "embedding": [1.0, 0.0]}, {"index": 1, "embedding": [0, 1]}]
+            },
         )
 
     embedding_transport(monkeypatch, respond)

@@ -179,7 +179,7 @@ async def test_french_query_finds_english_without_any_durable_write(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_query_preserves_original_literal_channel_and_uses_single_english_embedding(
+async def test_query_preserves_original_literal_channel_and_uses_single_bilingual_batch(
     tmp_path: Path,
 ) -> None:
     provider = LocalProvider()
@@ -191,7 +191,7 @@ async def test_query_preserves_original_literal_channel_and_uses_single_english_
     provider.calls.clear()
     found = await state.search_memory(MemorySearch(query="CRM_KEEP_30D"))
     assert {row["id"] for row in found} == {item["id"], literal["id"]}
-    assert provider.calls == [["customer retention"]]
+    assert provider.calls == [["CRM_KEEP_30D", "customer retention"]]
     assert len({row["id"] for row in found}) == len(found)
     assert next(row for row in found if row["id"] == literal["id"])["search_kind"] == "lexical"
 
@@ -301,7 +301,7 @@ async def test_query_rechecks_normalizer_after_embedding(tmp_path: Path) -> None
     with pytest.raises(MemoryNormalizationError) as rejected:
         await state.search_memory(MemorySearch(query="conservation des clients"))
     assert rejected.value.category == "source_conflict"
-    assert provider.calls == [["customer retention"]]
+    assert provider.calls == [["conservation des clients", "customer retention"]]
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 """Bounded consumer for durable, revision-fenced memory indexing intents.
 
-Only the configured canonical/legacy vector channel is projected here. Original
-text views are retained by SQL; this is not a dual-vector or external-index sink.
+Each current native/canonical view is projected independently. The index view
+also maintains the canonical/legacy compatibility cache; there is no external sink.
 Calls are explicit (write path or operator drain), never a startup model load.
 """
 
@@ -47,7 +47,7 @@ async def _uncoordinated_test_slot() -> AsyncIterator[None]:
 
 
 class MemoryProjectionWorker:
-    """One lease per item; never reserve a batch while its first model call runs."""
+    """One lease per view; never reserve a batch while its first model call runs."""
 
     def __init__(
         self,
@@ -85,7 +85,9 @@ class MemoryProjectionWorker:
             await db.commit()
             return applied
 
-    async def drain(self, *, limit: int = 1, memory_id: str | None = None) -> ProjectionDrainReport:
+    async def drain(
+        self, *, limit: int = 1, memory_id: str | None = None, revision: int | None = None
+    ) -> ProjectionDrainReport:
         if type(limit) is not int or not 1 <= limit <= 16:
             raise ValueError("projection batch must contain 1 to 16 items")
         report = ProjectionDrainReport()
@@ -103,6 +105,7 @@ class MemoryProjectionWorker:
                 limit=1,
                 lease_seconds=60,
                 memory_id=memory_id,
+                revision=revision,
                 provider=identity,
             )
             if not claims:

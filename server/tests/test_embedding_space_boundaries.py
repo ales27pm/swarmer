@@ -5,6 +5,7 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
+from aiosqlite.context import contextmanager as sqlite_contextmanager
 
 from app.models import MemoryCreate, MemorySearch
 from app.services.episode_memory import EpisodeMemoryService
@@ -394,6 +395,7 @@ async def test_general_storage_rechecks_provider_instance_after_insert(
     original = aiosqlite.Connection.execute
     changed = False
 
+    @sqlite_contextmanager
     async def execute(connection, sql, parameters=None):
         nonlocal changed
         cursor = await original(connection, sql, parameters)
@@ -416,4 +418,8 @@ async def test_general_storage_rechecks_provider_instance_after_insert(
     assert changed
     async with aiosqlite.connect(state.db_path) as db:
         assert await (await db.execute("SELECT COUNT(*) FROM memory_embeddings")).fetchone() == (0,)
+        view_vectors = await (
+            await db.execute("SELECT COUNT(*) FROM memory_view_embeddings")
+        ).fetchone()
+        assert view_vectors == (0,)
     assert await state.get_memory(item["id"]) is not None

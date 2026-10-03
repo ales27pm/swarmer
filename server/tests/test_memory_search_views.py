@@ -231,7 +231,7 @@ async def test_embedding_failure_keeps_original_lexical_hit(tmp_path):
     found = await state.search_memory(MemorySearch(query="Garder"))
     assert [r["id"] for r in found] == [item["id"]]
     assert found[0]["search_kind"] == "lexical" and found[0]["score"] == 1.0
-    assert provider.calls == [["unmatched pivot"]]
+    assert provider.calls == [["Garder", "unmatched pivot"]]
 
 
 @pytest.mark.parametrize("change", ["identity", "signature"])

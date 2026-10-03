@@ -20,7 +20,7 @@ from tests.test_memory_canonical_store import ReviewedNormalizer
 from tests.test_memory_indexing_regressions import LocalProvider
 
 PROJECTIONS = ("memory_text_heads", "memory_text_views", "memory_index_outbox")
-ATOMIC = ("memory_items", "memory_embeddings", *PROJECTIONS)
+ATOMIC = ("memory_items", "memory_embeddings", "memory_view_embeddings", *PROJECTIONS)
 
 
 class InjectedFault(RuntimeError):
@@ -63,7 +63,8 @@ async def test_create_writes_exact_views_and_durable_intent_in_domain_transactio
     item = await state.create_memory(MemoryCreate(content=text, scope="project:one"), "phone")
     (head,) = await rows(state, "memory_text_heads")
     views = await rows(state, "memory_text_views")
-    (event,) = await rows(state, "memory_index_outbox")
+    events = await rows(state, "memory_index_outbox")
+    event = next(event for event in events if event["view_id"] == head["index_view_id"])
     original = next(view for view in views if view["role"] == "original")
     assert original["content"] == text and original["scope"] == "project:one"
     assert original["language"] == ("fr" if canonical else "und")
@@ -72,6 +73,9 @@ async def test_create_writes_exact_views_and_durable_intent_in_domain_transactio
     assert event["revision"] == head["revision"] == 1
     assert text not in json.dumps(event)
     assert len(views) == (2 if canonical else 1)
+    assert len(events) == len(views)
+    assert {event["view_id"] for event in events} == {view["id"] for view in views}
+    assert all(event["status"] == "pending" and event["provider"] is None for event in events)
     if canonical:
         pivot = next(view for view in views if view["role"] == "canonical")
         assert pivot["content"] == item["content"] == "Do not send automatically."
@@ -188,6 +192,7 @@ async def make_schema28_fixture(tmp_path):
     )
     await canonical.create_memory(MemoryCreate(content="Ne pas envoyer automatiquement."), "phone")
     async with aiosqlite.connect(legacy.db_path) as db:
+        await db.execute("DROP TABLE memory_view_embeddings")
         for name in reversed(PROJECTIONS):
             await db.execute(f"DROP TABLE {name}")
         await db.execute("PRAGMA user_version=28")
@@ -350,20 +355,22 @@ async def test_only_explicit_index_request_wakes_known_failure(tmp_path, canonic
     state = await state_at(tmp_path, canonical=canonical, provider=provider)
     request = MemoryCreate(content="Ne pas envoyer automatiquement.")
     item = await state.create_memory(request, "phone")
-    assert len(provider.calls) == 1
-    (failed,) = await rows(state, "memory_index_outbox")
-    assert failed["status"] == "pending" and failed["error_category"]
+    view_count = 2 if canonical else 1
+    assert len(provider.calls) == view_count
+    failed = await rows(state, "memory_index_outbox")
+    assert len(failed) == view_count
+    assert all(event["status"] == "pending" and event["error_category"] for event in failed)
     provider.fail = False
     assert not await state.index_memory(item["id"], retry_known_failure=False)
     assert (await state.drain_memory_projections(memory_id=item["id"])).claimed == 0
     if canonical:
         assert (await state.create_memory(request, "phone"))["id"] == item["id"]
     await state.update_memory(item["id"], MemoryUpdate(pinned=True), "phone")
-    assert len(provider.calls) == 1
-    assert (await rows(state, "memory_index_outbox"))[0] == failed
+    assert len(provider.calls) == view_count
+    assert await rows(state, "memory_index_outbox") == failed
     assert await state.index_memory(item["id"])
-    assert len(provider.calls) == 2
-    assert (await rows(state, "memory_index_outbox"))[0]["status"] == "completed"
+    assert len(provider.calls) == 2 * view_count
+    assert all(event["status"] == "completed" for event in await rows(state, "memory_index_outbox"))
 
 
 @pytest.mark.asyncio

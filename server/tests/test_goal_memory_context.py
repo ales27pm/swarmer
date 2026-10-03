@@ -17,6 +17,7 @@ from app.services.goal_project import GoalProjectService
 from app.services.project_memory import ProjectMemoryConflict, ProjectMemoryService
 from app.services.state_service import SCHEMA_VERSION, StateService
 from app.services.swarm_contracts import GoalCreateRequest
+from tests.test_agent_leases import restore_schema30_memory_fixture
 from tests.test_goal_api import _create_goal
 from tests.test_goal_runtime_recovery import _manager, _worker_plan
 from tests.test_project_memory import SemanticProvider, _count, _messages
@@ -283,6 +284,7 @@ async def test_schema24_upgrade_preserves_pairing_and_is_additive_restart_safe(
             table: await (await db.execute(f"SELECT * FROM {table}")).fetchall()
             for table in ("pairing_codes", "pairing_candidates", "devices")
         }
+        await restore_schema30_memory_fixture(db)
         await db.execute("DROP TABLE goal_memory_queries")
         await db.execute("PRAGMA user_version=23")
         await db.commit()

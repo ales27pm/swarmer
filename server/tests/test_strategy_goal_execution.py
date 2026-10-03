@@ -128,7 +128,15 @@ async def prepared(tmp_path: Path, monkeypatch, *, source_language="fr"):
     def response(request):
         body = json.loads(request.content)
         embedding_requests.append(body)
-        return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]}]})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [1.0, 0.0]}
+                    for index, _ in enumerate(body["input"])
+                ]
+            },
+        )
 
     def isolated_client(*args, **kwargs):
         kwargs.setdefault("transport", httpx.MockTransport(response))

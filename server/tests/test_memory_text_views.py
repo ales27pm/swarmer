@@ -34,6 +34,7 @@ from app.services.memory_text_views import (
     retry_known_projection_failure,
     text_view_sha256,
 )
+from app.services.memory_view_vector_schema import initialize_view_vector_schema_locked
 
 NOW = "2026-10-03T10:00:00+00:00"
 LATER = "2026-10-03T10:00:10+00:00"
@@ -56,6 +57,7 @@ async def database(tmp_path: Path) -> Path:
         """)
         await db.execute("BEGIN IMMEDIATE")
         await initialize_text_view_schema_locked(db)
+        await initialize_view_vector_schema_locked(db)
         await db.commit()
     return path
 
@@ -149,7 +151,7 @@ async def put(
             item_revision=revision,
             original_content=content,
             original_summary=None,
-            original_language="fr-CA",
+            original_language="fr" if canonical else "fr-CA",
             source_id=source_id,
             source_sha256=source_sha,
             canonical_content=canonical,
@@ -173,6 +175,7 @@ async def rows(path: Path, table: str) -> list[dict[str, object]]:
         "memory_text_heads",
         "memory_index_outbox",
         "memory_embeddings",
+        "memory_view_embeddings",
     }
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
@@ -190,7 +193,8 @@ async def test_views_and_private_intent_are_atomic_and_original_is_exact(tmp_pat
         == "Garder `A.swift` : 30 ms.\n"
     )
     outbox = await rows(path, "memory_index_outbox")
-    assert len(outbox) == 1
+    assert len(outbox) == 2
+    assert {event["view_id"] for event in outbox} == {view["id"] for view in views}
     assert "A.swift" not in json.dumps(outbox)
     async with aiosqlite.connect(path) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -302,7 +306,7 @@ async def test_missing_provider_intent_survives_and_other_provider_is_not_claime
 async def test_strict_vector_and_source_checks_leave_intent_unacknowledged(tmp_path: Path) -> None:
     path = await database(tmp_path)
     await put(path, canonical="Original text")
-    (claim,) = await claim_projection_batch(path, "a", now=NOW)
+    (claim,) = await claim_projection_batch(path, "a", limit=1, now=NOW)
     source = await read_projection_source(path, claim, now=NOW)
     assert source is not None and source.content == "Original text" and source.scope == "project:p"
     async with aiosqlite.connect(path) as db:
@@ -399,6 +403,13 @@ async def test_backfill_cannot_steal_active_claim_but_fences_expired_claim(tmp_p
                 "INSERT INTO memory_embeddings VALUES(?,?,?,?,?)",
                 ("m1", "embed-v1", 1, "[1.0]", NOW),
             )
+            await db.execute(
+                """INSERT INTO memory_view_embeddings
+                SELECT v.memory_id,v.revision,v.id,'embed-v1',v.source_id,v.source_sha256,
+                    v.text_sha256,v.pipeline_signature,?,1,'[1.0]',?
+                FROM memory_text_views v WHERE v.id=?""",
+                (NOW, timestamp, head["index_view_id"]),
+            )
             accepted = await complete_current_projection_locked(
                 db,
                 memory_id="m1",
@@ -490,8 +501,10 @@ async def test_canonical_provenance_is_requalified_before_projection_commit(
 ) -> None:
     path = await database(tmp_path)
     await put(path, canonical="Original text")
-    (claim,) = await claim_projection_batch(path, "worker", now=NOW)
-    assert await read_projection_source(path, claim, now=NOW) is not None
+    claims = await claim_projection_batch(path, "worker", now=NOW)
+    assert len(claims) == 2
+    for claim in claims:
+        assert await read_projection_source(path, claim, now=NOW) is not None
     async with aiosqlite.connect(path) as db:
         await db.execute("BEGIN IMMEDIATE")
         if mutation == "receipt":
@@ -506,9 +519,11 @@ async def test_canonical_provenance_is_requalified_before_projection_commit(
             else:
                 metadata["normalization_signature"] = "another-pipeline"
             await db.execute("UPDATE memory_items SET metadata_json=?", (json.dumps(metadata),))
-        assert not await finish_projection_locked(db, claim, vector=[1.0, 0.0], now=LATER)
+        for claim in claims:
+            assert not await finish_projection_locked(db, claim, vector=[1.0, 0.0], now=LATER)
         await db.commit()
     assert not await rows(path, "memory_embeddings")
+    assert not await rows(path, "memory_view_embeddings")
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,8 @@
 
 The domain transaction owns creation/deletion. This is deliberately separate
 from the MessageBoard publication outbox: neither text nor vectors are events.
-Only the current canonical (or legacy original) view is projected in this slice.
+Each current original/canonical view has its own provider projection in schema31.
+The canonical (or legacy original) index view also maintains the compatibility cache.
 An unknown dispatched request fences this projection queue across memories and
 revisions. It is not a global GPU lock or evidence that remote inference stopped;
 other model callers retain their own admission and cancellation contracts.
@@ -10,7 +11,6 @@ other model callers retain their own admission and cancellation contracts.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,8 +19,17 @@ from typing import Any, Literal
 
 import aiosqlite
 
-from app.services.memory_search_presentation import _qualified
+from app.services.memory_text_fingerprints import (
+    _hash as _hash,  # noqa: PLC0414 - compatibility re-export
+)
+from app.services.memory_text_fingerprints import (
+    _json as _json,  # noqa: PLC0414 - compatibility re-export
+)
+from app.services.memory_text_fingerprints import (
+    text_view_sha256 as text_view_sha256,  # noqa: PLC0414 - compatibility re-export
+)
 from app.services.memory_vectors import memory_vector
+from app.services.memory_view_qualification import qualify_search_rows
 
 MEMORY_TEXT_VIEW_STATEMENTS = (
     """CREATE TABLE IF NOT EXISTS memory_text_heads (
@@ -99,20 +108,10 @@ class ProjectionSource:
     source_sha256: str
     pipeline_signature: str
     item_revision: str
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
-
-
-def _hash(value: Any) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
-
-
-def text_view_sha256(content: str, summary: str | None) -> str:
-    return _hash({"content": content, "summary": summary})
+    source_id: str | None = None
+    role: str = "original"
+    language: str = "und"
+    is_index_view: bool = False
 
 
 def _time(value: str | None = None) -> str:
@@ -168,8 +167,8 @@ async def _enqueue(
         existing = await _one(
             db,
             """SELECT id FROM memory_index_outbox WHERE memory_id=? AND revision=?
-                AND operation='upsert' AND status<>'obsolete' LIMIT 1""",
-            (memory_id, revision),
+                AND view_id=? AND operation='upsert' AND status<>'obsolete' LIMIT 1""",
+            (memory_id, revision, view_id),
         )
         if existing is not None:
             return
@@ -252,20 +251,23 @@ async def record_text_views_locked(
         raise ValueError("migration seed requires a memory without a text head")
     if head is not None and not head["deleted"] and head["view_set_sha256"] == digest:
         await refresh_text_view_head_locked(db, memory_id, item_revision, timestamp)
-        await _enqueue(
-            db,
-            memory_id=memory_id,
-            revision=head["revision"],
-            view_id=head["index_view_id"],
-            provider=embedding_provider,
-            operation="upsert",
-            now=timestamp,
-        )
+        for view in reversed(views):
+            await _enqueue(
+                db,
+                memory_id=memory_id,
+                revision=head["revision"],
+                view_id="mtv_" + _hash([memory_id, head["revision"], view]),
+                provider=embedding_provider,
+                operation="upsert",
+                now=timestamp,
+            )
         return int(head["revision"])
     revision = int(head["revision"]) + 1 if head else 1
     view_id = ""
+    view_ids = []
     for view in views:
         view_id = "mtv_" + _hash([memory_id, revision, view])
+        view_ids.append(view_id)
         await db.execute(
             """INSERT INTO memory_text_views(id,memory_id,revision,role,language,pipeline_signature,
                 content,summary,text_sha256,source_id,source_sha256,scope,kind,sensitivity,created_at)
@@ -299,6 +301,7 @@ async def record_text_views_locked(
     )
     if not migration_seed:
         await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+        await db.execute("DELETE FROM memory_view_embeddings WHERE memory_id=?", (memory_id,))
     await db.execute(
         """UPDATE memory_index_outbox SET status='obsolete',
             owner=CASE WHEN request_state='in_flight' THEN owner ELSE NULL END,
@@ -307,15 +310,18 @@ async def record_text_views_locked(
             AND status IN ('pending','claimed')""",
         (timestamp, memory_id, revision),
     )
-    await _enqueue(
-        db,
-        memory_id=memory_id,
-        revision=revision,
-        view_id=view_id,
-        provider=embedding_provider,
-        operation="upsert",
-        now=timestamp,
-    )
+    # Historical migration prefixes still seed exactly the old index intent.
+    # Normal schema31 writes enqueue both views, retaining canonical-first order.
+    for selected_view_id in [view_id] if migration_seed else reversed(view_ids):
+        await _enqueue(
+            db,
+            memory_id=memory_id,
+            revision=revision,
+            view_id=selected_view_id,
+            provider=embedding_provider,
+            operation="upsert",
+            now=timestamp,
+        )
     return revision
 
 
@@ -323,6 +329,11 @@ async def refresh_text_view_head_locked(
     db: aiosqlite.Connection, memory_id: str, item_revision: str, now: str | None = None
 ) -> None:
     _locked(db)
+    previous = await _one(
+        db,
+        "SELECT item_revision FROM memory_text_heads WHERE memory_id=? AND deleted=0",
+        (memory_id,),
+    )
     await db.execute(
         """UPDATE memory_text_heads SET item_revision=?,updated_at=?
             WHERE memory_id=? AND deleted=0 AND EXISTS(
@@ -333,6 +344,20 @@ async def refresh_text_view_head_locked(
                 AND m.scope=v.scope AND m.kind=v.kind AND m.sensitivity=v.sensitivity)""",
         (item_revision, _time(now), memory_id, item_revision),
     )
+    if previous is not None:
+        await db.execute(
+            """UPDATE memory_view_embeddings SET item_revision=? WHERE memory_id=? AND item_revision=?
+                AND EXISTS(SELECT 1 FROM memory_text_heads h JOIN memory_text_views v
+                  ON v.memory_id=h.memory_id AND v.revision=h.revision
+                  WHERE h.memory_id=memory_view_embeddings.memory_id AND h.deleted=0
+                    AND h.item_revision=? AND h.revision=memory_view_embeddings.revision
+                    AND v.id=memory_view_embeddings.view_id
+                    AND v.text_sha256=memory_view_embeddings.view_sha256
+                    AND v.source_id IS memory_view_embeddings.source_id
+                    AND v.source_sha256=memory_view_embeddings.source_sha256
+                    AND v.pipeline_signature=memory_view_embeddings.pipeline_signature)""",
+            (item_revision, memory_id, previous["item_revision"], item_revision),
+        )
 
 
 async def delete_text_views_locked(
@@ -348,6 +373,7 @@ async def delete_text_views_locked(
         if head
         else 1
     )
+    await db.execute("DELETE FROM memory_view_embeddings WHERE memory_id=?", (memory_id,))
     await db.execute("DELETE FROM memory_text_views WHERE memory_id=?", (memory_id,))
     await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
     await db.execute(
@@ -397,6 +423,7 @@ async def claim_projection_batch(
     limit: int = 16,
     lease_seconds: int = 60,
     memory_id: str | None = None,
+    revision: int | None = None,
     provider: str | None = None,
     now: str | None = None,
 ) -> list[ProjectionClaim]:
@@ -406,6 +433,7 @@ async def claim_projection_batch(
         or not 1 <= limit <= 16
         or not 1 <= lease_seconds <= 900
         or provider == ""
+        or (revision is not None and (type(revision) is not int or revision < 1 or not memory_id))
     ):
         raise ValueError("invalid projection claim parameters")
     async with aiosqlite.connect(db_path) as db:
@@ -419,12 +447,25 @@ async def claim_projection_batch(
                 AND (o.operation='delete' OR NOT EXISTS(
                     SELECT 1 FROM memory_index_outbox uncertain WHERE uncertain.request_state='in_flight'))
                 AND h.revision=o.revision AND ((o.operation='delete' AND h.deleted=1) OR
-                  (o.operation='upsert' AND h.deleted=0 AND h.index_view_id=o.view_id))
+                  (o.operation='upsert' AND h.deleted=0 AND EXISTS(SELECT 1 FROM memory_text_views v
+                    WHERE v.id=o.view_id AND v.memory_id=o.memory_id AND v.revision=o.revision)))
                 AND (? IS NULL OR o.memory_id=?)
+                AND (? IS NULL OR o.revision=?)
                 AND (o.operation='delete' OR (? IS NULL AND o.provider IS NOT NULL) OR
                      (? IS NOT NULL AND (o.provider=? OR o.provider IS NULL)))
                 ORDER BY o.id LIMIT ?""",
-            (timestamp, timestamp, memory_id, memory_id, provider, provider, provider, limit * 2),
+            (
+                timestamp,
+                timestamp,
+                memory_id,
+                memory_id,
+                revision,
+                revision,
+                provider,
+                provider,
+                provider,
+                limit * 2,
+            ),
         )
         names = [column[0] for column in cursor.description or ()]
         selected = [dict(zip(names, row, strict=True)) for row in await cursor.fetchall()]
@@ -438,8 +479,8 @@ async def claim_projection_batch(
                 await _one(
                     db,
                     """SELECT id FROM memory_index_outbox
-                WHERE memory_id=? AND revision=? AND operation='upsert' AND provider=? AND id<>?""",
-                    (row["memory_id"], row["revision"], identity, row["id"]),
+                WHERE memory_id=? AND revision=? AND view_id=? AND operation='upsert' AND provider=? AND id<>?""",
+                    (row["memory_id"], row["revision"], row["view_id"], identity, row["id"]),
                 )
                 if identity
                 else None
@@ -520,7 +561,7 @@ async def reserve_projection_batch(
         or not provider
         or not 1 <= len(snapshots) <= 100
         or not 1 <= lease_seconds <= 900
-        or len({item["id"] for item in snapshots}) != len(snapshots)
+        or len({(item["id"], item["projection_view_id"]) for item in snapshots}) != len(snapshots)
     ):
         raise ValueError("invalid explicit projection page")
     async with aiosqlite.connect(db_path) as db:
@@ -547,9 +588,9 @@ async def reserve_projection_batch(
             busy = await _one(
                 db,
                 """SELECT id FROM memory_index_outbox WHERE memory_id=?
-                AND revision=? AND operation='upsert' AND (provider=? OR provider IS NULL)
+                AND revision=? AND view_id=? AND operation='upsert' AND (provider=? OR provider IS NULL)
                 AND status='claimed' AND lease_expires_at>?""",
-                (memory_id, revision, provider, timestamp),
+                (memory_id, revision, view_id, provider, timestamp),
             )
             if busy is not None:
                 return []
@@ -584,9 +625,9 @@ async def reserve_projection_batch(
             # Prevent an older unbound intent from admitting a second projection.
             await db.execute(
                 """UPDATE memory_index_outbox SET status='obsolete',owner=NULL,
-                lease_expires_at=NULL,updated_at=? WHERE memory_id=? AND revision=?
+                lease_expires_at=NULL,updated_at=? WHERE memory_id=? AND revision=? AND view_id=?
                 AND operation='upsert' AND provider IS NULL AND request_state<>'in_flight'""",
-                (timestamp, memory_id, revision),
+                (timestamp, memory_id, revision, view_id),
             )
             claims.append(_claim(row))
         await db.commit()
@@ -693,68 +734,23 @@ async def mark_projection_response_received(
 async def _source(
     db: aiosqlite.Connection, memory_id: str, revision: int, view_id: str | None
 ) -> ProjectionSource | None:
+    item = await _row(db, "SELECT * FROM memory_items WHERE id=?", (memory_id,))
+    if item is None:
+        return None
+    qualified = (await qualify_search_rows(db, [item])).get(memory_id)
+    # Retrieval deliberately preserves canonical qualification errors. Projection
+    # requires a fully qualified original/receipt even for its canonical view.
+    if qualified is None or qualified.view_token is None or qualified.original is None:
+        return None
     row = await _one(
         db,
-        """SELECT v.*,h.item_revision,m.metadata_json FROM memory_text_views v
+        """SELECT v.*,h.item_revision,h.index_view_id FROM memory_text_views v
         JOIN memory_text_heads h ON h.memory_id=v.memory_id AND h.revision=v.revision
-        JOIN memory_items m ON m.id=h.memory_id
-        WHERE h.memory_id=? AND h.revision=? AND h.index_view_id=? AND v.id=h.index_view_id
-          AND h.deleted=0 AND h.source_id IS v.source_id AND h.source_sha256=v.source_sha256
-          AND m.updated_at=h.item_revision AND m.content=v.content AND m.summary IS v.summary
-          AND m.scope=v.scope AND m.kind=v.kind AND m.sensitivity=v.sensitivity""",
+        WHERE h.memory_id=? AND h.revision=? AND v.id=? AND h.deleted=0""",
         (memory_id, revision, view_id),
     )
-    if row is None or text_view_sha256(row["content"], row["summary"]) != row["text_sha256"]:
+    if row is None:
         return None
-    original = await _one(
-        db,
-        """SELECT * FROM memory_text_views WHERE memory_id=?
-        AND revision=? AND role='original'""",
-        (memory_id, revision),
-    )
-    if (
-        original is None
-        or text_view_sha256(original["content"], original["summary"]) != row["source_sha256"]
-        or original["text_sha256"] != row["source_sha256"]
-    ):
-        return None
-    if row["source_id"] is not None:
-        source = await _one(
-            db, "SELECT * FROM memory_source_journal WHERE id=?", (row["source_id"],)
-        )
-        if (
-            source is None
-            or any(
-                source[key] != row[key] for key in ("scope", "kind", "sensitivity", "source_sha256")
-            )
-            or text_view_sha256(source["content"], source["summary"]) != row["source_sha256"]
-        ):
-            return None
-    if row["role"] == "canonical":
-        try:
-            metadata = json.loads(row["metadata_json"] or "{}")
-        except (TypeError, ValueError):
-            return None
-        if not isinstance(metadata, dict) or any(
-            metadata.get(key) != value
-            for key, value in (
-                ("source_id", row["source_id"]),
-                ("source_sha256", row["source_sha256"]),
-                ("normalization_signature", row["pipeline_signature"]),
-            )
-        ):
-            return None
-        item = await _one(db, "SELECT * FROM memory_items WHERE id=?", (memory_id,))
-        receipt = await _row(
-            db,
-            "SELECT * FROM memory_canonical_receipts WHERE id=?",
-            (metadata.get("canonical_receipt_id"),),
-        )
-        journal = await _row(
-            db, "SELECT * FROM memory_source_journal WHERE id=?", (row["source_id"],)
-        )
-        if item is None or not _qualified({**item, "metadata": metadata}, receipt, journal):
-            return None
     return ProjectionSource(
         memory_id,
         revision,
@@ -768,6 +764,10 @@ async def _source(
         row["source_sha256"],
         row["pipeline_signature"],
         row["item_revision"],
+        row["source_id"],
+        row["role"],
+        row["language"],
+        row["id"] == row["index_view_id"],
     )
 
 
@@ -803,6 +803,7 @@ async def finish_projection_locked(
         if head is None or not head["deleted"] or head["revision"] != claim.revision:
             return False
         await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (claim.memory_id,))
+        await db.execute("DELETE FROM memory_view_embeddings WHERE memory_id=?", (claim.memory_id,))
     else:
         checked_vector = memory_vector(vector)
         if checked_vector is None:
@@ -811,16 +812,37 @@ async def finish_projection_locked(
         if source is None or not claim.provider:
             return False
         await db.execute(
-            """INSERT OR REPLACE INTO memory_embeddings(
-            memory_id,provider,dimensions,vector_json,updated_at) VALUES(?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO memory_view_embeddings(
+                memory_id,revision,view_id,provider,source_id,source_sha256,view_sha256,
+                pipeline_signature,item_revision,dimensions,vector_json,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 claim.memory_id,
+                claim.revision,
+                claim.view_id,
                 claim.provider,
+                source.source_id,
+                source.source_sha256,
+                source.view_sha256,
+                source.pipeline_signature,
+                source.item_revision,
                 len(checked_vector),
                 _json(checked_vector),
-                source.item_revision,
+                timestamp,
             ),
         )
+        if source.is_index_view:
+            await db.execute(
+                """INSERT OR REPLACE INTO memory_embeddings(
+                memory_id,provider,dimensions,vector_json,updated_at) VALUES(?,?,?,?,?)""",
+                (
+                    claim.memory_id,
+                    claim.provider,
+                    len(checked_vector),
+                    _json(checked_vector),
+                    source.item_revision,
+                ),
+            )
     await db.execute(
         """UPDATE memory_index_outbox SET status='completed',owner=NULL,
         lease_expires_at=NULL,error_category=NULL,updated_at=? WHERE id=?""",
@@ -855,17 +877,25 @@ async def complete_current_projection_locked(
         return False
     vector = await _one(
         db,
-        "SELECT updated_at,dimensions,vector_json FROM memory_embeddings WHERE memory_id=? AND provider=?",
-        (memory_id, provider),
+        """SELECT * FROM memory_view_embeddings WHERE memory_id=? AND revision=? AND view_id=? AND provider=?""",
+        (memory_id, revision, view_id, provider),
     )
     busy = await _one(
         db,
-        """SELECT id FROM memory_index_outbox WHERE request_state='in_flight' OR (memory_id=? AND revision=?
+        """SELECT id FROM memory_index_outbox WHERE request_state='in_flight' OR (memory_id=? AND revision=? AND view_id=?
         AND operation='upsert' AND (provider=? OR provider IS NULL)
         AND status='claimed' AND lease_expires_at>?)""",
-        (memory_id, revision, provider, timestamp),
+        (memory_id, revision, view_id, provider, timestamp),
     )
-    if vector is None or vector["updated_at"] != item_revision or busy is not None:
+    if (
+        vector is None
+        or vector["item_revision"] != item_revision
+        or busy is not None
+        or vector["source_id"] != source.source_id
+        or vector["source_sha256"] != source.source_sha256
+        or vector["view_sha256"] != source.view_sha256
+        or vector["pipeline_signature"] != source.pipeline_signature
+    ):
         return False
     try:
         if memory_vector(json.loads(vector["vector_json"]), vector["dimensions"]) is None:
@@ -884,15 +914,15 @@ async def complete_current_projection_locked(
     )
     await db.execute(
         """UPDATE memory_index_outbox SET status='completed',owner=NULL,
-        lease_expires_at=NULL,error_category=NULL,updated_at=? WHERE memory_id=? AND revision=?
+        lease_expires_at=NULL,error_category=NULL,updated_at=? WHERE memory_id=? AND revision=? AND view_id=?
         AND operation='upsert' AND provider=? AND status<>'obsolete'""",
-        (timestamp, memory_id, revision, provider),
+        (timestamp, memory_id, revision, view_id, provider),
     )
     await db.execute(
         """UPDATE memory_index_outbox SET status='obsolete',owner=NULL,
-        lease_expires_at=NULL,error_category=NULL,updated_at=? WHERE memory_id=? AND revision=?
+        lease_expires_at=NULL,error_category=NULL,updated_at=? WHERE memory_id=? AND revision=? AND view_id=?
         AND operation='upsert' AND provider IS NULL AND status IN ('pending','claimed')""",
-        (timestamp, memory_id, revision),
+        (timestamp, memory_id, revision, view_id),
     )
     return True
 
@@ -922,10 +952,19 @@ async def fail_projection_claim(
 
 
 async def retry_known_projection_failure(
-    db_path: Path, *, memory_id: str, provider: str, now: str | None = None
+    db_path: Path,
+    *,
+    memory_id: str,
+    provider: str,
+    revision: int | None = None,
+    now: str | None = None,
 ) -> bool:
     """An explicit retry may wake a known failure, never an uncertain live lease."""
-    if not memory_id or not provider:
+    if (
+        not memory_id
+        or not provider
+        or (revision is not None and (type(revision) is not int or revision < 1))
+    ):
         raise ValueError("explicit retry requires a memory and provider identity")
     async with aiosqlite.connect(db_path) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -933,6 +972,7 @@ async def retry_known_projection_failure(
         cursor = await db.execute(
             """UPDATE memory_index_outbox SET available_at=?,updated_at=?
             WHERE memory_id=? AND provider=? AND operation='upsert'
+              AND (? IS NULL OR revision=?)
               AND status='pending' AND owner IS NULL AND available_at>?
               AND request_state<>'in_flight'
               AND NOT EXISTS(SELECT 1 FROM memory_index_outbox unknown
@@ -942,11 +982,12 @@ async def retry_known_projection_failure(
               AND EXISTS(SELECT 1 FROM memory_text_heads h
                 WHERE h.memory_id=memory_index_outbox.memory_id AND h.deleted=0
                   AND h.revision=memory_index_outbox.revision
-                  AND h.index_view_id=memory_index_outbox.view_id)""",
-            (timestamp, timestamp, memory_id, provider, timestamp),
+                  AND EXISTS(SELECT 1 FROM memory_text_views v WHERE v.id=memory_index_outbox.view_id
+                    AND v.memory_id=h.memory_id AND v.revision=h.revision))""",
+            (timestamp, timestamp, memory_id, provider, revision, revision, timestamp),
         )
         await db.commit()
-        return cursor.rowcount == 1
+        return cursor.rowcount > 0
 
 
 async def projection_status(

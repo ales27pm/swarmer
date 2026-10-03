@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 
 from app.services.state_service import SCHEMA_VERSION, StateService
+from tests.test_agent_leases import restore_schema30_memory_fixture
 
 V011_SCHEMA_VERSION = 19
 V012_TABLES = frozenset(
@@ -37,6 +38,7 @@ async def _make_v011_fixture(path: Path) -> None:
     await state.initialize()
     created_at = "2026-09-08T00:00:00+00:00"
     async with aiosqlite.connect(path) as db:
+        await restore_schema30_memory_fixture(db)
         await db.execute(
             """INSERT INTO tasks(
                 id,title,input,mode,source,conversation_id,status,priority,

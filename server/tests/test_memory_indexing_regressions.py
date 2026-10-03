@@ -102,7 +102,7 @@ async def test_corrupt_or_incompatible_cached_vectors_fall_back_to_lexical(
     state = await _state(tmp_path, LocalProvider())
     item = await state.create_memory(MemoryCreate(content="canoe safety"), "phone")
     async with aiosqlite.connect(state.db_path) as db:
-        await db.execute("UPDATE memory_embeddings SET vector_json=?", (json.dumps(vector),))
+        await db.execute("UPDATE memory_view_embeddings SET vector_json=?", (json.dumps(vector),))
         await db.commit()
     results = await state.search_memory(MemorySearch(query="canoe"))
     assert [(row["id"], row["search_kind"]) for row in results] == [(item["id"], "lexical")]

@@ -14,7 +14,7 @@ from app.models import AgentCreate, TaskCreate, TaskRecord
 from app.services.agent_dispatcher import AgentDispatchConflict, AgentDispatcher
 from app.services.agent_lease_reaper import AgentLeaseReaper
 from app.services.message_board import MessageBoardService
-from app.services.state_service import SCHEMA_VERSION, StateService
+from app.services.state_service import StateService
 
 
 @dataclass
@@ -36,6 +36,20 @@ async def set_agent_seen(database: Path, agent_id: str, at: datetime) -> None:
             (timestamp, timestamp, agent_id),
         )
         await db.commit()
+
+
+async def restore_schema30_memory_fixture(db: aiosqlite.Connection) -> None:
+    """Construct the actual pre-31 memory layout without changing agent/job data."""
+    assert await (await db.execute("PRAGMA user_version")).fetchone() == (31,)
+    vectors = await (await db.execute("SELECT COUNT(*) FROM memory_view_embeddings")).fetchone()
+    assert vectors == (0,)
+    await db.execute("DROP TABLE memory_view_embeddings")
+    await db.execute("DROP INDEX idx_memory_index_dedupe")
+    await db.execute(
+        """CREATE UNIQUE INDEX idx_memory_index_dedupe
+        ON memory_index_outbox(memory_id,revision,operation,COALESCE(provider,''))"""
+    )
+    await db.execute("PRAGMA user_version=30")
 
 
 async def setup_runtime(
@@ -528,7 +542,7 @@ async def test_v09_migration_preserves_queued_job_for_queued_parent_with_leased_
                 now,
             ),
         )
-        await db.execute(f"PRAGMA user_version={SCHEMA_VERSION - 1}")
+        await restore_schema30_memory_fixture(db)
         await db.commit()
 
     await state.initialize()
@@ -605,7 +619,7 @@ async def test_migration_fences_active_job_with_incompatible_task_state(
                 now,
             ),
         )
-        await db.execute(f"PRAGMA user_version={SCHEMA_VERSION - 1}")
+        await restore_schema30_memory_fixture(db)
         await db.commit()
 
     await state.initialize()

@@ -55,10 +55,10 @@ class ScopedEmbedding:
 
     async def embed(self, texts, *, model_executor=None):
         self.seen.append(("embed", model_executor))
-        assert texts == ["customer retention"]
+        assert texts == ["conservation des clients", "customer retention"]
         if self.failure:
             raise self.failure
-        return [[1.0, 0.0]]
+        return [[1.0, 0.0] for _ in texts]
 
 
 @pytest.mark.asyncio

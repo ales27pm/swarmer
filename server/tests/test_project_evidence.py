@@ -16,6 +16,7 @@ from app.services.project_evidence_contracts import EvidenceMappingRequest, Requ
 from app.services.project_graph import read_project_graph
 from app.services.state_service import SCHEMA_VERSION, StateService
 from app.services.swarm_contracts import GoalCreateRequest
+from tests.test_agent_leases import restore_schema30_memory_fixture
 from tests.test_project_graph import graph_evidence
 
 
@@ -380,6 +381,7 @@ async def test_concurrent_updates_and_request_reuse_do_not_overwrite_mapping(tmp
 
 async def remove_v27(path):
     async with aiosqlite.connect(path) as db:
+        await restore_schema30_memory_fixture(db)
         await db.execute("DROP TABLE project_requirement_evidence")
         await db.execute("PRAGMA user_version=26")
         await db.commit()

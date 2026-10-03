@@ -302,6 +302,15 @@ def test_migration_reconciles_duplicate_nonterminal_request_fingerprints(
         arguments={},
     )
     with sqlite3.connect(test_app.state.settings.db_path) as db:
+        # Restore the actual pre-31 memory layout before exercising an older upgrade.
+        assert db.execute("PRAGMA user_version").fetchone() == (31,)
+        assert db.execute("SELECT COUNT(*) FROM memory_view_embeddings").fetchone() == (0,)
+        db.execute("DROP TABLE memory_view_embeddings")
+        db.execute("DROP INDEX idx_memory_index_dedupe")
+        db.execute(
+            """CREATE UNIQUE INDEX idx_memory_index_dedupe
+            ON memory_index_outbox(memory_id,revision,operation,COALESCE(provider,''))"""
+        )
         db.execute("DROP INDEX idx_iphone_capability_one_nonterminal_fingerprint")
         db.execute(
             """

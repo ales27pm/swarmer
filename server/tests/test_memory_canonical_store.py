@@ -443,7 +443,7 @@ async def test_legacy_original_preserved_when_first_converted_and_gets_are_inert
 
 
 @pytest.mark.asyncio
-async def test_only_accepted_english_content_is_embedded(tmp_path):
+async def test_accepted_english_and_bound_original_views_are_embedded(tmp_path):
     from tests.test_memory_indexing_regressions import LocalProvider
 
     provider = ReviewedNormalizer()
@@ -451,7 +451,10 @@ async def test_only_accepted_english_content_is_embedded(tmp_path):
     service = await enabled(tmp_path, provider)
     service.embedding_service = embeddings
     await service.create_memory(MemoryCreate(content="Ne pas envoyer automatiquement."), "phone")
-    assert embeddings.calls == [["Do not send automatically. "]]
+    assert embeddings.calls == [
+        ["Do not send automatically. "],
+        ["Ne pas envoyer automatiquement. "],
+    ]
 
 
 @pytest.mark.asyncio

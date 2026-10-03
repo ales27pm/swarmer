@@ -10,6 +10,7 @@ from app.services.iphone_capability_binding import (
     canonical_capability_request_fingerprint,
 )
 from app.services.state_service import SCHEMA_VERSION, StateService
+from tests.test_agent_leases import restore_schema30_memory_fixture
 
 V08_SCHEMA = """
 PRAGMA foreign_keys=ON;
@@ -801,6 +802,7 @@ async def test_v011_upgrade_adds_bounded_outbox_metrics_restart_safely(
     state = StateService(path)
     await state.initialize()
     async with aiosqlite.connect(path) as db:
+        await restore_schema30_memory_fixture(db)
         await db.execute("DROP TABLE outbox_operational_metrics")
         await db.execute(f"PRAGMA user_version={V010_SCHEMA_VERSION}")
         await db.commit()
@@ -830,6 +832,7 @@ async def test_v011_upgrade_seeds_bounded_agent_job_metrics_once(tmp_path: Path)
     state = StateService(path)
     await state.initialize()
     async with aiosqlite.connect(path) as db:
+        await restore_schema30_memory_fixture(db)
         await db.execute("DROP TABLE agent_job_operational_metrics")
         await db.executemany(
             """
