@@ -1,7 +1,10 @@
 import importlib.util
+import io
 import json
+import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -207,6 +210,124 @@ def test_process_timeout_and_output_limit(tmp_path):
             3,
             lambda: None,
         )
+
+
+class StoppingProcess:
+    pid = 4321
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+        self.polls = 0
+        self.waits = 0
+        self.stdout = io.BytesIO()
+
+    def poll(self):
+        self.polls += 1
+        return self.returncode
+
+    def wait(self, *, timeout):
+        assert timeout == 2
+        self.waits += 1
+        return self.returncode
+
+
+def test_stop_reaps_zombie_then_accepts_disappeared_group(monkeypatch):
+    process = StoppingProcess(0)
+    signals = []
+
+    def killpg(pid, sig):
+        assert pid == process.pid
+        signals.append(sig)
+        if len(signals) == 1:
+            raise PermissionError("Darwin group contains only a zombie")
+        raise ProcessLookupError("group disappeared after reaping")
+
+    monkeypatch.setattr(worker.os, "killpg", killpg)
+    worker._stop(process)
+
+    assert signals == [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL]
+    assert process.polls == 1 and process.waits == 0
+
+
+@pytest.mark.parametrize("returncode", [None, 0])
+def test_stop_never_ignores_persistent_group_permission_error(monkeypatch, returncode):
+    process = StoppingProcess(returncode)
+    signals = []
+
+    def killpg(pid, sig):
+        assert pid == process.pid
+        signals.append(sig)
+        raise PermissionError("group cannot be controlled")
+
+    monkeypatch.setattr(worker.os, "killpg", killpg)
+    with pytest.raises(PermissionError, match="cannot be controlled"):
+        worker._stop(process)
+
+    expected = (
+        [signal.SIGTERM, signal.SIGKILL]
+        if returncode is None
+        else [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL, signal.SIGKILL]
+    )
+    assert signals == expected
+    assert process.polls == 2 and process.waits == 0
+
+
+def test_stop_still_signals_descendants_after_reaping_leader(monkeypatch):
+    process = StoppingProcess(0)
+    signals = []
+
+    def killpg(pid, sig):
+        assert pid == process.pid
+        signals.append(sig)
+        if len(signals) == 1:
+            raise PermissionError("zombie leader during group traversal")
+        # A surviving descendant still occupies the same group after poll().
+
+    monkeypatch.setattr(worker.os, "killpg", killpg)
+    worker._stop(process)
+
+    assert signals == [signal.SIGTERM, signal.SIGTERM, signal.SIGKILL]
+    assert process.polls == 1 and process.waits == 1
+
+
+@pytest.mark.parametrize("group_refuses", [False, True])
+def test_output_limit_survives_zombie_cleanup_and_pipe_always_closes(
+    tmp_path, monkeypatch, group_refuses
+):
+    process = StoppingProcess(0)
+    signals = []
+
+    class ReadyOutput:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def register(self, stream, events):
+            assert stream is process.stdout
+
+        def get_map(self):
+            return {1: process.stdout}
+
+        def select(self, *, timeout):
+            return [(SimpleNamespace(fd=1, fileobj=process.stdout), None)]
+
+    def killpg(pid, sig):
+        signals.append(sig)
+        if len(signals) == 1 or group_refuses:
+            raise PermissionError("group cannot be controlled")
+        raise ProcessLookupError("group disappeared after reaping")
+
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(worker.selectors, "DefaultSelector", ReadyOutput)
+    monkeypatch.setattr(worker.os, "read", lambda *args: b"x" * (worker.MAX_LOG_BYTES + 1))
+    monkeypatch.setattr(worker.os, "killpg", killpg)
+    expected = PermissionError if group_refuses else worker.SwiftWorkerError
+    message = "cannot be controlled" if group_refuses else "byte limit"
+    with pytest.raises(expected, match=message):
+        worker.run_command(["fixture"], tmp_path, tmp_path / "output.log", 3, lambda: None)
+    assert process.stdout.closed
 
 
 def test_process_cancelled_and_no_credentials(tmp_path):

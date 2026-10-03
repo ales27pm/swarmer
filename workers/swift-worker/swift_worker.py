@@ -62,18 +62,30 @@ def source_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except PermissionError:
+        # Darwin can return EPERM for a group containing only the unreaped
+        # zombie leader. Reap it, then retry once so surviving descendants are
+        # still signalled. A live child or a persistent refusal must fail closed.
+        if process.poll() is None:
+            raise
+        os.killpg(process.pid, sig)
+
+
 def _stop(process: subprocess.Popen[bytes]) -> None:
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        _signal_group(process, signal.SIGTERM)
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        _signal_group(process, signal.SIGKILL)
         process.wait(timeout=2)
     except ProcessLookupError:
         pass
     finally:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            _signal_group(process, signal.SIGKILL)
         except ProcessLookupError:
             pass
 
@@ -127,9 +139,11 @@ def run_command(
             ensure_active()
             return process.wait(timeout=max(0.1, timeout - (time.monotonic() - started)))
     finally:
-        _stop(process)
-        if process.stdout is not None:
-            process.stdout.close()
+        try:
+            _stop(process)
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
 
 
 def xunit_counts(path: Path) -> tuple[int, int]:
