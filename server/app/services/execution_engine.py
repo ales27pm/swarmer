@@ -7,7 +7,7 @@ import math
 import os
 import sqlite3
 import stat
-from collections.abc import Coroutine, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -407,6 +407,8 @@ class ExecutionEngine:
         arguments: dict[str, Any],
         summary: str,
         requester: AuthenticatedRequester,
+        acceptance_guard: Callable[[aiosqlite.Connection], Awaitable[None]] | None = None,
+        commit_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Atomically create one call and, when required, its one-shot approval."""
 
@@ -450,6 +452,8 @@ class ExecutionEngine:
         }
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
+            if acceptance_guard is not None:
+                await acceptance_guard(db)
             task = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
             ).fetchone()
@@ -570,6 +574,8 @@ class ExecutionEngine:
             if cursor.rowcount != 1:
                 await db.rollback()
                 raise ExecutionConflict("task changed while the tool call was proposed")
+            if commit_guard is not None:
+                commit_guard()
             await db.commit()
         return public_tool_call(record)
 

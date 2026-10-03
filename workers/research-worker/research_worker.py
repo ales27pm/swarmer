@@ -367,10 +367,26 @@ class LeaseHeartbeat:
             self._thread.join(timeout=HEARTBEAT_JOIN_TIMEOUT_SECONDS)
 
 
+def _symbolic_operation(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("invalid worker payload")
+    if not {"symbolic_context", "symbolic_context_binding"}.intersection(value):
+        return value
+    path = Path(__file__).resolve().with_name("agent_capsule.py")
+    spec = importlib.util.spec_from_file_location("worker_symbolic_capsule", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("symbolic context validator unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    operation: dict[str, Any]
+    operation, _ = module.symbolic_transport(value)
+    return operation
+
+
 def parse_research_job(job: dict[str, Any]) -> ResearchQuery:
     if job.get("required_skill") != RESEARCH_SKILL:
         raise ValueError("unsupported worker skill")
-    payload = job.get("payload")
+    payload = _symbolic_operation(job.get("payload"))
     if not isinstance(payload, dict):
         raise TypeError("job payload must be an object")
     if set(payload) - {"query", "max_results"}:
@@ -1321,7 +1337,7 @@ def execute(
                 _ACTIVE_DEADLINE.reset(local_token)
 
         result = collect(
-            job.get("payload"),
+            _symbolic_operation(job.get("payload")),
             search,
             public_page_request,
             check_active=check_active,

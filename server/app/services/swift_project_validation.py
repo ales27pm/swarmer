@@ -124,6 +124,12 @@ async def require_project_grant_locked(
     agent_id: str | None = None,
     active: bool = True,
 ) -> dict[str, Any] | None:
+    from app.services.agent_capsule import symbolic_transport
+
+    try:
+        payload, _ = symbolic_transport(payload)
+    except ValueError as exc:
+        raise SwiftProjectConflict("invalid native execution context") from exc
     reference = payload.get("project_revision")
     if reference is None:
         return None
@@ -358,6 +364,14 @@ class SwiftProjectValidationService:
                 "source_sha256": grant["source_sha256"],
                 "project_revision": project_reference(grant),
             }
+            from app.services.worker_context import attach_symbolic_native_context
+
+            payload = await attach_symbolic_native_context(
+                self.db_path,
+                payload,
+                validation_id=grant["id"],
+                catalogs=self.dispatcher.symbolic_catalogs,
+            )
             await self.dispatcher.queue_job(
                 grant["task_id"],
                 "code.swift." + request.operation,

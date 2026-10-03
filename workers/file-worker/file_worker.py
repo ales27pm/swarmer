@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import importlib.util
 import ipaddress
 import json
 import logging
@@ -385,12 +386,26 @@ class LeaseHeartbeat:
             self._thread.join(timeout=HEARTBEAT_JOIN_TIMEOUT_SECONDS)
 
 
+def _symbolic_operation(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("invalid worker payload")
+    if not {"symbolic_context", "symbolic_context_binding"}.intersection(value):
+        return value
+    path = Path(__file__).resolve().with_name("agent_capsule.py")
+    spec = importlib.util.spec_from_file_location("worker_symbolic_capsule", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("symbolic context validator unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    operation: dict[str, Any]
+    operation, _ = module.symbolic_transport(value)
+    return operation
+
+
 def capability_request_from_job(
     job: dict[str, Any],
 ) -> tuple[str, dict[str, Any]] | None:
-    payload = job.get("payload")
-    if payload is None:
-        payload = {}
+    payload = _symbolic_operation({} if job.get("payload") is None else job["payload"])
     if not isinstance(payload, dict):
         raise TypeError("job payload must be an object")
     raw_request = payload.get("capability_request")
@@ -524,9 +539,7 @@ def _list_safe_directory(root: Path, relative: str) -> list[str]:
 
 def execute(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     skill = job["required_skill"]
-    payload = job.get("payload")
-    if payload is None:
-        payload = {}
+    payload = _symbolic_operation({} if job.get("payload") is None else job["payload"])
     if not isinstance(payload, dict):
         raise TypeError("job payload must be an object")
     relative = str(payload.get("path", "."))

@@ -31,6 +31,7 @@ from project_contract import (
     MAX_CONTROL_BYTES,
     MAX_PATCH_BYTES,
     ProjectError,
+    capsule_contract,
     checks_value,
     merge_files,
     parse_payload,
@@ -1828,6 +1829,10 @@ def model_context(
         "durable_project_requirements": payload.get("durable_context"),
         "advisory_context_compaction": payload.get("context_compaction"),
     }
+    if payload.get("symbolic_context") is not None:
+        context["symbolic_context"] = capsule_contract.validate_symbolic_context(
+            payload["symbolic_context"]
+        )
     if evidence := completion_decision_evidence(payload):
         context["completion_decision"] = {
             "base_revision_id": payload["base_revision_id"],
@@ -1852,6 +1857,11 @@ def model_context(
         )
         return (
             len(SYSTEM_PROMPT.encode("utf-8"))
+            + (
+                len(capsule_contract.SYMBOLIC_CONTEXT_INSTRUCTION.encode()) + 1
+                if "symbolic_context" in context
+                else 0
+            )
             + (len(DEPENDENCY_EVIDENCE_INSTRUCTION.encode()) if has_evidence else 0)
             + (
                 len(SHARED_CAPSULE_INSTRUCTION.encode())
@@ -1887,6 +1897,12 @@ def model_context(
 
     # Qwen uses byte-fallback BPE: UTF-8 bytes conservatively bound input tokens.
     # The configured input/output/framing budgets were validated together above.
+    if prompt_size() > prompt_max_bytes and context.get("symbolic_context"):
+        context["symbolic_context"] = {
+            **context["symbolic_context"],
+            "evidence": [],
+            "status": "omitted_budget",
+        }
     while prompt_size() > prompt_max_bytes:
         removable = oldest_history_index()
         if removable is None:
@@ -2259,8 +2275,10 @@ class ProjectGenerator:
             conversation = [item for item in conversation if item is not latest_user_message]
 
         repair_read_path = compact_repair_read_path(payload)
-        compact_repair = needs_repair and bool(payload["files"]) and (
-            repair_follows_model_timeout(payload) or repair_read_path is not None
+        compact_repair = (
+            needs_repair
+            and bool(payload["files"])
+            and (repair_follows_model_timeout(payload) or repair_read_path is not None)
         )
         compact_completion = bool(context.get("completion_decision"))
         compact_authoring = bool(current_runtime_evidence) and not compact_completion
@@ -2271,13 +2289,18 @@ class ProjectGenerator:
         if bounded_rejection:
             instruction += "\n" + REJECTED_BATCH_INSTRUCTION
         prompt_budget = (
-            min(MAX_COMPLETION_PROMPT_BYTES, self.prompt_max_bytes) if compact_review
-            else MAX_RECOVERY_PROMPT_BYTES if compact_repair else self.prompt_max_bytes
+            min(MAX_COMPLETION_PROMPT_BYTES, self.prompt_max_bytes)
+            if compact_review
+            else MAX_RECOVERY_PROMPT_BYTES
+            if compact_repair
+            else self.prompt_max_bytes
         )
         repair_source = None
         if compact_review:
             instruction = (
-                COMPLETION_DECISION_INSTRUCTION if compact_completion else COMPLETION_AUTHORING_INSTRUCTION
+                COMPLETION_DECISION_INSTRUCTION
+                if compact_completion
+                else COMPLETION_AUTHORING_INSTRUCTION
             )
             review_key = "completion_decision" if compact_completion else "authoring_review"
             if compact_authoring:
@@ -2292,17 +2315,23 @@ class ProjectGenerator:
             # and accepted plan. Only retrieval hints lack instructional authority.
             context["historical_memory_hints"] = None
             context[review_key]["historical_memory_hints_omitted"] = bool(payload.get("memory"))
-            context["checks"] = [
-                {**check, "output": ""} for check in context["checks"]
-            ]
+            context["checks"] = [{**check, "output": ""} for check in context["checks"]]
             # Obsolete timeout instructions requested an artificial edit. Their
             # fixed category is enough here; user messages remain unchanged.
             conversation = [
-                {**item, "content": "The preceding model call timed out; no fresh validation ran."}
-                if item["role"] == "assistant" and item["content"] in {
-                    MODEL_TIMEOUT_DIAGNOSTIC, MODEL_REPEATED_TIMEOUT_DIAGNOSTIC,
-                    VALIDATION_TIMEOUT_DIAGNOSTIC, VALIDATION_REPEATED_TIMEOUT_DIAGNOSTIC,
-                } else item
+                {
+                    **item,
+                    "content": "The preceding model call timed out; no fresh validation ran.",
+                }
+                if item["role"] == "assistant"
+                and item["content"]
+                in {
+                    MODEL_TIMEOUT_DIAGNOSTIC,
+                    MODEL_REPEATED_TIMEOUT_DIAGNOSTIC,
+                    VALIDATION_TIMEOUT_DIAGNOSTIC,
+                    VALIDATION_REPEATED_TIMEOUT_DIAGNOSTIC,
+                }
+                else item
                 for item in conversation
             ]
             current_task = (
@@ -2343,7 +2372,11 @@ class ProjectGenerator:
                 repair_source = compact_repair_source(
                     context,
                     payload,
-                    "\n".join(check["output"] for check in payload["checks"] if check["status"] == "failed"),
+                    "\n".join(
+                        check["output"]
+                        for check in payload["checks"]
+                        if check["status"] == "failed"
+                    ),
                     read_path=repair_read_path,
                 )
                 if repair_source is not None:
@@ -2357,6 +2390,8 @@ class ProjectGenerator:
                 )
         if self.runtime_instruction:
             instruction += "\n" + self.runtime_instruction
+        if context.get("symbolic_context"):
+            instruction += "\n" + capsule_contract.SYMBOLIC_CONTEXT_INSTRUCTION
         if context.get("project_guidance"):
             instruction += "\n" + GUIDANCE_INSTRUCTION
         if context.get("durable_project_requirements"):
@@ -2415,7 +2450,13 @@ class ProjectGenerator:
                 ),
                 None,
             )
-            if trim_dependency_evidence(context):
+            if context.get("symbolic_context", {}).get("evidence"):
+                context["symbolic_context"] = {
+                    **context["symbolic_context"],
+                    "evidence": [],
+                    "status": "omitted_budget",
+                }
+            elif trim_dependency_evidence(context):
                 pass
             elif address_budget > 500 and repair_source is None:
                 address_budget = max(500, address_budget - 1_000)
@@ -2438,23 +2479,31 @@ class ProjectGenerator:
                 prompt_budget = min(MAX_COMPLETION_HARD_PROMPT_BYTES, self.prompt_max_bytes)
                 continue
             elif compact_authoring and any(
-                item["path"] not in pinned_review_paths for item in context["selected_file_fragments"]
+                item["path"] not in pinned_review_paths
+                for item in context["selected_file_fragments"]
             ):
                 # An incidental fragment is cheaper to omit than complete source
                 # and must not make a pinned review fail while it remains removable.
-                removable_source = next(
-                    index for index in reversed(range(len(context["selected_file_fragments"])))
+                removable_source: int | None = next(
+                    index
+                    for index in reversed(range(len(context["selected_file_fragments"])))
                     if context["selected_file_fragments"][index]["path"] not in pinned_review_paths
                 )
                 context["selected_file_fragments"].pop(removable_source)
             elif context["selected_complete_files"]:
                 removable_source = next(
-                    (index for index in reversed(range(len(context["selected_complete_files"])))
-                     if context["selected_complete_files"][index]["path"] not in pinned_review_paths),
+                    (
+                        index
+                        for index in reversed(range(len(context["selected_complete_files"])))
+                        if context["selected_complete_files"][index]["path"]
+                        not in pinned_review_paths
+                    ),
                     None,
                 )
                 if removable_source is None:
-                    raise ProjectError("project review source and requirements exceed the local model context budget")
+                    raise ProjectError(
+                        "project review source and requirements exceed the local model context budget"
+                    )
                 removed = context["selected_complete_files"].pop(removable_source)
                 if (
                     removed["path"] in requested_paths
@@ -2475,12 +2524,18 @@ class ProjectGenerator:
                     )
             elif context["selected_file_fragments"]:
                 removable_source = next(
-                    (index for index in reversed(range(len(context["selected_file_fragments"])))
-                     if context["selected_file_fragments"][index]["path"] not in pinned_review_paths),
+                    (
+                        index
+                        for index in reversed(range(len(context["selected_file_fragments"])))
+                        if context["selected_file_fragments"][index]["path"]
+                        not in pinned_review_paths
+                    ),
                     None,
                 )
                 if removable_source is None:
-                    raise ProjectError("project review source and requirements exceed the local model context budget")
+                    raise ProjectError(
+                        "project review source and requirements exceed the local model context budget"
+                    )
                 context["selected_file_fragments"].pop(removable_source)
             else:
                 if compact_repair and prompt_budget < self.prompt_max_bytes:
@@ -2509,7 +2564,8 @@ class ProjectGenerator:
                 item["path"] == repair_source["path"] for item in addresses.values()
             )
             response_schema = compact_repair_schema(
-                response_schema, allow_edits=not (large_repair_target and target_patch_available),
+                response_schema,
+                allow_edits=not (large_repair_target and target_patch_available),
             )
         elif bounded_rejection:
             response_schema = bounded_rejection_schema(response_schema)
@@ -2523,8 +2579,11 @@ class ProjectGenerator:
                 "temperature": 0,
                 "num_ctx": self.context_tokens,
                 "num_predict": (
-                    MAX_COMPLETION_OUTPUT_TOKENS if compact_review
-                    else MAX_RECOVERY_OUTPUT_TOKENS if compact_repair else MAX_OUTPUT_TOKENS
+                    MAX_COMPLETION_OUTPUT_TOKENS
+                    if compact_review
+                    else MAX_RECOVERY_OUTPUT_TOKENS
+                    if compact_repair
+                    else MAX_OUTPUT_TOKENS
                 ),
             },
         }

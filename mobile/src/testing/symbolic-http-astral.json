@@ -1,0 +1,131 @@
+[
+  {
+    "id": "mem_5b86525cd1cb49cfac3aae7342d4fe96",
+    "scope": "project:symbolic-acceptance",
+    "kind": "fact",
+    "content": "Document privé jetable astral.",
+    "summary": null,
+    "sensitivity": "normal",
+    "confidence": 1.0,
+    "pinned": false,
+    "created_at": "2026-10-03T19:16:15.953459+00:00",
+    "updated_at": "2026-10-03T19:16:15.953459+00:00",
+    "metadata": null,
+    "score": 1.0,
+    "score_kind": "symbolic_match",
+    "search_kind": "symbolic",
+    "ranking_algorithm": "symbolic-v1",
+    "symbolic_evidence": [
+      {
+        "schema_version": "symbolic-evidence-v1",
+        "catalog": {
+          "namespace": "software",
+          "scheme_id": "engineering"
+        },
+        "proposal": {
+          "proposal_id": "msp_711d96d3f0be463d9bd60395c8fd28d3",
+          "claim": {
+            "scope": "project:symbolic-acceptance",
+            "namespace": "software",
+            "scheme_id": "engineering",
+            "kind": "constraint",
+            "subject": {
+              "type": "identity",
+              "namespace": "software",
+              "identity": "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633"
+            },
+            "predicate": {
+              "type": "identity",
+              "namespace": "software",
+              "identity": "preserve"
+            },
+            "object": {
+              "type": "identity",
+              "namespace": "software",
+              "identity": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+            },
+            "polarity": "affirmed",
+            "modality": "required",
+            "applicability": {},
+            "version": null,
+            "effective_conditions": [
+              {
+                "relation": "only_after",
+                "argument": {
+                  "type": "identity",
+                  "namespace": "software",
+                  "identity": "commit"
+                }
+              }
+            ]
+          },
+          "claim_sha256": "cd1da23a0fa24245918cad42fbb9bb8a075fd3d9ee29aa7a44d50a5c1aaf8cdd",
+          "sources": [
+            {
+              "binding": {
+                "memory_id": "mem_5b86525cd1cb49cfac3aae7342d4fe96",
+                "revision": 1,
+                "view_id": "mtv_6671b6bceb8e70bf050bc96ab83b1074f8dfe17314cb84da7bb660b654eb9176",
+                "field": "content",
+                "field_sha256": "ed02e2fb328b4063f31b05d9bbf0c632411a6045350f4522b7502ca829c1fdba",
+                "document_sha256": "92d77d73e88e8a24d9f12372c6acf26790861873b7db4b1429fe4df735a94e23"
+              },
+              "scope": "project:symbolic-acceptance",
+              "origin": "source_document",
+              "validation_status": "unvalidated"
+            }
+          ],
+          "concept_ids": [
+            "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633"
+          ],
+          "lifecycle": "active",
+          "validation_status": "unvalidated",
+          "grants_authority": false,
+          "created_at": "2026-10-03T19:16:15.988526+00:00"
+        },
+        "matches": [
+          {
+            "channel": "concept_label",
+            "value": "silent clock",
+            "concept_id": "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633",
+            "language": "en",
+            "field": null
+          }
+        ],
+        "concepts": [
+          {
+            "concept_id": "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633",
+            "scope": "project:symbolic-acceptance",
+            "namespace": "software",
+            "scheme_id": "engineering",
+            "labels": [
+              {
+                "text": "horloge silencieuse",
+                "language": {
+                  "tag": "fr-CA",
+                  "origin": "declared"
+                },
+                "role": "pref"
+              },
+              {
+                "text": "silent clock",
+                "language": {
+                  "tag": "en",
+                  "origin": "declared"
+                },
+                "role": "pref"
+              }
+            ],
+            "curation_status": "proposed",
+            "grants_authority": false
+          }
+        ],
+        "relations": [],
+        "read_token": "b646072f2918f788bac6040f26b70c9a3179903884fc72afc2b6977b48028b8a",
+        "validation_status": "unvalidated",
+        "grants_authority": false
+      }
+    ],
+    "symbolic_status": "available"
+  }
+]

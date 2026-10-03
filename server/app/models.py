@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.services.memory_symbolic_contracts import SymbolicSearchOptions
+
 RFC3339_TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
 )
@@ -114,6 +116,7 @@ class MemorySearch(BaseModel):
     scope: str | None = Field(default=None, max_length=100)
     kind: str | None = Field(default=None, max_length=100)
     limit: int = Field(default=6, ge=1, le=20)
+    symbolic: SymbolicSearchOptions | None = None
 
 
 class AgentCreate(BaseModel):

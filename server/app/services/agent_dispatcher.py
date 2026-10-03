@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import aiosqlite
 
+from app.services.agent_capsule import bound_symbolic_transport
 from app.services.agent_lease import lease_matches, lease_token_hash
 from app.services.agent_liveness import DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS
 from app.services.agent_scheduler import SchedulerService
@@ -24,6 +25,7 @@ from app.services.distributed_state import (
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.media_contracts import MEDIA_FAILURE_CODES, MEDIA_SKILLS
 from app.services.media_store import MediaConflict, media_root, verify_media_result
+from app.services.memory_symbolic_contracts import SymbolicCatalog
 from app.services.message_board import MessageBoard
 from app.services.model_resource_admission import (
     active_local_model_work_locked,
@@ -40,6 +42,10 @@ from app.services.swift_project_validation import (
     cancel_native_job_locked,
     require_project_grant_locked,
 )
+from app.services.worker_context import (
+    attach_symbolic_task_context_locked,
+    require_symbolic_worker_context_locked,
+)
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 from app.services.writing_contracts import (
     UnsupportedCitationError,
@@ -52,6 +58,8 @@ from app.services.writing_contracts import (
 
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "quarantined"})
 DISPATCHABLE_TASK_STATUSES = frozenset({"created", "planned"})
+MAX_REMOTE_PAYLOAD_BYTES = 1_000_000
+MAX_PROJECT_PAYLOAD_BYTES = 4_000_000
 
 
 class AgentDispatchConflict(RuntimeError):
@@ -76,8 +84,10 @@ class AgentDispatcher:
         permission_policy: PermissionPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
         local_model_gpu_lock_path: Path | None = None,
+        symbolic_catalogs: tuple[SymbolicCatalog, ...] = (),
     ) -> None:
         self.db_path = db_path
+        self.symbolic_catalogs = tuple(SymbolicCatalog.model_validate(c) for c in symbolic_catalogs)
         self.local_model_gpu_lock_path = local_model_gpu_lock_path
         self.board = board
         self.outbox = OutboxService(
@@ -152,7 +162,10 @@ class AgentDispatcher:
             if project_validation_id is not None:
                 if required_skill not in {"code.swift.build", "code.swift.test"}:
                     raise ValueError("native grant requires a Swift skill")
-                payload = validate_swift_project_payload(payload)
+                from app.services.agent_capsule import symbolic_transport
+
+                operation, advisory = symbolic_transport(payload)
+                payload = {**validate_swift_project_payload(operation), **advisory}
                 if (
                     payload.get("project_revision", {}).get("validation_id")
                     != project_validation_id
@@ -162,23 +175,20 @@ class AgentDispatcher:
                 payload = validate_remote_job(required_skill, payload)
         except ValueError as exc:
             raise AgentDispatchConflict(str(exc)) from exc
+        max_payload_bytes = (
+            MAX_PROJECT_PAYLOAD_BYTES
+            if required_skill == "code.build_project"
+            else MAX_REMOTE_PAYLOAD_BYTES
+        )
         try:
-            encoded_payload = json.dumps(
-                payload,
-                allow_nan=False,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-        except (TypeError, ValueError) as exc:
-            raise AgentDispatchConflict("job payload must be canonical JSON") from exc
-        max_payload_bytes = 4_000_000 if required_skill == "code.build_project" else 1_000_000
-        if len(encoded_payload.encode("utf-8")) > max_payload_bytes:
-            raise AgentDispatchConflict("job payload is too large")
+            payload, encoded_payload = bound_symbolic_transport(payload, max_payload_bytes)
+        except ValueError as exc:
+            raise AgentDispatchConflict(str(exc)) from exc
         job_id = f"job_{uuid4().hex}"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            symbolic_catalogs = self.symbolic_catalogs
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             now = self._now().isoformat()
@@ -215,6 +225,27 @@ class AgentDispatcher:
                 await db.rollback()
                 raise AgentDispatchConflict("task not found")
             task_status = str(task["status"])
+            try:
+                payload = await attach_symbolic_task_context_locked(
+                    db,
+                    payload,
+                    task_id=task_id,
+                    catalogs=symbolic_catalogs,
+                )
+                await require_symbolic_worker_context_locked(
+                    db,
+                    payload,
+                    task_id=task_id,
+                    required_skill=required_skill,
+                    catalogs=symbolic_catalogs,
+                    task_statuses=("created", "planned"),
+                )
+            except ValueError as exc:
+                raise AgentDispatchConflict("symbolic_context_changed") from exc
+            try:
+                payload, encoded_payload = bound_symbolic_transport(payload, max_payload_bytes)
+            except ValueError as exc:
+                raise AgentDispatchConflict(str(exc)) from exc
             if task_status not in DISPATCHABLE_TASK_STATUSES:
                 await db.rollback()
                 raise AgentDispatchConflict(
@@ -297,6 +328,9 @@ class AgentDispatcher:
             )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
+            if self.symbolic_catalogs != symbolic_catalogs:
+                await db.rollback()
+                raise AgentDispatchConflict("symbolic_context_changed")
             await db.commit()
         await self._drain_outbox()
         record = await self.get_job(job_id)
@@ -445,11 +479,13 @@ class AgentDispatcher:
         lease_id = f"lease_{uuid4().hex}"
         lease_token = secrets.token_urlsafe(32)
         token_hash = lease_token_hash(lease_token)
-        async with model_admission_connection(
-            self.db_path, self.local_model_gpu_lock_path
-        ) as (db, gpu_admission):
+        async with model_admission_connection(self.db_path, self.local_model_gpu_lock_path) as (
+            db,
+            gpu_admission,
+        ):
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            symbolic_catalogs = self.symbolic_catalogs
             # Writer contention may have delayed this transaction beyond an
             # entire lease TTL. Authoritative claim/expiry timestamps must be
             # derived only after the write lock is actually held.
@@ -523,7 +559,8 @@ class AgentDispatcher:
                 )
             ).fetchall()
             local_model_busy = any(
-                requires_local_model_resource(str(candidate["required_skill"])) for candidate in rows
+                requires_local_model_resource(str(candidate["required_skill"]))
+                for candidate in rows
             ) and (
                 not gpu_admission.try_acquire()
                 or await active_local_model_work_locked(db, now=claimed_at)
@@ -543,6 +580,19 @@ class AgentDispatcher:
                     # worker lease while a different local model is active.
                     continue
                 candidate_payload = json.loads(str(candidate["payload_json"]))
+                try:
+                    await require_symbolic_worker_context_locked(
+                        db,
+                        candidate_payload,
+                        task_id=str(candidate["task_id"]),
+                        required_skill=str(candidate["required_skill"]),
+                        catalogs=symbolic_catalogs,
+                        task_statuses=("queued",),
+                    )
+                except ValueError:
+                    await self._cancel_symbolic_job_locked(db, candidate, now=now)
+                    quarantined += 1
+                    continue
                 if "project_revision" in candidate_payload:
                     try:
                         await require_project_grant_locked(
@@ -652,12 +702,67 @@ class AgentDispatcher:
                 dedupe_key=f"agent-job:{row['id']}:claimed:{generation}",
                 created_at=now,
             )
+            if self.symbolic_catalogs != symbolic_catalogs:
+                await db.rollback()
+                raise AgentDispatchConflict("symbolic_context_changed")
             await db.commit()
         await self._drain_outbox()
         record = await self.get_job(str(row["id"]))
         if record is None:
             raise RuntimeError("claimed job disappeared")
         return {**record, "claim_token": lease_token}
+
+    async def _cancel_symbolic_job_locked(
+        self,
+        db: aiosqlite.Connection,
+        row: aiosqlite.Row,
+        *,
+        now: str,
+    ) -> None:
+        reason = "symbolic_context_changed"
+        await AgentJobStateMachine.transition_locked(
+            db,
+            job_id=str(row["id"]),
+            current=str(row["status"]),
+            target="cancelled",
+            now=now,
+            updates={"completed_at": now, "last_failure_reason": reason, "error": reason},
+        )
+        await TaskStateMachine.transition_locked(
+            db,
+            task_id=str(row["task_id"]),
+            current="queued" if row["status"] == "queued" else "running",
+            target="cancelled",
+            now=now,
+            error=reason,
+        )
+        await db.execute(
+            """UPDATE plan_nodes SET status='cancelled',updated_at=?,completed_at=?,error_summary=?
+            WHERE task_id=? AND required_skill=? AND (worker_job_id=? OR worker_job_id IS NULL)
+              AND status IN ('dispatched','running')""",
+            (now, now, reason, row["task_id"], row["required_skill"], row["id"]),
+        )
+        await append_audit_event(
+            db,
+            "agent.job.cancelled",
+            {"job_id": row["id"], "reason": reason},
+            actor_type="control-plane",
+            actor_id="dispatcher",
+            task_id=str(row["task_id"]),
+            created_at=now,
+        )
+        await self.outbox.enqueue_locked(
+            db,
+            aggregate_type="agent_job",
+            aggregate_id=str(row["id"]),
+            topic="tasks.status",
+            event_type="cancelled",
+            payload={"job_id": row["id"], "status": "cancelled"},
+            task_id=str(row["task_id"]),
+            message_id=str(row["id"]),
+            dedupe_key=f"agent-job:{row['id']}:symbolic-context-cancelled",
+            created_at=now,
+        )
 
     async def _cancel_stale_goal_jobs_locked(
         self,
@@ -925,6 +1030,7 @@ class AgentDispatcher:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
+            symbolic_catalogs = self.symbolic_catalogs
             now = self._now().isoformat()
             row = await (
                 await db.execute("SELECT * FROM agent_jobs WHERE id=?", (job_id,))
@@ -1002,6 +1108,19 @@ class AgentDispatcher:
                     "job cannot finish while an iPhone capability request is pending"
                 )
             native_payload = json.loads(str(row["payload_json"]))
+            try:
+                await require_symbolic_worker_context_locked(
+                    db,
+                    native_payload,
+                    task_id=str(row["task_id"]),
+                    required_skill=str(row["required_skill"]),
+                    catalogs=symbolic_catalogs,
+                    task_statuses=("running",),
+                )
+            except ValueError as exc:
+                await self._cancel_symbolic_job_locked(db, row, now=now)
+                await db.commit()
+                raise AgentDispatchConflict("symbolic_context_changed") from exc
             if (
                 status == "completed"
                 and row["required_skill"] == "research.collect"
@@ -1148,6 +1267,9 @@ class AgentDispatcher:
                 dedupe_key=f"agent-job:{job_id}:{status}:{row['lease_generation']}",
                 created_at=now,
             )
+            if self.symbolic_catalogs != symbolic_catalogs:
+                await db.rollback()
+                raise AgentDispatchConflict("symbolic_context_changed")
             await db.commit()
         await self._drain_outbox()
         completed_record = await self.get_job(job_id)

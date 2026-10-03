@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.services.agent_capsule import validate_agent_capsule
+from app.services.agent_capsule import symbolic_transport, validate_agent_capsule
 
 WRITING_SKILL = "writing.draft"
 MAX_WRITING_PAYLOAD_BYTES = 32_000
@@ -491,7 +491,21 @@ class WritingPayload(_StrictModel):
     )
     requirements: WritingRequirements | None = None
     durable_context: dict[str, Any] | None = None
+    symbolic_context: dict[str, Any] | None = None
+    symbolic_context_binding: dict[str, Any] | None = None
     previous_attempt_feedback: WritingPreviousAttemptFeedback | None = None
+
+    @model_validator(mode="after")
+    def validate_symbolic_transport(self) -> WritingPayload:
+        if {"symbolic_context", "symbolic_context_binding"} & self.model_fields_set:
+            symbolic_transport(
+                {
+                    key: getattr(self, key)
+                    for key in ("symbolic_context", "symbolic_context_binding")
+                    if key in self.model_fields_set
+                }
+            )
+        return self
 
     @field_validator("durable_context")
     @classmethod

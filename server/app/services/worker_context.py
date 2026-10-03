@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
+from app.services.agent_capsule import (
+    MAX_SYMBOLIC_CONTEXT_BYTES,
+    symbolic_transport,
+    validate_symbolic_context,
+)
 from app.services.context_builder import safe_context_text
+from app.services.memory_symbolic_contracts import SymbolicCatalog, SymbolicEvidence
+from app.services.memory_symbolic_store import SymbolicStoreError
 from app.services.research_contracts import (
     project_research_collect_sources,
     valid_research_collect_receipt,
@@ -30,6 +38,253 @@ from app.services.writing_contracts import (
 
 def context_bytes(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+async def _symbolic_context_locked(
+    db: aiosqlite.Connection,
+    query: str,
+    scopes: tuple[str, ...],
+    catalogs: tuple[SymbolicCatalog, ...],
+) -> dict[str, Any]:
+    from app.services.memory_symbolic_search import search_symbolic_evidence
+
+    omitted = False
+    try:
+        evidence = await search_symbolic_evidence(
+            db, query, allowed_scopes=scopes, catalogs=catalogs, limit=4
+        )
+    except SymbolicStoreError as exc:
+        if exc.code != "symbolic_result_too_large":
+            raise
+        evidence, omitted = [], True
+    context = {
+        "schema_version": "symbolic-context-v1",
+        "status": "omitted_budget" if omitted else "available",
+        "grants_authority": False,
+        "evidence": [e.model_dump() for e in evidence],
+    }
+    if context_bytes(context) > MAX_SYMBOLIC_CONTEXT_BYTES:
+        context.update(evidence=[], status="omitted_budget")
+    return validate_symbolic_context(context)
+
+
+async def attach_symbolic_native_context(
+    db_path: Path,
+    payload: dict[str, Any],
+    *,
+    validation_id: str,
+    catalogs: tuple[SymbolicCatalog, ...],
+) -> dict[str, Any]:
+    """Bind explicitly approved native jobs, which have a grant instead of a plan node."""
+    if not catalogs:
+        return payload
+    from app.services.swift_project_validation import require_project_grant_locked
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA query_only=ON")
+        await db.execute("BEGIN")
+        row = await (
+            await db.execute(
+                """SELECT v.*,g.objective FROM swift_project_validations v
+            JOIN goal_runs g ON g.id=v.goal_id WHERE v.id=?""",
+                (validation_id,),
+            )
+        ).fetchone()
+        if row is None:
+            raise ValueError("symbolic worker context unavailable")
+        await require_project_grant_locked(
+            db, payload, task_id=row["task_id"], skill="code.swift." + row["operation"]
+        )
+        scopes = ("general", f"project:{row['project_id']}")
+        context = await _symbolic_context_locked(db, row["objective"], scopes, catalogs)
+        result = {
+            **payload,
+            "symbolic_context": context,
+            "symbolic_context_binding": {
+                "goal_id": row["goal_id"],
+                "node_id": validation_id,
+                "conversation_revision": row["conversation_revision"],
+                "project_id": row["project_id"],
+                "catalogs": [c.model_dump() for c in catalogs],
+            },
+        }
+        symbolic_transport(result)
+        return result
+
+
+def _task_revision(row: aiosqlite.Row) -> str:
+    # Tasks have no integer revision. Pin immutable request identity, not mutable
+    # scheduling timestamps/status, which legitimately advance with the lease.
+    value = {key: row[key] for key in ("input", "mode", "source", "conversation_id", "created_at")}
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+async def attach_symbolic_task_context_locked(
+    db: aiosqlite.Connection,
+    payload: dict[str, Any],
+    *,
+    task_id: str,
+    catalogs: tuple[SymbolicCatalog, ...],
+) -> dict[str, Any]:
+    """Cover manual task dispatch without borrowing any project scope."""
+    if not catalogs:
+        return payload
+    cursor = await db.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+    cursor.row_factory = aiosqlite.Row
+    row = await cursor.fetchone()
+    if row is None or row["status"] not in ("created", "planned"):
+        raise ValueError("symbolic_context_changed")
+    if str(row["source"]).startswith("goal:") or "project_revision" in payload:
+        return payload  # Those SQL-bound selections are prepared by their owning controller.
+    operation, _ = symbolic_transport(payload)
+    context = await _symbolic_context_locked(db, row["input"], ("general",), catalogs)
+    return {
+        **operation,
+        "symbolic_context": context,
+        "symbolic_context_binding": {
+            "task_id": task_id,
+            "task_revision_sha256": _task_revision(row),
+            "catalogs": [c.model_dump() for c in catalogs],
+        },
+    }
+
+
+async def attach_symbolic_worker_context(
+    db_path: Path,
+    payload: dict[str, Any],
+    *,
+    goal_id: str,
+    node_id: str,
+    conversation_revision: int,
+    catalogs: tuple[SymbolicCatalog, ...],
+) -> dict[str, Any]:
+    """Select optional observations by SQL only, after the required job is built."""
+    if not catalogs:
+        return payload
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA query_only=ON")
+            await db.execute("BEGIN")
+            row = await (
+                await db.execute(
+                    """SELECT g.conversation_revision,p.project_id,n.objective
+                FROM goal_runs g JOIN plan_nodes n ON n.goal_run_id=g.id
+                LEFT JOIN goal_project_links p ON p.goal_run_id=g.id
+                WHERE g.id=? AND n.id=? AND n.node_type='worker'
+                AND g.status='running' AND n.conversation_revision=g.conversation_revision""",
+                    (goal_id, node_id),
+                )
+            ).fetchone()
+            if row is None or row["conversation_revision"] != conversation_revision:
+                raise ValueError("symbolic worker context changed")
+            project_id = row["project_id"]
+            scopes = ("general",) + ((f"project:{project_id}",) if project_id else ())
+            context = await _symbolic_context_locked(db, str(row["objective"]), scopes, catalogs)
+            await db.rollback()
+        result = {
+            **payload,
+            "symbolic_context": validate_symbolic_context(context),
+            "symbolic_context_binding": {
+                "goal_id": goal_id,
+                "node_id": node_id,
+                "conversation_revision": conversation_revision,
+                "project_id": project_id,
+                "catalogs": [c.model_dump() for c in catalogs],
+            },
+        }
+        symbolic_transport(result)
+        return result
+    except (ValueError, TypeError, aiosqlite.Error) as exc:
+        raise ValueError("symbolic worker context unavailable") from exc
+
+
+async def require_symbolic_worker_context_locked(
+    db: aiosqlite.Connection,
+    payload: dict[str, Any],
+    *,
+    task_id: str,
+    required_skill: str,
+    catalogs: tuple[SymbolicCatalog, ...],
+    task_statuses: tuple[str, ...] = ("created", "planned", "queued", "running"),
+) -> None:
+    """Fence every selected source and selection identity before queue/claim."""
+    if "symbolic_context" not in payload and "symbolic_context_binding" not in payload:
+        if catalogs:
+            raise ValueError("symbolic_context_changed")
+        return
+    from app.services.memory_symbolic_search import revalidate_symbolic_evidence
+
+    try:
+        _, advisory = symbolic_transport(payload)
+        binding = advisory["symbolic_context_binding"]
+        if binding["catalogs"] != [c.model_dump() for c in catalogs] or not catalogs:
+            raise ValueError("changed configuration")
+        if "task_id" in binding:
+            cursor = await db.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+            cursor.row_factory = aiosqlite.Row
+            task = await cursor.fetchone()
+            if (
+                task is None
+                or task["status"] not in task_statuses
+                or str(task["source"]).startswith("goal:")
+                or "project_revision" in payload
+                or binding["task_id"] != task_id
+                or binding["task_revision_sha256"] != _task_revision(task)
+            ):
+                raise ValueError("changed task")
+            scopes: tuple[str, ...] = ("general",)
+            for raw in advisory["symbolic_context"]["evidence"]:
+                if not await revalidate_symbolic_evidence(
+                    db,
+                    SymbolicEvidence.model_validate(raw),
+                    allowed_scopes=scopes,
+                    catalogs=catalogs,
+                ):
+                    raise ValueError("changed source")
+            return
+        if "project_revision" in payload and required_skill in SWIFT_SKILLS:
+            cursor = await db.execute(
+                """SELECT g.id AS goal_id,g.conversation_revision,l.project_id,v.id AS node_id
+                FROM swift_project_validations v JOIN goal_runs g ON g.id=v.goal_id
+                JOIN goal_project_links l ON l.goal_run_id=g.id AND l.project_id=v.project_id
+                WHERE v.task_id=? AND 'code.swift.' || v.operation=? AND v.status='approved'
+                AND g.status NOT IN ('completed','failed','cancelled','budget_exhausted')
+                AND g.conversation_revision=v.conversation_revision""",
+                (task_id, required_skill),
+            )
+        else:
+            cursor = await db.execute(
+                """SELECT g.id AS goal_id,g.conversation_revision,p.project_id,n.id AS node_id
+            FROM tasks t JOIN goal_runs g ON t.source='goal:' || g.id
+            JOIN plan_nodes n ON n.goal_run_id=g.id AND n.task_id=t.id
+            LEFT JOIN goal_project_links p ON p.goal_run_id=g.id
+            WHERE t.id=? AND n.required_skill=? AND n.node_type='worker'
+              AND g.status='running' AND n.conversation_revision=g.conversation_revision
+              AND n.status IN ('dispatched','running')""",
+                (task_id, required_skill),
+            )
+        cursor.row_factory = aiosqlite.Row
+        row = await cursor.fetchone()
+        if row is None or any(
+            row[key] != binding[key]
+            for key in ("goal_id", "node_id", "conversation_revision", "project_id")
+        ):
+            raise ValueError("changed binding")
+        scopes = ("general",) + ((f"project:{row['project_id']}",) if row["project_id"] else ())
+        for raw in advisory["symbolic_context"]["evidence"]:
+            if not await revalidate_symbolic_evidence(
+                db,
+                SymbolicEvidence.model_validate(raw),
+                allowed_scopes=scopes,
+                catalogs=catalogs,
+            ):
+                raise ValueError("changed source")
+    except (ValueError, TypeError, KeyError, aiosqlite.Error) as exc:
+        raise ValueError("symbolic_context_changed") from exc
 
 
 async def read_worker_context(

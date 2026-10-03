@@ -337,7 +337,10 @@ def valid_research_collect_result(value: Any) -> bool:
 def valid_research_collect_receipt(value: Any, payload: Any) -> bool:
     """Check bounded execution evidence against the exact admitted request."""
     try:
-        request = ResearchCollectPayload.model_validate(payload)
+        from app.services.agent_capsule import symbolic_transport
+
+        operation, _ = symbolic_transport(payload)
+        request = ResearchCollectPayload.model_validate(operation)
         result = validate_research_collect_result(value)
         if [search["query"] for search in result["searches"]] != request.queries:
             return False

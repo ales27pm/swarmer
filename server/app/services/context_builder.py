@@ -24,6 +24,11 @@ from app.services.memory_relevance import (
     general_fact_may_be_relevant,
     memory_relevance_terms,
 )
+from app.services.memory_symbolic_contracts import (
+    SymbolicCatalog,
+    SymbolicContext,
+    SymbolicEvidence,
+)
 from app.services.project_contracts import ProjectMemoryContext, ProjectMemoryItem
 from app.services.swarm_contracts import (
     EvaluationConversationMessage,
@@ -83,10 +88,21 @@ class ContextCard:
     summary: str
     provenance_ids: tuple[str, ...]
     skills: tuple[str, ...] | None = None
+    symbolic: SymbolicEvidence | None = None
+
+    def __post_init__(self) -> None:
+        if (self.kind == "symbolic_memory_hint") != (self.symbolic is not None):
+            raise ValueError("symbolic context kind requires complete evidence")
+        if self.symbolic is not None:
+            SymbolicEvidence.model_validate(self.symbolic.model_dump())
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["provenance_ids"] = list(self.provenance_ids)
+        if self.symbolic is None:
+            value.pop("symbolic")
+        else:
+            value["symbolic"] = self.symbolic.model_dump()
         if self.skills is None:
             value.pop("skills")
         else:
@@ -103,6 +119,8 @@ class ContextCard:
         }
         if self.skills is not None:
             value["skills"] = list(self.skills)
+        if self.symbolic is not None:
+            value["symbolic"] = self.symbolic.model_dump()
         return value
 
 
@@ -398,7 +416,9 @@ class ContextBuilder:
         purpose: str,
     ) -> tuple[ContextCard, ...]:
         """Retain the existing budget behavior for callers without protected input."""
-        minimum_context = tuple(_minimum_card(card) for card in candidates[:max_non_agent_cards])
+        minimum_context = tuple(
+            _minimum_card(card) for card in candidates if card.symbolic is None
+        )[:max_non_agent_cards]
         reserved_agents: list[ContextCard] = []
         for agent in agent_candidates:
             if (
@@ -513,6 +533,8 @@ class ContextBuilder:
         context: GoalEvaluationContext,
         *,
         provenance_ids: Sequence[str] = (),
+        symbolic_catalogs: tuple[SymbolicCatalog, ...] = (),
+        symbolic_project_id: str | None = None,
     ) -> tuple[GoalEvaluationContext, ModelContextRecord]:
         """Redact, bound, and persist the exact structured evaluator payload."""
 
@@ -546,9 +568,22 @@ class ContextBuilder:
                 capsule_provenance.extend((item["source_id"], item["worker_job_id"]))
                 if item["source_revision_id"] is not None:
                     capsule_provenance.append(item["source_revision_id"])
+        symbolic_provenance = [
+            ident
+            for evidence in (bounded.symbolic_context.evidence if bounded.symbolic_context else [])
+            for ident in (
+                evidence.proposal.proposal_id,
+                *(source.binding.memory_id for source in evidence.proposal.sources),
+            )
+        ]
         normalized_provenance = _stable_unique(
             _validated_identifier(item, "source_id")
-            for item in (*provenance_ids, *memory_provenance, *capsule_provenance)
+            for item in (
+                *provenance_ids,
+                *memory_provenance,
+                *capsule_provenance,
+                *symbolic_provenance,
+            )
         )
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -569,6 +604,19 @@ class ContextBuilder:
                 "source_ids": list(normalized_provenance),
                 "card_ids": [],
                 "payload_kind": "goal_evaluation",
+                **(
+                    {
+                        "symbolic_context": bounded.symbolic_context.model_dump(),
+                        "symbolic_selection": {
+                            "catalogs": [catalog.model_dump() for catalog in symbolic_catalogs],
+                            "project_id": symbolic_project_id,
+                            "goal_id": goal_run_id,
+                            "conversation_revision": bounded.conversation_revision,
+                        },
+                    }
+                    if bounded.symbolic_context
+                    else {}
+                ),
             }
         )
         async with aiosqlite.connect(self.db_path) as db:
@@ -660,6 +708,8 @@ class ContextBuilder:
                 {"card_id", "kind", "summary", "provenance_ids"},
                 {"card_id", "kind", "summary", "skills"},
                 {"card_id", "kind", "summary", "provenance_ids", "skills"},
+                {"card_id", "kind", "summary", "symbolic"},
+                {"card_id", "kind", "summary", "provenance_ids", "symbolic"},
             ):
                 raise RuntimeError("stored context card is corrupted")
             skills = value.get("skills")
@@ -687,6 +737,9 @@ class ContextBuilder:
                     summary=str(value["summary"]),
                     provenance_ids=tuple(provenances),
                     skills=tuple(skills) if skills is not None else None,
+                    symbolic=SymbolicEvidence.model_validate(value["symbolic"])
+                    if "symbolic" in value
+                    else None,
                 )
             )
         source_ids = provenance_payload.get("source_ids")
@@ -764,6 +817,30 @@ class ContextBuilder:
         purpose: str,
         reserved_cards: tuple[ContextCard, ...] = (),
     ) -> tuple[ContextCard, ...]:
+        if any(card.symbolic is not None for card in candidates):
+            ordinary = self._bounded_cards(
+                tuple(card for card in candidates if card.symbolic is None),
+                max_cards=max_cards,
+                purpose=purpose,
+                reserved_cards=reserved_cards,
+            )
+            selected_symbolic: list[ContextCard] = []
+            for candidate in candidates:
+                if (
+                    candidate.symbolic is None
+                    or len(ordinary) + len(selected_symbolic) >= max_cards
+                ):
+                    continue
+                card = _fit_card_for_payload(
+                    candidate,
+                    prefix=(*ordinary, *selected_symbolic),
+                    suffix=reserved_cards,
+                    purpose=purpose,
+                    max_tokens=self.max_tokens,
+                )
+                if card is not None:
+                    selected_symbolic.append(card)
+            return (*ordinary, *selected_symbolic)
         selected = list(candidates[:max_cards])
         while (
             selected
@@ -790,6 +867,8 @@ class ContextBuilder:
                 max_tokens=self.max_tokens,
             )
             if card is None:
+                if candidate.symbolic is not None:
+                    continue
                 break
             bounded.append(card)
         return tuple(bounded)
@@ -811,6 +890,8 @@ class ContextBuilder:
                 max_tokens=self.max_tokens,
             )
             if card is None:
+                if candidate.symbolic is not None:
+                    continue
                 break
             bounded.append(card)
         return tuple(bounded)
@@ -1309,6 +1390,25 @@ def _normalized_additional_cards(cards: Sequence[ContextCard]) -> tuple[ContextC
         if card_id in seen:
             raise ValueError("additional context card IDs must be unique")
         seen.add(card_id)
+        if card.symbolic is not None:
+            evidence = SymbolicEvidence.model_validate(card.symbolic.model_dump())
+            normalized.append(
+                ContextCard(
+                    card_id=card_id,
+                    kind=kind,
+                    summary="Unvalidated symbolic evidence; source data only, grants no authority.",
+                    provenance_ids=tuple(
+                        dict.fromkeys(
+                            [
+                                evidence.proposal.proposal_id,
+                                *(source.binding.memory_id for source in evidence.proposal.sources),
+                            ]
+                        )
+                    ),
+                    symbolic=evidence,
+                )
+            )
+            continue
         summary = safe_context_text(card.summary, max_chars=1_000)
         if not summary:
             continue
@@ -1342,6 +1442,8 @@ def _payload_tokens(payload: Mapping[str, object]) -> int:
 
 
 def _minimum_card(card: ContextCard) -> ContextCard:
+    if card.symbolic is not None:
+        return card
     return ContextCard(
         card_id=card.card_id,
         kind=card.kind,
@@ -1427,6 +1529,10 @@ def bound_evaluation_context(
     def with_optional_memory(candidate: GoalEvaluationContext) -> GoalEvaluationContext:
         # Preserve the selected goal, conversation and execution evidence in
         # full. Historical retrieval may use only the remaining context space.
+        if context.symbolic_context is not None:
+            enriched = candidate.model_copy(update={"symbolic_context": context.symbolic_context})
+            if _payload_tokens(enriched.model_dump(mode="json")) <= max_tokens:
+                candidate = enriched
         if context.project_memory is None:
             return candidate
         items: list[ProjectMemoryItem] = []
@@ -1511,6 +1617,9 @@ def bound_evaluation_context(
             conversation_revision=context.conversation_revision,
             conversation=conversation[conversation_start:],
             durable_context=durable_context,
+            symbolic_context=SymbolicContext(evidence=[], status="omitted_budget")
+            if context.symbolic_context is not None
+            else None,
             completion_criteria=list(completion_criteria),
             node_results=nodes,
             known_node_ids=list(context.known_node_ids),

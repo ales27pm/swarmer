@@ -514,7 +514,7 @@ def run_once(
             if isinstance(workspace, ProjectSnapshotWorkspace):
                 result = workspace.execute_job(
                     SKILLS.get(job.get("required_skill"), ""),
-                    job.get("payload"),
+                    protocol._symbolic_operation(job.get("payload")),
                     source_request=lambda: _project_source_request(
                         protocol, client, job_id, lease, request_fn
                     ),
@@ -523,7 +523,7 @@ def run_once(
             else:
                 result = workspace.execute(
                     SKILLS.get(job.get("required_skill"), ""),
-                    job.get("payload"),
+                    protocol._symbolic_operation(job.get("payload")),
                     ensure_active=heartbeat.ensure_active,
                 )
             body = {

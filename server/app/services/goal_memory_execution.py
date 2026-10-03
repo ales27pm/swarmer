@@ -14,6 +14,8 @@ import aiosqlite
 from pydantic import BaseModel
 
 from app.services.audit_log import append_audit_event
+from app.services.memory_symbolic_contracts import SymbolicEvidence
+from app.services.memory_symbolic_search import revalidate_symbolic_evidence
 from app.services.model_request_execution import (
     MEMORY_MODEL_ROLES,
     MemoryModelRole,
@@ -101,12 +103,39 @@ class GoalMemoryExecutor:
                         for key in metadata_fields
                         if isinstance(hint.get(key), str) and len(hint[key]) <= 200
                     }
+        symbolic_candidates = [
+            (f"strategy:symbolic:{index}", SymbolicEvidence.model_validate(value))
+            for index, value in enumerate(hints.get("symbolic", []))
+        ]
+        symbolic_selected = {
+            ident: item for ident, item in symbolic_candidates if ident in selected_card_ids
+        }
+        symbolic_omitted = [
+            item.proposal.proposal_id
+            for ident, item in symbolic_candidates
+            if ident not in selected_card_ids
+        ]
         receipt = {
             "status": "degraded" if status == "completed" and self._failures else status,
             "conversation_revision": self.conversation_revision,
             "model_call_ids": list(self.call_ids),
             "sources": sources,
             "failed_requests": list(self.failures),
+            **(
+                {
+                    "symbolic_catalogs": hints["symbolic_catalogs"],
+                    "symbolic_project_id": hints.get("symbolic_project_id"),
+                    "symbolic": {
+                        ident: item.model_dump() for ident, item in symbolic_selected.items()
+                    },
+                    "symbolic_omitted_budget": symbolic_omitted,
+                    "symbolic_status": "omitted_budget"
+                    if symbolic_omitted
+                    else hints.get("symbolic_status", "available"),
+                }
+                if "symbolic_catalogs" in hints
+                else {}
+            ),
         }
         async with aiosqlite.connect(self.manager.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -123,6 +152,27 @@ class GoalMemoryExecutor:
                 or int(current[1]) != self.conversation_revision
             ):
                 raise ModelExecutionControlError("goal changed after memory retrieval")
+            if "symbolic_catalogs" in hints:
+                retrieval = self.manager.strategy_retrieval
+                catalogs = getattr(retrieval, "symbolic_catalogs", ())
+                project = await (
+                    await db.execute(
+                        "SELECT project_id FROM goal_project_links WHERE goal_run_id=?",
+                        (self.goal_id,),
+                    )
+                ).fetchone()
+                project_id = str(project[0]) if project else None
+                if (
+                    project_id != hints.get("symbolic_project_id")
+                    or [item.model_dump() for item in catalogs] != hints["symbolic_catalogs"]
+                ):
+                    raise ModelExecutionControlError("symbolic context changed")
+                scopes = ("general",) + ((f"project:{project_id}",) if project_id else ())
+                for _, item in symbolic_candidates:
+                    if not await revalidate_symbolic_evidence(
+                        db, item, allowed_scopes=scopes, catalogs=catalogs
+                    ):
+                        raise ModelExecutionControlError("symbolic context changed")
             if context_id is not None:
                 context = await (
                     await db.execute(

@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AppState, Text, TextInput, View } from "react-native";
 
 import { ScreenShell } from "@/components/screen-shell";
+import { SymbolicMemoryEvidence } from "@/components/symbolic-memory-evidence";
+import { SymbolicMemorySearchControls, type SymbolicSearchSelection } from "@/components/symbolic-memory-search-controls";
+import { memorySearchRequest } from "@/lib/api/memory-search";
 import {
   ActionButton,
   Card,
@@ -87,6 +90,7 @@ function MemorySearchControls({
             : mode === "hybrid" ? "Dernière recherche : classement hybride déclaré par le serveur."
               : mode === "vector" ? "Dernière recherche : classement vectoriel déclaré par le serveur."
                 : mode === "lexical" ? "Dernière recherche : classement lexical déclaré par le serveur."
+                  : mode === "symbolic" ? "Dernière recherche : classement symbolique déclaré par le serveur."
                   : mode === "mixed" ? "Dernière recherche : modes différents selon les résultats."
                     : "Dernière recherche : mode non renseigné dans les résultats reçus."}
       </Text>
@@ -206,6 +210,7 @@ function MemoryRecordCard({
           />
         </>
       ) : null}
+      <SymbolicMemoryEvidence item={item} />
       <View style={{ flexDirection: "row", gap: 8 }}>
         <ActionButton
           accessibilityHint="Modifie l’état épinglé de cette mémoire uniquement."
@@ -281,6 +286,7 @@ export default function MemoryScreen() {
   const { state: liveState } = useLiveSync();
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [query, setQuery] = useState("");
+  const [symbolicSelection, setSymbolicSelection] = useState<SymbolicSearchSelection | null>(null);
   const [draft, setDraft] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -298,6 +304,7 @@ export default function MemoryScreen() {
   const mounted = useRef(true);
   const active = useRef(AppState.currentState === "active");
   const queryRef = useRef("");
+  const symbolicRef = useRef<SymbolicSearchSelection | null>(null);
   useAccessibilityAnnouncement(notice);
 
   function updateQuery(value: string) {
@@ -305,6 +312,12 @@ export default function MemoryScreen() {
     setSearching(false); setRefreshing(false); setStale(true);
     queryRef.current = value;
     setQuery(value);
+  }
+
+  function updateSymbolic(value: SymbolicSearchSelection | null) {
+    symbolicRef.current = value; setSymbolicSelection(value);
+    // A changed catalog invalidates an in-flight result even if its query is unchanged.
+    updateQuery(queryRef.current);
   }
 
   const refresh = useCallback(async (explicit = false) => {
@@ -319,7 +332,12 @@ export default function MemoryScreen() {
       && activeQuery === queryRef.current.trim();
     setSearching(Boolean(activeQuery)); setStale(true); setError(null);
     try {
-      const result = await (activeQuery ? searchMemory(activeQuery) : listMemory());
+      const selected = symbolicRef.current;
+      const options = selected ? { scope: selected.scope, symbolic: {
+        catalogs: [{ namespace: selected.namespace, scheme_id: selected.scheme_id }],
+      } } : undefined;
+      if (activeQuery) memorySearchRequest(activeQuery, options);
+      const result = await (activeQuery ? options ? searchMemory(activeQuery, options) : searchMemory(activeQuery) : listMemory());
       if (accepts()) { setItems(result); setLoadedQuery(activeQuery); setReceivedAt(new Date().toISOString()); setStale(false); }
     } catch (cause) {
       if (accepts()) setError(cause instanceof Error ? cause.message : String(cause));
@@ -334,6 +352,7 @@ export default function MemoryScreen() {
     const unsubscribe = subscribeConnectionChanges(() => {
       connectionEpoch.current += 1; searchSequence.current += 1; blocked.current = true;
       setConnectionBlocked(true); setItems([]); setLoadedQuery(null); setReceivedAt(null);
+      symbolicRef.current = null; setSymbolicSelection(null);
       setRefreshing(false); setSearching(false); setMutating(null); setStale(true); setNotice(null);
       setError("Le jumelage a changé. Actualisez la mémoire depuis cette connexion.");
     });
@@ -429,7 +448,7 @@ export default function MemoryScreen() {
   }
 
   const modes = new Set(items.map((item) => item.search_kind));
-  const mode = items.length && [...modes].every((value) => value === "lexical" || value === "hybrid" || value === "vector")
+  const mode = items.length && [...modes].every((value) => value === "lexical" || value === "hybrid" || value === "vector" || value === "symbolic")
     ? modes.size === 1 ? items[0].search_kind! : "mixed" : null;
   return (
     <ScreenShell
@@ -459,6 +478,7 @@ export default function MemoryScreen() {
         mode={mode}
         loadedQuery={loadedQuery}
       />
+      <SymbolicMemorySearchControls value={symbolicSelection} onChange={updateSymbolic} />
       <MemoryComposer
         draft={draft}
         mutating={connectionBlocked ? "connection" : mutating}

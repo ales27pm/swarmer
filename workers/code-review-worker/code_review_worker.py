@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import ipaddress
 import json
 import logging
@@ -844,6 +845,22 @@ def _validate_static_file(
         budget.checkpoint()
 
 
+def _symbolic_operation(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("invalid worker payload")
+    if not {"symbolic_context", "symbolic_context_binding"}.intersection(value):
+        return value
+    path = Path(__file__).resolve().with_name("agent_capsule.py")
+    spec = importlib.util.spec_from_file_location("worker_symbolic_capsule", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("symbolic context validator unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    operation: dict[str, Any]
+    operation, _ = module.symbolic_transport(value)
+    return operation
+
+
 def parse_review_job(
     root: Path,
     job: dict[str, Any],
@@ -856,7 +873,7 @@ def parse_review_job(
     skill = job.get("required_skill")
     if not isinstance(skill, str) or skill not in REVIEW_SKILLS:
         raise ValueError("unsupported worker skill")
-    payload = job.get("payload")
+    payload = _symbolic_operation(job.get("payload"))
     if not isinstance(payload, dict):
         raise TypeError("job payload must be an object")
     allowed_fields = {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -60,7 +61,27 @@ def text(value: Any, maximum: int) -> bool:
     return True
 
 
+def _symbolic_operation(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("invalid worker payload")
+    if not {"symbolic_context", "symbolic_context_binding"}.intersection(value):
+        return value
+    path = Path(__file__).resolve().with_name("agent_capsule.py")
+    spec = importlib.util.spec_from_file_location("worker_symbolic_capsule", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("symbolic context validator unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    operation: dict[str, Any]
+    operation, _ = module.symbolic_transport(value)
+    return operation
+
+
 def validate_payload(skill: str, value: Any) -> dict[str, Any]:
+    try:
+        value = _symbolic_operation(value)
+    except (ValueError, TypeError) as exc:
+        raise MediaError("invalid_arguments") from exc
     if skill not in SKILLS or not isinstance(value, dict):
         raise MediaError("invalid_arguments")
     fields = (
@@ -68,16 +89,11 @@ def validate_payload(skill: str, value: Any) -> dict[str, Any]:
         if skill == "image.generate"
         else {"text", "language", "voice", "max_duration_seconds"}
     )
-    optional = (
-        {"context", "model_profile"} if skill == "image.generate" else {"context"}
-    )
+    optional = {"context", "model_profile"} if skill == "image.generate" else {"context"}
     if set(value) - fields - optional or fields - set(value):
         raise MediaError("invalid_arguments")
     try:
-        if (
-            len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode())
-            > 64_000
-        ):
+        if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > 64_000:
             raise MediaError("invalid_arguments")
     except (TypeError, ValueError, UnicodeError) as exc:
         raise MediaError("invalid_arguments") from exc
@@ -96,8 +112,7 @@ def validate_payload(skill: str, value: Any) -> dict[str, Any]:
             and type(value["steps"]) is int
             and value["steps"] == IMAGE_PROFILES[model_profile]["steps"]
             and (
-                model_profile != "chroma1-hd-q4"
-                or (value["width"], value["height"]) == (512, 512)
+                model_profile != "chroma1-hd-q4" or (value["width"], value["height"]) == (512, 512)
             )
             and integer(value["seed"], 0, 2_147_483_647)
         )

@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,7 +73,7 @@ from app.services.memory_search_views import (
     lexical_candidates,
     qualify_search_rows,
 )
-from app.services.memory_semantic_search import fuse_rankings, semantic_candidates
+from app.services.memory_semantic_search import _public_item, fuse_rankings, semantic_candidates
 from app.services.memory_symbolic_store import (
     MemorySymbolicStore,
     forget_symbolic_memory_locked,
@@ -2552,7 +2552,15 @@ class StateService:
         return conversation_id, record
 
     async def append_conversation_message(
-        self, conversation_id: str, role: str, content: str, *, agent_id: str | None = None
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        *,
+        agent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        acceptance_guard: Callable[[aiosqlite.Connection], Awaitable[None]] | None = None,
+        commit_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if role not in {"agent", "system"}:
             raise ValueError("unsupported conversation role")
@@ -2564,10 +2572,13 @@ class StateService:
             "role": role,
             "agent_id": agent_id,
             "content": content,
-            "metadata": {"verified_status": "conversation_only"},
+            "metadata": {**(metadata or {}), "verified_status": "conversation_only"},
             "created_at": now,
         }
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if acceptance_guard is not None:
+                await acceptance_guard(db)
             await db.execute(
                 """
                 INSERT INTO messages(id,conversation_id,task_id,role,agent_id,content,metadata_json,created_at)
@@ -2587,6 +2598,8 @@ class StateService:
             await db.execute(
                 "UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id)
             )
+            if commit_guard is not None:
+                commit_guard()
             await db.commit()
         return record
 
@@ -2646,22 +2659,30 @@ class StateService:
         *,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        acceptance_guard: Callable[[aiosqlite.Connection], Awaitable[None]] | None = None,
+        commit_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any] | None:
         task = await self.get_task(task_id)
-        if not task or not task.conversation_id:
-            return None
         now = datetime.now(UTC).isoformat()
-        record = {
-            "id": f"msg_{uuid4().hex}",
-            "conversation_id": task.conversation_id,
-            "task_id": task_id,
-            "role": role,
-            "agent_id": agent_id,
-            "content": content,
-            "metadata": metadata,
-            "created_at": now,
-        }
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if acceptance_guard is not None:
+                await acceptance_guard(db)
+            if not task or not task.conversation_id:
+                if commit_guard is not None:
+                    commit_guard()
+                await db.commit()
+                return None
+            record = {
+                "id": f"msg_{uuid4().hex}",
+                "conversation_id": task.conversation_id,
+                "task_id": task_id,
+                "role": role,
+                "agent_id": agent_id,
+                "content": content,
+                "metadata": metadata,
+                "created_at": now,
+            }
             await db.execute(
                 """
                 INSERT INTO messages(id,conversation_id,task_id,role,agent_id,content,metadata_json,created_at)
@@ -2681,6 +2702,8 @@ class StateService:
             await db.execute(
                 "UPDATE conversations SET updated_at=? WHERE id=?", (now, task.conversation_id)
             )
+            if commit_guard is not None:
+                commit_guard()
             await db.commit()
         return record
 
@@ -2808,6 +2831,56 @@ class StateService:
         required_sensitivity: str | None = None,
         model_executor: ModelRequestExecutor | None = None,
     ) -> list[dict[str, Any]]:
+        if request.symbolic is None:
+            return await self._search_text_memory(
+                request,
+                allowed_scopes=allowed_scopes,
+                required_sensitivity=required_sensitivity,
+                model_executor=model_executor,
+            )
+        from app.services.memory_symbolic_store import SymbolicStoreError, _scope
+
+        scopes: tuple[str, ...]
+        if allowed_scopes is None:
+            if request.scope is None:
+                raise SymbolicStoreError("symbolic_scope_required", 422)
+            _scope(request.scope)
+            scopes = (request.scope,)
+        else:
+            if not isinstance(allowed_scopes, tuple) or not 1 <= len(allowed_scopes) <= 16:
+                raise SymbolicStoreError("unsupported_scope", 422)
+            for scope in allowed_scopes:
+                _scope(scope)
+            if request.scope is not None and request.scope not in allowed_scopes:
+                raise SymbolicStoreError("unsupported_scope", 422)
+            scopes = (request.scope,) if request.scope is not None else allowed_scopes
+        if required_sensitivity not in (None, "normal"):
+            raise SymbolicStoreError("unsupported_sensitivity", 422)
+        return await self._search_text_memory(
+            request,
+            allowed_scopes=scopes,
+            required_sensitivity="normal",
+            model_executor=model_executor,
+        )
+
+    async def _search_text_memory(
+        self,
+        request: MemorySearch,
+        *,
+        allowed_scopes: tuple[str, ...] | None = None,
+        required_sensitivity: str | None = None,
+        model_executor: ModelRequestExecutor | None = None,
+    ) -> list[dict[str, Any]]:
+        from app.services.memory_symbolic_contracts import SymbolicEvidence
+        from app.services.memory_symbolic_search import (
+            revalidate_symbolic_evidence,
+            search_symbolic_memories,
+        )
+        from app.services.memory_symbolic_store import SymbolicStoreError
+
+        symbolic_catalogs = tuple(request.symbolic.catalogs) if request.symbolic is not None else ()
+        symbolic_ids: list[str] = []
+        symbolic_proofs: list[SymbolicEvidence] = []
         # Internal agent callers provide their authoritative scope. Invalid or
         # empty scope must not become an unrestricted search or trigger a model.
         if allowed_scopes is not None and (
@@ -2982,6 +3055,39 @@ class StateService:
                 provider=identity or "",
             )
             candidates.update(vector_candidates)
+            if symbolic_catalogs:
+                assert allowed_scopes is not None
+                symbolic_ids, symbolic_proofs = await search_symbolic_memories(
+                    db,
+                    request.query,
+                    allowed_scopes=allowed_scopes,
+                    catalogs=symbolic_catalogs,
+                    kind=request.kind,
+                    limit=request.limit,
+                )
+                source_ids = list(
+                    {
+                        source.binding.memory_id
+                        for proof in symbolic_proofs
+                        for source in proof.proposal.sources
+                    }
+                )
+                rows = list(
+                    await (
+                        await db.execute(
+                            "SELECT * FROM memory_items WHERE id IN (SELECT value FROM json_each(?))",
+                            (json.dumps(source_ids),),
+                        )
+                    ).fetchall()
+                )
+                qualified = await qualify_search_rows(db, rows)
+                if any(
+                    ident not in qualified
+                    or (normalizer is not None and qualified[ident].original is None)
+                    for ident in source_ids
+                ):
+                    raise MemoryNormalizationError("unavailable", "canonical_memory_unqualified")
+                candidates.update(qualified)
         assert_query_current()
 
         async def finalize(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3040,6 +3146,18 @@ class StateService:
                     )
                 ).fetchall()
                 current = await qualify_search_rows(db, list(current_rows))
+                if symbolic_catalogs:
+                    assert allowed_scopes is not None
+                    selected_ids = {item["id"] for item in selected}
+                    for proof in symbolic_proofs:
+                        if selected_ids.intersection(
+                            source.binding.memory_id for source in proof.proposal.sources
+                        ) and not await revalidate_symbolic_evidence(
+                            db, proof, allowed_scopes=allowed_scopes, catalogs=symbolic_catalogs
+                        ):
+                            raise MemoryNormalizationError(
+                                "source_conflict", "symbolic_source_changed"
+                            )
             for item in selected:
                 previous = candidates[item["id"]]
                 latest = current.get(item["id"])
@@ -3064,7 +3182,39 @@ class StateService:
             self.embedding_service, self.embedding_model_revision
         ):
             semantic = {}
-        return await finalize(fuse_rankings(hits, semantic))
+        found = fuse_rankings(hits, semantic)
+        if symbolic_catalogs:
+            results = {
+                item["id"]: dict(item, symbolic_evidence=[], symbolic_status="available")
+                for item in found
+            }
+            for ident in symbolic_ids:
+                if ident not in results:
+                    results[ident] = dict(
+                        _public_item(candidates[ident]),
+                        score=1.0,
+                        score_kind="symbolic_match",
+                        search_kind="symbolic",
+                        ranking_algorithm="symbolic-v1",
+                        symbolic_evidence=[],
+                        symbolic_status="available",
+                    )
+                results[ident]["symbolic_evidence"] = [
+                    proof.model_dump()
+                    for proof in symbolic_proofs
+                    if any(source.binding.memory_id == ident for source in proof.proposal.sources)
+                ]
+            order = symbolic_ids + [ident for ident in results if ident not in symbolic_ids]
+            found = [results[ident] for ident in order[: request.limit]]
+            if len(json.dumps(found, ensure_ascii=False).encode("utf-8")) > 128 * 1024:
+                raise SymbolicStoreError("symbolic_result_too_large", 409)
+        result = await finalize(found)
+        if (
+            symbolic_catalogs
+            and len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 128 * 1024
+        ):
+            raise SymbolicStoreError("symbolic_result_too_large", 409)
+        return result
 
     async def memory_index_coverage(self, request: MemoryIndexCoverageRequest) -> dict[str, Any]:
         provider = self.embedding_service

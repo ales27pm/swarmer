@@ -55,7 +55,9 @@ def run_once(base_url: str, agent_id: str, credential: str, workspace: Any) -> b
             if operation is None:
                 raise ValueError("unsupported SQLite skill")
             result = workspace.execute(
-                operation, job.get("payload"), ensure_active=heartbeat.ensure_active
+                operation,
+                protocol._symbolic_operation(job.get("payload")),
+                ensure_active=heartbeat.ensure_active,
             )
             result.update({"job_id": job_id, "lease_generation": lease.lease_generation})
             body = {"status": "completed", "result": result}

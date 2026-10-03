@@ -1,0 +1,131 @@
+[
+  {
+    "id": "mem_8f4f7ce8f7f2442e88f2e86f7d3c432f",
+    "scope": "project:symbolic-acceptance",
+    "kind": "fact",
+    "content": "Document privé jetable ordinary.",
+    "summary": null,
+    "sensitivity": "normal",
+    "confidence": 1.0,
+    "pinned": false,
+    "created_at": "2026-10-03T19:16:15.853264+00:00",
+    "updated_at": "2026-10-03T19:16:15.853264+00:00",
+    "metadata": null,
+    "score": 1.0,
+    "score_kind": "symbolic_match",
+    "search_kind": "symbolic",
+    "ranking_algorithm": "symbolic-v1",
+    "symbolic_evidence": [
+      {
+        "schema_version": "symbolic-evidence-v1",
+        "catalog": {
+          "namespace": "software",
+          "scheme_id": "engineering"
+        },
+        "proposal": {
+          "proposal_id": "msp_24dcdf7725d341e09b05be2bd9a69c6c",
+          "claim": {
+            "scope": "project:symbolic-acceptance",
+            "namespace": "software",
+            "scheme_id": "engineering",
+            "kind": "constraint",
+            "subject": {
+              "type": "identity",
+              "namespace": "software",
+              "identity": "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633"
+            },
+            "predicate": {
+              "type": "identity",
+              "namespace": "software",
+              "identity": "preserve"
+            },
+            "object": {
+              "type": "identity",
+              "namespace": "software",
+              "identity": "Archive.py"
+            },
+            "polarity": "affirmed",
+            "modality": "required",
+            "applicability": {},
+            "version": null,
+            "effective_conditions": [
+              {
+                "relation": "only_after",
+                "argument": {
+                  "type": "identity",
+                  "namespace": "software",
+                  "identity": "commit"
+                }
+              }
+            ]
+          },
+          "claim_sha256": "459d6266358f10d835c0a7871e62225ac725b111b6d459c45b1ec0b597543585",
+          "sources": [
+            {
+              "binding": {
+                "memory_id": "mem_8f4f7ce8f7f2442e88f2e86f7d3c432f",
+                "revision": 1,
+                "view_id": "mtv_28965515cc58560eef8f2eb0bc11b3f9a6a4e6c4f732d1a913d0f25b1205ec8f",
+                "field": "content",
+                "field_sha256": "66d79e61fc58f3edd43a758bef88ac7649fde59edb140b4c9733c6bff75953cb",
+                "document_sha256": "9e18a30f8c3fc37ff5d3e894fa8f0690883e52f5d09ccfaf09d70e57bbb349fb"
+              },
+              "scope": "project:symbolic-acceptance",
+              "origin": "source_document",
+              "validation_status": "unvalidated"
+            }
+          ],
+          "concept_ids": [
+            "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633"
+          ],
+          "lifecycle": "active",
+          "validation_status": "unvalidated",
+          "grants_authority": false,
+          "created_at": "2026-10-03T19:16:15.900007+00:00"
+        },
+        "matches": [
+          {
+            "channel": "concept_label",
+            "value": "silent clock",
+            "concept_id": "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633",
+            "language": "en",
+            "field": null
+          }
+        ],
+        "concepts": [
+          {
+            "concept_id": "urn:swarmer:concept:6411d978cc7547b0b46a2bb84e7f0633",
+            "scope": "project:symbolic-acceptance",
+            "namespace": "software",
+            "scheme_id": "engineering",
+            "labels": [
+              {
+                "text": "horloge silencieuse",
+                "language": {
+                  "tag": "fr-CA",
+                  "origin": "declared"
+                },
+                "role": "pref"
+              },
+              {
+                "text": "silent clock",
+                "language": {
+                  "tag": "en",
+                  "origin": "declared"
+                },
+                "role": "pref"
+              }
+            ],
+            "curation_status": "proposed",
+            "grants_authority": false
+          }
+        ],
+        "relations": [],
+        "read_token": "eba4f07d193434b53dc79d43b860bde20070c6b6606be7a12b0fd6d4a712ae87",
+        "validation_status": "unvalidated",
+        "grants_authority": false
+      }
+    ],
+    "symbolic_status": "available"
+  }
+]

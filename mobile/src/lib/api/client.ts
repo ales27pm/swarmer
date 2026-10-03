@@ -1,6 +1,8 @@
 import { fetch } from "expo/fetch";
 import { goalMediaIdentifier, parseGoalMedia, parseGoalMediaArtifact, verifyGoalMediaBytes, type GoalMediaArtifact } from "./goal-media";
 import { validateMemoryPresentations } from "./memory-presentation";
+import { memorySearchRequest, type MemorySearchOptions } from "./memory-search";
+import { memorySymbolicEvidence } from "./memory-symbolic";
 import { parseProjectContext } from "./project-context";
 import { parseProjectGraph, type ProjectGraph } from "./project-graph";
 import { parseProjectEvidence, type ProjectEvidenceView, type ProjectEvidenceWrite } from "./project-evidence";
@@ -1499,12 +1501,14 @@ export function listMemory(): Promise<MemoryItem[]> {
   return request<MemoryItem[]>("/memory");
 }
 
-export async function searchMemory(query: string): Promise<MemoryItem[]> {
+export async function searchMemory(query: string, options?: MemorySearchOptions): Promise<MemoryItem[]> {
   const items = await request<MemoryItem[]>("/memory/search", {
     method: "POST",
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(memorySearchRequest(query, options)),
   });
-  return validateMemoryPresentations(items);
+  validateMemoryPresentations(items);
+  items.forEach(memorySymbolicEvidence);
+  return items;
 }
 
 export function rememberMemory(input: {

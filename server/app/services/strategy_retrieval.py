@@ -20,6 +20,16 @@ from app.services.memory_relevance import (
     general_fact_may_be_relevant,
     memory_relevance_terms,
 )
+from app.services.memory_symbolic_contracts import (
+    SymbolicCatalog,
+    SymbolicContext,
+    SymbolicEvidence,
+)
+from app.services.memory_symbolic_search import (
+    revalidate_symbolic_evidence,
+    search_symbolic_evidence,
+)
+from app.services.memory_symbolic_store import SymbolicStoreError
 from app.services.model_request_execution import ModelRequestExecutor
 
 if TYPE_CHECKING:
@@ -62,6 +72,10 @@ class StrategyHints:
     failures: tuple[StrategyHint, ...]
     memory: tuple[StrategyHint, ...]
     provenance_ids: tuple[str, ...]
+    symbolic: tuple[SymbolicEvidence, ...] = ()
+    symbolic_project_id: str | None = None
+    symbolic_catalogs: tuple[SymbolicCatalog, ...] = ()
+    symbolic_status: Literal["available", "omitted_budget"] = "available"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +83,16 @@ class StrategyHints:
             "failures": [hint.as_dict() for hint in self.failures],
             "memory": [hint.as_dict() for hint in self.memory],
             "provenance_ids": list(self.provenance_ids),
+            **(
+                {
+                    "symbolic": [item.model_dump() for item in self.symbolic],
+                    "symbolic_project_id": self.symbolic_project_id,
+                    "symbolic_status": self.symbolic_status,
+                    "symbolic_catalogs": [item.model_dump() for item in self.symbolic_catalogs],
+                }
+                if self.symbolic_catalogs
+                else {}
+            ),
         }
 
 
@@ -89,6 +113,7 @@ class StrategyRetrieval:
         max_failure_hints: int = 2,
         max_memory_hints: int = 2,
         canonical_memory: StateService | None = None,
+        symbolic_catalogs: tuple[SymbolicCatalog, ...] = (),
     ) -> None:
         for name, value in (
             ("max_success_hints", max_success_hints),
@@ -105,6 +130,7 @@ class StrategyRetrieval:
         if canonical_memory is not None and canonical_memory.db_path != db_path:
             raise ValueError("canonical memory must share the strategy database")
         self.canonical_memory = canonical_memory
+        self.symbolic_catalogs = symbolic_catalogs
 
     async def retrieve(
         self,
@@ -114,6 +140,7 @@ class StrategyRetrieval:
         goal_run_id: str | None = None,
         model_executor: ModelRequestExecutor | None = None,
     ) -> StrategyHints:
+        symbolic_catalogs = self.symbolic_catalogs
         safe_query = safe_context_text(query, max_chars=512)
         if not safe_query:
             raise ValueError("query must contain safe text")
@@ -156,7 +183,32 @@ class StrategyRetrieval:
             await db.execute("BEGIN")
             try:
                 if await self._project_locked(db, goal_run_id) != project_id:
+                    if self.symbolic_catalogs:
+                        raise MemoryNormalizationError("source_conflict", "symbolic_scope_changed")
                     return StrategyHints((), (), (), ())
+                if self.symbolic_catalogs != symbolic_catalogs:
+                    raise MemoryNormalizationError("source_conflict", "symbolic_catalogs_changed")
+                scopes = ("general",) + ((f"project:{project_id}",) if project_id else ())
+                symbolic_status: Literal["available", "omitted_budget"] = "available"
+                try:
+                    symbolic = tuple(
+                        await search_symbolic_evidence(
+                            db,
+                            query,
+                            allowed_scopes=scopes,
+                            catalogs=self.symbolic_catalogs,
+                            limit=4,
+                        )
+                    )
+                except SymbolicStoreError as exc:
+                    if exc.code != "symbolic_result_too_large":
+                        raise MemoryNormalizationError(
+                            "unavailable", "symbolic_unavailable"
+                        ) from exc
+                    symbolic = ()
+                    symbolic_status = "omitted_budget"
+                except aiosqlite.Error as exc:
+                    raise MemoryNormalizationError("unavailable", "symbolic_unavailable") from exc
                 episode_rows = await (
                     await db.execute(
                         """SELECT e.id FROM episodes e
@@ -202,7 +254,60 @@ class StrategyRetrieval:
             failures=failures,
             memory=memory,
             provenance_ids=tuple(provenance),
+            symbolic=symbolic,
+            symbolic_project_id=project_id,
+            symbolic_catalogs=self.symbolic_catalogs,
+            symbolic_status=symbolic_status,
         )
+
+    async def retrieve_symbolic_context(
+        self, query: str, *, goal_run_id: str
+    ) -> tuple[SymbolicContext | None, str | None, tuple[SymbolicCatalog, ...]]:
+        catalogs = self.symbolic_catalogs
+        if not catalogs:
+            return None, None, ()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN")
+            project_id = await self._project_locked(db, goal_run_id)
+            scopes = ("general",) + ((f"project:{project_id}",) if project_id else ())
+            try:
+                evidence = await search_symbolic_evidence(
+                    db, query, allowed_scopes=scopes, catalogs=catalogs, limit=4
+                )
+                raw = {
+                    "schema_version": "symbolic-context-v1",
+                    "evidence": [item.model_dump() for item in evidence],
+                    "status": "available",
+                    "grants_authority": False,
+                }
+                if (
+                    len(json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                    > 16 * 1024
+                ):
+                    raw.update(evidence=[], status="omitted_budget")
+                context = SymbolicContext.model_validate(raw)
+            except SymbolicStoreError as exc:
+                if exc.code != "symbolic_result_too_large":
+                    raise
+                context = SymbolicContext(evidence=[], status="omitted_budget")
+        if self.symbolic_catalogs != catalogs:
+            raise ValueError("symbolic catalogs changed")
+        return context, project_id, catalogs
+
+    async def revalidate_symbolic(
+        self, evidence: Sequence[SymbolicEvidence], *, goal_run_id: str, project_id: str | None
+    ) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN")
+            if await self._project_locked(db, goal_run_id) != project_id:
+                return False
+            scopes = ("general",) + ((f"project:{project_id}",) if project_id else ())
+            for item in evidence:
+                if not await revalidate_symbolic_evidence(
+                    db, item, allowed_scopes=scopes, catalogs=self.symbolic_catalogs
+                ):
+                    return False
+            return True
 
     @staticmethod
     async def _project_locked(db: aiosqlite.Connection, goal_run_id: str | None) -> str | None:

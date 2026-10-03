@@ -42,7 +42,7 @@ export const sendChat: typeof adapter.sendChat = (content, conversationId, mode,
 export const listApprovals: typeof adapter.listApprovals = (status) => call("approvals.list", { status });
 export const decideApproval: typeof adapter.decideApproval = (id, decision) => call("approvals.decide", { id, decision, confirm: true });
 export const listMemory: typeof adapter.listMemory = () => call("memory.list");
-export const searchMemory: typeof adapter.searchMemory = (query) => call("memory.search", { query });
+export const searchMemory: typeof adapter.searchMemory = (query, options) => call("memory.search", { ...options, query });
 export const rememberMemory: typeof adapter.rememberMemory = (input) => call("memory.create", input);
 export const updateMemory: typeof adapter.updateMemory = (id, input) => call("memory.update", { id, ...input });
 export const deleteMemory: typeof adapter.deleteMemory = (id) => call("memory.delete", { id });

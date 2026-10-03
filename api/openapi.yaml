@@ -5293,6 +5293,11 @@ components:
       additionalProperties: false
       required: [query]
       properties:
+        symbolic:
+          anyOf:
+            - {$ref: "#/components/schemas/SymbolicSearchOptions"}
+            - {type: "null"}
+          description: Explicit catalog selection; requires exact public scope, never grants access or validates proposals.
         query: {type: string, minLength: 1, maxLength: 2000}
         scope: {type: [string, 'null'], maxLength: 100}
         kind: {type: [string, 'null'], maxLength: 100}
@@ -5322,7 +5327,14 @@ components:
           required: [score, search_kind]
           properties:
             score: {type: number, minimum: 0, maximum: 1}
-            search_kind: {type: string, enum: [lexical, vector, hybrid]}
+            search_kind: {type: string, enum: [lexical, vector, hybrid, symbolic]}
+            symbolic_evidence:
+              type: array
+              maxItems: 50
+              items: {$ref: "#/components/schemas/SymbolicEvidence"}
+              description: Whole unvalidated claims and source bindings; present only for explicit symbolic search.
+            symbolic_status: {type: string, const: available}
+            ranking_algorithm: {type: string, const: symbolic-v1}
             presentation: {$ref: '#/components/schemas/MemoryPresentation'}
 
     MemoryPresentation:
@@ -9150,3 +9162,165 @@ components:
       - datatype
       - lexical_value
       title: TypedLiteral
+
+    SymbolicCatalog:
+      additionalProperties: false
+      properties:
+        namespace:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Namespace
+          type: string
+        scheme_id:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Scheme Id
+          type: string
+      required:
+      - namespace
+      - scheme_id
+      title: SymbolicCatalog
+      type: object
+
+    SymbolicSearchOptions:
+      additionalProperties: false
+      properties:
+        catalogs:
+          items:
+            $ref: '#/components/schemas/SymbolicCatalog'
+          maxItems: 8
+          minItems: 1
+          title: Catalogs
+          type: array
+      required:
+      - catalogs
+      title: SymbolicSearchOptions
+      type: object
+
+    SymbolicMatch:
+      additionalProperties: false
+      properties:
+        channel:
+          enum:
+          - concept_label
+          - exact_identity
+          title: Channel
+          type: string
+        value:
+          maxLength: 4000
+          minLength: 1
+          title: Value
+          type: string
+        concept_id:
+          anyOf:
+          - pattern: ^urn:swarmer:concept:[a-f0-9]{32}$
+            type: string
+          - type: 'null'
+          default: null
+          title: Concept Id
+        language:
+          anyOf:
+          - maxLength: 100
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Language
+        field:
+          anyOf:
+          - maxLength: 100
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Field
+      required:
+      - channel
+      - value
+      title: SymbolicMatch
+      type: object
+
+    SymbolicEvidence:
+      additionalProperties: false
+      description: Unvalidated source data, transported whole or omitted; never policy.
+      properties:
+        schema_version:
+          const: symbolic-evidence-v1
+          default: symbolic-evidence-v1
+          title: Schema Version
+          type: string
+        catalog:
+          $ref: '#/components/schemas/SymbolicCatalog'
+        proposal:
+          $ref: '#/components/schemas/SymbolicProposalRecord'
+        matches:
+          items:
+            $ref: '#/components/schemas/SymbolicMatch'
+          maxItems: 64
+          minItems: 1
+          title: Matches
+          type: array
+        concepts:
+          items:
+            $ref: '#/components/schemas/ConceptDefinition'
+          maxItems: 35
+          title: Concepts
+          type: array
+        relations:
+          items:
+            $ref: '#/components/schemas/SymbolicRelationRecord'
+          maxItems: 100
+          title: Relations
+          type: array
+        read_token:
+          pattern: ^[a-f0-9]{64}$
+          title: Read Token
+          type: string
+        validation_status:
+          const: unvalidated
+          default: unvalidated
+          title: Validation Status
+          type: string
+        grants_authority:
+          const: false
+          default: false
+          title: Grants Authority
+          type: boolean
+      required:
+      - catalog
+      - proposal
+      - matches
+      - concepts
+      - relations
+      - read_token
+      title: SymbolicEvidence
+      type: object
+
+    SymbolicContext:
+      additionalProperties: false
+      properties:
+        schema_version:
+          const: symbolic-context-v1
+          default: symbolic-context-v1
+          title: Schema Version
+          type: string
+        evidence:
+          items:
+            $ref: '#/components/schemas/SymbolicEvidence'
+          maxItems: 4
+          title: Evidence
+          type: array
+        status:
+          enum:
+          - available
+          - omitted_budget
+          title: Status
+          type: string
+        grants_authority:
+          const: false
+          default: false
+          title: Grants Authority
+          type: boolean
+      required:
+      - evidence
+      - status
+      title: SymbolicContext
+      type: object

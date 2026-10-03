@@ -11,6 +11,7 @@ import {
 } from "@/lib/api/client";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { sha256 } from "@/lib/iphone-capabilities/grant";
+import symbolicRows from "@/testing/symbolic-http-ordinary.json";
 
 jest.mock("@/lib/api/client", () => ({
   deleteMemory: jest.fn(),
@@ -55,6 +56,49 @@ describe("MemoryScreen", () => {
     mockUpdateMemory.mockResolvedValue({ ...memory, pinned: true });
   });
 
+  it("lets the owner select a concept catalog and displays the complete returned evidence", async () => {
+    mockSearchMemory.mockResolvedValue(symbolicRows as unknown as MemoryItem[]);
+    await render(<MemoryScreen />); await screen.findByText(memory.content);
+    const user = userEvent.setup();
+    await user.press(screen.getByTestId("memory-symbolic-toggle"));
+    await fireEvent.changeText(screen.getByLabelText("Portée"), "project:symbolic-acceptance");
+    await fireEvent.changeText(screen.getByLabelText("Espace du catalogue"), "software");
+    await fireEvent.changeText(screen.getByLabelText("Identifiant du catalogue"), "engineering");
+    await fireEvent.changeText(screen.getByLabelText("Rechercher dans la mémoire"), "horloge silencieuse");
+    await user.press(screen.getByRole("button", { name: "Chercher" }));
+    expect(mockSearchMemory).toHaveBeenCalledWith("horloge silencieuse", {
+      scope: "project:symbolic-acceptance", symbolic: { catalogs: [{ namespace: "software", scheme_id: "engineering" }] },
+    });
+    expect(await screen.findByText("Proposition non validée")).toBeOnTheScreen();
+    const card = symbolicRows[0].symbolic_evidence[0];
+    await user.press(screen.getByTestId(`symbolic-details-${card.proposal.proposal_id}`));
+    expect(JSON.parse(screen.getByTestId(`symbolic-content-${card.proposal.proposal_id}`).props.children).proposal).toEqual(card.proposal);
+    expect(mockUpdateMemory).not.toHaveBeenCalled();
+  });
+
+  it("rejects an incomplete catalog before requesting memory", async () => {
+    await render(<MemoryScreen />); await screen.findByText(memory.content);
+    const user = userEvent.setup();
+    await user.press(screen.getByTestId("memory-symbolic-toggle"));
+    await fireEvent.changeText(screen.getByLabelText("Rechercher dans la mémoire"), "cache");
+    await user.press(screen.getByRole("button", { name: "Chercher" }));
+    expect(await screen.findByText("Les filtres de recherche mémoire sont invalides.")).toBeOnTheScreen();
+    expect(mockSearchMemory).not.toHaveBeenCalled();
+  });
+
+  it("does not accept an earlier result after the catalog changes", async () => {
+    const pending = deferred<MemoryItem[]>();
+    mockSearchMemory.mockReturnValue(pending.promise);
+    await render(<MemoryScreen />); await screen.findByText(memory.content);
+    const user = userEvent.setup();
+    await fireEvent.changeText(screen.getByLabelText("Rechercher dans la mémoire"), "cache");
+    await user.press(screen.getByRole("button", { name: "Chercher" }));
+    await user.press(screen.getByTestId("memory-symbolic-toggle"));
+    await act(async () => pending.resolve(symbolicRows as unknown as MemoryItem[]));
+    expect(screen.queryByText("Proposition non validée")).not.toBeOnTheScreen();
+    expect(screen.getByText(memory.content)).toBeOnTheScreen();
+  });
+
   it("shows a temporary French result and exposes its English canonical version without writing", async () => {
     const content = "Do not send automatically.";
     mockSearchMemory.mockResolvedValue([{ ...memory, content, summary: null,
@@ -76,7 +120,7 @@ describe("MemoryScreen", () => {
     expect(mockSearchMemory).toHaveBeenCalledTimes(1);
   });
 
-  it.each<[NonNullable<MemoryItem["search_kind"]>, string]>([["lexical", "lexical"], ["hybrid", "hybride"], ["vector", "vectoriel"]])("labels %s search only from returned evidence", async (mode, label) => {
+  it.each<[NonNullable<MemoryItem["search_kind"]>, string]>([["lexical", "lexical"], ["hybrid", "hybride"], ["vector", "vectoriel"], ["symbolic", "symbolique"]])("labels %s search only from returned evidence", async (mode, label) => {
     mockSearchMemory.mockResolvedValue([{ ...memory, search_kind: mode }]);
     const user = userEvent.setup();
     await render(<MemoryScreen />);

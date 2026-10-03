@@ -8,7 +8,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.models import CAPABILITY_ARGUMENT_MODELS
-from app.services.agent_capsule import validate_agent_capsule
+from app.services.agent_capsule import (
+    bound_symbolic_transport,
+    symbolic_transport,
+    validate_agent_capsule,
+)
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
 from app.services.media_contracts import MEDIA_SKILLS, media_payload
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
@@ -201,6 +205,20 @@ def _review_payload(skill: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
     """Return the canonical bounded payload accepted by one policy-bound worker."""
+
+    try:
+        operation, advisory = symbolic_transport(payload)
+    except ValueError as exc:
+        raise RemoteJobPolicyError("invalid symbolic context") from exc
+    result = {**_validate_remote_operation(required_skill, operation), **advisory}
+    maximum = 4_000_000 if required_skill == PROJECT_SKILL else 1_000_000
+    try:
+        return bound_symbolic_transport(result, maximum)[0]
+    except ValueError as exc:
+        raise RemoteJobPolicyError(str(exc)) from exc
+
+
+def _validate_remote_operation(required_skill: str, payload: object) -> dict[str, Any]:
 
     if not isinstance(required_skill, str) or required_skill not in SUPPORTED_AGENT_SKILLS:
         raise RemoteJobPolicyError("remote job requires an unsupported or privileged skill")

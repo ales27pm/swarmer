@@ -270,6 +270,10 @@ def _text(value: object, limit: int | None = None) -> str:
 
 
 def validate_payload(value: object) -> dict[str, Any]:
+    try:
+        value, advisory = capsule_contract.symbolic_transport(value)
+    except ValueError as exc:
+        raise GenerationError("invalid symbolic context", reason="invalid_payload") from exc
     if (
         not isinstance(value, dict)
         or not {"schema_version", "objective", "conversation"} <= set(value)
@@ -327,8 +331,20 @@ def validate_payload(value: object) -> dict[str, Any]:
         result["previous_attempt_feedback"] = _previous_attempt_feedback(
             value["previous_attempt_feedback"], result
         )
-    if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) > (
-        MAX_PAYLOAD_BYTES
+    result.update(advisory)
+    if (
+        len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode())
+        > MAX_PAYLOAD_BYTES
+        and advisory
+    ):
+        result["symbolic_context"] = {
+            **advisory["symbolic_context"],
+            "evidence": [],
+            "status": "omitted_budget",
+        }
+    if (
+        len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode())
+        > MAX_PAYLOAD_BYTES
     ):
         raise GenerationError("draft payload exceeds its UTF-8 byte limit")
     return result
@@ -667,7 +683,11 @@ def validate_failure_diagnostics(value: object, payload: dict[str, Any]) -> dict
 
 
 def _previous_attempt_feedback(value: object, payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"node_id", "worker_job_id", "diagnostics"}:
+    if not isinstance(value, dict) or set(value) != {
+        "node_id",
+        "worker_job_id",
+        "diagnostics",
+    }:
         raise GenerationError("invalid previous attempt feedback", reason="invalid_payload")
     node_id, job_id = value["node_id"], value["worker_job_id"]
     if (
@@ -1044,6 +1064,17 @@ def validate_generation_result(
 
 
 def _bounded_model_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    ) > MAX_PAYLOAD_BYTES and payload.get("symbolic_context", {}).get("evidence"):
+        payload = {
+            **payload,
+            "symbolic_context": {
+                **payload["symbolic_context"],
+                "evidence": [],
+                "status": "omitted_budget",
+            },
+        }
     if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()) > (
         MAX_PAYLOAD_BYTES
     ):
@@ -1058,6 +1089,7 @@ def _model_input(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
     # The model must see the same explicit constraints used for token allocation
     # and acceptance, including when an older caller omitted their structured form.
     # Keep the canonical job unchanged; this is a derived model-input projection.
+    payload = {key: value for key, value in payload.items() if key != "symbolic_context_binding"}
     requirements = payload_requirements(payload)
     if requirements or "requirements" in payload:
         payload = {**payload, "requirements": requirements}
@@ -1301,6 +1333,8 @@ class TextGenerator:
             f"{JSON_TOKEN_RESERVE} for JSON and summary. The text is bounded to "
             f"{MAX_TEXT_BYTES} UTF-8 bytes.\n"
         )
+        if payload.get("symbolic_context"):
+            system += "\n" + capsule_contract.SYMBOLIC_CONTEXT_INSTRUCTION
         if payload.get("dependency_context"):
             system += "\n" + DEPENDENCY_CONTEXT_INSTRUCTION
         if payload.get("step_objective"):

@@ -19,6 +19,7 @@ SOURCES = (
     "workers/project-worker/registry_proxy.py",
     "workers/code-worker/code_worker.py",
     "workers/file-worker/file_worker.py",
+    "workers/file-worker/agent_capsule.py",
     "workers/project-worker/browser-seccomp-v1.json",
 )
 REQUIRED_ENV = (

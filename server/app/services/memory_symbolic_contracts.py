@@ -128,3 +128,71 @@ class SymbolicMemoryPage(SymbolicPublicModel):
         if len(json.dumps(self.model_dump(), ensure_ascii=False).encode("utf-8")) > 128 * 1024:
             raise ValueError("symbolic page byte budget exceeded")
         return self
+
+
+class SymbolicCatalog(SymbolicPublicModel):
+    namespace: SymbolicIdentifier
+    scheme_id: SymbolicIdentifier
+
+
+class SymbolicSearchOptions(SymbolicPublicModel):
+    catalogs: list[SymbolicCatalog] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def distinct_catalogs(self) -> Self:
+        if len({(item.namespace, item.scheme_id) for item in self.catalogs}) != len(self.catalogs):
+            raise ValueError("symbolic catalogs must be distinct")
+        return self
+
+
+class SymbolicMatch(SymbolicPublicModel):
+    channel: Literal["concept_label", "exact_identity"]
+    value: str = Field(min_length=1, max_length=4_000)
+    concept_id: SymbolicConceptId | None = None
+    language: str | None = Field(default=None, min_length=1, max_length=100)
+    field: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SymbolicEvidence(SymbolicPublicModel):
+    """Unvalidated source data, transported whole or omitted; never policy."""
+
+    schema_version: Literal["symbolic-evidence-v1"] = "symbolic-evidence-v1"
+    catalog: SymbolicCatalog
+    proposal: SymbolicProposalRecord
+    matches: list[SymbolicMatch] = Field(min_length=1, max_length=64)
+    concepts: list[ConceptDefinition] = Field(max_length=35)
+    relations: list[SymbolicRelationRecord] = Field(max_length=100)
+    read_token: SymbolicHash
+    validation_status: Literal["unvalidated"] = "unvalidated"
+    grants_authority: Literal[False] = False
+
+    @model_validator(mode="after")
+    def bounded_evidence(self) -> Self:
+        claim = self.proposal.claim
+        if (claim.namespace, claim.scheme_id) != (self.catalog.namespace, self.catalog.scheme_id):
+            raise ValueError("symbolic evidence catalog mismatch")
+        if any(
+            (concept.scope, concept.namespace, concept.scheme_id)
+            != (claim.scope, claim.namespace, claim.scheme_id)
+            or concept.curation_status != "proposed"
+            for concept in self.concepts
+        ):
+            raise ValueError("symbolic evidence concept mismatch")
+        if len(json.dumps(self.model_dump(), ensure_ascii=False).encode("utf-8")) > 128 * 1024:
+            raise ValueError("symbolic evidence byte budget exceeded")
+        return self
+
+
+class SymbolicContext(SymbolicPublicModel):
+    schema_version: Literal["symbolic-context-v1"] = "symbolic-context-v1"
+    evidence: list[SymbolicEvidence] = Field(max_length=4)
+    status: Literal["available", "omitted_budget"]
+    grants_authority: Literal[False] = False
+
+    @model_validator(mode="after")
+    def complete_or_omitted(self) -> Self:
+        if self.status == "omitted_budget" and self.evidence:
+            raise ValueError("omitted symbolic context cannot contain evidence")
+        if len(self.model_dump_json().encode("utf-8")) > 16 * 1024:
+            raise ValueError("symbolic context byte budget exceeded")
+        return self

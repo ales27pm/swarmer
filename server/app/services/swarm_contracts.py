@@ -14,6 +14,7 @@ from pydantic import (
 
 from app.services.agent_capsule import validate_agent_capsule
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.memory_symbolic_contracts import SymbolicContext
 from app.services.project_contracts import ProjectMemoryContext
 
 SCHEMA_VERSION = "1.0"
@@ -504,6 +505,7 @@ class GoalEvaluationContext(BaseModel):
     conversation_revision: int = Field(default=0, strict=True, ge=0)
     conversation: list[EvaluationConversationMessage] = Field(default_factory=list, max_length=40)
     project_memory: ProjectMemoryContext | None = None
+    symbolic_context: SymbolicContext | None = None
     durable_context: dict[str, Any] | None = None
     completion_criteria: list[ShortText] = Field(min_length=1, max_length=MAX_PLAN_NODES)
     node_results: list[EvaluationNodeResult] = Field(max_length=MAX_PLAN_NODES)

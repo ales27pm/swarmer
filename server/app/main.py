@@ -81,6 +81,11 @@ from app.services.code_proposal import (
 from app.services.context_builder import ContextBuilder
 from app.services.control_plane_instance import ControlPlaneInstanceService
 from app.services.direct_model_admission import LocalGPUUnavailable, direct_model_admission
+from app.services.direct_symbolic_context import (
+    DirectSymbolicConflict,
+    DirectSymbolicSelection,
+    select_direct_symbolic_context,
+)
 from app.services.embedding_service import HttpEmbeddingService
 from app.services.episode_memory import EpisodeMemoryService
 from app.services.evaluator_provider import UbuntuEvaluatorProvider
@@ -472,6 +477,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         agent_offline_timeout_seconds=settings.agent_offline_timeout_seconds,
         permission_policy=permission_policy,
         local_model_gpu_lock_path=settings.local_model_gpu_lock_path,
+        symbolic_catalogs=tuple(settings.memory_symbolic_catalogs),
     )
     activity_catalog = ActivityCatalogService(
         settings.db_path,
@@ -515,6 +521,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         settings.db_path,
         episode_memory,
         canonical_memory=state_service if settings.memory_canonical_language == "en" else None,
+        symbolic_catalogs=tuple(settings.memory_symbolic_catalogs),
     )
     model_router = ModelRouter(
         [
@@ -816,6 +823,12 @@ def create_app(config: Settings | None = None) -> FastAPI:
             await message_board.close()
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
+
+    @app.exception_handler(DirectSymbolicConflict)
+    async def direct_symbolic_conflict(
+        request: Request, exc: DirectSymbolicConflict
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(LocalGPUUnavailable)
     async def local_gpu_unavailable(request: Request, exc: LocalGPUUnavailable) -> JSONResponse:
@@ -1361,7 +1374,12 @@ def create_app(config: Settings | None = None) -> FastAPI:
         return await publish_terminal_snapshot(result, task)
 
     async def handle_tool_proposal(
-        task_id: str, request: ToolProposal, principal: DevicePrincipal
+        task_id: str,
+        request: ToolProposal,
+        principal: DevicePrincipal,
+        *,
+        symbolic_selection: DirectSymbolicSelection | None = None,
+        planning_proposal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             record = await execution_engine.create_tool_call(
@@ -1373,6 +1391,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
                     id=str(principal["id"]),
                     name=str(principal["name"]),
                 ),
+                acceptance_guard=symbolic_selection.accept_locked if symbolic_selection else None,
+                commit_guard=symbolic_selection.check_catalogs if symbolic_selection else None,
             )
         except ExecutionConflict as exc:
             status_code = 404 if str(exc) == "task not found" else 409
@@ -1384,6 +1404,13 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 headers={"X-MonGARS-Validation-Code": exc.diagnostic},
             ) from exc
 
+        if planning_proposal is not None:
+            await broadcast(
+                {
+                    "type": "orchestrator.proposed",
+                    "payload": {"task_id": task_id, **planning_proposal},
+                }
+            )
         await state_service.append_audit(
             "planner.proposal.accepted",
             {"planner_source": request.planner_source, "tool_call_id": record["id"]},
@@ -1431,7 +1458,22 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 trace_id=task_id,
             )
             try:
-                proposal = await planner_provider.plan(task.input, task.mode.value)
+                symbolic_selection = await select_direct_symbolic_context(
+                    state_service.db_path,
+                    task.input,
+                    current_catalogs=lambda: strategy_retrieval.symbolic_catalogs,
+                    task_id=task_id,
+                    expected_mode=task.mode.value,
+                )
+                proposal = await planner_provider.plan(
+                    task.input,
+                    task.mode.value,
+                    **(
+                        {"symbolic_context": symbolic_selection.context}
+                        if symbolic_selection
+                        else {}
+                    ),
+                )
             except OrchestratorError as exc:
                 try:
                     await state_service.update_task_status(task_id, "failed", error=str(exc))
@@ -1444,6 +1486,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
                     trace_id=task_id,
                 )
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        if symbolic_selection is not None:
+            await symbolic_selection.validate_current()
 
         if proposal["tool_name"] != "none":
             try:
@@ -1481,12 +1526,6 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 else public_tool_summary(proposal["tool_name"])
             ),
         }
-        await broadcast(
-            {
-                "type": "orchestrator.proposed",
-                "payload": {"task_id": task_id, **public_proposal},
-            }
-        )
         if proposal["tool_name"] == "none":
             updated = await state_service.get_task(task_id)
             if proposal["summary"].strip():
@@ -1496,7 +1535,17 @@ def create_app(config: Settings | None = None) -> FastAPI:
                     proposal["summary"].strip(),
                     agent_id="local-orchestrator",
                     metadata={"verified_status": "proposal_only"},
+                    acceptance_guard=symbolic_selection.accept_locked
+                    if symbolic_selection
+                    else None,
+                    commit_guard=symbolic_selection.check_catalogs if symbolic_selection else None,
                 )
+            await broadcast(
+                {
+                    "type": "orchestrator.proposed",
+                    "payload": {"task_id": task_id, **public_proposal},
+                }
+            )
             return {
                 "task_id": task_id,
                 "proposal": public_proposal,
@@ -1512,6 +1561,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 summary=public_tool_summary(proposal["tool_name"]),
             ),
             principal,
+            symbolic_selection=symbolic_selection,
+            planning_proposal=public_proposal,
         )
 
     @app.get("/health", response_model=HealthResponse)
@@ -2233,6 +2284,13 @@ def create_app(config: Settings | None = None) -> FastAPI:
             )
             await broadcast({"type": "message.created", "payload": user_message})
             history = await state_service.list_messages(conversation_id, 40)
+            symbolic_selection = await select_direct_symbolic_context(
+                state_service.db_path,
+                request.content,
+                current_catalogs=lambda: strategy_retrieval.symbolic_catalogs,
+                conversation_id=conversation_id,
+                expected_messages=history,
+            )
             try:
                 reply = await orchestrator_service.chat(
                     [
@@ -2244,12 +2302,22 @@ def create_app(config: Settings | None = None) -> FastAPI:
                         }
                         for item in history
                         if item["role"] in {"user", "agent", "assistant"}
-                    ]
+                    ],
+                    **(
+                        {"symbolic_context": symbolic_selection.context}
+                        if symbolic_selection
+                        else {}
+                    ),
                 )
             except OrchestratorError as exc:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
         assistant_message = await state_service.append_conversation_message(
-            conversation_id, "agent", reply, agent_id="local-orchestrator"
+            conversation_id,
+            "agent",
+            reply,
+            agent_id="local-orchestrator",
+            acceptance_guard=symbolic_selection.accept_locked if symbolic_selection else None,
+            commit_guard=symbolic_selection.check_catalogs if symbolic_selection else None,
         )
         await broadcast({"type": "message.created", "payload": assistant_message})
         return {"conversation_id": conversation_id, "task": None, "message": assistant_message}
@@ -2454,6 +2522,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
         del principal
         try:
             return await state_service.search_memory(request)
+        except SymbolicStoreError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
+        except sqlite3.Error as exc:
+            if request.symbolic is not None:
+                raise HTTPException(
+                    status_code=503, detail={"code": "symbolic_unavailable"}
+                ) from exc
+            raise
         except MemoryNormalizationError as exc:
             raise _memory_normalization_http_error(exc) from exc
 

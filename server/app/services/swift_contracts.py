@@ -7,6 +7,8 @@ import json
 import re
 from typing import Any
 
+from app.services.agent_capsule import symbolic_transport
+
 SWIFT_SKILLS = frozenset({"code.swift.build", "code.swift.test"})
 _DIGEST = re.compile(r"[a-f0-9]{64}")
 
@@ -130,6 +132,7 @@ def validate_swift_project_payload(payload: object) -> dict[str, Any]:
     """Reserved controller payload; never exposed in model argument schemas."""
     if not isinstance(payload, dict):
         raise ValueError("Swift operation arguments must be an object")  # noqa: TRY004
+    payload, _ = symbolic_transport(payload)
     if "project_revision" not in payload:
         return validate_swift_payload(payload)
     reference = payload["project_revision"]

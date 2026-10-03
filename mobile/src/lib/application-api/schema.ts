@@ -54,8 +54,8 @@ export function validateInput(schema: JsonSchema, value: unknown, depth = 0): vo
       value.forEach((item) => validateInput(schema.items!, item, depth + 1));
       break;
     case "string":
-      if (typeof value !== "string" || value.includes("\0") || value.length < (schema.minLength ?? 0)
-          || value.length > (schema.maxLength ?? 32_000) || (schema.pattern && !new RegExp(schema.pattern).test(value))) invalid();
+      if (typeof value !== "string" || value.includes("\0") || Array.from(value).length < (schema.minLength ?? 0)
+          || Array.from(value).length > (schema.maxLength ?? 32_000) || (schema.pattern && !new RegExp(schema.pattern).test(value))) invalid();
       break;
     case "number":
     case "integer":

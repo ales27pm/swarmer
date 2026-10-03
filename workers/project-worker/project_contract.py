@@ -289,7 +289,14 @@ def research_sources_value(value: object) -> list[dict[str, Any]]:
             or set(item)
             not in (
                 {"content_trust", "worker_job_id", "title", "url", "snippet"},
-                {"content_trust", "worker_job_id", "title", "url", "snippet", "evidence"},
+                {
+                    "content_trust",
+                    "worker_job_id",
+                    "title",
+                    "url",
+                    "snippet",
+                    "evidence",
+                },
             )
             or item["content_trust"] != "untrusted"
         ):
@@ -359,7 +366,10 @@ def dependency_context_value(value: object) -> list[dict[str, str]]:
 def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("required_skill") != SKILL:
         raise ProjectError("unsupported project worker skill")
-    value = job.get("payload")
+    try:
+        value, advisory = capsule_contract.symbolic_transport(job.get("payload"))
+    except ValueError as exc:
+        raise ProjectError("invalid symbolic context") from exc
     if (
         not isinstance(value, dict)
         or set(value)
@@ -420,6 +430,7 @@ def parse_payload(job: dict[str, Any]) -> dict[str, Any]:
     if any(path not in {item["path"] for item in files} for path in focus):
         raise ProjectError("project read focus references an absent file")
     return {
+        **advisory,
         "objective": objective,
         "guidance_version": guidance_version,
         "native_validation": native_validation,

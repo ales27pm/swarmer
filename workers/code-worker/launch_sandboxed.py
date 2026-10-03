@@ -11,6 +11,7 @@ SOURCES = (
     "workers/code-worker/code_worker.py",
     "workers/code-worker/agent_capsule.py",
     "workers/file-worker/file_worker.py",
+    "workers/file-worker/agent_capsule.py",
 )
 REQUIRED_ENV = (
     "MONGARS_SERVER_URL",

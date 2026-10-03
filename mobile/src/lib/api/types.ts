@@ -446,7 +446,9 @@ export type MemoryItem = {
   created_at: string;
   updated_at: string;
   score?: number;
-  search_kind?: "lexical" | "vector" | "hybrid";
+  search_kind?: "lexical" | "vector" | "hybrid" | "symbolic";
+  symbolic_evidence?: import("./memory-symbolic").SymbolicEvidence[];
+  symbolic_status?: "available";
   presentation?: {
     language: "fr";
     content: string;

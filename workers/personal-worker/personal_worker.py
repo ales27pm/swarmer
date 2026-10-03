@@ -408,7 +408,10 @@ class PersonalWorker:
         self.crm = crm
 
     def execute(self, job: dict[str, Any], ensure_active: Callable[[], None]) -> dict[str, Any]:
-        payload = job.get("payload")
+        try:
+            payload = protocol._symbolic_operation(job.get("payload"))
+        except (ValueError, TypeError) as exc:
+            raise PersonalError("payload_invalid") from exc
         if not isinstance(payload, dict):
             raise PersonalError("payload_invalid")
         skill = job.get("required_skill")

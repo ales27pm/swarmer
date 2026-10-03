@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.services.agent_capsule import symbolic_transport
 from app.services.writing_contracts import (
     MAX_DEPENDENCY_BYTES,
     MAX_RESEARCH_SOURCES,
@@ -153,6 +154,9 @@ class NativeValidationState(StrictModel):
             # Older workers forbid extra fields. Keep their non-native payload
             # shape unchanged even after remote-job normalization serializes it.
             data.pop("native_validation", None)
+        for key in ("symbolic_context", "symbolic_context_binding"):
+            if key not in self.model_fields_set:
+                data.pop(key, None)
         return data
 
 
@@ -229,6 +233,8 @@ class ProjectPayload(NativeValidationState):
     )
     memory: ProjectMemoryContext | None = None
     durable_context: dict[str, Any] | None = None
+    symbolic_context: dict[str, Any] | None = None
+    symbolic_context_binding: dict[str, Any] | None = None
     context_compaction: dict[str, Any] | None = None
     dependency_context: list[DependencyContextItem] = Field(default_factory=list, max_length=8)
     research_sources: list[WritingResearchSource] = Field(
@@ -237,6 +243,14 @@ class ProjectPayload(NativeValidationState):
 
     @model_validator(mode="after")
     def validate_payload(self) -> ProjectPayload:
+        if {"symbolic_context", "symbolic_context_binding"} & self.model_fields_set:
+            symbolic_transport(
+                {
+                    key: getattr(self, key)
+                    for key in ("symbolic_context", "symbolic_context_binding")
+                    if key in self.model_fields_set
+                }
+            )
         validate_files(self.files)
         source_count, source_limit = research_source_limits(
             [s.model_dump() for s in self.research_sources]

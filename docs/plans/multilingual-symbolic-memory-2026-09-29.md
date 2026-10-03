@@ -57,8 +57,11 @@ schema/client rollout still required before production activation.
 The conceptual module supplies deterministic contracts. Schema 30 connects those
 contracts to scoped SQL concepts, multilingual labels, proposals, exact
 original-source bindings and explicit relations, exposed through paired API
-routes. It does not yet use those proposals in agent retrieval or promote them
-to validated lessons.
+routes. The next local candidate adds explicit catalog-selected retrieval,
+source-qualified agent/worker context and mobile inspection; its
+[integration evidence](../evidence/memory-symbolic-retrieval-2026-10-03.md)
+tracks local checks and outstanding combined/device qualification. It does not
+promote proposals to validated lessons.
 
 The locally qualified schema-31 candidate adds current original/pivot vectors,
 scoped lexical/semantic rank fusion and bounded explicit backfill. The
@@ -68,8 +71,9 @@ limits. The [coverage endpoint](../evidence/memory-index-coverage-2026-10-03.md)
 separately reports current, missing, mismatched and invalid vectors; completed
 outbox work is not treated as proof of coverage. These are implemented local
 behaviors, not a claim of production activation or measured FR/EN relevance.
-Concept-assisted retrieval, trusted promotion, dependency freshness and
-chronological quality evaluation remain outstanding. There is no automatic
+Concept-assisted retrieval is being integrated locally; production qualification,
+trusted promotion, dependency freshness and chronological quality evaluation
+remain outstanding. There is no automatic
 cross-language merge or startup backfill.
 
 ## Integration sequence
@@ -117,8 +121,9 @@ that source and their source/concept/relation links atomically. Standalone conce
 definitions remain separate records, including definitions shared by other
 proposals. The schema-30 SQL/API integration binds only current normal-sensitivity
 original views in the exact declared scope. It never promotes a proposal or
-labels a source as a verified user statement. Agent retrieval and a separately
-authorized validation/promotion path remain outstanding. See the
+labels a source as a verified user statement. Agent retrieval now has a locally
+tested source-qualified integration; the evidence-gated validation/promotion
+path requested by the user remains to be implemented. See the
 [symbolic registry evidence](../evidence/memory-symbolic-registry-2026-10-03.md).
 
 ## Corrections required before adopting the supplied PoC

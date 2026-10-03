@@ -13,6 +13,7 @@ import { applicationSessions } from "./sessions";
 import { outputDescriptor, type CommandOutputDescriptor } from "./outputs";
 import { pairApplicationConnection, type PairApplicationConnectionInput } from "./connection";
 import { readApplicationSyncState } from "./sync-state";
+import { memorySearchResult } from "./memory-search";
 import { submitReviewedToolProposal } from "./tool-proposal";
 import { assertGoalPlanSnapshotCurrent, buildLocalGoalPlanPrompt, localPlanPreparationError, parseCompletedLocalGoalPlan, readInitialGoal, startReviewedLocalGoalPlan, type GoalPlanSession, type GoalPlanSnapshot } from "./goal-plan";
 import {
@@ -193,7 +194,11 @@ register("embeddings.status", noInput, () => embeddings.getLocalEmbeddingStatus(
 register<embeddings.LocalEmbeddingLoadInput>("embeddings.load", object({ modelId: text(200), revision: text(40), experimental: boolean }), (input) => embeddings.loadLocalEmbedder(input), { ...device, ...mutation, ...embeddingAvailability, requiresForeground: true });
 register<embeddings.LocalEmbeddingInput>("embeddings.generate", object({ texts: list(text(16384), 8), kind: choice("query", "document") }), (input) => embeddings.embedLocalTexts(input), { ...device, ...mutation, ...embeddingAvailability, requiresForeground: true });
 register("embeddings.unload", noInput, () => embeddings.unloadLocalEmbedder(), { ...device, ...mutation, ...embeddingAvailability, requiresForeground: true });
-register<{ query: string }>("memory.search", object({ query: text(2000) }), ({ query }) => server.searchMemory(query));
+const symbolicCatalogIdentifier = { ...text(200), pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$" };
+register<import("@/lib/api/memory-search").MemorySearchOptions & { query: string }>("memory.search", object({
+  query: text(2000), scope: text(100), kind: text(100), limit: integer(1, 20),
+  symbolic: object({ catalogs: { ...list(object({ namespace: symbolicCatalogIdentifier, scheme_id: symbolicCatalogIdentifier }), 8), minItems: 1 } }),
+}, ["query"]), ({ query, ...options }) => Object.keys(options).length ? server.searchMemory(query, options) : server.searchMemory(query), { publicResult: memorySearchResult });
 register<Parameters<typeof server.rememberMemory>[0]>("memory.create", object({
   content: text(32_000), summary: text(2000, 0), scope: text(100), kind: text(100), pinned: boolean,
 }, ["content"]), (input) => server.rememberMemory(input), mutation);

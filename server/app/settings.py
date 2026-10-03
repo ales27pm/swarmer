@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.services.memory_symbolic_contracts import SymbolicCatalog, SymbolicSearchOptions
 from app.services.message_board import _validate_redis_transport_url
 from app.services.swarm_contracts import ModelIdentifier
 
@@ -73,6 +74,15 @@ class Settings(BaseSettings):
     # Explicit opt-in for the memory-items write API. Project/episode sources
     # retain their own lifecycle until their canonical projection is qualified.
     memory_canonical_language: Literal["legacy", "en"] = "legacy"
+    memory_symbolic_catalogs: list[SymbolicCatalog] = Field(default_factory=list, max_length=8)
+
+    @field_validator("memory_symbolic_catalogs")
+    @classmethod
+    def explicit_symbolic_catalogs(cls, value: list[SymbolicCatalog]) -> list[SymbolicCatalog]:
+        if value:
+            SymbolicSearchOptions(catalogs=value)
+        return value
+
     memory_normalization_base_url: str | None = Field(default=None, max_length=2_083)
     memory_translator_model: ModelIdentifier | None = None
     memory_translator_revision: str | None = Field(default=None, min_length=1, max_length=200)
