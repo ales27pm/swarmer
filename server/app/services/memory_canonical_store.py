@@ -42,6 +42,7 @@ from app.services.memory_normalization import (
     canonical_text_sha256,
     normalization_identity,
 )
+from app.services.memory_text_views import record_text_views_locked
 
 MEMORY_CANONICAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_source_journal (
@@ -167,6 +168,7 @@ class MemoryCanonicalStore:
         current_provider: Callable[[], MemoryNormalizer | None],
         gate: asyncio.Lock,
         timeout_seconds: float,
+        embedding_provider: str | None = None,
     ) -> None:
         self.db_path, self.provider = db_path, provider
         self.current_provider, self.gate, self.timeout_seconds = (
@@ -175,6 +177,7 @@ class MemoryCanonicalStore:
             timeout_seconds,
         )
         self.signature = provider.normalization_signature if provider else ""
+        self.embedding_provider = embedding_provider
 
     def _provider_current(self) -> bool:
         return (
@@ -470,6 +473,22 @@ class MemoryCanonicalStore:
                 await db.execute(
                     "UPDATE memory_canonical_receipts SET status='accepted',result_json=?,updated_at=? WHERE id=? AND lease_token=?",
                     (_json(canonical), accepted_at, receipt_id, lease),
+                )
+                languages = {result.source_language for result in results}
+                await record_text_views_locked(
+                    db,
+                    memory_id=target,
+                    item_revision=accepted_at,
+                    original_content=content,
+                    original_summary=summary,
+                    original_language=next(iter(languages)) if len(languages) == 1 else "und",
+                    source_id=source["id"],
+                    source_sha256=source["source_sha256"],
+                    canonical_content=canonical["content"],
+                    canonical_summary=canonical["summary"],
+                    normalization_signature=self.signature,
+                    embedding_provider=self.embedding_provider,
+                    now=accepted_at,
                 )
                 await append_audit_event(
                     db,

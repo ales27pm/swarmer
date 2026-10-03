@@ -122,6 +122,8 @@ from app.services.memory_normalization import (
     OpenAIMemoryNormalizationProvider,
 )
 from app.services.memory_presentation import OpenAIMemoryPresentationProvider
+from app.services.memory_text_views import projection_status
+from app.services.memory_vectors import embedding_identity
 from app.services.message_board import (
     MessageBoard,
     RedisStreamsMessageBoard,
@@ -404,6 +406,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         memory_presenter=memory_presenter,
         canonical_language=settings.memory_canonical_language,
         memory_normalization_timeout_seconds=settings.memory_normalization_timeout_seconds,
+        embedding_admission=direct_model_slot,
     )
     configured_pairing_secret = settings.pairing_bootstrap_token
     auth_service = AuthService(
@@ -1731,6 +1734,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
             if project_embedding_service
             else "lexical_fallback",
             "context_token_count_method": "conservative_utf8_bytes",  # nosec B105 - public metric
+            "memory_projections": await projection_status(
+                settings.db_path,
+                provider=embedding_identity(
+                    state_service.embedding_service, state_service.embedding_model_revision
+                )
+                if state_service.embedding_service is not None
+                else None,
+            ),
         }
 
     @app.get("/goals/{goal_id}/context/sources/{source_id}")

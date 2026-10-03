@@ -6,6 +6,8 @@ import json
 import os
 import secrets
 import stat
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -55,7 +57,27 @@ from app.services.memory_normalization import (
     MemoryNormalizationSource,
     canonical_text_sha256,
 )
-from app.services.memory_search_presentation import MemoryPresenter, finalize_memory_search
+from app.services.memory_projection_worker import MemoryProjectionWorker, ProjectionDrainReport
+from app.services.memory_search_presentation import (
+    MemoryPresenter,
+    _qualified,
+    finalize_memory_search,
+)
+from app.services.memory_text_views import (
+    ProjectionClaim,
+    delete_text_views_locked,
+    fail_projection_claim,
+    finish_projection_locked,
+    initialize_text_view_schema_locked,
+    mark_projection_batch_dispatched,
+    mark_projection_batch_response_received,
+    read_projection_source,
+    record_text_views_locked,
+    refresh_text_view_head_locked,
+    reserve_projection_batch,
+    retry_known_projection_failure,
+    text_view_sha256,
+)
 from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
 from app.services.model_request_execution import (
     MEMORY_MODEL_ROLES,
@@ -68,7 +90,7 @@ from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.project_evidence_schema import migrate_project_evidence
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 _LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 _MEMORY_MODEL_ROLE_CHECK = (
     "CHECK(role IN ("
@@ -901,10 +923,18 @@ class StateService:
         memory_normalizer: MemoryNormalizer | None = None,
         memory_presenter: MemoryPresenter | None = None,
         memory_normalization_timeout_seconds: float = 60,
+        embedding_admission: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> None:
         self.db_path = db_path
         self.embedding_service = embedding_service
         self.embedding_model_revision = embedding_model_revision
+        self.embedding_admission = embedding_admission
+        self.memory_projection_worker = MemoryProjectionWorker(
+            self.db_path,
+            lambda: self.embedding_service,
+            lambda: self.embedding_model_revision,
+            model_admission=embedding_admission,
+        )
         if (
             canonical_language not in {"legacy", "en"}
             or not 0 < memory_normalization_timeout_seconds <= 60
@@ -1154,10 +1184,82 @@ class StateService:
             await db.commit()
             if version < 28:
                 await self._migrate_memory_model_roles(db)
+            if version < 29:
+                await self._migrate_memory_text_views(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():
                 database_file.chmod(0o600)
+
+    async def _migrate_memory_text_views(self, db: aiosqlite.Connection) -> None:
+        """Add recoverable views without altering source rows or calling a model."""
+        if db.in_transaction:
+            raise RuntimeError("memory view migration needs its own transaction")
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            version_row = await (await db.execute("PRAGMA user_version")).fetchone()
+            version = int(version_row[0]) if version_row else -1
+            if version == 29:
+                await db.commit()
+                return
+            if version != 28:
+                raise RuntimeError("memory view migration requires schema 28")
+            await initialize_text_view_schema_locked(db)
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM memory_items ORDER BY id")
+            while rows := await cursor.fetchmany(128):
+                for row in rows:
+                    item = self._memory_from_row(row)
+                    metadata = item["metadata"]
+                    arguments: dict[str, Any] = {
+                        "memory_id": item["id"],
+                        "item_revision": item["updated_at"],
+                        "original_content": item["content"],
+                        "original_summary": item["summary"],
+                        "original_language": "und",
+                        "source_id": None,
+                        "source_sha256": text_view_sha256(item["content"], item["summary"]),
+                        "migration_seed": True,
+                        "now": datetime.now(UTC).isoformat(),
+                    }
+                    if isinstance(metadata, dict) and metadata.get("canonical_language") == "en":
+                        receipt = await (
+                            await db.execute(
+                                "SELECT * FROM memory_canonical_receipts WHERE id=?",
+                                (metadata.get("canonical_receipt_id"),),
+                            )
+                        ).fetchone()
+                        source = await (
+                            await db.execute(
+                                "SELECT * FROM memory_source_journal WHERE id=?",
+                                (metadata.get("source_id"),),
+                            )
+                        ).fetchone()
+                        if not _qualified(item, receipt, source) or source is None:
+                            raise RuntimeError("canonical memory provenance blocks view migration")
+                        languages = {
+                            metadata[field]["source_language"]
+                            for field in ("content", "summary")
+                            if source[field] is not None
+                        }
+                        arguments.update(
+                            original_content=source["content"],
+                            original_summary=source["summary"],
+                            original_language=next(iter(languages))
+                            if len(languages) == 1
+                            else "und",
+                            source_id=source["id"],
+                            source_sha256=source["source_sha256"],
+                            canonical_content=item["content"],
+                            canonical_summary=item["summary"],
+                            normalization_signature=metadata["normalization_signature"],
+                        )
+                    await record_text_views_locked(db, **arguments)
+            await db.execute("PRAGMA user_version=29")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
     @staticmethod
     async def _migrate_memory_model_roles(db: aiosqlite.Connection) -> None:
@@ -2560,6 +2662,11 @@ class StateService:
             ),
             gate=self.memory_normalization_gate,
             timeout_seconds=self.memory_normalization_timeout_seconds,
+            embedding_provider=embedding_identity(
+                self.embedding_service, self.embedding_model_revision
+            )
+            if self.embedding_service is not None
+            else None,
         )
 
     async def create_memory(self, request: MemoryCreate, actor_id: str) -> dict[str, Any]:
@@ -2570,7 +2677,7 @@ class StateService:
             memory_id, changed = outcome
             if changed and self.embedding_service is not None:
                 try:
-                    await self.index_memory(memory_id)
+                    await self.index_memory(memory_id, retry_known_failure=False)
                 except EmbeddingServiceError:
                     pass
             record = await self.get_memory(memory_id)
@@ -2602,6 +2709,22 @@ class StateService:
                     now,
                 ),
             )
+            await record_text_views_locked(
+                db,
+                memory_id=memory_id,
+                item_revision=now,
+                original_content=request.content,
+                original_summary=request.summary,
+                original_language="und",
+                source_id=None,
+                source_sha256=text_view_sha256(request.content, request.summary),
+                embedding_provider=embedding_identity(
+                    self.embedding_service, self.embedding_model_revision
+                )
+                if self.embedding_service is not None
+                else None,
+                now=now,
+            )
             await append_audit_event(
                 db,
                 "memory.remembered",
@@ -2613,7 +2736,7 @@ class StateService:
             await db.commit()
         if self.embedding_service is not None:
             try:
-                await self.index_memory(memory_id)
+                await self.index_memory(memory_id, retry_known_failure=False)
             except EmbeddingServiceError:
                 pass
         record = await self.get_memory(memory_id)
@@ -2888,31 +3011,27 @@ class StateService:
             )
         )
 
-    async def index_memory(self, memory_id: str) -> bool:
-        provider = self.embedding_service
-        if provider is None:
-            return False
-        identity = embedding_identity(provider, self.embedding_model_revision)
-        item = await self.get_memory(memory_id)
-        if item is None:
-            return False
-        vectors = await provider.embed([f"{item['content']} {item.get('summary') or ''}"])
-        vector = (
-            memory_vector(vectors[0], getattr(provider, "dimensions", None))
-            if len(vectors) == 1
-            else None
-        )
-        if vector is None:
-            raise EmbeddingServiceError("embedding provider returned an invalid vector")
-        if provider is not self.embedding_service or identity != embedding_identity(
-            self.embedding_service, self.embedding_model_revision
-        ):
-            return False
-        return await self._store_embedding(item, vector, identity, provider)
+    async def drain_memory_projections(
+        self, *, limit: int = 1, memory_id: str | None = None
+    ) -> ProjectionDrainReport:
+        """Consume a bounded durable page explicitly; initialize never calls models."""
+        return await self.memory_projection_worker.drain(limit=limit, memory_id=memory_id)
+
+    async def index_memory(self, memory_id: str, *, retry_known_failure: bool = True) -> bool:
+        # Only an explicit indexing request may shorten known-failure backoff.
+        # Automatic create/update calls retain the scheduled retry boundary.
+        if retry_known_failure and self.embedding_service is not None:
+            await retry_known_projection_failure(
+                self.db_path,
+                memory_id=memory_id,
+                provider=embedding_identity(self.embedding_service, self.embedding_model_revision),
+            )
+        report = await self.drain_memory_projections(limit=1, memory_id=memory_id)
+        return report.projected > 0
 
     async def _store_embedding(
         self,
-        item: dict[str, Any],
+        claim: ProjectionClaim,
         vector: list[float],
         identity: str,
         provider: EmbeddingService,
@@ -2923,28 +3042,14 @@ class StateService:
                 self.embedding_service, self.embedding_model_revision
             ):
                 return False
-            cursor = await db.execute(
-                """INSERT OR REPLACE INTO memory_embeddings(
-                    memory_id,provider,dimensions,vector_json,updated_at
-                ) SELECT id,?,?,?,updated_at FROM memory_items
-                WHERE id=? AND updated_at=? AND content=? AND summary IS ?""",
-                (
-                    identity,
-                    len(vector),
-                    json.dumps(vector, allow_nan=False),
-                    item["id"],
-                    item["updated_at"],
-                    item["content"],
-                    item["summary"],
-                ),
-            )
+            stored = await finish_projection_locked(db, claim, vector=vector)
             if provider is not self.embedding_service or identity != embedding_identity(
                 self.embedding_service, self.embedding_model_revision
             ):
                 await db.rollback()
                 return False
             await db.commit()
-            return cursor.rowcount == 1
+            return stored
 
     async def backfill_memory_embeddings(
         self,
@@ -2982,7 +3087,11 @@ class StateService:
                 await (
                     await db.execute(
                         """SELECT m.*,e.vector_json,e.dimensions AS vector_dimensions,
-                e.updated_at AS vector_updated_at FROM memory_items m
+                e.updated_at AS vector_updated_at,h.revision AS projection_revision,
+                h.index_view_id AS projection_view_id,
+                h.source_sha256 AS projection_source_sha256 FROM memory_items m
+                JOIN memory_text_heads h ON h.memory_id=m.id AND h.deleted=0
+                    AND h.item_revision=m.updated_at
                 LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.provider=?
                 WHERE m.scope=? AND m.id>? ORDER BY m.id LIMIT ?""",
                         (identity, scope, after_id or "", limit + 1),
@@ -3014,31 +3123,93 @@ class StateService:
         }
         if not pending:
             return report
-        try:
-            returned = await provider.embed(
-                [f"{item['content']} {item.get('summary') or ''}" for item in pending]
+        async with self.embedding_admission() if self.embedding_admission else nullcontext():
+
+            def provider_current() -> bool:
+                return provider is self.embedding_service and identity == embedding_identity(
+                    self.embedding_service, self.embedding_model_revision
+                )
+
+            if not provider_current():
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
+            # Admission may have waited while sources were edited or forgotten.
+            # Reserve this entire current page, not its stale pre-admission text.
+            claims = await reserve_projection_batch(
+                self.db_path,
+                "memory-backfill-" + uuid4().hex,
+                snapshots=pending,
+                provider=identity,
             )
+            if not claims:
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
+
+            async def fail_claims(category: str) -> None:
+                for claim in claims:
+                    await fail_projection_claim(self.db_path, claim, error_category=category)
+
+            texts: list[str] = []
+            for claim, item in zip(claims, pending, strict=True):
+                source = await read_projection_source(self.db_path, claim)
+                if (
+                    source is None
+                    or source.scope != scope
+                    or source.kind != item["kind"]
+                    or source.sensitivity != item["sensitivity"]
+                ):
+                    await fail_claims("source_conflict")
+                    report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                    return report
+                texts.append(f"{source.content} {source.summary or ''}")
+            if not provider_current():
+                await fail_claims("provider_changed")
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
+            # The durable uncertainty marker and final source/receipt check are
+            # committed together before the one batch request crosses HTTP.
+            if not await mark_projection_batch_dispatched(self.db_path, claims):
+                await fail_claims("source_conflict")
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
+            if not provider_current():
+                # No request was made; this particular outcome is known.
+                await mark_projection_batch_response_received(self.db_path, claims)
+                await fail_claims("provider_changed")
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
+            try:
+                returned = await provider.embed(texts)
+            except EmbeddingServiceError as exc:
+                if exc.request_outcome_known:
+                    await mark_projection_batch_response_received(self.db_path, claims)
+                    await fail_claims("provider_unavailable")
+                # Transport ambiguity remains in_flight after lease expiry.
+                # Cancellation also propagates without clearing that marker.
+                report.update(failed=len(pending), complete=False, next_after_id=after_id)
+                return report
+            if not await mark_projection_batch_response_received(self.db_path, claims):
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
             vectors = [memory_vector(value, expected_dimensions) for value in returned]
             if (
                 len(vectors) != len(pending)
                 or any(vector is None for vector in vectors)
                 or len({len(vector) for vector in vectors if vector is not None}) != 1
             ):
-                raise EmbeddingServiceError("invalid memory backfill vectors")
-        except EmbeddingServiceError:
-            report.update(failed=len(pending), complete=False, next_after_id=after_id)
-            return report
-        if provider is not self.embedding_service or identity != embedding_identity(
-            self.embedding_service, self.embedding_model_revision
-        ):
-            report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
-            return report
-        valid_vectors = [vector for vector in vectors if vector is not None]
-        for item, vector in zip(pending, valid_vectors, strict=True):
-            stored = await self._store_embedding(item, vector, identity, provider)
-            report["indexed" if stored else "conflicted"] += 1
-        if report["conflicted"]:
-            report.update(complete=False, next_after_id=after_id)
+                await fail_claims("invalid_vector")
+                report.update(failed=len(pending), complete=False, next_after_id=after_id)
+                return report
+            if not provider_current():
+                await fail_claims("provider_changed")
+                report.update(conflicted=len(pending), complete=False, next_after_id=after_id)
+                return report
+            valid_vectors = [vector for vector in vectors if vector is not None]
+            for claim, vector in zip(claims, valid_vectors, strict=True):
+                stored = await self._store_embedding(claim, vector, identity, provider)
+                report["indexed" if stored else "conflicted"] += 1
+            if report["conflicted"]:
+                report.update(complete=False, next_after_id=after_id)
         return report
 
     async def update_memory(
@@ -3053,7 +3224,7 @@ class StateService:
             _, changed = outcome
             if changed and self.embedding_service is not None:
                 try:
-                    await self.index_memory(memory_id)
+                    await self.index_memory(memory_id, retry_known_failure=False)
                 except EmbeddingServiceError:
                     pass
             return await self.get_memory(memory_id)
@@ -3088,10 +3259,29 @@ class StateService:
                 return None
             if source_changed:
                 await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+                await record_text_views_locked(
+                    db,
+                    memory_id=memory_id,
+                    item_revision=now,
+                    original_content=content,
+                    original_summary=summary,
+                    original_language="und",
+                    source_id=None,
+                    source_sha256=text_view_sha256(content, summary),
+                    embedding_provider=embedding_identity(
+                        self.embedding_service, self.embedding_model_revision
+                    )
+                    if self.embedding_service is not None
+                    else None,
+                    now=now,
+                )
             else:
                 await db.execute(
                     "UPDATE memory_embeddings SET updated_at=? WHERE memory_id=? AND updated_at=?",
                     (now, memory_id, existing["updated_at"]),
+                )
+                await refresh_text_view_head_locked(
+                    db, memory_id=memory_id, item_revision=now, now=now
                 )
             await append_audit_event(
                 db,
@@ -3104,7 +3294,7 @@ class StateService:
             await db.commit()
         if self.embedding_service is not None and source_changed:
             try:
-                await self.index_memory(memory_id)
+                await self.index_memory(memory_id, retry_known_failure=False)
             except EmbeddingServiceError:
                 pass
         return await self.get_memory(memory_id)
@@ -3120,6 +3310,7 @@ class StateService:
             # SQLite foreign keys are connection-local; invalidate explicitly
             # even when the connection does not enable ON DELETE CASCADE.
             await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+            await delete_text_views_locked(db, memory_id=memory_id, now=now)
             await forget_canonical_sources(db, memory_id)
             await append_audit_event(
                 db,

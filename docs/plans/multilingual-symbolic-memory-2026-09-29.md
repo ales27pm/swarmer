@@ -61,6 +61,15 @@ automatic lesson promotion, or historical backfill in this slice.
 
 ## Integration sequence
 
+The schema-29 candidate implements the SQL portion of step 2: immutable original
+and canonical view revisions, a current head/tombstone, and transactional index
+intents. Its bounded consumer still writes only the existing canonical/legacy
+SQLite vector channel. Writes and explicit backfill consume these intents; there
+is no autonomous startup drain. An interrupted request is not retried merely
+because its lease expired. See the [implementation evidence and rollout
+boundary](../evidence/memory-versioned-projections-2026-10-03.md). This candidate
+has not been deployed, and the existing schema-28 rollback kit cannot deploy it.
+
 1. Finish qualification of the pivot write/search/display path, including the
    actual local provider and fixed model-call budgets. Keep rejected attempts as
    rejected; a structurally valid response is not proof of faithful translation.
@@ -79,6 +88,18 @@ automatic lesson promotion, or historical backfill in this slice.
 5. Measure phase-aware retrieval, dependency freshness and optional graph
    expansion against the same coding model, tasks and total execution budget.
    Adopt Qdrant only if this measured retrieval workload earns the extra service.
+
+The next SQL integration must keep proposal identity separate from the claim
+fingerprint: equal claims from two observations must retain both evidence links.
+Bind each proposal to an original view's memory ID, revision, field, exact field
+bytes hash and document hash. The conceptual module's `source_bytes_sha256` hashes
+raw bytes, whereas a text head's source hash covers the content/summary document;
+these are different keys. Likewise, do not silently map legacy `global` or free
+scope strings to the conceptual contract's `general` or `project:*` scopes.
+Public proposal writes remain unvalidated and cannot request curated status.
+Supersession is explicit; forgetting a memory must also erase derived symbolic
+text. The conceptual module is currently imported only by its contract tests;
+its SQL/API/retrieval integration remains outstanding.
 
 ## Corrections required before adopting the supplied PoC
 

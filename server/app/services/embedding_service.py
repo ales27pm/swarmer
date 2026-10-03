@@ -18,7 +18,10 @@ class EmbeddingService(Protocol):
 
 
 class EmbeddingServiceError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, request_outcome_known: bool = True) -> None:
+        super().__init__(message)
+        # A transport interruption does not prove that the remote request stopped.
+        self.request_outcome_known = request_outcome_known
 
 
 class DeterministicEmbeddingService:
@@ -62,6 +65,10 @@ class HttpEmbeddingService:
                 body = response.json()
             except ModelExecutionControlError:
                 raise
+            except httpx.RequestError as exc:
+                raise EmbeddingServiceError(
+                    "local embedding provider outcome unknown", request_outcome_known=False
+                ) from exc
             except (httpx.HTTPError, ValueError) as exc:
                 raise EmbeddingServiceError("local embedding provider unavailable") from exc
             if not isinstance(body, dict):

@@ -7,7 +7,7 @@ import aiosqlite
 import pytest
 
 from app.services.model_request_execution import MEMORY_MODEL_ROLES
-from app.services.state_service import SCHEMA, StateService
+from app.services.state_service import SCHEMA, SCHEMA_VERSION, StateService
 
 LEGACY_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 
@@ -94,7 +94,7 @@ async def test_27_to_28_preserves_rows_rowids_indexes_triggers_and_compaction_li
     await state.initialize()
     assert await _snapshot(path) == before
     async with aiosqlite.connect(path) as db:
-        assert await (await db.execute("PRAGMA user_version")).fetchone() == (28,)
+        assert await (await db.execute("PRAGMA user_version")).fetchone() == (SCHEMA_VERSION,)
         assert await (await db.execute("PRAGMA foreign_key_check")).fetchall() == []
         assert (
             await (await db.execute("PRAGMA foreign_key_list(goal_model_calls)")).fetchall()
@@ -125,7 +125,7 @@ async def test_fresh_database_has_new_roles_and_foreign_key_enforcement(tmp_path
     await state.initialize()
     async with aiosqlite.connect(path) as db:
         await db.execute("PRAGMA foreign_keys=ON")
-        assert await (await db.execute("PRAGMA user_version")).fetchone() == (28,)
+        assert await (await db.execute("PRAGMA user_version")).fetchone() == (SCHEMA_VERSION,)
         for role in sorted(MEMORY_MODEL_ROLES):
             with pytest.raises(aiosqlite.IntegrityError, match="FOREIGN KEY"):
                 await _insert_role(db, role)
