@@ -274,13 +274,70 @@ This package is also not deployed.
 Both artifacts above predate the source-preserving display change. They must not
 be described as containing that newer server/client contract.
 
+### Four-call real-provider trial from `9288fd4`
+
+The source-preserving candidate completed its bounded live trial in **23.592
+seconds**. Exactly four HTTP requests returned complete HTTP 200 responses:
+translation/review for creation, then translation/review of the French query.
+Their elapsed times were 10.035, 5.017, 3.233 and 4.342 seconds, respectively.
+The model and digest were the same pinned 9B used above; there was no retry or
+model substitution. The GPU reservation was released only after every HTTP
+outcome was known.
+
+The disposable database contained one memory, one original journal entry and
+one canonical receipt. Replaying the write made no additional request. Search
+made no database writes, issued zero presentation requests, and returned the
+exact original French text with `mode=original` and
+`validation_status=source_preserved`. Provenance bindings passed the actual
+consumer validator. No production goal, task, project, job, memory or image was
+created or changed. Embedding retrieval was disabled in this lexical trial;
+it does not qualify dual-vector retrieval or a deployed agent execution.
+
+The English pivot again read `Keep exactly 30 ms and file \`rapport.csv\`.`
+Manual review did **not** accept its semantic qualification: the French noun
+phrase is still ambiguous as an English action. Exact source display resolves
+the observed second-translation loss, but does not repair this pivot. The
+automatic `mechanical_pass_semantic_review_required` receipt is preserved; a
+separate manual semantic receipt records this limitation. Production canonical
+activation remains unqualified.
+
+Private evidence: `provider-9288fd4-original/live-01/`. The transferred harness
+archive SHA256 is
+`037fdcb5c5e83925ecad09e3ea99aec623a14853237bf683e491673ba5a9a0fb`.
+Its 123 application files came from the exact source commit; 25 harness tests
+and independent review preceded the real run.
+
+### Matching source-preserving server and iOS artifacts
+
+Both new artifacts use `9288fd4fcc7f75dd5f632e12171a2bef435913ef`.
+The server wheel has **123 identical application files** across source, wheel
+and private installation. The installed smoke check preserves the original in
+strategy retrieval, rejects a forged presentation, leaves the database unchanged
+on search/reinitialization and initializes schema 28. Its synthetic provider is
+separate from the real-provider trial above. Wheel SHA256:
+`e8ca905998e95a54b7af87de56d73417dda29d92619948f9e62892c9cc6a41f7`.
+
+The signed DEBUG iOS build succeeded in **164.855 seconds**. The IPA contains the
+original/source-preserved contract, French display label and five memory roles;
+254 source inputs, 50 protected native inputs and ten Core ML fixtures (88 files)
+remained intact. Signature and IPA CRC/content checks passed. IPA SHA256:
+`0e66b26415ca2cdec11274e42ed15f1380189a05be1c0572706147c5a91ca313`.
+Embedded JavaScript SHA256:
+`c4bfd214d1c9115c50deda62b56b97d7e574480943910c72fea7fd8108f213b4`.
+
+Receipts are in `package-9288fd4/` and `mobile-original-9288fd4/` under the same
+private qualification directory. Neither artifact was deployed or installed by
+these build/qualification steps. They do not establish iPhone runtime behavior
+or Core ML Neural Engine compatibility.
+
 ## Remaining proof
 
 - No server deployment, production canonical-memory activation or historical
   backfill is included in this evidence.
-- Historical real-provider trials ended in HTTP or semantic-review rejection;
-  they do not establish French→English→French runtime success. A new bounded
-  real-provider trial must retain its actual acceptance or rejection result.
+- The four-call trial proves exact original display for one French source, but
+  semantic qualification of its English pivot is still not accepted. A broader
+  fixed corpus must include faithful and altered claims; one mechanical success
+  is not a production translation-quality gate.
 - Project/episode migration, conceptual claim identities, dual native/pivot
   indexes and their transactional outbox remain separate outstanding requirements.
 - Mock transport tests prove accounting, scope and fencing at the real service
