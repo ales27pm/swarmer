@@ -89,8 +89,8 @@ Cohort index SHA256:
 `cf0cc1850ee18cf9bf1d0387c90d36bd74927f1fe13321919f48dbea5663224a`.
 
 These artifacts are in the private `candidate-243e913` directory. The API and
-Ubuntu workers have not yet been staged or activated. Local import and wire
-tests do not qualify active service bindings, model quality, media generation,
+workers are now staged as described below, but have not been activated. Local
+import and wire tests do not qualify active service bindings, model quality, media generation,
 Swift compilation, or iPhone execution. The
 [real reviewer comparison](memory-reviewer-comparison-2026-10-03.md)
 remains a separate failed semantic-quality check; transport compatibility does
@@ -105,6 +105,45 @@ bytes stayed unchanged. No service was stopped or restarted and no capacity was
 approved; the active worker still uses its previous release. This stage receipt
 cannot replace the fresh stopped-service receipt required at coordinated cutover.
 Its SHA256 is `40defb376ba6569d891df2a5e6f3a9998af47a321f29144a21e4f6d7c3fefeda`.
+
+## Inactive Ubuntu preparation
+
+Six family bundles are installed under
+`~/.local/share/swarmer-workers/releases/memory-243e913/`: file, research,
+code-review, text, project and media. Audio and Chroma share the media bundle;
+each other family has its own complete manifest. All six isolated probes pass
+with the existing Ubuntu Python 3.12 environment. An independent readback
+rehashed every installed file and found exact equality with the six manifests.
+No service binding, model setting, agent capability or production row was changed.
+
+The first staging command stopped at the project probe because its private
+temporary parent directory was missing. Five bundles had already been copied.
+A separate continuation verified those exact contents, created the missing
+private directory, installed the remaining media bundle and completed all six
+probes. The failed attempt remains recorded. Service binding/state equality in
+the receipt covers the continuation's before/after observations; it is not a
+claim that the first command completed. Worker stage receipt SHA256:
+`470245e2640056ddec3984d88ddfdba2d8695207e596e9b5ee039a69816cc62a`.
+
+The API is installed, inactive, at
+`local-20261003-memory-transport-243e913c3126`. The metadata-compatible recovery
+is installed separately at
+`local-20261003-memory-recovery32-capability-56832aa10432`.
+The new stage-only kit passed 55 local tests before transfer. Its pinned source,
+wheel and installed API contain the same 139 application files. On Ubuntu,
+staging migrated a private copy from schema 27 to 32, preserving all 63 existing
+tables and rowids. Recovery initialization passed at each prefix 27 through 32.
+The live database was opened read-only for the copy and was not migrated.
+
+Independent readback confirmed the installed API hashes, nine active services,
+healthy API 0.14.2 and `current` still pointing to
+`local-20261003-memory-compat27-397e979987a6`. Staging did not switch or restart
+services. The new stage command receipt SHA256 is
+`d597aac7059ffb2b05c6ab76ff75699a54c1602dcb28c2ba34dd5ef080c6b720`;
+the fallback preparation receipt is
+`1270de83bded8df5e58f2c445e99390670312ae411b4bedcfbc37621be6f5139`.
+Private copies and the independent readback are in
+`transport-capability-20261003/ubuntu-stage-243e913/remote-stage/`.
 
 ## Recovery and activation boundary
 
@@ -133,8 +172,9 @@ API/worker/configuration cohort, with no unresolved external effects. It never
 restores an old database or strips context from retained jobs. Schema27/28 still
 use the separately qualified compat27 predecessor.
 
-The staged c56 API and c527 worker archives predate this handshake and cannot be
-presented as its deployment. Fresh API/worker artifacts, corresponding approved
-registration metadata, and a coordinated activation including the active iMac
-Swift worker remain required. No production capability, service, database,
-configuration or model was changed by this local slice.
+The earlier c56 API and c527 worker archives predate this handshake and cannot be
+presented as its deployment. The 243e913 artifacts are now prepared on their
+target hosts. Corresponding approved registration metadata and a coordinated
+activation including the active iMac Swift worker remain required. No production
+capability, service binding, database content, configuration or model was changed
+by this preparation.
