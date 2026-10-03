@@ -59,7 +59,7 @@ const RUNTIMES: readonly {
   { value: "llama.cpp", label: "llama.cpp", detail: "Fichier GGUF importé" },
 ];
 
-type BusyAction = "initial" | "import" | "download" | "hugging-face" | "save" | "load" | "generate" | "cancel" | "unload" | "submit";
+type BusyAction = "initial" | "import" | "download" | "save" | "load" | "generate" | "cancel" | "unload" | "submit";
 
 function BackgroundExecutionCard({ status }: { status: BackgroundExecutionStatus | undefined }) {
   let description = "Disponibilité non confirmée. Garde l’app au premier plan pendant la génération.";
@@ -319,6 +319,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const generationVersion = useRef(0);
   const loadVersion = useRef(0);
   const downloadVersion = useRef(0);
+  const pendingHuggingFaceImport = useRef<LocalModel | null>(null);
   const runtimeSelections = useRef<Partial<Record<LocalInferenceRuntime, { modelId: string; revision: string }>>>({});
   const mounted = useRef(true);
   const generationSession = useRef<ReturnType<typeof createLocalGenerationSession> | null>(null);
@@ -326,6 +327,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const statusVersion = useRef(0);
   const [initialized, setInitialized] = useState(false);
   const [nativeBusy, setNativeBusy] = useState(false);
+  const [huggingFaceBusy, setHuggingFaceBusy] = useState(false);
   const [backgroundExecution, setBackgroundExecution] = useState<BackgroundExecutionStatus>();
   const [capabilities, setCapabilities] = useState<LocalInferenceCapabilities | null>(null);
   const [models, setModels] = useState<LocalModel[]>([]);
@@ -364,7 +366,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const validMlxModelId = isHuggingFaceModelId(modelId);
   const immutableRevision = isImmutableHuggingFaceRevision(revision);
   const selectedRuntimeSupported = supportsRuntime(capabilities, runtime);
-  const locked = busy !== null || nativeBusy;
+  const locked = busy !== null || nativeBusy || huggingFaceBusy;
   const canLoad =
     !loaded &&
     selectedRuntimeSupported &&
@@ -380,6 +382,28 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setProposal(null);
     setLocalPlan(null);
   }, []);
+
+  const acceptHuggingFaceImport = useCallback((model: LocalModel) => {
+    setModels((current) => [model, ...current.filter((item) => item.modelId !== model.modelId)]);
+    if (model.purpose === "embeddings" || loadedModel.current) {
+      setNotice(`${model.displayName} est importé. Le modèle de génération sélectionné est conservé.`);
+      return;
+    }
+    setRuntime(model.runtime);
+    setModelId(model.modelId);
+    setRevision("");
+    invalidateProposal();
+    setNotice(`${model.displayName} est téléchargé et sélectionné. Tu peux maintenant charger le modèle.`);
+  }, [invalidateProposal]);
+
+  useEffect(() => {
+    // A remounted downloader can report completion before the initial native
+    // model/settings snapshot resolves. Apply it after that older snapshot.
+    if (!initialized || !pendingHuggingFaceImport.current) return;
+    const model = pendingHuggingFaceImport.current;
+    pendingHuggingFaceImport.current = null;
+    acceptHuggingFaceImport(model);
+  }, [initialized, acceptHuggingFaceImport]);
 
   const observeNativeStatus = useCallback((status: LocalInferenceStatus) => {
     setBackgroundExecution(status.backgroundExecution);
@@ -913,17 +937,10 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         key={runtime}
         runtime={runtime}
         disabled={locked || loaded || !selectedRuntimeSupported}
-        onBusyChange={(active) => setBusy((current) => active ? "hugging-face" : current === "hugging-face" ? null : current)}
+        onBusyChange={setHuggingFaceBusy}
         onImported={(model) => {
-          setModels((current) => [model, ...current.filter((item) => item.modelId !== model.modelId)]);
-          if (model.purpose === "embeddings") {
-            setNotice(`${model.displayName} est importé pour les embeddings. Le modèle de génération sélectionné est conservé.`);
-            return;
-          }
-          setModelId(model.modelId);
-          setRevision("");
-          invalidateProposal();
-          setNotice(`${model.displayName} est téléchargé et sélectionné. Tu peux maintenant charger le modèle.`);
+          if (!initialized) pendingHuggingFaceImport.current = model;
+          else acceptHuggingFaceImport(model);
         }}
       />
 

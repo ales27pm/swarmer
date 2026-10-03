@@ -6,10 +6,13 @@ import { sendChat, submitToolProposal, type Task } from "@/lib/api/client";
 import {
   cancelLocalGeneration,
   cancelLocalModelDownload,
+  cancelHuggingFaceModelDownload,
+  downloadHuggingFaceModel,
   downloadLocalGgufModel,
   generateLocalProposal,
   getLocalInferenceCapabilities,
   getLocalInferenceStatus,
+  getModelDownloadProgress,
   importLocalModel,
   isLocalInferenceAvailable,
   listLocalModels,
@@ -21,6 +24,9 @@ import {
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { readLocalModelSettings, saveLocalModelSettings } from "@/lib/local-model-settings";
 import { applicationApi } from "@/lib/application-api/registry";
+import { resolveHuggingFaceModels } from "@/lib/hugging-face-models";
+
+jest.mock("@/lib/hugging-face-models", () => ({ resolveHuggingFaceModels: jest.fn() }));
 
 jest.mock("@/lib/local-model-settings", () => ({
   ...jest.requireActual<typeof import("@/lib/local-model-settings")>("@/lib/local-model-settings"),
@@ -55,10 +61,13 @@ jest.mock("@/lib/local-inference", () => {
     ...actual,
     cancelLocalGeneration: jest.fn(),
     cancelLocalModelDownload: jest.fn(),
+    cancelHuggingFaceModelDownload: jest.fn(),
+    downloadHuggingFaceModel: jest.fn(),
     downloadLocalGgufModel: jest.fn(),
     generateLocalProposal: jest.fn(),
     getLocalInferenceCapabilities: jest.fn(),
     getLocalInferenceStatus: jest.fn(),
+    getModelDownloadProgress: jest.fn(),
     importLocalModel: jest.fn(),
     isLocalInferenceAvailable: jest.fn(),
     listLocalModels: jest.fn(),
@@ -114,6 +123,12 @@ describe("LocalModelScreen", () => {
     jest.mocked(readLocalModelSettings).mockResolvedValue(null);
     jest.mocked(saveLocalModelSettings).mockResolvedValue();
     jest.mocked(cancelLocalModelDownload).mockResolvedValue();
+    jest.mocked(cancelHuggingFaceModelDownload).mockResolvedValue();
+    jest.mocked(getModelDownloadProgress).mockResolvedValue({ state: "downloading", downloadedBytes: 512, totalBytes: 1024, completedFiles: 0, totalFiles: 1 });
+    jest.mocked(resolveHuggingFaceModels).mockResolvedValue([{
+      id: "hf.gguf", label: "Modèle HF", sizeBytes: 1024,
+      plan: { runtime: "llama.cpp", repoId: "example/model", revision: "a".repeat(40), displayName: "Modèle HF", files: [{ path: "hf.gguf", sizeBytes: 1024, sha256: "b".repeat(64) }] },
+    }]);
     mockIsAvailable.mockReturnValue(true);
     mockCapabilities.mockResolvedValue({
       coreml: true,
@@ -385,6 +400,71 @@ describe("LocalModelScreen", () => {
     expect(screen.queryByText("Late Dolphin")).not.toBeOnTheScreen();
     expect(mockLoad).not.toHaveBeenCalled();
     expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps the preset locked after remount and native initialization while a custom download continues", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof downloadHuggingFaceModel>>) => void;
+    jest.mocked(downloadHuggingFaceModel).mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    mockCapabilities.mockResolvedValue({ coreml: false, mlx: false, llamaCpp: true, platform: "ios" });
+    const first = await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await fireEvent.changeText(screen.getByLabelText("Adresse Hugging Face du modèle"), "example/model");
+    await fireEvent.press(screen.getByText("Rechercher les modèles"));
+    await waitFor(() => expect(screen.getByLabelText("Télécharger Modèle HF")).toBeEnabled());
+    await fireEvent.press(screen.getByLabelText("Télécharger Modèle HF"));
+    expect(downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    await first.unmount();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    expect(screen.getByText("Télécharger Dolphin GGUF · 2,02 Go")).toBeDisabled();
+    expect(screen.getByText("Annuler le téléchargement Hugging Face")).toBeEnabled();
+    await act(async () => complete({ modelId: "local_hf", runtime: "llama.cpp", displayName: "Modèle HF", source: "hf.gguf", sizeBytes: 1024, importedAt: "2026-10-03T00:00:00Z" }));
+    await screen.findByLabelText("Choisir Modèle HF");
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled();
+    expect(downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    expect(downloadLocalGgufModel).not.toHaveBeenCalled();
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
+  it("applies an import completed offscreen after the older initial model snapshot resolves", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof downloadHuggingFaceModel>>) => void;
+    jest.mocked(downloadHuggingFaceModel).mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    const first = await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await fireEvent.press(screen.getByRole("button", { name: "Runtime llama.cpp" }));
+    await fireEvent.changeText(screen.getByLabelText("Adresse Hugging Face du modèle"), "example/model");
+    await fireEvent.press(screen.getByText("Rechercher les modèles"));
+    await waitFor(() => expect(screen.getByLabelText("Télécharger Modèle HF")).toBeEnabled());
+    await fireEvent.press(screen.getByLabelText("Télécharger Modèle HF"));
+    expect(downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    await first.unmount();
+    await act(async () => complete({ modelId: "local_hf_away", runtime: "llama.cpp", displayName: "Modèle HF revenu", source: "hf.gguf", sizeBytes: 1024, importedAt: "2026-10-03T00:00:00Z" }));
+    let finishInitialList!: (models: Awaited<ReturnType<typeof listLocalModels>>) => void;
+    mockListModels.mockReturnValueOnce(new Promise((resolve) => { finishInitialList = resolve; }));
+    await render(<LocalModelScreen />);
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
+    await act(async () => finishInitialList([]));
+    await screen.findByLabelText("Choisir Modèle HF revenu");
+    expect(screen.getByRole("button", { name: "Runtime llama.cpp" })).toBeSelected();
+    expect(screen.getAllByLabelText("Choisir Modèle HF revenu")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeEnabled();
+    expect(downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt or cancel a preset download through the custom Hugging Face form", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof downloadLocalGgufModel>>) => void;
+    jest.mocked(downloadLocalGgufModel).mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    await fireEvent.press(screen.getByRole("button", { name: "Runtime llama.cpp" }));
+    await fireEvent.press(screen.getByText("Télécharger Dolphin GGUF · 2,02 Go"));
+    expect(screen.getByText("Rechercher les modèles")).toBeDisabled();
+    expect(screen.queryByText("Annuler le téléchargement Hugging Face")).toBeNull();
+    expect(getModelDownloadProgress).not.toHaveBeenCalled();
+    expect(cancelHuggingFaceModelDownload).not.toHaveBeenCalled();
+    await act(async () => complete({ modelId: "local_preset", runtime: "llama.cpp", displayName: "Dolphin GGUF", source: "preset.gguf", sizeBytes: 1024, importedAt: "2026-10-03T00:00:00Z" }));
+    expect(downloadHuggingFaceModel).not.toHaveBeenCalled();
   });
 
   it("imports a Core ML folder so tokenizer sidecars remain in the same payload", async () => {

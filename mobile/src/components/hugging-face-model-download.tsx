@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Text, TextInput, View } from "react-native";
 
 import { ActionButton, Card, COLORS, ErrorBanner, SectionTitle } from "@/components/swarm-ui";
@@ -19,6 +19,60 @@ function size(bytes: number): string {
 
 type Progress = Awaited<ReturnType<typeof getModelDownloadProgress>>;
 
+type DownloadSnapshot = {
+  pending: boolean;
+  cancelling: boolean;
+  progress: Progress | null;
+  progressError: string | null;
+  error: string | null;
+  notice: string | null;
+  imported: LocalModel | null;
+};
+type DownloadSession = { snapshot: DownloadSnapshot; delivered: boolean };
+
+// Native downloads outlive a screen. Keep the original promise's receipt (at
+// most one) and let screens observe it, rather than launching/adopting another
+// import from global byte counts, which contain no model or operation identity.
+let downloadSession: DownloadSession | null = null;
+const observers = new Set<() => void>();
+const downloadSnapshot = () => downloadSession?.snapshot ?? null;
+const downloadActive = () => Boolean(downloadSession?.snapshot.pending || downloadSession?.snapshot.cancelling);
+function subscribeDownload(observer: () => void) {
+  observers.add(observer);
+  return () => { observers.delete(observer); };
+}
+function publishDownload(session: DownloadSession, update: Partial<DownloadSnapshot>) {
+  if (downloadSession !== session) return;
+  session.snapshot = { ...session.snapshot, ...update };
+  observers.forEach((observer) => observer());
+}
+function clearFinishedDownload() {
+  if (downloadActive()) return;
+  downloadSession = null;
+  observers.forEach((observer) => observer());
+}
+async function startDownload(choice: HuggingFaceModelChoice) {
+  const session: DownloadSession = { delivered: false, snapshot: {
+    pending: true, cancelling: false, progress: null, progressError: null,
+    error: null, notice: null, imported: null,
+  } };
+  downloadSession = session;
+  publishDownload(session, {});
+  try {
+    const imported = await downloadHuggingFaceModel(choice.plan);
+    if (imported.runtime !== choice.plan.runtime) throw new Error("Le format importé ne correspond pas au moteur demandé.");
+    publishDownload(session, { imported, error: null, notice: imported.purpose === "embeddings"
+      ? `${imported.displayName} est téléchargé et vérifié. C’est un modèle d’embeddings, pas un modèle de génération.`
+      : `${imported.displayName} est téléchargé et vérifié. Tu peux maintenant le charger.` });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    publishDownload(session, /cancel|annul/i.test(message)
+      ? { notice: "Téléchargement annulé." } : { error: message });
+  } finally {
+    publishDownload(session, { pending: false, progressError: null });
+  }
+}
+
 /** Resolve a public repository before starting a user-selected, pinned download. */
 export function HuggingFaceModelDownload({ runtime, disabled, onBusyChange, onImported }: {
   runtime: LocalInferenceRuntime;
@@ -28,13 +82,15 @@ export function HuggingFaceModelDownload({ runtime, disabled, onBusyChange, onIm
 }) {
   const [address, setAddress] = useState("");
   const [choices, setChoices] = useState<HuggingFaceModelChoice[]>([]);
-  const [phase, setPhase] = useState<"idle" | "resolving" | "downloading">("idle");
-  const [progress, setProgress] = useState<Progress | null>(null);
+  const [resolving, setResolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  const download = useSyncExternalStore(subscribeDownload, downloadSnapshot, downloadSnapshot);
+  const downloading = Boolean(download?.pending || download?.cancelling);
+  const phase = resolving ? "resolving" : downloading ? "downloading" : "idle";
+  const progress = download?.progress;
+  const cancelling = download?.cancelling ?? false;
   const live = useRef(true);
-  const operation = useRef<"resolving" | "downloading" | null>(null);
   const resolver = useRef<AbortController | null>(null);
   const callbacks = useRef({ onBusyChange, onImported });
   callbacks.current = { onBusyChange, onImported };
@@ -44,14 +100,29 @@ export function HuggingFaceModelDownload({ runtime, disabled, onBusyChange, onIm
     return () => {
       live.current = false;
       resolver.current?.abort();
-      if (operation.current) callbacks.current.onBusyChange(false);
+      callbacks.current.onBusyChange(false);
       // A native download owns its own lifetime and commits only a complete import.
       // Navigating away must not cancel a later operation owned by another screen.
     };
   }, []);
 
   useEffect(() => {
-    if (phase !== "downloading") return;
+    callbacks.current.onBusyChange(resolving || downloading);
+  }, [resolving, downloading]);
+
+  useEffect(() => {
+    const session = downloadSession;
+    if (!session || downloading || session.delivered || !session.snapshot.imported) return;
+    // Consume before notifying: a callback can synchronously change the runtime
+    // (and remount this component) or another screen can observe the same result.
+    session.delivered = true;
+    setChoices([]);
+    callbacks.current.onImported(session.snapshot.imported);
+  }, [download, downloading]);
+
+  useEffect(() => {
+    const session = downloadSession;
+    if (!downloading || !session) return;
     let active = true;
     let reading = false;
     const refresh = async () => {
@@ -59,82 +130,63 @@ export function HuggingFaceModelDownload({ runtime, disabled, onBusyChange, onIm
       reading = true;
       try {
         const next = await getModelDownloadProgress();
-        if (active) setProgress(next);
+        if (active && session.snapshot.pending) publishDownload(session, { progress: next, progressError: null });
       } catch {
-        // Progress is optional feedback; the actual download promise is authoritative.
+        // Losing progress is not completion. Keep the original promise and
+        // cancellation available; a later read can recover without a new import.
+        if (active && session.snapshot.pending) publishDownload(session, {
+          progressError: "Le suivi du téléchargement est temporairement indisponible. Le téléchargement n’est pas relancé.",
+        });
       } finally { reading = false; }
     };
     void refresh();
     const timer = setInterval(() => void refresh(), 500);
     return () => { active = false; clearInterval(timer); };
-  }, [phase]);
-
-  function finish() {
-    operation.current = null;
-    if (!live.current) return;
-    setPhase("idle");
-    setCancelling(false);
-    callbacks.current.onBusyChange(false);
-  }
+  }, [downloading]);
 
   async function resolve() {
-    if (disabled || operation.current || !address.trim()) return;
-    operation.current = "resolving";
+    if (disabled || resolver.current || downloadActive() || !address.trim()) return;
     const controller = new AbortController();
     resolver.current = controller;
-    setPhase("resolving");
+    clearFinishedDownload();
+    setResolving(true);
     setError(null); setNotice(null); setChoices([]);
-    callbacks.current.onBusyChange(true);
     try {
       const found = await resolveHuggingFaceModels(address.trim(), runtime, controller.signal);
-      if (live.current && !controller.signal.aborted) setChoices(found);
+      if (live.current && resolver.current === controller && !controller.signal.aborted) setChoices(found);
     } catch (cause) {
-      if (live.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Impossible de lire ce dépôt Hugging Face.");
+      if (live.current && resolver.current === controller && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Impossible de lire ce dépôt Hugging Face.");
     } finally {
-      resolver.current = null;
-      finish();
+      if (resolver.current === controller) {
+        resolver.current = null;
+        if (live.current) setResolving(false);
+      }
     }
   }
 
-  async function download(choice: HuggingFaceModelChoice) {
-    if (disabled || operation.current) return;
-    operation.current = "downloading";
-    setPhase("downloading"); setProgress(null); setCancelling(false);
+  function downloadChoice(choice: HuggingFaceModelChoice) {
+    if (disabled || resolver.current || downloadActive()) return;
     setError(null); setNotice(null);
-    callbacks.current.onBusyChange(true);
-    try {
-      const imported = await downloadHuggingFaceModel(choice.plan);
-      if (!live.current) return;
-      if (imported.runtime !== runtime) throw new Error("Le format importé ne correspond pas au moteur sélectionné.");
-      callbacks.current.onImported(imported);
-      setChoices([]);
-      setNotice(imported.purpose === "embeddings"
-        ? `${imported.displayName} est téléchargé et vérifié. C’est un modèle d’embeddings, pas un modèle de génération.`
-        : `${imported.displayName} est téléchargé et vérifié. Tu peux maintenant le charger.`);
-    } catch (cause) {
-      if (!live.current) return;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (/cancel|annul/i.test(message)) setNotice("Téléchargement annulé.");
-      else setError(message);
-    } finally { finish(); }
+    void startDownload(choice);
   }
 
   async function cancel() {
-    if (operation.current === "resolving") {
+    if (resolver.current) {
       resolver.current?.abort();
       setNotice("Recherche annulée.");
       return;
     }
-    if (operation.current !== "downloading" || cancelling) return;
-    setCancelling(true);
+    const session = downloadSession;
+    if (!session?.snapshot.pending || session.snapshot.cancelling) return;
+    publishDownload(session, { cancelling: true, error: null });
     try {
       await cancelHuggingFaceModelDownload();
-      if (live.current) setNotice("Annulation demandée…");
+      if (session.snapshot.pending) publishDownload(session, { notice: "Annulation demandée…" });
     } catch (cause) {
-      if (live.current) {
-        setCancelling(false);
-        setError(cause instanceof Error ? cause.message : "Impossible d’annuler le téléchargement.");
-      }
+      if (session.snapshot.pending) publishDownload(session, { error: cause instanceof Error ? cause.message : "Impossible d’annuler le téléchargement." });
+    } finally {
+      // Do not admit a successor until this cancellation call has settled.
+      publishDownload(session, { cancelling: false });
     }
   }
 
@@ -177,11 +229,11 @@ export function HuggingFaceModelDownload({ runtime, disabled, onBusyChange, onIm
       {!active ? choices.map((choice) => <View key={choice.id} style={{ gap: 6, paddingVertical: 8 }}>
         <Text selectable style={{ color: COLORS.text, fontWeight: "700" }}>{choice.label}</Text>
         <Text style={{ color: COLORS.muted }}>{size(choice.sizeBytes)} · {choice.plan.files.length} fichiers</Text>
-        <ActionButton accessibilityLabel={`Télécharger ${choice.label}`} label="Télécharger cette variante" disabled={disabled} onPress={() => void download(choice)} />
+        <ActionButton accessibilityLabel={`Télécharger ${choice.label}`} label="Télécharger cette variante" disabled={disabled} onPress={() => downloadChoice(choice)} />
       </View>) : null}
       {choices.length > 0 && !active ? <Text style={{ color: COLORS.subtle, lineHeight: 19 }}>Format détecté. La compatibilité avec ton iPhone sera confirmée au chargement. Aucun modèle ne sera chargé automatiquement.</Text> : null}
-      {notice ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.accent }}>{notice}</Text> : null}
-      {error ? <ErrorBanner message={error} /> : null}
+      {notice || download?.notice ? <Text accessibilityLiveRegion="polite" style={{ color: COLORS.accent }}>{notice ?? download?.notice}</Text> : null}
+      {error || download?.error || download?.progressError ? <ErrorBanner message={error ?? download?.error ?? download?.progressError ?? null} /> : null}
     </Card>
   </>;
 }

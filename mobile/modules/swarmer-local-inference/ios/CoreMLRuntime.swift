@@ -501,6 +501,7 @@ enum CoreMLFixtureProbe {
     "dolphin-attention-int4-perchannel-cache28",
     "dolphin-attention-int4-perchannel-cache28-two-blocks",
     "dolphin-attention-int4-perchannel-cache28-slot1",
+    "dolphin-attention-int4-perchannel-cache28-two-blocks-independent",
   ]
   static let timeoutSeconds: UInt64 = 90
   private static let maximumElements = 1_000_000
