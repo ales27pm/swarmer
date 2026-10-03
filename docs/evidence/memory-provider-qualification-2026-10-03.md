@@ -3,7 +3,9 @@
 Follow-up: the [92-call reviewer comparison](memory-reviewer-comparison-2026-10-03.md)
 completed with both false acceptance and false rejection. Adding exact quoted
 issues did not improve faithful-case acceptance and is not promoted. The original
-failed trial below remains unchanged evidence.
+failed trial below remains unchanged evidence. The subsequent
+[70-call clarification trial](memory-reviewer-clarification-2026-10-03.md)
+also failed its semantic gate: one altered condition was accepted by each arm.
 
 ## Scope and source identity
 

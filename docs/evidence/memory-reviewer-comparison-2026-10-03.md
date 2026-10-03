@@ -1,5 +1,9 @@
 # Translation reviewer comparison — 3 October 2026
 
+Follow-up: the [70-call clarification trial](memory-reviewer-clarification-2026-10-03.md)
+completed with fewer false rejections but the same reachable false acceptance.
+Its predeclared semantic gate failed; neither proposed prompt is promoted.
+
 The actual private comparison completed all **92 planned inference calls**, with
 no retries, missing observations or unresolved HTTP outcomes. Its owned GPU
 reservation was cleared. Neither reviewer is qualified by this result, and the
@@ -85,7 +89,7 @@ human evaluation and does not silently rewrite the frozen scoring result.
 ## Decision and next experiment
 
 Do not promote the quoted-issue schema or relax the production acceptance gate.
-The next bounded hypothesis is a compact clarification of Boolean prerequisites,
+The subsequent bounded hypothesis was a compact clarification of Boolean prerequisites,
 permission versus factual uncertainty, and faithfully retained English technical
 spans, using the existing strict response schema. The known corpus stays a
 regression set. Any evaluation of a changed prompt must retain these results and
