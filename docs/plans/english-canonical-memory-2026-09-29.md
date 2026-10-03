@@ -81,6 +81,15 @@ Optional `MONGARS_MEMORY_TRANSLATOR_REVISION` and
 remain unknown, and a configured string is not proof of the served weights.
 `MONGARS_MEMORY_NORMALIZATION_TIMEOUT_SECONDS` bounds one operation to at most
 60 seconds. No global planner model is silently substituted for either role.
+`MONGARS_MEMORY_NORMALIZATION_REASONING_EFFORT=none` explicitly disables reasoning
+when the configured compatible provider supports that value. Unset or blank
+preserves the provider default; other values are rejected. This setting applies
+to both normalization and French presentation, including their review requests,
+and participates in their signatures. Each request includes the compact generation
+schema in its system prompt as well as `response_format`; this versioned prompt
+policy also changes the signature and counts toward the existing request byte
+budget. Source content remains untrusted user data. Truncated responses remain
+invalid and never trigger an automatic retry.
 
 The API retains its successful memory-item response format. Unavailable
 normalization returns 503, invalid or uncertain translation returns 422, and a

@@ -99,6 +99,68 @@ missing `redis.asyncio` typing/package support in `message_board.py`, and the
 `model_profile` Literal override in `media_contracts.py`. These are not represented
 as a passing global type check.
 
+### Completed full run and immutable package
+
+The subsequent full run finished with **3,681 passed, 11 skipped and one
+deprecation warning in 736.50 seconds**. It ran as the ordinary macOS operator,
+with pytest's cache provider disabled, from the source collected at `b012fe0`.
+Its log is `full-suite-final.log` in the same private qualification directory.
+The later Swift termination-escalation change in `7d7e0a2` was validated by its
+24 non-compilation Swift tests; it was not in that already-collected full run.
+The root cause and native regression evidence are recorded separately in
+[Swift process cleanup](swift-process-cleanup-2026-10-03.md).
+
+An isolated wheel built from Git `b012fe0` contains exactly the 122 expected
+application files. Source, wheel and a separate target installation have
+identical file contents. Wheel SHA256:
+`3cb8702f5fbfa4dee2eab8ee79118402f2648f826740e4c10278e973a6b84c1b`.
+The installed copy initializes a disposable schema-28 database with valid
+foreign keys and accepts all five memory activity roles. It was not deployed.
+
+### First real provider trial
+
+A private immutable harness was transferred to Ubuntu and exercised the exact
+`b012fe0` application source in a disposable database. Its synthetic Ubuntu
+check passed six calls; the live trial then made **one actual model request**
+and stopped on rejection, without a retry. The configured model was
+`swarmer-research-qwen35:9b-8k-6488c96fa5fa`, with its served manifest digest
+verified before inference. No production task, goal, memory or image was created.
+
+The first translation returned HTTP 200 after **45.518 seconds**, but used all
+2,048 completion tokens in the reasoning field, returned empty content and
+`finish_reason=length`. The strict parser correctly reported
+`invalid_provider_response`; no translation or review was accepted. The full
+HTTP response was received and the trial cleared only its own GPU marker;
+there were no unresolved requests. This is evidence of an execution-setting
+problem, not a successful semantic translation.
+
+Ollama's [v0.32.3 compatibility implementation](https://github.com/ollama/ollama/blob/v0.32.3/openai/openai.go#L591-L618)
+maps `reasoning_effort: "none"` to disabled thinking. Its
+[structured-output guidance](https://docs.ollama.com/capabilities/structured-outputs)
+also recommends putting the output schema in the prompt. The provider already
+supported an explicit reasoning setting, but the tested application startup did
+not expose it for memory. Increasing the budget or accepting the reasoning as
+the result would not address this failure.
+
+Private receipt: `provider-candidate/live-01/receipt.json` under the qualification
+directory. The original failure receipt and response remain unchanged.
+
+### Correction after the real rejection
+
+`MONGARS_MEMORY_NORMALIZATION_REASONING_EFFORT=none` now reaches both memory
+providers through startup. The default remains unset; no production setting
+has been changed. Each request also includes its compact JSON schema in the
+trusted system message, while source data stays in the user message. This
+prompt policy is versioned in the provider signatures. The existing byte limit
+includes the additional schema and strict parsing still rejects a truncated
+response; no retry or token-limit increase was introduced.
+
+Before the fix, 14 new regression cases failed. After it, **292 affected tests
+passed in 27.53 seconds**, including 21 new cases. The changed source passes
+mypy, Ruff and formatting checks, and an independent review found no blocker.
+These focused results follow the full run above; the full run does not include
+this later correction. The corrected real-provider trial is still to run.
+
 ## Remaining proof
 
 - No server deployment, production canonical-memory activation or historical

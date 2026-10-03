@@ -38,11 +38,14 @@ French presentation of qualified results; that presentation is checked against
 the English source revision and hashes and is never written as another memory.
 The mobile memory screen can reveal the stored English text.
 
-Strategy retrieval has a tested optional seam for this path, currently not wired in app startup pending complete model-call budgeting and admission. It limits candidates
-to normal-sensitivity general/global items and the exact linked project. Legacy
+The 3 October candidate wires strategy retrieval to this path when canonical
+English memory is explicitly enabled. Actual model calls use goal-scoped
+admission, budgets and revision fencing; candidates remain limited to
+normal-sensitivity general/global items and the exact linked project. Legacy
 episodes and direct ContextBuilder reads are not silently reclassified or
-translated. Model calls for translation still require qualification against the
-global scheduling/admission and budget machinery before production activation.
+translated. The [integration evidence](../evidence/goal-memory-admission-2026-10-03.md)
+distinguishes passing local checks from real-provider qualification and the
+schema/client rollout still required before production activation.
 
 The independent conceptual module is a deterministic contract foundation. Until
 its SQL links, API and retrieval path are integrated, it is not a working graph

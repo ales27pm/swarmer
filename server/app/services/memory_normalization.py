@@ -33,6 +33,10 @@ MAX_RESPONSE_BYTES = 64_000
 MAX_REQUEST_BYTES = 32_000
 POLICY_VERSION = "english-memory-v1"
 GENERATION_SCHEMA_POLICY = "runtime-string-bounds-v1"
+GENERATION_PROMPT_POLICY = "system-json-schema-v1"
+GENERATION_SCHEMA_PROMPT = (
+    "\nReturn only one complete JSON object conforming to this JSON Schema:\n"
+)
 _HASH = re.compile(r"^[a-f0-9]{64}$")
 _TOKEN = re.compile(r"__MNL_[a-f0-9]{16}_[0-9]{4}__")
 _Response = TypeVar("_Response", bound=BaseModel)
@@ -170,6 +174,8 @@ _POLICY = {
     "max_source_bytes": MAX_SOURCE_BYTES,
     "max_canonical_bytes": MAX_CANONICAL_BYTES,
     "generation_schema_policy": GENERATION_SCHEMA_POLICY,
+    "generation_prompt_policy": GENERATION_PROMPT_POLICY,
+    "generation_schema_prompt": GENERATION_SCHEMA_PROMPT,
 }
 
 
@@ -473,13 +479,17 @@ class OpenAIMemoryNormalizationProvider:
             or not MAX_REQUEST_BYTES <= request_budget_bytes <= 96_000
         ):
             raise MemoryNormalizationError("invalid", "invalid_request_budget")
+        generation_schema = _generation_schema(schema)
         body: dict[str, Any] = {
             "model": model,
             "stream": False,
             "temperature": 0,
             "max_tokens": self.max_output_tokens,
             "messages": [
-                {"role": "system", "content": prompt},
+                {
+                    "role": "system",
+                    "content": prompt + GENERATION_SCHEMA_PROMPT + _json(generation_schema),
+                },
                 {"role": "user", "content": _json(data)},
             ],
             "response_format": {
@@ -487,7 +497,7 @@ class OpenAIMemoryNormalizationProvider:
                 "json_schema": {
                     "name": schema.__name__,
                     "strict": True,
-                    "schema": _generation_schema(schema),
+                    "schema": generation_schema,
                 },
             },
         }

@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     memory_reviewer_model: ModelIdentifier | None = None
     memory_reviewer_revision: str | None = Field(default=None, min_length=1, max_length=200)
     memory_normalization_timeout_seconds: float = Field(default=45, ge=1, le=60)
+    memory_normalization_reasoning_effort: Literal["none"] | None = None
     project_embedding_base_url: str | None = None
     project_embedding_model: str | None = None
     project_embedding_model_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -133,9 +134,11 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("planner_reasoning_effort", mode="before")
+    @field_validator(
+        "planner_reasoning_effort", "memory_normalization_reasoning_effort", mode="before"
+    )
     @classmethod
-    def unset_blank_planner_reasoning_effort(cls, value: object) -> object:
+    def unset_blank_reasoning_effort(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value

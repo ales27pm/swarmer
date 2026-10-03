@@ -376,6 +376,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             reviewer_model=settings.memory_reviewer_model,
             reviewer_revision=settings.memory_reviewer_revision,
             timeout_seconds=settings.memory_normalization_timeout_seconds,
+            reasoning_effort=settings.memory_normalization_reasoning_effort,
             model_admission=direct_model_slot,
         )
         if settings.memory_canonical_language == "en"
@@ -389,6 +390,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             reviewer_model=settings.memory_reviewer_model,
             reviewer_revision=settings.memory_reviewer_revision,
             timeout_seconds=settings.memory_normalization_timeout_seconds,
+            reasoning_effort=settings.memory_normalization_reasoning_effort,
             model_admission=direct_model_slot,
         )
         if settings.memory_canonical_language == "en"
