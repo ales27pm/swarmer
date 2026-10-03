@@ -1,5 +1,10 @@
 # Actual local FR/EN provider qualification — 3 October 2026
 
+Follow-up: the [92-call reviewer comparison](memory-reviewer-comparison-2026-10-03.md)
+completed with both false acceptance and false rejection. Adding exact quoted
+issues did not improve faithful-case acceptance and is not promoted. The original
+failed trial below remains unchanged evidence.
+
 ## Scope and source identity
 
 This trial ran the memory implementation from commit
