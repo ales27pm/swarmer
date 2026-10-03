@@ -1,0 +1,35 @@
+{
+  "predecessor": "/home/ales27pm/.local/share/chroma-studio/releases/20261002-7de1a188dc5d",
+  "candidate": "/home/ales27pm/.local/share/chroma-studio/releases/20261003-gpu-lock-bea3d32c73ec",
+  "release_sha256": "bea3d32c73ecc2fb42160b9810e016338f3e6a19d35661dbf6449928abe9ad7f",
+  "changed": ["studio.py", "runner.py"],
+  "import_check": true,
+  "frozen_idle_check": {
+    "active_records": 0,
+    "partial_records": 0,
+    "running_containers": 0
+  },
+  "idle_cutover_method": "freeze_then_recheck_then_stop_idle_process",
+  "deployed_at_utc": "2026-10-03T04:20:31.122302+00:00",
+  "service": "active",
+  "main_pid": 730394,
+  "private_api": {"active": false, "ready": true},
+  "independent_api": {"active": false, "ready": true},
+  "protected_config_unchanged": true,
+  "rollback": false,
+  "file_sha256": {
+    "studio.py": "b6d78be283736f4d3afb2e7b7c4b210dcb588872c8e6fb99c011b5837c8a558d",
+    "runner.py": "7abe8648b54a5892d94721796b17d62b67e1bb8f4b3d0dbcc0d7c7da70d1eacd"
+  },
+  "private_bind": "100.125.44.127:8765",
+  "transport": "HTTP inside encrypted Tailscale network; existing Serve/Funnel unchanged",
+  "shared_gpu_lock": "/home/ales27pm/.local/state/swarmer-gpu/image-generation.lock",
+  "generation_test_performed": false,
+  "user_work_interrupted": false,
+  "validation": {
+    "backend_tests_passed": 41,
+    "ruff_passed": true,
+    "git_diff_check_passed": true
+  },
+  "scope": "Studio-only immutable code cutover. Worker deployment and image generation proof are separate. No prompts or images were inspected during this deployment."
+}

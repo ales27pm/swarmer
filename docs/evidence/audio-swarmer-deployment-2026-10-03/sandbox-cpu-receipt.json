@@ -1,0 +1,47 @@
+{
+  "release": "/home/ales27pm/.local/share/swarmer-audio-worker/releases/media-audio-dba819494b6ad405254d",
+  "profile": "/home/ales27pm/.local/share/swarmer-audio-worker/models/kokoro-fr-cpu-v1/profile.json",
+  "cpu_probe": {
+    "torch": "2.8.0+cpu",
+    "cuda_build": null,
+    "external_errno": 101
+  },
+  "results": [
+    {
+      "case": "standard",
+      "outcome": "completed",
+      "elapsed_seconds": 8.357,
+      "metadata": {
+        "size_bytes": 313244,
+        "sha256": "cde38f420c91f006e6e3412e9467e64de1e9eee3337a30fb99d9e3b9a996be70",
+        "media_type": "audio/wav",
+        "width": null,
+        "height": null,
+        "duration_ms": 6525,
+        "sample_rate": 24000,
+        "channels": 1
+      },
+      "output": "/home/ales27pm/.local/state/swarmer-qualifications/audio-deploy-20261003/standard/output.wav"
+    },
+    {
+      "case": "duration_limit",
+      "outcome": "failed",
+      "error": "duration_limit",
+      "elapsed_seconds": 8.093,
+      "partial_output_present": false
+    }
+  ],
+  "sandbox": "bubblewrap offline",
+  "source_hashes": {
+    "workers/media-worker/media_worker.py": "5d9dd74535b1186acd51020d3e2f8a8b7ea07948e24e3acbd4bd1679ef8f5f93",
+    "workers/media-worker/media_runtime.py": "775fa9ebd7f423ccd1d0bafcde94f2415b06c4700af34c7217ba2d51f36834f3",
+    "workers/media-worker/media_contract.py": "1ebce9d216916db9a00cbceaa44e5d645c6c38537852262e039ead2e2fd541d2",
+    "workers/media-worker/render.py": "1850e6691324e521a78279527c031e4f0f15e8395ded414d004238f1e42863d5",
+    "workers/media-worker/requirements-audio-cpu.txt": "3f833014856bab2f7d284b5dfcacd591bcdc89b4f80f7a0512f5d074340f470b",
+    "workers/media-worker/agent-card-audio.json": "39f2ff769ae8309a43737ab47feb63136c07327184cfb467b74f49e08acb2172",
+    "workers/media-worker/.env.example": "621b2222ce3ffd06d8a5fb9555ecdaa9abed702f12130a61dc739524ba4a6026",
+    "workers/media-worker/README.md": "9a5eb2c2b775a16585601b81efebaf3817639529f7c69bdab656e3652f834ee6",
+    "workers/file-worker/file_worker.py": "8189e5b5979e22d61daf48db6863e032513be2ef95025f735e18e1a226969371",
+    "configs/media/kokoro-fr-cpu-v1.json": "ae50c592bd1ec68f0d5148a790f3442f44efc7347a47a69b90a883ff028744d9"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "verified_at": "2026-10-03T08:58:11.644321+00:00",
+  "compute": "cpu",
+  "goal_id": "goal_83c3cc2168984eca9f8993eea19c2326",
+  "artifact_id": "media_54bfd337db2823388f5ff093936e511309d2c1b9",
+  "job_id": "job_396daad23562402da1d5200ef9b4a24b",
+  "sha256": "3976e3e2dbbeae8fcfd37f1211d596da37bc130a69e769c750b96cae56aaded4",
+  "size_bytes": 313244,
+  "duration_ms": 6525,
+  "sample_rate": 24000,
+  "channels": 1,
+  "unauthenticated_http": 401,
+  "cache_control": "private, no-store"
+}

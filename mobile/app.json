@@ -52,7 +52,16 @@
           "photosPermission": "monGARS ouvre le sélecteur de photos uniquement après votre autorisation explicite."
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": false,

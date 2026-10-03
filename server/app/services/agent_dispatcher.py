@@ -22,6 +22,8 @@ from app.services.distributed_state import (
     TaskStateMachine,
 )
 from app.services.maintenance_lease import MaintenanceLeaseGuard
+from app.services.media_contracts import MEDIA_FAILURE_CODES, MEDIA_SKILLS
+from app.services.media_store import MediaConflict, media_root, verify_media_result
 from app.services.message_board import MessageBoard
 from app.services.model_resource_admission import (
     active_local_model_work_locked,
@@ -932,6 +934,15 @@ class AgentDispatcher:
                 raise AgentDispatchConflict(
                     "job lease is stale, expired, or owned by another agent"
                 )
+            if row["required_skill"] in MEDIA_SKILLS and status == "completed":
+                try:
+                    verify_media_result(media_root(self.db_path), dict(row), result)
+                except MediaConflict as exc:
+                    raise AgentDispatchConflict(str(exc)) from exc
+            if row["required_skill"] in MEDIA_SKILLS and status == "failed":
+                if result is not None or error not in MEDIA_FAILURE_CODES:
+                    raise AgentDispatchConflict("invalid media failure receipt")
+                public_error = error
             result_limit = 4_000_000 if row["required_skill"] == "code.build_project" else 1_000_000
             if result_json is not None and len(result_json.encode("utf-8")) > result_limit:
                 raise AgentDispatchConflict("job result is too large")

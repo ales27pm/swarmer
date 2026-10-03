@@ -1,0 +1,9 @@
+# Candidate only: resolve into an isolated Python 3.12 Linux environment and qualify CUDA.
+# Torch's CUDA wheel must come exclusively from the administrator-selected PyTorch index.
+torch==2.8.0
+diffusers==0.35.2
+accelerate==1.10.1
+transformers==4.51.3
+safetensors==0.8.0
+numpy==2.2.6
+Pillow==12.3.0

@@ -10,6 +10,7 @@ from typing import Any, Literal
 import yaml
 
 from app.services.agent_card import SPECIALIST_SKILLS, SUPPORTED_AGENT_SKILLS
+from app.services.media_contracts import MEDIA_SKILLS
 from app.services.swift_contracts import SWIFT_SKILLS
 
 
@@ -176,7 +177,7 @@ class PermissionPolicy:
             }
         missing_worker_skills = SUPPORTED_AGENT_SKILLS - set(effective_worker_rules)
         extra_worker_skills = set(effective_worker_rules) - SUPPORTED_AGENT_SKILLS
-        if missing_worker_skills - SPECIALIST_SKILLS or extra_worker_skills:
+        if missing_worker_skills - SPECIALIST_SKILLS - MEDIA_SKILLS or extra_worker_skills:
             raise PermissionPolicyError(
                 "worker_skill_rules must define exactly the supported remote skills; "
                 f"missing={sorted(missing_worker_skills)}, extra={sorted(extra_worker_skills)}"

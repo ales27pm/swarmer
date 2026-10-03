@@ -1,0 +1,35 @@
+{
+  "observed_at_utc": "2026-10-03T02:49:16.791530+00:00",
+  "health": {
+    "http_status": 200,
+    "body": {
+      "status": "ok",
+      "service": "mongars-control-plane",
+      "version": "0.14.2"
+    }
+  },
+  "services": {
+    "swarmer-control-plane": "active",
+    "swarmer-code-review-worker": "active",
+    "swarmer-file-worker": "active",
+    "swarmer-project-worker": "active",
+    "swarmer-research-worker": "active",
+    "swarmer-text-worker": "active"
+  },
+  "gpu": {
+    "exit_code": 0,
+    "stdout": "360, 26, 46",
+    "stderr": ""
+  },
+  "gpu_compute_apps": {
+    "exit_code": 0,
+    "stdout": "7692, /usr/libexec/gnome-remote-desktop-daemon, 97 MiB",
+    "stderr": ""
+  },
+  "chroma_containers": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "ollama_resident_model_count": 0
+}

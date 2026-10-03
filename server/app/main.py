@@ -108,6 +108,7 @@ from app.services.maintenance_lease import (
     MaintenanceLeaseRunner,
     MaintenanceLeaseService,
 )
+from app.services.media_routes import install_media_routes
 from app.services.memory_inspection import (
     MemoryInspectionCursorError,
     MemoryInspectionEvidenceError,
@@ -872,6 +873,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if principal is None:
             raise HTTPException(status_code=401, detail="invalid agent credential")
         return principal
+
+    install_media_routes(app, settings.db_path, require_device, require_agent)
 
     async def require_pairing_operator(
         request: Request,

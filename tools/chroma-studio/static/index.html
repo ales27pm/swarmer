@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Chroma Studio</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div><h1>Chroma Studio</h1><p>Génération locale</p></div>
+      <div class="connection" role="status"><span class="dot" id="connection-dot"></span><span id="connection">Connexion…</span></div>
+    </header>
+    <div class="workspace">
+      <section class="panel compose" aria-labelledby="compose-title">
+        <h2 id="compose-title">Décris ton image</h2>
+        <form id="generate-form">
+          <div class="label-row"><label for="prompt">Prompt</label><span class="count" id="prompt-count">0 / 2 000</span></div>
+          <textarea id="prompt" name="prompt" required maxlength="2000" rows="5" placeholder="Une théière rouge sur une table bleue, lumière douce, photo de studio."></textarea>
+          <details class="settings" open>
+            <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>Réglages</summary>
+            <div class="settings-body">
+              <div class="field-row"><label for="steps">Étapes</label><input id="steps" name="steps" type="number" min="1" max="40" value="40" required></div>
+              <div class="field-row"><label for="seed">Graine</label><input id="seed" name="seed" type="number" min="0" max="2147483647" placeholder="Aléatoire" value="42"></div>
+              <div class="field-row fixed-size"><span>Taille de l’image</span><span>512 × 512</span></div>
+              <label class="negative-label" for="negative">À éviter <span>(facultatif)</span></label>
+              <textarea id="negative" name="negative" maxlength="1000" rows="2" placeholder="Flou, texte, filigrane…"></textarea>
+            </div>
+          </details>
+          <div id="form-error" class="error" role="alert" hidden></div>
+          <button id="generate" class="primary" type="submit" disabled>Générer l’image</button>
+          <p class="hint">Environ 4 minutes avec les réglages par défaut.</p>
+          <p class="hint" id="availability" role="status" hidden></p>
+        </form>
+      </section>
+      <section class="panel output" aria-labelledby="output-title">
+        <div class="output-heading"><h2 id="output-title">Votre image</h2><span class="output-caption" id="output-caption">Exemple local</span></div>
+        <div class="preview" id="preview">
+          <img id="result-image" src="/static/example.png" alt="Exemple Chroma : une théière rouge sur une table bleue" width="512" height="512">
+          <div class="waiting" id="waiting" hidden>
+            <svg class="waiting-icon" viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="6" width="36" height="36" rx="7"/><circle cx="17" cy="17" r="3"/><path d="m7 34 11-11 7 7 6-6 10 10"/></svg>
+            <strong id="phase">Préparation…</strong><span id="elapsed">0:00</span>
+            <progress id="progress" max="1" aria-label="Progression de la génération"></progress>
+            <span class="progress-detail" id="progress-detail">L’image apparaîtra ici.</span>
+          </div>
+        </div>
+        <div class="output-actions">
+          <a id="download" class="secondary" href="/static/example.png" download="chroma-exemple.png"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 15v5h14v-5"/></svg>Télécharger</a>
+          <button id="cancel" class="cancel" type="button" hidden>Annuler la génération</button>
+        </div>
+        <p class="result-detail" id="result-detail" aria-live="polite"></p>
+      </section>
+    </div>
+    <section class="panel history" aria-labelledby="history-title">
+      <h2 id="history-title">Images récentes</h2>
+      <p id="history-empty" class="empty-history">Vos images terminées resteront disponibles ici.</p>
+      <div id="history-list" class="history-list"></div>
+    </section>
+    <footer>Chroma1-HD · Calcul sur votre serveur · Accès privé</footer>
+  </main>
+</body>
+</html>

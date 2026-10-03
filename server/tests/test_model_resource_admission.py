@@ -56,14 +56,22 @@ async def busy(path: Path, now: datetime = NOW) -> bool:
         return await active_local_model_work_locked(db, now=now)
 
 
-@pytest.mark.parametrize("skill", ["writing.draft", "code.build_project", "code.generate_python"])
+@pytest.mark.parametrize(
+    "skill", ["writing.draft", "code.build_project", "code.generate_python", "image.generate"]
+)
 def test_generation_skills_share_the_resource(skill: str) -> None:
     assert requires_local_model_resource(skill)
 
 
 @pytest.mark.parametrize(
     "skill",
-    ["research.collect", "research.query", "workspace.read_text", "code.review_python"],
+    [
+        "research.collect",
+        "research.query",
+        "workspace.read_text",
+        "code.review_python",
+        "audio.synthesize",
+    ],
 )
 def test_non_generation_jobs_remain_parallel(skill: str) -> None:
     assert not requires_local_model_resource(skill)
@@ -77,6 +85,7 @@ def test_non_generation_jobs_remain_parallel(skill: str) -> None:
         ("job", "writing.draft", "running"),
         ("job", "code.build_project", "running"),
         ("job", "code.generate_python", "running"),
+        ("job", "image.generate", "running"),
     ],
 )
 async def test_live_local_generation_blocks_other_reservations(
@@ -104,6 +113,7 @@ async def test_live_local_generation_blocks_other_reservations(
         ("job", "writing.draft", "completed"),
         ("job", "writing.draft", "cancelled"),
         ("job", "research.collect", "running"),
+        ("job", "audio.synthesize", "running"),
         ("job", "workspace.read_text", "running"),
     ],
 )

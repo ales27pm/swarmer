@@ -1,0 +1,11 @@
+{
+  "old_sha256": "e14eae2f904d447cc1a407d7f371fbd209e7ef74bcabfdbb71bbdbbca9a68303",
+  "new_sha256": "f61067745b0eb2dc5f61208d6a2eb319bf830bc3baad5bf5ea695fe46b3837d8",
+  "old_digest": "sha256:9f96a9c90e176aeaa1b023250d13f077dbc10a0e546c0659f1680bc7f98c3584",
+  "new_digest": "sha256:c9c650a369c18ec44e5da67d79c3497475c938150b6ead9b4f0d65c755c3bb56",
+  "old_count": 21,
+  "new_count": 22,
+  "only_added": [
+    "audio.synthesize"
+  ]
+}

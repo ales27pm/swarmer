@@ -28,6 +28,8 @@ NEW_CALENDAR = {
     "iphone.calendar.reminder.update",
 }
 NEW_SPECIALISTS = {
+    "image.generate",
+    "audio.synthesize",
     "database.sqlite.inspect",
     "database.sqlite.query",
     "database.sqlite.create",

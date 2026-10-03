@@ -1,0 +1,14 @@
+{
+  "id": "job_0bbbeb2d86d443aa8d647504ff90459e",
+  "status": "completed",
+  "required_skill": "image.generate",
+  "claimed_by": "agt_5bb1857921b0427cbfb3a620a432002b",
+  "claimed_at": "2026-10-03T04:27:47.342877+00:00",
+  "completed_at": "2026-10-03T04:31:50.946212+00:00",
+  "created_at": "2026-10-03T04:27:45.215058+00:00",
+  "attempt_count": 1,
+  "error": null,
+  "last_failure_reason": null,
+  "elapsed_seconds": 243.603335,
+  "queue_seconds": 2.127819
+}

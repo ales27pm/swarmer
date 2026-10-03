@@ -13,6 +13,7 @@ from app.services.agent_card import (
     PROJECT_BUILD_SKILLS,
     SUPPORTED_AGENT_SKILLS,
 )
+from app.services.media_contracts import MEDIA_SKILLS, media_argument_schema
 from app.services.model_wire_schema import (
     decode_research_query_nodes,
     encode_model_wire_response,
@@ -196,12 +197,14 @@ def worker_node_array_schema(
         collection["required"] = [*collection["required"], "worker_arguments"]
         general_nodes.append(collection)
 
-    for skill in sorted(skills & SPECIALIST_SKILLS):
+    for skill in sorted(skills & (SPECIALIST_SKILLS | MEDIA_SKILLS)):
         specialist = deepcopy(node_schema)
         specialist["properties"]["node_type"] = {"type": "string", "const": "worker"}
         specialist["properties"]["00_required_skill"] = {"type": "string", "const": skill}
         specialist["properties"]["worker_arguments"] = model_wire_schema(
-            specialist_argument_schema(skill)
+            media_argument_schema(skill)
+            if skill in MEDIA_SKILLS
+            else specialist_argument_schema(skill)
         )
         specialist["required"] = [*specialist["required"], "worker_arguments"]
         general_nodes.append(specialist)
@@ -221,6 +224,7 @@ def worker_node_array_schema(
         - CODE_GENERATION_SKILLS
         - {"research.query", "research.collect", "workspace.read_text", "writing.draft"}
         - SPECIALIST_SKILLS
+        - MEDIA_SKILLS
     ):
         worker = deepcopy(node_schema)
         worker["properties"]["node_type"] = {"type": "string", "const": "worker"}
@@ -296,6 +300,13 @@ Choose the capability matching the user's requested outcome before writing its p
 For database.sqlite.*, code.swift.*, crm.command and documents.extract, worker_arguments
 must contain the operation's bounded JSON arguments from supplied source information.
 Never guess a workspace path, source hash, record ID, calendar ID or permission.
+image.generate and audio.synthesize require explicit bounded worker_arguments.
+For image.generate, model_profile identifies the installed image model: chroma1-hd-q4
+requires 512 by 512 and exactly 40 steps; sdxl-lightning-4step requires exactly 4 steps.
+Omitting model_profile means legacy SDXL, never an automatic model switch. Use only
+an image profile advertised by the available image worker; never infer it from GPU size.
+Image generation returns one PNG; speech synthesis reads the exact French text with
+fr-FR / ff_siwis and a strict duration limit. Never claim generation from text alone.
 research.collect also requires explicit worker_arguments.
 For workspace.read_text, worker_arguments must contain exactly {"path": "relative/file"}.
 Use an explicit user-supplied path or a path from the relevant workspace inventory.

@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ScreenShell } from "@/components/screen-shell";
 import { GoalCodeProposalReview } from "@/components/goal-code-proposal";
 import { GoalWritingDraft } from "@/components/goal-writing-draft";
+import { GoalMediaArtifacts } from "@/components/goal-media-artifacts";
 import { GoalConversation } from "@/components/goal-conversation";
 import { GoalProjectReview } from "@/components/goal-project-review";
 import { RecordedFailure } from "@/components/recorded-failure";
@@ -817,6 +818,8 @@ function GoalWorkspace({ controller, navigation }: { controller: GoalDetailContr
     </View>
     <View style={panel("Résultats")} accessibilityElementsHidden={tab !== "Résultats"} importantForAccessibility={tab !== "Résultats" ? "no-hide-descendants" : "auto"}>
       <GoalDeliverables controller={controller} visible={tab === "Résultats"} />
+      <GoalMediaArtifacts key={`media:${goal.id}`} goalId={goal.id} nodes={nodes}
+        enabled={controller.source === "authoritative"} visible={tab === "Résultats"} />
       <ProjectRequirementEvidence state={evidence} disabled={!controller.online || Boolean(controller.busy)} />
       <ProjectGraphEvidence graph={graph.graph} stale={graph.stale} showCriteria={evidence.view === null} />
       {controller.nodes.some((node) => node.required_skill === "code.build_project") ? <GoalProjectReview

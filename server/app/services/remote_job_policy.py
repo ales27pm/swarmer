@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from app.models import CAPABILITY_ARGUMENT_MODELS
 from app.services.agent_capsule import validate_agent_capsule
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.media_contracts import MEDIA_SKILLS, media_payload
 from app.services.project_contracts import PROJECT_SKILL, ProjectPayload
 from app.services.research_contracts import ResearchCollectPayload
 from app.services.specialist_contracts import (
@@ -205,6 +206,11 @@ def validate_remote_job(required_skill: str, payload: object) -> dict[str, Any]:
         raise RemoteJobPolicyError("remote job requires an unsupported or privileged skill")
     if not isinstance(payload, dict):
         raise RemoteJobPolicyError("remote job payload must be an object")
+    if required_skill in MEDIA_SKILLS:
+        try:
+            return media_payload(required_skill, payload)
+        except (ValueError, TypeError) as exc:
+            raise RemoteJobPolicyError("media arguments invalid") from exc
     if required_skill in SQLITE_SKILLS | PERSONAL_SKILLS | SWIFT_SKILLS:
         try:
             return validate_specialist_payload(required_skill, payload)

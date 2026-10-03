@@ -1,0 +1,29 @@
+{
+  "audio_enabled": false,
+  "changed_tables": [
+    "goal_contexts",
+    "worker_skill_policy_state"
+  ],
+  "contexts": {
+    "allowed_changed_columns": [
+      "id",
+      "created_at"
+    ],
+    "appended_identical_contexts": 1,
+    "backup_rows_retained": 8527,
+    "baseline_rows_retained": 8527,
+    "current_fingerprint": {
+      "count": 8528,
+      "sha256": "489fcd15e5715e6126e88ea552209af4238c3d2d6fda5513906d446b07388e36"
+    },
+    "goal_id": "goal_41f6bcd97eb549bc9290e0ba62557f1f"
+  },
+  "device_identity_preserved": true,
+  "enabled_skill": "image.generate",
+  "epoch_after": 8,
+  "epoch_before": 7,
+  "new_policy_file_sha256": "e14eae2f904d447cc1a407d7f371fbd209e7ef74bcabfdbb71bbdbbca9a68303",
+  "previous_rules_preserved": true,
+  "protected_fingerprints": 52,
+  "rules_digest": "sha256:9f96a9c90e176aeaa1b023250d13f077dbc10a0e546c0659f1680bc7f98c3584"
+}

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.services.code_proposal import validate_code_proposal_result
 from app.services.feedback_dataset import SafeDatasetValue, sanitize_dataset_value
+from app.services.media_contracts import MEDIA_SKILLS, valid_media_result
 from app.services.project_contracts import PROJECT_SKILL, ProjectResult
 from app.services.research_contracts import valid_research_collect_result
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
@@ -371,6 +372,8 @@ def validate_worker_evidence(required_skill: object, value: object) -> bool:
 
     if not isinstance(required_skill, str) or not isinstance(value, dict):
         return False
+    if required_skill in MEDIA_SKILLS:
+        return valid_media_result(required_skill, value)
     if required_skill in SWIFT_SKILLS:
         return valid_swift_receipt(required_skill, value)
     if required_skill == WRITING_SKILL:

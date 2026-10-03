@@ -1,0 +1,19 @@
+[Unit]
+Description=Private Chroma image studio
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/chroma-studio/current
+EnvironmentFile=%h/.config/chroma-studio/studio.env
+ExecStart=%h/.local/share/chroma-studio/venv/bin/python -m uvicorn studio:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=65
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

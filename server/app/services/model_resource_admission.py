@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import aiosqlite
 
 LOCAL_MODEL_WORKER_SKILLS = frozenset(
-    {"writing.draft", "code.generate_python", "code.build_project"}
+    {"writing.draft", "code.generate_python", "code.build_project", "image.generate"}
 )
 
 
@@ -44,7 +44,7 @@ async def active_local_model_work_locked(db: aiosqlite.Connection, *, now: datet
                   AND lease_expires_at>?
                 UNION ALL
                 SELECT 1 FROM agent_jobs
-                WHERE required_skill IN ('writing.draft','code.generate_python','code.build_project')
+                WHERE required_skill IN ('writing.draft','code.generate_python','code.build_project','image.generate')
                   AND status IN ('claimed','running') AND lease_expires_at>?
             )
             """,

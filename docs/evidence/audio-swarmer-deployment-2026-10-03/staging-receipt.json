@@ -1,0 +1,29 @@
+{
+  "release": "/home/ales27pm/.local/share/swarmer-audio-worker/releases/media-audio-dba819494b6ad405254d",
+  "archive_sha256": "2998d0a4fb8bb9a56aa393d9a09d0cac2fa0809b55cd147cdd4a9f3e3c1437c1",
+  "venv": "/home/ales27pm/.local/share/swarmer-audio-worker/venv",
+  "python_freeze_sha256": "3f833014856bab2f7d284b5dfcacd591bcdc89b4f80f7a0512f5d074340f470b",
+  "package_count": 91,
+  "profile": "/home/ales27pm/.local/share/swarmer-audio-worker/models/kokoro-fr-cpu-v1/profile.json",
+  "profile_sha256": "ae50c592bd1ec68f0d5148a790f3442f44efc7347a47a69b90a883ff028744d9",
+  "files": [
+    {
+      "path": "config.json",
+      "size_bytes": 2351,
+      "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f"
+    },
+    {
+      "path": "kokoro-v1_0.pth",
+      "size_bytes": 327212226,
+      "sha256": "496dba118d1a58f5f3db2efc88dbdc216e0483fc89fe6e47ee1f2c53f18ad1e4"
+    },
+    {
+      "path": "voices/ff_siwis.pt",
+      "size_bytes": 523425,
+      "sha256": "8073bf2d2c4b9543a90f2f0fd2144de4ed157e2d4b79ddeb0d5123066171fbc9"
+    }
+  ],
+  "unit": "/home/ales27pm/.config/systemd/user/swarmer-audio-worker.service",
+  "unit_sha256": "2ec60c09a71ba6df16cd589434746674b386a47e5a56c39d2f44857e33733675",
+  "started": false
+}

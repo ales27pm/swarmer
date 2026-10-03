@@ -7,7 +7,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.agent_card import MEDIA_SKILLS, SUPPORTED_AGENT_SKILLS
 from app.services.evaluator_provider import UbuntuEvaluatorProvider
 from app.services.planner_provider import UbuntuSwarmPlannerProvider
 from app.services.specialist_contracts import SPECIALIST_SKILLS
@@ -38,7 +38,10 @@ def schema_and_wire(consumer: str, node: dict[str, Any]) -> tuple[dict[str, Any]
     [
         None,
         *sorted(
-            SUPPORTED_AGENT_SKILLS - SPECIALIST_SKILLS - {"research.collect", "workspace.read_text"}
+            SUPPORTED_AGENT_SKILLS
+            - SPECIALIST_SKILLS
+            - MEDIA_SKILLS
+            - {"research.collect", "workspace.read_text"}
         ),
     ],
 )
@@ -67,6 +70,16 @@ def test_server_derived_worker_arguments_cannot_be_invented_by_the_grammar(
 @pytest.mark.parametrize(
     ("skill", "arguments"),
     [
+        ("image.generate", {"prompt": "blue", "width": 512, "height": 512, "steps": 4, "seed": 42}),
+        (
+            "audio.synthesize",
+            {
+                "text": "Bonjour",
+                "language": "fr-FR",
+                "voice": "ff_siwis",
+                "max_duration_seconds": 30,
+            },
+        ),
         ("database.sqlite.inspect", {"path": "notes.sqlite"}),
         ("database.sqlite.query", {"path": "notes.sqlite", "sql": "SELECT 1"}),
         ("database.sqlite.backup", {"path": "notes.sqlite", "destination": "notes-backup.sqlite"}),

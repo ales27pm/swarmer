@@ -1,0 +1,153 @@
+{
+  "runs": [
+    {
+      "run": "first-512",
+      "elapsed_seconds": 262.223,
+      "exit_code": 0,
+      "stop_reason": null,
+      "stop_latency_seconds": null,
+      "oom_killed": false,
+      "output_exists": true,
+      "output_bytes": 352411,
+      "output_sha256": "3beb76f45ac9a58137450633012582726f662e8b2ca9e59dbb33ebe9a97b1f69",
+      "peak_container_memory_bytes": 12884901888,
+      "direct_diffusion_weights": false,
+      "sampled_peak_gpu_mib": 6207.0,
+      "sampled_peak_gpu_temperature_c": 81.0,
+      "sampled_min_host_available_kib": 7526612,
+      "sampled_peak_host_swap_used_kib": 1920304,
+      "last_sample_memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "3883",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      },
+      "phase_seconds": {
+        "get_learned_condition completed": 56.53,
+        "sampling completed": 178.7,
+        "decode_first_stage completed": 24.29
+      },
+      "image": {
+        "size": [
+          512,
+          512
+        ],
+        "mode": "RGB",
+        "stddev": [
+          40.0817341044088,
+          64.54771348927336,
+          64.88860559584805
+        ],
+        "extrema": [
+          [
+            12,
+            255
+          ],
+          [
+            0,
+            238
+          ],
+          [
+            0,
+            255
+          ]
+        ],
+        "pixel_sha256": "90b04ccd9c4e59fc006862972eb972e6efca62cfe268a3b211c9886a10f2cb60"
+      }
+    },
+    {
+      "run": "cancel-512",
+      "elapsed_seconds": 97.052,
+      "exit_code": 143,
+      "stop_reason": "intentional_cancellation",
+      "stop_latency_seconds": 0.323,
+      "oom_killed": false,
+      "output_exists": false,
+      "output_bytes": null,
+      "output_sha256": null,
+      "peak_container_memory_bytes": 10655232000,
+      "direct_diffusion_weights": true,
+      "sampled_peak_gpu_mib": 6151.0,
+      "sampled_peak_gpu_temperature_c": 71.0,
+      "sampled_min_host_available_kib": 14666364,
+      "sampled_peak_host_swap_used_kib": 2081304,
+      "last_sample_memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      },
+      "phase_seconds": {
+        "get_learned_condition completed": 53.89
+      }
+    },
+    {
+      "run": "recovery-direct-512",
+      "elapsed_seconds": 247.92,
+      "exit_code": 0,
+      "stop_reason": null,
+      "stop_latency_seconds": null,
+      "oom_killed": false,
+      "output_exists": true,
+      "output_bytes": 352411,
+      "output_sha256": "3beb76f45ac9a58137450633012582726f662e8b2ca9e59dbb33ebe9a97b1f69",
+      "peak_container_memory_bytes": 7972270080,
+      "direct_diffusion_weights": true,
+      "sampled_peak_gpu_mib": 6177.0,
+      "sampled_peak_gpu_temperature_c": 80.0,
+      "sampled_min_host_available_kib": 14311400,
+      "sampled_peak_host_swap_used_kib": 3155336,
+      "last_sample_memory_events": {
+        "low": "0",
+        "high": "0",
+        "max": "0",
+        "oom": "0",
+        "oom_kill": "0",
+        "oom_group_kill": "0",
+        "sock_throttled": "0"
+      },
+      "phase_seconds": {
+        "get_learned_condition completed": 54.73,
+        "sampling completed": 164.86,
+        "decode_first_stage completed": 25.75
+      },
+      "image": {
+        "size": [
+          512,
+          512
+        ],
+        "mode": "RGB",
+        "stddev": [
+          40.0817341044088,
+          64.54771348927336,
+          64.88860559584805
+        ],
+        "extrema": [
+          [
+            12,
+            255
+          ],
+          [
+            0,
+            238
+          ],
+          [
+            0,
+            255
+          ]
+        ],
+        "pixel_sha256": "90b04ccd9c4e59fc006862972eb972e6efca62cfe268a3b211c9886a10f2cb60"
+      }
+    }
+  ],
+  "application_api_test": false,
+  "production_deployment": false,
+  "baseline_and_recovery_pixels_identical": true,
+  "visual_review": "One red teapot on pale blue table with cream background; no visible lettering/watermark. Surface has glossy highlights despite matte requested."
+}

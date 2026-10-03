@@ -1,0 +1,20 @@
+{
+  "release": "20261002-7de1a188dc5d",
+  "predecessor": "20261002-f491e420363b",
+  "archive": "/tmp/20261002-7de1a188dc5d-chroma-studio.tar.gz",
+  "archive_sha256": "240136f8d61bb21bcd23e56cb40378174be7f0f13d9aa99f598959196fce0551",
+  "files": {
+    "studio.py": "1573f808a70245a686983a40a7cfd1f9451d5d5aaa21323b41ba4f9921ff7fd6",
+    "runner.py": "8d7ebbf9ea463775cb0ecf6d1194f6b5c54ecd7319b427c8b0693f490676b6b0",
+    "requirements.txt": "bb38aa925f14d156852a3553f56167f31e7f2db6a6799130b38bb47c7eaca16e",
+    "chroma-studio.service": "c341a7ff2b07df306f0d68bfaae984de08fdccdd2e7e84eac651770a79d5967f",
+    "README.md": "a9c6fb2bfde3ac318b8af2718878d47add1ae52948207776e0fe77fd588f2bac",
+    "static/app.js": "aa5dbb0f447f43cb01a002ea7d0dff14a916762699cad0c2e4f73f9cf5b0bfef",
+    "static/example.png": "3beb76f45ac9a58137450633012582726f662e8b2ca9e59dbb33ebe9a97b1f69",
+    "static/index.html": "884f320b3a6a76008455ea99d551c3018248fd3d0234561ec1176f46c1b95afa",
+    "static/style.css": "d6d1917983ad645785ce6e0c2614c6299325ee74611063ac4416b3190e43bb91"
+  },
+  "source_scope": "tools/chroma-studio only",
+  "studio_tests": 36,
+  "reason": "Immediate native progress and actual network deployment documentation"
+}

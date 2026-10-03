@@ -1,0 +1,17 @@
+{
+  "verified_at": "2026-10-03T04:31:58.298322+00:00",
+  "gpu": {
+    "memory_used_mib": 6998,
+    "utilization_percent": 25
+  },
+  "goal_id": "goal_ac7b7f6b2c49412b868a81dd26f61bed",
+  "artifact_id": "media_335891b3464149eac7d7361633595ed1e419e1a1",
+  "job_id": "job_0bbbeb2d86d443aa8d647504ff90459e",
+  "sha256": "77c3de68e3e6eedbffe93032eb0f35c8d59f28f193907963d55a0289f6910bf9",
+  "size_bytes": 407853,
+  "width": 512,
+  "height": 512,
+  "unauthenticated_http": 401,
+  "cache_control": "private, no-store",
+  "saved_image": "/home/ales27pm/.local/state/swarmer-qualifications/chroma-deploy-20261003/qualified-image.png"
+}

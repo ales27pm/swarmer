@@ -1,0 +1,119 @@
+{
+  "goal": {
+    "id": "goal_ac7b7f6b2c49412b868a81dd26f61bed",
+    "status": "budget_exhausted",
+    "autonomy_profile": "manual",
+    "max_steps": 1,
+    "step_count": 1,
+    "max_replans": 0,
+    "replan_count": 0,
+    "max_model_calls": 1,
+    "model_call_count": 1,
+    "current_phase": "auto_continuation_pending",
+    "evaluator_status": null,
+    "failure_reason": "goal model call budget exhausted",
+    "completed_at": "2026-10-03T04:31:51.227901+00:00",
+    "conversation_revision": 0,
+    "pending_message_revision": 0
+  },
+  "nodes": [
+    {
+      "id": "node_67e17ffdbd084fd4a07205488f19437e",
+      "status": "completed",
+      "worker_job_id": "job_0bbbeb2d86d443aa8d647504ff90459e",
+      "error_summary": null
+    }
+  ],
+  "jobs": [
+    {
+      "id": "job_0bbbeb2d86d443aa8d647504ff90459e",
+      "status": "completed",
+      "attempt_count": 1,
+      "error": null,
+      "last_failure_reason": null
+    }
+  ],
+  "active_jobs": 0,
+  "model_calls": [],
+  "continuation_audit": {
+    "linked_goals": [
+      {
+        "goal_run_id": "goal_ac7b7f6b2c49412b868a81dd26f61bed",
+        "parent_goal_id": null,
+        "status": "budget_exhausted",
+        "current_phase": "auto_continuation_pending",
+        "failure_reason": "goal model call budget exhausted",
+        "model_call_count": 1,
+        "max_model_calls": 1
+      },
+      {
+        "goal_run_id": "goal_d3aefd096f594e56b4aef43549c617ed",
+        "parent_goal_id": "goal_ac7b7f6b2c49412b868a81dd26f61bed",
+        "status": "budget_exhausted",
+        "current_phase": "auto_continuation_pending",
+        "failure_reason": "goal model call budget exhausted",
+        "model_call_count": 1,
+        "max_model_calls": 1
+      },
+      {
+        "goal_run_id": "goal_3e62501e4aa84412bebd58e8466b5980",
+        "parent_goal_id": "goal_d3aefd096f594e56b4aef43549c617ed",
+        "status": "budget_exhausted",
+        "current_phase": "auto_continuation_pending",
+        "failure_reason": "goal model call budget exhausted",
+        "model_call_count": 1,
+        "max_model_calls": 1
+      },
+      {
+        "goal_run_id": "goal_6c18d7d55f7a4359b13e3fa933d07c12",
+        "parent_goal_id": "goal_3e62501e4aa84412bebd58e8466b5980",
+        "status": "budget_exhausted",
+        "current_phase": "auto_continuation_stopped",
+        "failure_reason": "automatic continuation stopped after three runs without completed work",
+        "model_call_count": 1,
+        "max_model_calls": 1
+      }
+    ],
+    "automatic_message_markers": [],
+    "nodes_jobs": [
+      {
+        "goal_run_id": "goal_ac7b7f6b2c49412b868a81dd26f61bed",
+        "node_id": "node_67e17ffdbd084fd4a07205488f19437e",
+        "node_status": "completed",
+        "job_id": "job_0bbbeb2d86d443aa8d647504ff90459e",
+        "job_status": "completed"
+      },
+      {
+        "goal_run_id": "goal_3e62501e4aa84412bebd58e8466b5980",
+        "node_id": "node_e62e6d7a5cf742759058c6e83043c06c",
+        "node_status": "cancelled",
+        "job_id": null,
+        "job_status": null
+      },
+      {
+        "goal_run_id": "goal_6c18d7d55f7a4359b13e3fa933d07c12",
+        "node_id": "node_f45a8c98c507414f8e0e988454f74d41",
+        "node_status": "cancelled",
+        "job_id": null,
+        "job_status": null
+      }
+    ],
+    "model_calls": [
+      {
+        "goal_run_id": "goal_d3aefd096f594e56b4aef43549c617ed",
+        "role": "planner",
+        "status": "failed"
+      },
+      {
+        "goal_run_id": "goal_3e62501e4aa84412bebd58e8466b5980",
+        "role": "planner",
+        "status": "completed"
+      },
+      {
+        "goal_run_id": "goal_6c18d7d55f7a4359b13e3fa933d07c12",
+        "role": "planner",
+        "status": "completed"
+      }
+    ]
+  }
+}

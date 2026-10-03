@@ -1,0 +1,49 @@
+{
+  "goal": {
+    "id": "goal_6763fd9cd11141fb953647b55e5e436e",
+    "status": "completed",
+    "planner_source": "manual",
+    "autonomy_profile": "assisted",
+    "max_steps": 20,
+    "max_model_calls": 100,
+    "max_replans": 10,
+    "max_runtime_seconds": 86400,
+    "step_count": 1,
+    "model_call_count": 3,
+    "replan_count": 0,
+    "evaluator_status": "done",
+    "evaluator_summary": "The task has been completed successfully. An image was generated using the specified parameters (Chroma1-HD Q4, 40 steps, seed 42, 512x512 pixels) and accepted by the server. The PNG artifact was validated and stored in the project results as required.",
+    "created_at": "2026-10-03T08:32:41.079537+00:00",
+    "started_at": "2026-10-03T08:32:41.412419+00:00",
+    "completed_at": "2026-10-03T08:38:28.934284+00:00",
+    "failure_reason": null
+  },
+  "nodes": [
+    {
+      "id": "node_9ec3e2b1eecb43c28eeecf78a7ee4c8b",
+      "status": "completed",
+      "required_skill": "image.generate",
+      "worker_job_id": "job_9bc19a7d9a234b2b99d6bc3b2d928ea4",
+      "completed_at": "2026-10-03T08:37:09.401304+00:00",
+      "error_summary": null
+    }
+  ],
+  "artifact": {
+    "verified_at": "2026-10-03T08:39:25.062090+00:00",
+    "gpu": {
+      "memory_used_mib": 6714,
+      "utilization_percent": 29
+    },
+    "goal_id": "goal_6763fd9cd11141fb953647b55e5e436e",
+    "artifact_id": "media_aba768abfb5be9be71f69a3a137c4bf361a1a0d9",
+    "job_id": "job_9bc19a7d9a234b2b99d6bc3b2d928ea4",
+    "sha256": "77c3de68e3e6eedbffe93032eb0f35c8d59f28f193907963d55a0289f6910bf9",
+    "size_bytes": 407853,
+    "width": 512,
+    "height": 512,
+    "unauthenticated_http": 401,
+    "cache_control": "private, no-store"
+  },
+  "initial_plan_supplied": true,
+  "physical_iphone_test": false
+}

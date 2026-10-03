@@ -19,6 +19,7 @@ from app.services.agent_card import (
     SUPPORTED_AGENT_SKILLS,
     WRITING_SKILLS,
 )
+from app.services.media_contracts import MEDIA_SKILLS
 from app.services.permission_policy import (
     PermissionPolicy,
     PermissionPolicyError,
@@ -130,6 +131,7 @@ class WorkerSkillPolicyStore:
             - WRITING_SKILLS
             - SWIFT_SKILLS
             - SPECIALIST_SKILLS
+            - MEDIA_SKILLS
             or extra
         ):
             raise WorkerSkillPolicyStateError(

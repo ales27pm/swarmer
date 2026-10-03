@@ -1,0 +1,22 @@
+{
+  "api_source_archive": {
+    "filename": "source.tar",
+    "sha256": "0d23f123a64a4711bf281d756eaaef18b6c96af996176076a4654b32bd18855b",
+    "bytes": 4925440
+  },
+  "api_wheel": {
+    "filename": "mongars_control_plane-0.1.0-py3-none-any.whl",
+    "sha256": "39ebc00822c492af3118d92320c603709bf1ee2e4fc2337fc552bf10c7d73296",
+    "bytes": 538856
+  },
+  "worker_archive": {
+    "filename": "media-chroma-ee3d039ac6215a5cd2d7.tar.gz",
+    "sha256": "b0d39b0a6288ef8a787b8d7a6e14d0ecc0ff9e17bf6b25e11c698d7588e7f1e1",
+    "bytes": 35093
+  },
+  "qualification_client": {
+    "filename": "chroma_deploy_qualification.py",
+    "sha256": "7856360cbe463a43c6bcbbb1c41987e499502133fd23860a9cec2e41db7574c9",
+    "bytes": 11261
+  }
+}

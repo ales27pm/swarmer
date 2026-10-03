@@ -134,6 +134,18 @@ capability_rules:
 # executable allowlist for dispatch. Only the two original workspace reads are
 # safe for automatic lease redistribution.
 worker_skill_rules:
+  audio.synthesize:
+    id: allow-local-french-speech
+    description: Synthesize bounded French speech from explicit text into a private goal artifact using the installed CPU model.
+    decision: allow
+    risk: low
+    auto_redistribute: false
+  image.generate:
+    id: allow-local-image-generation
+    description: Generate a bounded private image with an installed local model under shared GPU admission.
+    decision: allow
+    risk: low
+    auto_redistribute: false
   code.swift.build:
     id: allow-code-swift-build
     description: Build or test a source-hash-bound operator-approved checkout on the configured Mac worker.

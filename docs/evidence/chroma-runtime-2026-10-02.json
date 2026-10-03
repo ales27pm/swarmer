@@ -1,0 +1,98 @@
+{
+  "source_commit": "3f8527a46c54ecf4cb4ed6003da8e8982283c73c",
+  "ggml_commit": "89c4413f5da6fb20cc796f16033d37f129be81fd",
+  "cuda_architecture": "75",
+  "build_image": "sha256:c55ec3428181057adc0a92a8cf844cb7d3aa029dc2c154bc8baca5fc6c7ede5f",
+  "probes": {
+    "ldd": {
+      "code": 0,
+      "output_file": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/ldd.txt"
+    },
+    "version": {
+      "code": 0,
+      "output_file": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/version.txt"
+    },
+    "help": {
+      "code": 0,
+      "output_file": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/help.txt"
+    },
+    "devices": {
+      "code": 0,
+      "output_file": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/devices.txt"
+    }
+  },
+  "gpu_test": {
+    "code": 0,
+    "passed": true,
+    "expected_cases": 2,
+    "output_file": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/gpu-test.txt",
+    "output": "Testing 2 devices\n\nBackend 1/2: CUDA0\n  Device description: NVIDIA GeForce RTX 2070\n  Device memory: 7783 MB (7292 MB free)\n\n  MUL_MAT(type_a=f16,type_b=f32,m=1,n=64,k=256,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0): \u001b[1;32mOK\u001b[0m\n  MUL_MAT(type_a=q4_K,type_b=f32,m=1,n=64,k=256,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1,src_overlap=0): \u001b[1;32mOK\u001b[0m\n  2/2 tests passed\n  Backend CUDA0: \u001b[1;32mOK\u001b[0m\nBackend 2/2: CPU\n  Skipping\n2/2 backends passed\n\u001b[1;32mOK\u001b[0m\nggml_cuda_init: found 1 CUDA devices (Total VRAM: 7783 MiB):\n  Device 0: NVIDIA GeForce RTX 2070, compute capability 7.5, VMM: yes, VRAM: 7783 MiB\n"
+  },
+  "installed_binary": "/home/ales27pm/.local/share/swarmer/chroma-runtime/3f8527a-sm75/bin/sd-cli",
+  "sha256": "3e3f105d52840e06dd133c862abd5c6895c2d974abf92e9487b963b5decfa6cf",
+  "bytes": 893247080,
+  "command": "/home/ales27pm/.local/bin/sd-cli",
+  "observed_at_utc": "2026-10-03T02:23:10.382260+00:00",
+  "fresh_ssh_checks": {
+    "cmake": {
+      "path": "/home/ales27pm/.local/bin/cmake",
+      "code": 0,
+      "output": "cmake version 4.4.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+    },
+    "ninja": {
+      "path": "/home/ales27pm/.local/bin/ninja",
+      "code": 0,
+      "output": "1.11.1.git.kitware.jobserver-1"
+    },
+    "sd_cli": {
+      "path": "/home/ales27pm/.local/bin/sd-cli",
+      "code": 0,
+      "output": "stable-diffusion.cpp version unknown, commit 3f8527a"
+    },
+    "gpu_after": {
+      "path": "/usr/bin/nvidia-smi",
+      "code": 0,
+      "output": "NVIDIA GeForce RTX 2070, 8192 MiB, 390 MiB, 595.91.07"
+    }
+  },
+  "build_command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "swarmer-chroma-build-3f8527a",
+    "--network",
+    "none",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--user",
+    "1000:1000",
+    "--cpus",
+    "4",
+    "--memory",
+    "12g",
+    "--memory-swap",
+    "12g",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=1g",
+    "--mount",
+    "type=bind,src=/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/source,dst=/src,readonly",
+    "--mount",
+    "type=bind,src=/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/build,dst=/build",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:c55ec3428181057adc0a92a8cf844cb7d3aa029dc2c154bc8baca5fc6c7ede5f",
+    "-c",
+    "set -e; cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 -DSD_CUDA=ON -DGGML_CUDA_NCCL=OFF -DSD_SERVER_BUILD_FRONTEND=OFF -DGGML_STATIC=ON -DSD_BUILD_SHARED_LIBS=OFF -DSD_BUILD_SHARED_GGML_LIB=OFF -DSD_USE_UPSTREAM_GGML=OFF -DSD_WEBP=OFF -DSD_WEBM=OFF; cmake --build /build --target sd-cli --parallel 2"
+  ],
+  "path_change": {
+    "path_block_added": true,
+    "original_sha256": "0a767b936112208db99f2b1e7c8c009e4aa6a59e315fde562272ce1c06f62396",
+    "updated_sha256": "c7da9c9622e82d368b0f055a8dce374e16c8f07377a1ebec3773b3039098becc",
+    "backup": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-3f8527a-sm75/bashrc-before-path",
+    "existing_cmake_preserved": true
+  }
+}

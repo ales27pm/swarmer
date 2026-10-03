@@ -1,0 +1,33 @@
+{
+  "goal": {
+    "id": "goal_83c3cc2168984eca9f8993eea19c2326",
+    "status": "completed",
+    "planner_source": "manual",
+    "autonomy_profile": "assisted",
+    "max_steps": 20,
+    "max_model_calls": 100,
+    "max_replans": 10,
+    "max_runtime_seconds": 86400,
+    "step_count": 1,
+    "model_call_count": 3,
+    "replan_count": 0,
+    "evaluator_status": "done",
+    "evaluator_summary": "The task was to synthesize a French text into a WAV file using the ff_siwis voice and verify it meets specific criteria (PCM16 mono at 24000 Hz, max 30 seconds). A result was produced that matches these requirements: the artifact is a WAV file with 1 channel, sample rate of 24000 Hz, duration of 6.525 seconds, and size of 313244 bytes. The content matches the provided text exactly.",
+    "created_at": "2026-10-03T08:57:24.986418+00:00",
+    "started_at": "2026-10-03T08:57:28.561271+00:00",
+    "completed_at": "2026-10-03T08:58:40.231807+00:00",
+    "failure_reason": null
+  },
+  "nodes": [
+    {
+      "id": "node_46af0f1fa2714927b1aa1d485e223f79",
+      "status": "completed",
+      "required_skill": "audio.synthesize",
+      "worker_job_id": "job_396daad23562402da1d5200ef9b4a24b",
+      "completed_at": "2026-10-03T08:57:40.350310+00:00",
+      "error_summary": null
+    }
+  ],
+  "initial_plan_supplied": true,
+  "physical_iphone_test": false
+}

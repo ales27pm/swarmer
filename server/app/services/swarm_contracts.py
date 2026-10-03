@@ -391,13 +391,17 @@ class SwarmPlanNodeProposal(BaseModel):
 
     @model_validator(mode="after")
     def validate_role_shape(self) -> SwarmPlanNodeProposal:
+        from app.services.media_contracts import MEDIA_SKILLS
         from app.services.specialist_contracts import SPECIALIST_SKILLS
 
         if self.retry_of_node_id is not None and (
             self.node_type is not PlanNodeType.WORKER or self.required_skill != "writing.draft"
         ):
             raise ValueError("only writing repairs may reference a previous attempt")
-        if self.required_skill in SPECIALIST_SKILLS and self.worker_arguments is None:
+        if (
+            self.required_skill in (SPECIALIST_SKILLS | MEDIA_SKILLS)
+            and self.worker_arguments is None
+        ):
             raise ValueError("specialist workers require explicit operation arguments")
         if self.required_skill == "research.collect" and self.worker_arguments is None:
             raise ValueError("source collection requires explicit bounded queries")
@@ -406,6 +410,8 @@ class SwarmPlanNodeProposal(BaseModel):
 
             if self.node_type is not PlanNodeType.WORKER or self.required_skill is None:
                 raise ValueError("only worker nodes accept operation arguments")
+            if self.required_skill in MEDIA_SKILLS and "context" in self.worker_arguments:
+                raise ValueError("media context is server supplied")
             self.worker_arguments = validate_remote_job(self.required_skill, self.worker_arguments)
         if set(self.dependencies) & set(self.optional_dependencies):
             raise ValueError("a dependency cannot be both hard and optional")

@@ -16,8 +16,11 @@
     "eas-build-on-success": "node scripts/verify-eas-ios-archive.cjs"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
     "@vibecodeapp/sdk": "^0.4.15",
     "expo": "~55.0.31",
+    "expo-asset": "55.0.20",
+    "expo-audio": "55.0.18",
     "expo-build-properties": "~55.0.18",
     "expo-calendar": "~55.0.19",
     "expo-constants": "~55.0.17",

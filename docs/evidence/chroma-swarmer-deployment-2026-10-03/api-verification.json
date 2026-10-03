@@ -1,0 +1,30 @@
+{
+  "release": "/home/ales27pm/.local/share/swarmer-control-plane/releases/local-20261003-chroma-media-0d23f123a64a",
+  "activated_at": "2026-10-03T04:24:00.100316+00:00",
+  "cutover_phase": "complete",
+  "baseline_sha256": "800e0f3a2a587a14e4853d40f28de1fea03aac00a8322b2fe635c43f72568ecf",
+  "verified_at": "2026-10-03T04:25:29.599797+00:00",
+  "api_files": 119,
+  "schema_version": 27,
+  "service_count": 6,
+  "active_jobs": 0,
+  "exact_fingerprints": 51,
+  "protected_fingerprints": 52,
+  "contexts": {
+    "baseline_rows_retained": 8508,
+    "backup_rows_retained": 8508,
+    "appended_identical_contexts": 9,
+    "goal_id": "goal_41f6bcd97eb549bc9290e0ba62557f1f",
+    "allowed_changed_columns": [
+      "id",
+      "created_at"
+    ],
+    "current_fingerprint": {
+      "count": 8517,
+      "sha256": "ebc962a51ce882a46bf26c2d381fcaa72c225654f9bbeff65db9122a38ab3adf"
+    }
+  },
+  "database_restored": false,
+  "supplemental_verifier_sha256": "57cf1f4bd6aba463e9d9ca4874d3e89b8d5f1dbf2de83fff9edab4efe142b022",
+  "note": "Original failed kit and retry1 helpers preserved; supplemental verifier always proves all backup rows even when live count would return to baseline. 36 tests including both entrypoint regressions; independent review passed."
+}

@@ -1,0 +1,37 @@
+[
+  {
+    "repo_id": "silveroxides/Chroma1-HD-GGUF",
+    "revision": "d3b77bf4eb5b84c0b50e9a1e83f6e8074ed85f82",
+    "path": "Chroma1-HD-Q4_K_M.gguf",
+    "bytes": 5566533792,
+    "hub_lfs_sha256": "086f561e371d442b82b2c3689149da75046754c62a35293932cda397fc2bf9d2",
+    "source_url": "https://huggingface.co/silveroxides/Chroma1-HD-GGUF/blob/d3b77bf4eb5b84c0b50e9a1e83f6e8074ed85f82/Chroma1-HD-Q4_K_M.gguf",
+    "local_path": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-inference/models/Chroma1-HD-GGUF/Chroma1-HD-Q4_K_M.gguf",
+    "verified_sha256": "086f561e371d442b82b2c3689149da75046754c62a35293932cda397fc2bf9d2",
+    "verified_bytes": 5566533792,
+    "elapsed_seconds": 243.052
+  },
+  {
+    "repo_id": "city96/t5-v1_1-xxl-encoder-gguf",
+    "revision": "005a6ea51a7d0b84d677b3e633bb52a8c85a83d9",
+    "path": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+    "bytes": 3386856640,
+    "hub_lfs_sha256": "b51cbb10b1a7aac6dd1c3b62f0ed908bfd06e0b42d2f3577d43e061361f51dae",
+    "source_url": "https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/blob/005a6ea51a7d0b84d677b3e633bb52a8c85a83d9/t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+    "local_path": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-inference/models/t5-v1_1-xxl-encoder-gguf/t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+    "verified_sha256": "b51cbb10b1a7aac6dd1c3b62f0ed908bfd06e0b42d2f3577d43e061361f51dae",
+    "verified_bytes": 3386856640,
+    "elapsed_seconds": 102.565
+  },
+  {
+    "repo_id": "lodestones/Chroma",
+    "revision": "2f3b2730d7b5edbd02cdff12f72610af5787300b",
+    "path": "ae.safetensors",
+    "bytes": 335304388,
+    "hub_lfs_sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+    "local_path": "/home/ales27pm/swarmer-media-qualification/20261002/chroma-inference/models/Chroma/ae.safetensors",
+    "verified_sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+    "verified_bytes": 335304388,
+    "elapsed_seconds": 40.418
+  }
+]

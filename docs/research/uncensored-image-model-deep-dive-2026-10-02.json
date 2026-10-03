@@ -1,0 +1,190 @@
+{
+  "research_date": "2026-10-02",
+  "scope": "Research evidence inventory, not an install or deployment manifest",
+  "models_executed": false,
+  "weights_downloaded": false,
+  "universal_uncensored_behavior_verified": false,
+  "recommended_first_qualification": "Chroma1-HD Q4_K_M with pinned T5 and FLUX VAE",
+  "hardware_status": "Prior same-session host snapshot only; no fresh host benchmark during this research pass",
+  "repositories": [
+    {
+      "repo_id": "silveroxides/Chroma1-HD-GGUF",
+      "revision": "d3b77bf4eb5b84c0b50e9a1e83f6e8074ed85f82",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "Chroma1-HD-Q4_K_M.gguf",
+          "bytes": 5566533792,
+          "hub_lfs_sha256": "086f561e371d442b82b2c3689149da75046754c62a35293932cda397fc2bf9d2",
+          "source_url": "https://huggingface.co/silveroxides/Chroma1-HD-GGUF/blob/d3b77bf4eb5b84c0b50e9a1e83f6e8074ed85f82/Chroma1-HD-Q4_K_M.gguf"
+        }
+      ],
+      "evidence_status": "Hub metadata checked; local weight bytes not downloaded or verified"
+    },
+    {
+      "repo_id": "city96/t5-v1_1-xxl-encoder-gguf",
+      "revision": "005a6ea51a7d0b84d677b3e633bb52a8c85a83d9",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+          "bytes": 3386856640,
+          "hub_lfs_sha256": "b51cbb10b1a7aac6dd1c3b62f0ed908bfd06e0b42d2f3577d43e061361f51dae",
+          "source_url": "https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/blob/005a6ea51a7d0b84d677b3e633bb52a8c85a83d9/t5-v1_1-xxl-encoder-Q5_K_M.gguf"
+        },
+        {
+          "path": "t5-v1_1-xxl-encoder-Q8_0.gguf",
+          "bytes": 5061584064,
+          "hub_lfs_sha256": "9ec60f6028534b7fe5af439fcb535d75a68592a9ca3fcdeb175ef89e3ee99825",
+          "source_url": "https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/blob/005a6ea51a7d0b84d677b3e633bb52a8c85a83d9/t5-v1_1-xxl-encoder-Q8_0.gguf"
+        }
+      ],
+      "evidence_status": "Hub metadata checked; local weight bytes not downloaded or verified"
+    },
+    {
+      "repo_id": "abenzerps/Qwen-Image-2.1-Uncensored-GGUF",
+      "revision": "6b34e59458d3eb7ba6a6f86a116aed5253dc02c3",
+      "gated": false,
+      "declared_license": "other",
+      "license_name": "qwen-research",
+      "files": [
+        {
+          "path": "qwen-image-2.1-UC-Q4_K_M.gguf",
+          "bytes": 4604558112,
+          "hub_lfs_sha256": "e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/qwen-image-2.1-UC-Q4_K_M.gguf"
+        },
+        {
+          "path": "qwen-image-2.1-uncensored-lora.safetensors",
+          "bytes": 33586704,
+          "hub_lfs_sha256": "00ee2cb7f00a37b097640c1880ed0d17e368e30599f34bb348fee0e8c2cc4ca1",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/qwen-image-2.1-uncensored-lora.safetensors"
+        },
+        {
+          "path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "bytes": 9350798360,
+          "hub_lfs_sha256": "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/text_encoders/qwen3vl_8b_int8_convrot.safetensors"
+        },
+        {
+          "path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+          "bytes": 675509688,
+          "hub_lfs_sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/vae/qwen_image_2.1_vae_bf16.safetensors"
+        }
+      ],
+      "evidence_status": "Hub metadata checked; local weight bytes not downloaded or verified"
+    },
+    {
+      "repo_id": "lodestones/Chroma1-HD",
+      "revision": "0e0c60ece1e82b17cb7f77342d765ba5024c40c0",
+      "declared_license": "apache-2.0",
+      "role": "source model/card; not a proven parent revision for third-party GGUF",
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/lodestones/Chroma1-HD/tree/0e0c60ece1e82b17cb7f77342d765ba5024c40c0"
+    },
+    {
+      "repo_id": "lodestones/Chroma1-Flash",
+      "revision": "093c4f63b60507234aa53a073f1f9f565b3f4336",
+      "declared_license": "apache-2.0",
+      "role": "speed comparison candidate; README only31bytes",
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/lodestones/Chroma1-Flash/tree/093c4f63b60507234aa53a073f1f9f565b3f4336"
+    },
+    {
+      "repo_id": "lodestones/Chroma2-Kaleidoscope",
+      "revision": "7b2212134813e2a63dc8ccde06065992c9d706de",
+      "declared_license": "apache-2.0",
+      "role": "WIP alternative; not qualified",
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/lodestones/Chroma2-Kaleidoscope/tree/7b2212134813e2a63dc8ccde06065992c9d706de"
+    },
+    {
+      "repo_id": "lodestones/Zeta-Chroma",
+      "revision": "38ddc5f3e26fbbcb0ee4ff374b3f5cc384376d4b",
+      "declared_license": "apache-2.0",
+      "role": "WIP alternative; distinct architecture",
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/lodestones/Zeta-Chroma/tree/38ddc5f3e26fbbcb0ee4ff374b3f5cc384376d4b"
+    },
+    {
+      "repo_id": "lodestones/Kroma",
+      "revision": "b921d45c0f2c33ab753a32e32a5fe34eb790344c",
+      "declared_license": "other",
+      "role": "card front matter Krea community; body MIT text does not supersede upstream terms",
+      "files": [
+        {
+          "path": "kroma-v0.2-turbo.safetensors",
+          "bytes": 25640191096,
+          "hub_lfs_sha256": "c87e972b4242fd922870c49a7489da0b67e3166317755f4e370eaea33103ed76"
+        },
+        {
+          "path": "kroma-v0.3-turbo.safetensors",
+          "bytes": 25640191096,
+          "hub_lfs_sha256": "1e58dbbf59bb2cdd8589256666dbc57f73102a06e97293a411e91493e2a675bd"
+        }
+      ],
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/lodestones/Kroma/tree/b921d45c0f2c33ab753a32e32a5fe34eb790344c"
+    },
+    {
+      "repo_id": "Noctaluna/Noct-Q-Uncensored-Qwen-Image-2.1",
+      "revision": "a81b9af51120a78e285e57906f2250a2a02080e9",
+      "declared_license": "other",
+      "license_name": "qwen-research",
+      "role": "author claims; not independent image evaluation",
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/Noctaluna/Noct-Q-Uncensored-Qwen-Image-2.1/tree/a81b9af51120a78e285e57906f2250a2a02080e9"
+    },
+    {
+      "repo_id": "lodestones/Chroma",
+      "revision": "2f3b2730d7b5edbd02cdff12f72610af5787300b",
+      "role": "original-format FLUX VAE candidate; deprecated generator repo not selected",
+      "files": [
+        {
+          "path": "ae.safetensors",
+          "bytes": 335304388,
+          "hub_lfs_sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38"
+        }
+      ],
+      "evidence_status": "Fresh pinned Hub metadata/card; no local weight verification",
+      "source_url": "https://huggingface.co/lodestones/Chroma/tree/2f3b2730d7b5edbd02cdff12f72610af5787300b"
+    }
+  ],
+  "runtime_revisions_inspected": [
+    {
+      "repo": "leejet/stable-diffusion.cpp",
+      "revision": "3f8527a46c54ecf4cb4ed6003da8e8982283c73c"
+    },
+    {
+      "repo": "leejet/stable-diffusion.cpp",
+      "revision": "bb84971129d2a094ab8051c6feed5406d3b4409d"
+    },
+    {
+      "repo": "city96/ComfyUI-GGUF",
+      "revision": "6ea2651e7df66d7585f6ffee804b20e92fb38b8a"
+    },
+    {
+      "repo": "Comfy-Org/ComfyUI",
+      "revision": "36c0b0a687e5e6d7b55e3e61ab24262ffc0f2508"
+    },
+    {
+      "repo": "huggingface/diffusers",
+      "revision": "357f8738cdc050e3435e920ff3968a0bc101d4bb"
+    }
+  ],
+  "research_tools": [
+    "Exa",
+    "Hugging Face",
+    "GitHub",
+    "Consensus",
+    "Sider Scholar"
+  ],
+  "exa_search_calls": 13,
+  "exa_requested_result_slots": 83,
+  "search_count_note": "Includes duplicate results; not unique independent sources or full pages read"
+}

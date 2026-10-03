@@ -23,6 +23,8 @@ import { projectGraphFixture } from "@/testing/project-graph-fixtures";
 
 const mockPush = jest.fn();
 const mockStackScreen = jest.fn();
+const mockMediaResults = jest.fn();
+jest.mock("@/components/goal-media-artifacts", () => ({ GoalMediaArtifacts: (props: unknown) => { mockMediaResults(props); return null; } }));
 const mockLiveRefreshListeners = new Set<() => void | Promise<unknown>>();
 async function refreshFromLiveEvent() {
   await Promise.all([...mockLiveRefreshListeners].map((refresh) => refresh()));
@@ -292,6 +294,18 @@ describe("GoalDetailScreen", () => {
     expect(mockGetGoal).toHaveBeenCalledTimes(1);
     await user.press(screen.getByRole("button", { name: "Actualiser les preuves" }));
     await waitFor(() => expect(mockGetGoal).toHaveBeenCalledTimes(2));
+  });
+
+  it("routes media previews only to the visible Results panel and fences cached data", async () => {
+    const nodes = [{ ...detail.nodes[0], status: "completed" as const, required_skill: "image.generate", worker_job_id: "job_media" }];
+    mockGetGoal.mockResolvedValue({ ...detail, nodes });
+    await render(<GoalDetailScreen />);
+    await screen.findByRole("tab", { name: "Résultats" });
+    expect(mockMediaResults).toHaveBeenLastCalledWith(expect.objectContaining({ goalId: "goal_1", nodes, visible: false, enabled: true }));
+    await userEvent.setup().press(screen.getByRole("tab", { name: "Résultats" }));
+    expect(mockMediaResults).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true, enabled: true }));
+    await act(async () => notifyConnectionChanged());
+    expect(mockMediaResults).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
   });
 
   it("shows completed writing deliverables directly in Results without opening a Plan step", async () => {

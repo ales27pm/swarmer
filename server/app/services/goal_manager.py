@@ -44,6 +44,8 @@ from app.services.goal_state import (
     public_plan_node,
 )
 from app.services.maintenance_lease import MaintenanceLeaseGuard
+from app.services.media_contracts import MEDIA_SKILLS
+from app.services.media_store import MediaConflict, media_root, verify_media_result
 from app.services.model_resource_admission import active_local_model_work_locked
 from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
@@ -476,6 +478,31 @@ class GoalManager:
                 )
             except (ValueError, TypeError) as exc:
                 raise GoalManagerConflict("Writing repair feedback is unavailable.") from exc
+        if node["required_skill"] in MEDIA_SKILLS:
+            from app.services.project_context import ProjectContextConflict
+
+            payload = self._payload_for_node(node)
+            try:
+                media_context = None
+                if (
+                    self.project_applications is not None
+                    and self.project_applications.context is not None
+                ):
+                    state = await self.project_applications.context.refresh(str(goal["id"]))
+                    media_context = self.project_applications.context.prompt_state(state)
+                payload["context"] = {
+                    "goal_id": str(goal["id"]),
+                    "objective": str(goal["objective"]),
+                    "completion_criteria": goal.get("completion_criteria", []),
+                    "step_objective": str(node["objective"]),
+                    "conversation_revision": int(goal.get("conversation_revision") or 0),
+                    "durable_context": media_context,
+                }
+                return validate_remote_job(str(node["required_skill"]), payload)
+            except (ProjectContextConflict, ValueError, TypeError) as exc:
+                raise GoalManagerConflict(
+                    "Media requirements exceed the input budget or are unavailable."
+                ) from exc
         if node["required_skill"] == CODE_PROPOSAL_SKILL:
             from app.services.project_context import ProjectContextConflict
 
@@ -1264,7 +1291,9 @@ class GoalManager:
                     except _LocalModelResourceBusy:
                         waiting = await self.get_goal(goal_run_id)
                         if waiting is None:
-                            raise GoalManagerConflict("goal disappeared while waiting for local model")
+                            raise GoalManagerConflict(
+                                "goal disappeared while waiting for local model"
+                            )
                         return waiting
             goal = await self.graph.get_goal(goal_run_id)
             if goal is None:
@@ -2197,7 +2226,9 @@ class GoalManager:
                 and int(current["conversation_revision"]) != expected_conversation_revision
             ):
                 await db.rollback()
-                raise GoalManagerConflict("conversation changed while its manual plan was validated")
+                raise GoalManagerConflict(
+                    "conversation changed while its manual plan was validated"
+                )
             if self._runtime_expired(dict(current)):
                 await db.rollback()
                 raise GoalManagerConflict("goal runtime budget exhausted")
@@ -2554,7 +2585,10 @@ class GoalManager:
             if int(usage[6]) != int(goal.get("conversation_revision") or 0):
                 await db.rollback()
                 return
-            if node["required_skill"] in {CODE_PROPOSAL_SKILL, PROJECT_SKILL, WRITING_SKILL}:
+            if (
+                node["required_skill"]
+                in {CODE_PROPOSAL_SKILL, PROJECT_SKILL, WRITING_SKILL} | MEDIA_SKILLS
+            ):
                 if int(usage[4]) >= int(usage[5]):
                     await db.rollback()
                     await self._terminate_goal(
@@ -2790,7 +2824,10 @@ class GoalManager:
                         goal_run_id, maintenance_guard=maintenance_guard
                     )
                 return await self.get_goal(goal_run_id)
-            if node["required_skill"] in SWIFT_SKILLS or node["required_skill"] == WRITING_SKILL:
+            if (
+                node["required_skill"] in SWIFT_SKILLS | MEDIA_SKILLS
+                or node["required_skill"] == WRITING_SKILL
+            ):
                 recorded_job = await self.agent_dispatcher.get_job(str(job["id"]))
                 if (
                     recorded_job is None
@@ -2820,6 +2857,11 @@ class GoalManager:
                 node.get("required_skill"),
                 job.get("result"),
             )
+            if node["required_skill"] in MEDIA_SKILLS and job["status"] == "completed":
+                try:
+                    verify_media_result(media_root(self.db_path), dict(job), job.get("result"))
+                except MediaConflict:
+                    valid_evidence = False
             if node["required_skill"] == WRITING_SKILL and job["status"] == "completed":
                 try:
                     validate_writing_result(job.get("result"), payload=job.get("payload"))

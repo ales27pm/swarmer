@@ -1,0 +1,60 @@
+{
+  "admission": {
+    "historical_reconciliation": {
+      "active_jobs": 0,
+      "active_model_calls": 0,
+      "active_nodes": 0,
+      "ancestor_ids": [
+        "goal_ac7b7f6b2c49412b868a81dd26f61bed",
+        "goal_d3aefd096f594e56b4aef43549c617ed",
+        "goal_3e62501e4aa84412bebd58e8466b5980"
+      ],
+      "database_modified": false,
+      "pin_sha256": "9032361f3b9de7237c524b94c3bc4957d8b6bab6dd7964435cce7eafc19cfcda",
+      "terminal_descendant_id": "goal_6c18d7d55f7a4359b13e3fa933d07c12",
+      "terminal_descendant_phase": "auto_continuation_stopped"
+    },
+    "original_admission": {
+      "admission": {
+        "active_goal_embeddings": 0,
+        "active_goals": 0,
+        "active_jobs": 0,
+        "active_model_calls": 0,
+        "active_nodes": 0,
+        "active_project_embeddings": 0,
+        "active_tasks": 0,
+        "active_tools": 0
+      },
+      "historic_context_rows_preserved": null,
+      "protected_user_history_unchanged": false
+    }
+  },
+  "before_db_sha256": "f54cf11082d42058f165c426ee4ffde84ae9aea518599a6367a18a515c5a7ac3",
+  "changed_tables": [
+    "devices",
+    "goal_contexts",
+    "worker_skill_policy_state"
+  ],
+  "contexts": {
+    "allowed_changed_columns": [
+      "id",
+      "created_at"
+    ],
+    "appended_identical_contexts": 24,
+    "backup_rows_retained": 10085,
+    "goal_id": "goal_41f6bcd97eb549bc9290e0ba62557f1f",
+    "prior_failed_guard_preserved": true,
+    "reference_id_already_in_backup": "ctx_a670c5d2f78548adaf84aae47d0aaeb4",
+    "reference_stable_sha256": "7f3cddab6e473928e82dc77c912966d1eb22020717d2c4b2e667d2e7928d8ac8"
+  },
+  "database_modified": false,
+  "device_identity_preserved": true,
+  "enabled_skill": "audio.synthesize",
+  "epoch_after": 9,
+  "epoch_before": 8,
+  "image_preserved": true,
+  "new_policy_file_sha256": "f61067745b0eb2dc5f61208d6a2eb319bf830bc3baad5bf5ea695fe46b3837d8",
+  "previous_rules_preserved": true,
+  "protected_fingerprints": 52,
+  "rules_digest": "sha256:c9c650a369c18ec44e5da67d79c3497475c938150b6ead9b4f0d65c755c3bb56"
+}

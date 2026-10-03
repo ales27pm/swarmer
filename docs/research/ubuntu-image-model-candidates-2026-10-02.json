@@ -1,0 +1,250 @@
+{
+  "captured_at_utc": "2026-10-02T23:05:24.865607+00:00",
+  "scope": "Public metadata for selected candidate weights only. Not a complete runtime lockfile, installer, license approval, local checksum verification, or performance qualification. No weights downloaded.",
+  "observed_host": {
+    "gpu": "NVIDIA GeForce RTX 2070",
+    "nominal_vram_gb": 8,
+    "vram_note": "Standard NVIDIA specification; live NVML query failed.",
+    "cpu": "Intel Core i7-11700",
+    "os": "Ubuntu 26.04.1 LTS",
+    "ram_total_observed": "30 GiB",
+    "ram_available_observed": "10 GiB",
+    "swap_used_observed": "8 GiB of 8 GiB",
+    "root_available_observed": "197 GiB",
+    "loaded_driver": "595.84",
+    "installed_module": "595.91.07",
+    "nvml_error": "Driver/library version mismatch",
+    "gpu_benchmark_performed": false
+  },
+  "repositories": [
+    {
+      "repo_id": "SG161222/RealVisXL_V5.0_Lightning",
+      "revision": "f4454158cedaab9f0688c199561d6c92525f3a85",
+      "gated": false,
+      "declared_license": "openrail++",
+      "license_name": null,
+      "files": [
+        {
+          "path": "RealVisXL_V5.0_Lightning_fp16.safetensors",
+          "bytes": 6938065512,
+          "hub_lfs_sha256": "fabcadd9330dcc4f9702063428d40b9d4d07168d8acefc819b8d1d9db466b3ec",
+          "source_url": "https://huggingface.co/SG161222/RealVisXL_V5.0_Lightning/blob/f4454158cedaab9f0688c199561d6c92525f3a85/RealVisXL_V5.0_Lightning_fp16.safetensors"
+        }
+      ]
+    },
+    {
+      "repo_id": "cagliostrolab/animagine-xl-4.0",
+      "revision": "2b7c1b397761bf5bd3cc42e5b39ec99314a75a96",
+      "gated": false,
+      "declared_license": "openrail++",
+      "license_name": null,
+      "files": [
+        {
+          "path": "animagine-xl-4.0-opt.safetensors",
+          "bytes": 6938350040,
+          "hub_lfs_sha256": "6327eca98bfb6538dd7a4edce22484a1bbc57a8cff6b11d075d40da1afb847ac",
+          "source_url": "https://huggingface.co/cagliostrolab/animagine-xl-4.0/blob/2b7c1b397761bf5bd3cc42e5b39ec99314a75a96/animagine-xl-4.0-opt.safetensors"
+        }
+      ]
+    },
+    {
+      "repo_id": "silveroxides/Chroma1-HD-GGUF",
+      "revision": "d3b77bf4eb5b84c0b50e9a1e83f6e8074ed85f82",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "Chroma1-HD-Q4_K_M.gguf",
+          "bytes": 5566533792,
+          "hub_lfs_sha256": "086f561e371d442b82b2c3689149da75046754c62a35293932cda397fc2bf9d2",
+          "source_url": "https://huggingface.co/silveroxides/Chroma1-HD-GGUF/blob/d3b77bf4eb5b84c0b50e9a1e83f6e8074ed85f82/Chroma1-HD-Q4_K_M.gguf"
+        }
+      ]
+    },
+    {
+      "repo_id": "city96/t5-v1_1-xxl-encoder-gguf",
+      "revision": "005a6ea51a7d0b84d677b3e633bb52a8c85a83d9",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+          "bytes": 3386856640,
+          "hub_lfs_sha256": "b51cbb10b1a7aac6dd1c3b62f0ed908bfd06e0b42d2f3577d43e061361f51dae",
+          "source_url": "https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/blob/005a6ea51a7d0b84d677b3e633bb52a8c85a83d9/t5-v1_1-xxl-encoder-Q5_K_M.gguf"
+        },
+        {
+          "path": "t5-v1_1-xxl-encoder-Q8_0.gguf",
+          "bytes": 5061584064,
+          "hub_lfs_sha256": "9ec60f6028534b7fe5af439fcb535d75a68592a9ca3fcdeb175ef89e3ee99825",
+          "source_url": "https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/blob/005a6ea51a7d0b84d677b3e633bb52a8c85a83d9/t5-v1_1-xxl-encoder-Q8_0.gguf"
+        }
+      ]
+    },
+    {
+      "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
+      "revision": "0084d1df98e2e2137fe776d55170bc4792ec1d66",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "flux-2-klein-4b-Q4_K_M.gguf",
+          "bytes": 2604311104,
+          "hub_lfs_sha256": "0b25d143c8469b342bc5af3bce92b783bf6b0636d285f7b2f75e38af63af9a15",
+          "source_url": "https://huggingface.co/unsloth/FLUX.2-klein-4B-GGUF/blob/0084d1df98e2e2137fe776d55170bc4792ec1d66/flux-2-klein-4b-Q4_K_M.gguf"
+        }
+      ]
+    },
+    {
+      "repo_id": "Comfy-Org/flux2-klein-4B",
+      "revision": "5f526678002e43af5551dadb73ce2e8c91b43afe",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+          "bytes": 8044982048,
+          "hub_lfs_sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+          "source_url": "https://huggingface.co/Comfy-Org/flux2-klein-4B/blob/5f526678002e43af5551dadb73ce2e8c91b43afe/split_files/text_encoders/qwen_3_4b.safetensors"
+        },
+        {
+          "path": "split_files/vae/flux2-vae.safetensors",
+          "bytes": 336211292,
+          "hub_lfs_sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
+          "source_url": "https://huggingface.co/Comfy-Org/flux2-klein-4B/blob/5f526678002e43af5551dadb73ce2e8c91b43afe/split_files/vae/flux2-vae.safetensors"
+        }
+      ]
+    },
+    {
+      "repo_id": "Cordux/flux2-klein-4B-uncensored-text-encoder",
+      "revision": "0c84dd55742d852871dbad3369f30789cbc7e9e2",
+      "gated": "auto",
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "qwen3-4b-abl-q4_0.gguf",
+          "bytes": 2369547008,
+          "hub_lfs_sha256": null,
+          "source_url": "https://huggingface.co/Cordux/flux2-klein-4B-uncensored-text-encoder/blob/0c84dd55742d852871dbad3369f30789cbc7e9e2/qwen3-4b-abl-q4_0.gguf",
+          "hash_status": "Redacted by the Hub in public metadata for this gated file; not verified."
+        }
+      ]
+    },
+    {
+      "repo_id": "unsloth/Z-Image-Turbo-GGUF",
+      "revision": "6c80814333b7b6a70a2e5b469a7c6437ce65de0f",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "z-image-turbo-Q4_K_M.gguf",
+          "bytes": 5017613376,
+          "hub_lfs_sha256": "e6494f87de6abaf6a561924f50317a5f271fc34bb4222aabbd801197df8f7daa",
+          "source_url": "https://huggingface.co/unsloth/Z-Image-Turbo-GGUF/blob/6c80814333b7b6a70a2e5b469a7c6437ce65de0f/z-image-turbo-Q4_K_M.gguf"
+        }
+      ]
+    },
+    {
+      "repo_id": "Comfy-Org/z_image_turbo",
+      "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+          "bytes": 8044982048,
+          "hub_lfs_sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+          "source_url": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/6fc90a3b1b653e935a0d175e260736de25b84df5/split_files/text_encoders/qwen_3_4b.safetensors"
+        },
+        {
+          "path": "split_files/vae/ae.safetensors",
+          "bytes": 335304388,
+          "hub_lfs_sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+          "source_url": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/6fc90a3b1b653e935a0d175e260736de25b84df5/split_files/vae/ae.safetensors"
+        }
+      ]
+    },
+    {
+      "repo_id": "BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1",
+      "revision": "ce497d288a7ddfd5d0f337c7139349d5d0236bfa",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "Z-Image-AbliteratedV1.Q8_0.gguf",
+          "bytes": 4280405248,
+          "hub_lfs_sha256": "6272f0f8db9e91f5ed748c51da27f646ae2d2cb2a28460a38294192288f85298",
+          "source_url": "https://huggingface.co/BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1/blob/ce497d288a7ddfd5d0f337c7139349d5d0236bfa/Z-Image-AbliteratedV1.Q8_0.gguf"
+        },
+        {
+          "path": "Z-Image-AbliteratedV1.Q4_K_M.gguf",
+          "bytes": 2497280768,
+          "hub_lfs_sha256": "23aff120beed18450f1ad66dccc6699b08b19b4bbfc2ee3413a047a967cc9ea7",
+          "source_url": "https://huggingface.co/BennyDaBall/Qwen3-4b-Z-Image-Turbo-AbliteratedV1/blob/ce497d288a7ddfd5d0f337c7139349d5d0236bfa/Z-Image-AbliteratedV1.Q4_K_M.gguf"
+        }
+      ]
+    },
+    {
+      "repo_id": "abenzerps/Qwen-Image-2.1-Uncensored-GGUF",
+      "revision": "6b34e59458d3eb7ba6a6f86a116aed5253dc02c3",
+      "gated": false,
+      "declared_license": "other",
+      "license_name": "qwen-research",
+      "files": [
+        {
+          "path": "qwen-image-2.1-UC-Q4_K_M.gguf",
+          "bytes": 4604558112,
+          "hub_lfs_sha256": "e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/qwen-image-2.1-UC-Q4_K_M.gguf"
+        },
+        {
+          "path": "qwen-image-2.1-uncensored-lora.safetensors",
+          "bytes": 33586704,
+          "hub_lfs_sha256": "00ee2cb7f00a37b097640c1880ed0d17e368e30599f34bb348fee0e8c2cc4ca1",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/qwen-image-2.1-uncensored-lora.safetensors"
+        },
+        {
+          "path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "bytes": 9350798360,
+          "hub_lfs_sha256": "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/text_encoders/qwen3vl_8b_int8_convrot.safetensors"
+        },
+        {
+          "path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+          "bytes": 675509688,
+          "hub_lfs_sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
+          "source_url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/blob/6b34e59458d3eb7ba6a6f86a116aed5253dc02c3/vae/qwen_image_2.1_vae_bf16.safetensors"
+        }
+      ]
+    },
+    {
+      "repo_id": "pottokao/Qwen-Image-2.1-Text-Encoder-Heretic-GGUF",
+      "revision": "23813717f7f9282b372c23c7207468a7a168fa68",
+      "gated": false,
+      "declared_license": "apache-2.0",
+      "license_name": null,
+      "files": [
+        {
+          "path": "qwen3vl_8b_heretic-Q4_K_M.gguf",
+          "bytes": 5027785376,
+          "hub_lfs_sha256": "1338274ac7a6344f262a16c7a52d1bd7fe789307d252733b23ea421126e5d343",
+          "source_url": "https://huggingface.co/pottokao/Qwen-Image-2.1-Text-Encoder-Heretic-GGUF/blob/23813717f7f9282b372c23c7207468a7a168fa68/qwen3vl_8b_heretic-Q4_K_M.gguf"
+        },
+        {
+          "path": "mmproj-qwen3vl_8b_heretic-f16.gguf",
+          "bytes": 1159030464,
+          "hub_lfs_sha256": "4649839491c8df1ebc9bed2de158ad2a45b53ed1d3b311d92a69056b6764f101",
+          "source_url": "https://huggingface.co/pottokao/Qwen-Image-2.1-Text-Encoder-Heretic-GGUF/blob/23813717f7f9282b372c23c7207468a7a168fa68/mmproj-qwen3vl_8b_heretic-f16.gguf"
+        }
+      ]
+    }
+  ]
+}

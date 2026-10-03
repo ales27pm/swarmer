@@ -1,0 +1,54 @@
+{
+  "predecessor": "/home/ales27pm/.local/share/chroma-studio/releases/20261003-gpu-lock-bea3d32c73ec",
+  "candidate": "/home/ales27pm/.local/share/chroma-studio/releases/20261003-readiness-f3c6d2109e84",
+  "release_sha256": "f3c6d2109e842f483d6e319b073d849963731a0674f74eecc4d3b458a3d702a3",
+  "release_digest_format": "SHA256 of sorted compact JSON manifest",
+  "changed": [
+    "runner.py",
+    "studio.py",
+    "static/app.js"
+  ],
+  "manifest": {
+    "README.md": "a9c6fb2bfde3ac318b8af2718878d47add1ae52948207776e0fe77fd588f2bac",
+    "chroma-studio.service": "c341a7ff2b07df306f0d68bfaae984de08fdccdd2e7e84eac651770a79d5967f",
+    "requirements.txt": "bb38aa925f14d156852a3553f56167f31e7f2db6a6799130b38bb47c7eaca16e",
+    "runner.py": "b13c2e149fad32b1c8872926f98c1426ea1ffec7604b3f3729f0ea70b313e465",
+    "static/app.js": "0f9c5d0e9333b7eeb257767f78b353f53dfce64fadda9920d085243fd9d3f3f3",
+    "static/example.png": "3beb76f45ac9a58137450633012582726f662e8b2ca9e59dbb33ebe9a97b1f69",
+    "static/index.html": "884f320b3a6a76008455ea99d551c3018248fd3d0234561ec1176f46c1b95afa",
+    "static/style.css": "d6d1917983ad645785ce6e0c2614c6299325ee74611063ac4416b3190e43bb91",
+    "studio.py": "fc2c6da62fa6761d8040224d24260e97c9b132391fceb22ad3e4a27453f30adc"
+  },
+  "predecessor_manifest": {
+    "chroma-studio.service": "c341a7ff2b07df306f0d68bfaae984de08fdccdd2e7e84eac651770a79d5967f",
+    "studio.py": "b6d78be283736f4d3afb2e7b7c4b210dcb588872c8e6fb99c011b5837c8a558d",
+    "requirements.txt": "bb38aa925f14d156852a3553f56167f31e7f2db6a6799130b38bb47c7eaca16e",
+    "README.md": "a9c6fb2bfde3ac318b8af2718878d47add1ae52948207776e0fe77fd588f2bac",
+    "runner.py": "7abe8648b54a5892d94721796b17d62b67e1bb8f4b3d0dbcc0d7c7da70d1eacd",
+    "static/app.js": "aa5dbb0f447f43cb01a002ea7d0dff14a916762699cad0c2e4f73f9cf5b0bfef",
+    "static/example.png": "3beb76f45ac9a58137450633012582726f662e8b2ca9e59dbb33ebe9a97b1f69",
+    "static/style.css": "d6d1917983ad645785ce6e0c2614c6299325ee74611063ac4416b3190e43bb91",
+    "static/index.html": "884f320b3a6a76008455ea99d551c3018248fd3d0234561ec1176f46c1b95afa"
+  },
+  "archive_sha256": "d0a8bc72d9f24ec3653a8943029c6eaf798f12fa5ff98279d2f4f06b2b90286c",
+  "staged_at_utc": "2026-10-03T08:44:21.552669+00:00",
+  "import_check": true,
+  "protected_config_unchanged": true,
+  "service_pid_unchanged": true,
+  "main_pid": 1787084,
+  "cutover_executed": false,
+  "frozen_idle_check": {
+    "active_records": 0,
+    "partial_records": 0,
+    "running_containers": 0
+  },
+  "idle_cutover_method": "freeze_then_recheck_then_stop_idle_process",
+  "deployed_at_utc": "2026-10-03T08:45:32.256478+00:00",
+  "service": "active",
+  "private_api": {
+    "active": false,
+    "ready": true,
+    "availability_code": "ready"
+  },
+  "rollback": false
+}

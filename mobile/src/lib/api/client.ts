@@ -1,4 +1,5 @@
 import { fetch } from "expo/fetch";
+import { goalMediaIdentifier, parseGoalMedia, parseGoalMediaArtifact, verifyGoalMediaBytes, type GoalMediaArtifact } from "./goal-media";
 import { validateMemoryPresentations } from "./memory-presentation";
 import { parseProjectContext } from "./project-context";
 import { parseProjectGraph, type ProjectGraph } from "./project-graph";
@@ -455,6 +456,61 @@ async function fencedRequest<T>(
     throw cause;
   }
   return value;
+}
+
+/** UI-only media transport: the player never receives a server URL or a credential. */
+export async function getGoalMediaArtifacts(
+  goalId: string, shouldAccept: () => boolean = () => true, signal?: AbortSignal,
+): Promise<GoalMediaArtifact[]> {
+  const value = await fencedRequest<unknown>(`/goals/${goalMediaIdentifier(goalId)}/media`,
+    { redirect: "error", credentials: "omit", signal }, shouldAccept);
+  return parseGoalMedia(value, goalId);
+}
+
+export async function getGoalMediaBytes(
+  reference: GoalMediaArtifact, shouldAccept: () => boolean = () => true, signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const artifact = parseGoalMediaArtifact(reference, reference.goal_id);
+  const connection = await captureRequestConnectionFence();
+  if (!shouldAccept() || signal?.aborted) throw connectionRequestChanged();
+  const abort = new AbortController();
+  const stop = () => abort.abort();
+  signal?.addEventListener("abort", stop);
+  const timeout = setTimeout(stop, 30000);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let consumed = false;
+  try {
+    if (!connection.token) throw new ApiError(401, "Jumelez l’iPhone pour lire ce média.");
+    const response = await fetch(`${connection.baseUrl}/goals/${artifact.goal_id}/media/${artifact.artifact_id}`, {
+      method: "GET", redirect: "error", credentials: "omit", signal: abort.signal,
+      headers: { Authorization: `Bearer ${connection.token}`, Accept: artifact.media_type },
+    });
+    if (!response.ok) throw await responseError(response);
+    const length = response.headers.get("Content-Length");
+    if (response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== artifact.media_type
+      || (length !== null && (!/^\d+$/.test(length) || Number(length) !== artifact.size_bytes))
+      || !response.body) throw new Error("Le média reçu est incomplet ou invalide.");
+    reader = response.body.getReader();
+    const bytes = new Uint8Array(artifact.size_bytes);
+    let offset = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (!shouldAccept() || abort.signal.aborted) throw connectionRequestChanged();
+      if (done) break;
+      if (offset + value.byteLength > bytes.length) throw new Error("Le média dépasse la taille annoncée.");
+      bytes.set(value, offset); offset += value.byteLength;
+    }
+    consumed = true;
+    if (offset !== bytes.length) throw new Error("Le média reçu est incomplet.");
+    verifyGoalMediaBytes(bytes, artifact);
+    await assertRequestConnectionCurrent(connection);
+    if (!shouldAccept() || abort.signal.aborted) throw connectionRequestChanged();
+    return bytes;
+  } finally {
+    clearTimeout(timeout); signal?.removeEventListener("abort", stop);
+    if (!consumed) { abort.abort(); await reader?.cancel().catch(() => undefined); }
+    reader?.releaseLock();
+  }
 }
 
 export async function getServerUrl(): Promise<string> {

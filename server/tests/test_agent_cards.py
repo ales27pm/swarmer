@@ -76,6 +76,8 @@ def test_agent_skill_allowlist_is_exact() -> None:
             "code.swift.test",
             "crm.command",
             "documents.extract",
+            "image.generate",
+            "audio.synthesize",
         }
     )
 

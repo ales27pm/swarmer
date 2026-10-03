@@ -1,0 +1,33 @@
+[
+  {
+    "after_run": "first-512",
+    "source": "Independent SSH command executed after completion, before cancel-512; stdout preserved here from tool result",
+    "gpu_memory_mib": 358,
+    "compute_apps": [
+      {
+        "pid": 7692,
+        "name": "/usr/libexec/gnome-remote-desktop-daemon",
+        "memory_mib": 97
+      }
+    ],
+    "chroma_containers": [],
+    "health": {
+      "status": "ok",
+      "service": "mongars-control-plane",
+      "version": "0.14.2"
+    }
+  },
+  {
+    "after_run": "cancel-512",
+    "source": "Independent SSH command executed after cancellation, before recovery-direct-512; stdout preserved here from tool result",
+    "gpu_memory_mib": 356,
+    "compute_apps": [
+      {
+        "pid": 7692,
+        "name": "/usr/libexec/gnome-remote-desktop-daemon",
+        "memory_mib": 97
+      }
+    ],
+    "chroma_containers": []
+  }
+]
