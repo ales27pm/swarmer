@@ -1777,6 +1777,143 @@ paths:
           description: HTTPS required
       security:
       - bearerAuth: []
+  /memory/index-coverage:
+    get:
+      summary: Inspect current memory index coverage for one scoped page
+      parameters:
+      - name: scope
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 100
+          title: Scope
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          title: Kind
+      - name: sensitivity
+        in: query
+        required: false
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 50
+          default: normal
+          title: Sensitivity
+      - name: after_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 200
+          - type: 'null'
+          title: After Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryIndexCoveragePage'
+          headers:
+            Cache-Control:
+              description: Diagnostics and errors are not cached.
+              schema:
+                type: string
+                const: no-store
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          headers:
+            Cache-Control:
+              description: Diagnostics and errors are not cached.
+              schema:
+                type: string
+                const: no-store
+        '401':
+          description: Missing or invalid device bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Cache-Control:
+              description: Diagnostics and errors are not cached.
+              schema:
+                type: string
+                const: no-store
+        '409':
+          description: Atomic state transition rejected, including replay or stale state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Cache-Control:
+              description: Diagnostics and errors are not cached.
+              schema:
+                type: string
+                const: no-store
+        '426':
+          description: HTTPS is required when the socket peer is not loopback
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Cache-Control:
+              description: Diagnostics and errors are not cached.
+              schema:
+                type: string
+                const: no-store
+        '503':
+          description: Index unavailable or configured vector dimensions invalid; no
+            model probe or implicit repair occurs.
+          headers:
+            Cache-Control:
+              description: Diagnostics and errors are not cached.
+              schema:
+                type: string
+                const: no-store
+      description: Read-only paired-owner inspection. Scope, kind and sensitivity filter
+        before pagination. Counts describe one read transaction only; cursor pages do
+        not form a global snapshot. Stored projections are qualified against current
+        source and provider bindings without probing a model. Covered does not mean
+        provider available or retrieval relevance validated.
+      tags:
+      - Memory
+      security:
+      - bearerAuth: []
   /memory/status:
     get:
       summary: Memory Provider Status
@@ -3375,6 +3512,243 @@ components:
           schema: {$ref: '#/components/schemas/HTTPValidationError'}
 
   schemas:
+    MemoryCoverageCounts:
+      properties:
+        current:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Current
+        missing_vector:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Missing Vector
+        embedding_configuration_mismatch:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Embedding Configuration Mismatch
+        stale_binding:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Stale Binding
+        invalid_vector:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Invalid Vector
+        configuration_missing:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Configuration Missing
+      additionalProperties: false
+      type: object
+      required:
+      - current
+      - missing_vector
+      - embedding_configuration_mismatch
+      - stale_binding
+      - invalid_vector
+      - configuration_missing
+      title: MemoryCoverageCounts
+    MemoryCoverageItem:
+      properties:
+        memory_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Memory Id
+        status:
+          type: string
+          enum:
+          - qualified
+          - unqualified_source
+          title: Status
+        revision:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Revision
+        views:
+          items:
+            $ref: '#/components/schemas/MemoryCoverageView'
+          type: array
+          maxItems: 2
+          title: Views
+      additionalProperties: false
+      type: object
+      required:
+      - memory_id
+      - status
+      - revision
+      - views
+      title: MemoryCoverageItem
+    MemoryCoverageView:
+      properties:
+        role:
+          type: string
+          enum:
+          - original
+          - canonical
+          title: Role
+        view_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: View Id
+        status:
+          type: string
+          enum:
+          - current
+          - missing_vector
+          - embedding_configuration_mismatch
+          - stale_binding
+          - invalid_vector
+          - configuration_missing
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - role
+      - view_id
+      - status
+      title: MemoryCoverageView
+    MemoryIndexCoveragePage:
+      properties:
+        consistency:
+          type: string
+          const: page_snapshot
+          title: Consistency
+        counts_scope:
+          type: string
+          const: page
+          title: Counts Scope
+        scope:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Scope
+        kind:
+          anyOf:
+          - type: string
+            maxLength: 100
+            minLength: 1
+          - type: 'null'
+          title: Kind
+        sensitivity:
+          type: string
+          maxLength: 50
+          minLength: 1
+          title: Sensitivity
+        provider_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^memory-v3:[a-f0-9]{64}$
+          - type: 'null'
+          title: Provider Fingerprint
+        provider_readiness:
+          type: string
+          enum:
+          - configured_not_probed
+          - not_configured
+          title: Provider Readiness
+        dimensions:
+          anyOf:
+          - type: integer
+            maximum: 8192.0
+            minimum: 1.0
+          - type: 'null'
+          title: Dimensions
+        dimension_check:
+          type: string
+          enum:
+          - provider_declared
+          - stored_vector_only
+          - not_configured
+          title: Dimension Check
+        page_status:
+          type: string
+          enum:
+          - empty
+          - unqualified
+          - configuration_missing
+          - incomplete
+          - covered
+          title: Page Status
+        scanned_memories:
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          title: Scanned Memories
+        qualified_memories:
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          title: Qualified Memories
+        unqualified_memories:
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          title: Unqualified Memories
+        expected_views:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Expected Views
+        covered_views:
+          type: integer
+          maximum: 200.0
+          minimum: 0.0
+          title: Covered Views
+        views_by_status:
+          $ref: '#/components/schemas/MemoryCoverageCounts'
+        items:
+          items:
+            $ref: '#/components/schemas/MemoryCoverageItem'
+          type: array
+          maxItems: 100
+          title: Items
+        has_more:
+          type: boolean
+          title: Has More
+        next_after_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+          - type: 'null'
+          title: Next After Id
+        covers_entire_selection:
+          type: boolean
+          title: Covers Entire Selection
+      additionalProperties: false
+      type: object
+      required:
+      - consistency
+      - counts_scope
+      - scope
+      - kind
+      - sensitivity
+      - provider_fingerprint
+      - provider_readiness
+      - dimensions
+      - dimension_check
+      - page_status
+      - scanned_memories
+      - qualified_memories
+      - unqualified_memories
+      - expected_views
+      - covered_views
+      - views_by_status
+      - items
+      - has_more
+      - next_after_id
+      - covers_entire_selection
+      title: MemoryIndexCoveragePage
     MediaArtifact:
       additionalProperties: false
       properties:

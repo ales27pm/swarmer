@@ -112,6 +112,7 @@ from app.services.maintenance_lease import (
 )
 from app.services.media_routes import install_media_routes
 from app.services.memory_concepts import ConceptDefinition
+from app.services.memory_index_routes import install_memory_index_routes
 from app.services.memory_inspection import (
     MemoryInspectionCursorError,
     MemoryInspectionEvidenceError,
@@ -882,6 +883,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid device token")
         return principal
 
+    install_memory_index_routes(app, state_service, require_device)
     install_evidence_routes(app, settings.db_path, require_device)
     install_website_routes(app, website_workflow, require_device)
 
@@ -1748,6 +1750,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
             if project_embedding_service
             else "lexical_fallback",
             "context_token_count_method": "conservative_utf8_bytes",  # nosec B105 - public metric
+            "memory_projection_metric": "outbox_activity_not_vector_coverage",
+            "memory_index_coverage_path": "/memory/index-coverage",
             "memory_projections": await projection_status(
                 settings.db_path,
                 provider=embedding_identity(

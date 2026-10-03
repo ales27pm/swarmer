@@ -52,6 +52,11 @@ from app.services.memory_canonical_store import (
     MemoryNormalizer,
     forget_canonical_sources,
 )
+from app.services.memory_index_coverage import (
+    MemoryIndexCoverageError,
+    MemoryIndexCoverageRequest,
+    inspect_index_coverage,
+)
 from app.services.memory_normalization import (
     MAX_CANONICAL_BYTES,
     MemoryNormalizationError,
@@ -3060,6 +3065,29 @@ class StateService:
         ):
             semantic = {}
         return await finalize(fuse_rankings(hits, semantic))
+
+    async def memory_index_coverage(self, request: MemoryIndexCoverageRequest) -> dict[str, Any]:
+        provider = self.embedding_service
+        revision = self.embedding_model_revision
+        identity = embedding_identity(provider, revision) if provider is not None else None
+        dimensions = getattr(provider, "dimensions", None) if provider is not None else None
+
+        def assert_current() -> None:
+            if (
+                provider is not self.embedding_service
+                or revision != self.embedding_model_revision
+                or (embedding_identity(provider, revision) if provider is not None else None)
+                != identity
+            ):
+                raise MemoryIndexCoverageError("memory_index_configuration_changed", 409)
+
+        return await inspect_index_coverage(
+            self.db_path,
+            request,
+            provider=identity,
+            dimensions=dimensions,
+            assert_current=assert_current,
+        )
 
     async def drain_memory_projections(
         self, *, limit: int = 1, memory_id: str | None = None
