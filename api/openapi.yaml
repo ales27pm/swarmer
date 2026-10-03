@@ -2446,6 +2446,115 @@ paths:
       - bearerAuth: []
       description: 'Return PNG bytes only for a screenshot belonging to the owned capture and matching the
         requested SHA-256. Changed or missing bytes are rejected. Cache-Control: no-store.'
+  /agents/{agent_id}/jobs/{job_id}/media:
+    post:
+      tags: [Agents]
+      summary: Upload a private generated artifact under the current worker lease
+      operationId: upload_media_agents__agent_id__jobs__job_id__media_post
+      description: |
+        Streams raw PNG or PCM16 mono 24 kHz WAV bytes, never multipart or JSON,
+        with a maximum size of 8 MiB. The worker credential must match the agent
+        and the claim token, lease id and generation must identify its current
+        active job. The server verifies the digest, format and job requirements,
+        stores the private artifact, and returns its reference. This upload does
+        not complete the job; the worker must submit its terminal result separately.
+      security: [{agentBearer: []}]
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/JobId'
+        - name: x-claim-token
+          in: header
+          required: true
+          schema: {type: string, minLength: 20, maxLength: 500}
+        - name: x-lease-id
+          in: header
+          required: true
+          schema: {type: string, minLength: 10, maxLength: 200}
+        - name: x-lease-generation
+          in: header
+          required: true
+          schema: {type: integer, minimum: 1}
+        - name: x-artifact-sha256
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[a-f0-9]{64}$'}
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema: {type: string, format: binary}
+          audio/wav:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Server-verified artifact reference
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MediaArtifact'}
+        '401': {description: Missing or invalid agent-specific credential}
+        '408': {description: Upload exceeded the server time limit}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {description: Invalid Content-Length or media size limit exceeded}
+        '415': {description: Content-Type must be image/png or audio/wav}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+        '507': {description: Private media storage limit reached}
+
+  /goals/{goal_id}/media:
+    get:
+      tags: [Goals]
+      summary: List private artifacts belonging to an owned goal
+      operationId: list_media_goals__goal_id__media_get
+      description: |
+        Returns verified references only for the authenticated device's goal.
+        Binary bytes are fetched separately; this route does not expose a public
+        URL. Cache-Control is private, no-store.
+      parameters:
+        - $ref: '#/components/parameters/GoalId'
+      responses:
+        '200':
+          description: Goal-scoped artifact references
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MediaArtifactPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Owned goal or media unavailable}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+
+  /goals/{goal_id}/media/{artifact_id}:
+    get:
+      tags: [Goals]
+      summary: Read verified private PNG or WAV bytes from an owned goal
+      operationId: get_media_goals__goal_id__media__artifact_id__get
+      description: |
+        Requires the owner device's bearer credential. The artifact must belong
+        to this goal and its bytes must match the recorded SHA-256. Responses use
+        Cache-Control private, no-store, X-Content-Type-Options nosniff and an inline
+        Content-Disposition filename. This route never returns JSON on success.
+      parameters:
+        - $ref: '#/components/parameters/GoalId'
+        - name: artifact_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Verified private artifact bytes
+          headers:
+            X-Artifact-SHA256:
+              description: SHA-256 of the returned bytes
+              schema: {type: string, pattern: '^[a-f0-9]{64}$'}
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+            audio/wav:
+              schema: {type: string, format: binary}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: 'Owned goal, artifact or verified bytes unavailable'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '426': {$ref: '#/components/responses/SecureTransportRequired'}
+
   /goals/{goal_id}/activity:
     get:
       summary: Read recorded project operations
@@ -2945,6 +3054,85 @@ components:
           schema: {$ref: '#/components/schemas/HTTPValidationError'}
 
   schemas:
+    MediaArtifact:
+      additionalProperties: false
+      properties:
+        artifact_id:
+          pattern: ^media_[a-f0-9]{40}$
+          title: Artifact Id
+          type: string
+        job_id:
+          pattern: ^job_[a-f0-9]{32}$
+          title: Job Id
+          type: string
+        goal_id:
+          pattern: ^goal_[a-f0-9]{32}$
+          title: Goal Id
+          type: string
+        media_type:
+          enum:
+          - image/png
+          - audio/wav
+          title: Media Type
+          type: string
+        size_bytes:
+          maximum: 8388608
+          minimum: 1
+          title: Size Bytes
+          type: integer
+        sha256:
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+          type: string
+        width:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Width
+        height:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Height
+        duration_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Duration Ms
+        sample_rate:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Sample Rate
+        channels:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Channels
+      required:
+      - artifact_id
+      - job_id
+      - goal_id
+      - media_type
+      - size_bytes
+      - sha256
+      - width
+      - height
+      - duration_ms
+      - sample_rate
+      - channels
+      title: MediaArtifact
+      type: object
+    MediaArtifactPage:
+      type: object
+      additionalProperties: false
+      required:
+      - artifacts
+      properties:
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaArtifact'
     ActivityCatalogAvailability:
       properties:
         state:

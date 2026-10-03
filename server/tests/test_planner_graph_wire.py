@@ -374,6 +374,28 @@ def test_shared_definitions_keep_all_capability_schema_growth_bounded() -> None:
     assert json.dumps(schema).count('"const": "database.sqlite.query"') == 1
 
 
+def test_shared_dependency_definitions_do_not_overwrite_source_definitions() -> None:
+    source = _source_schema(sorted(SUPPORTED_AGENT_SKILLS))
+    source["$defs"]["PlannerGraphDependencies1"] = {"type": "integer"}
+    before = deepcopy(source)
+    with pytest.raises(ValueError, match="definitions collide"):
+        constrain_planner_graph(source)
+    assert source == before
+
+
+def test_dependency_sharing_keeps_the_synthesis_input_requirement() -> None:
+    schema = constrain_planner_graph(_source_schema(sorted(SUPPORTED_AGENT_SKILLS)))
+    validator = Draft202012Validator(schema)
+    wire = _wire(_body(), _body("writing.draft"), _body(None))
+    assert not validator.is_valid(wire)
+    _step(wire, 3)["03_optional_dependencies"] = ["step_2"]
+    assert not validator.is_valid(wire)
+    _step(wire, 3)["02_dependencies"] = ["step_1"]
+    assert validator.is_valid(wire)
+    _step(wire, 3)["02_dependencies"] = ["step_3"]
+    assert not validator.is_valid(wire)
+
+
 @pytest.mark.parametrize("count", [0, 21, True, 3.0, "3", None])
 def test_count_must_be_a_bounded_exact_integer(count: object) -> None:
     wire = _wire(_body(), _body(), _body("writing.draft"))

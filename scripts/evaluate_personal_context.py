@@ -66,8 +66,11 @@ def _database(path: Path, case: dict[str, Any]) -> None:
             CREATE TABLE goal_project_links(goal_run_id TEXT,project_id TEXT);
             CREATE TABLE goal_conversation_links(goal_run_id TEXT,conversation_id TEXT);
             CREATE TABLE goal_messages(id TEXT PRIMARY KEY,conversation_id TEXT,goal_run_id TEXT,role TEXT,content TEXT,created_at TEXT);
-            CREATE TABLE project_revisions(id TEXT,project_id TEXT,revision INTEGER,sha256 TEXT,snapshot_json TEXT);
+            CREATE TABLE project_revisions(id TEXT,project_id TEXT,revision INTEGER,sha256 TEXT,snapshot_json TEXT,worker_job_id TEXT,node_id TEXT,goal_run_id TEXT);
             CREATE TABLE project_context_snapshots(project_id TEXT,version INTEGER,goal_run_id TEXT,fingerprint TEXT,state_json TEXT,created_at TEXT);
+            CREATE TABLE tasks(id TEXT PRIMARY KEY,source TEXT);
+            CREATE TABLE plan_nodes(id TEXT PRIMARY KEY,goal_run_id TEXT,node_type TEXT,status TEXT,worker_job_id TEXT,task_id TEXT,required_skill TEXT,error_summary TEXT);
+            CREATE TABLE agent_jobs(id TEXT PRIMARY KEY,task_id TEXT,required_skill TEXT,status TEXT,result_json TEXT,payload_json TEXT,error TEXT,created_at TEXT);
         """)
         for project in ("own", "foreign"):
             db.execute("INSERT INTO goal_runs VALUES (?,?,?)", (project, case["objective"], 1))
@@ -89,7 +92,7 @@ def _database(path: Path, case: dict[str, Any]) -> None:
         checks = case.get("verified_checks", [])
         if checks:
             db.execute(
-                "INSERT INTO project_revisions VALUES (?,?,?,?,?)",
+                "INSERT INTO project_revisions(id,project_id,revision,sha256,snapshot_json) VALUES (?,?,?,?,?)",
                 (
                     "accepted-revision",
                     "own",
@@ -220,11 +223,20 @@ async def evaluate_case(
         requirements = case["expected"]["critical_fragments"]
         preserved = [fragment for fragment in requirements if fragment in payload_text]
         forbidden = case["expected"].get("foreign_fragments", [])
-        expected_checks = case.get("verified_checks", [])
-        checked = [
-            {k: v for k, v in item.items() if k != "source_id"}
-            for item in projection["payload"]["verified_results"]
+        # The service preserves recorded check fields while explicitly limiting
+        # their evidentiary scope. Validate those annotations and provenance too;
+        # an old recorded check must not silently become proof for current code.
+        expected_checks = [
+            {
+                "source_id": "accepted-revision",
+                **check,
+                "applicability": "historical",
+                "evidence_status": "recorded_check",
+                "tested_revision_status": "not_established",
+            }
+            for check in case.get("verified_checks", [])
         ]
+        checked = projection["payload"]["verified_results"]
         sources = list(
             dict.fromkeys(
                 [

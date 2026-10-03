@@ -17,6 +17,8 @@ from app.main import API_VERSION, create_app
 from app.settings import Settings
 
 HTTP_METHODS = {"delete", "get", "head", "options", "patch", "post", "put", "trace"}
+MEDIA_UPLOAD = "/agents/{agent_id}/jobs/{job_id}/media"
+MEDIA_DOWNLOAD = "/goals/{goal_id}/media/{artifact_id}"
 
 
 def operations(document: dict[str, Any]) -> set[tuple[str, str]]:
@@ -106,8 +108,8 @@ def effective_security(
 
 def validate_success_media(path: str, method: str, code: str, response: dict[str, Any]) -> None:
     # A raw Response has an empty JSON placeholder in FastAPI's generated schema.
-    # Keep this explicit binary boundary tied to the real screenshot route; all
-    # other successful payloads still require the published JSON schema.
+    # Keep binary exceptions tied to their real routes; all other successful
+    # payloads still require the published JSON schema.
     if (path, method) == ("/website-projects/{project_id}/screenshots/{sha256}", "get"):
         content = response.get("content", {})
         if not isinstance(content, dict) or set(content) != {"image/png"}:
@@ -118,8 +120,22 @@ def validate_success_media(path: str, method: str, code: str, response: dict[str
             "format": "binary",
         }:
             raise ValueError(f"screenshot response must declare a binary schema for {path}")
+    elif (path, method) == (MEDIA_DOWNLOAD, "get"):
+        validate_binary_media(response, "media response")
     elif code != "204" and media_schema(response) is None:
         raise ValueError(f"missing JSON response schema for {method.upper()} {path}")
+
+
+def validate_binary_media(container: dict[str, Any], label: str) -> None:
+    content = container.get("content", {})
+    if not isinstance(content, dict) or set(content) != {"image/png", "audio/wav"}:
+        raise ValueError(f"{label} must declare only image/png and audio/wav")
+    for media in content.values():
+        if not isinstance(media, dict) or media.get("schema") != {
+            "type": "string",
+            "format": "binary",
+        }:
+            raise ValueError(f"{label} must declare binary schemas")
 
 
 def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]) -> None:
@@ -145,7 +161,18 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
 
         declared_request = declared.get("requestBody")
         actual_request = actual.get("requestBody")
-        if bool(declared_request) != bool(actual_request):
+        if (path, method) == (MEDIA_UPLOAD, "post"):
+            # The route streams Request directly; FastAPI does not infer its
+            # binary body. Publish that existing wire contract explicitly.
+            if actual_request is not None:
+                raise ValueError("media upload runtime request schema changed")
+            if (
+                not isinstance(declared_request, dict)
+                or declared_request.get("required") is not True
+            ):
+                raise ValueError("media upload must require its raw binary body")
+            validate_binary_media(declared_request, "media upload")
+        elif bool(declared_request) != bool(actual_request):
             raise ValueError(f"request-body presence mismatch for {method.upper()} {path}")
         if isinstance(actual_request, dict) and isinstance(declared_request, dict):
             if bool(declared_request.get("required")) != bool(actual_request.get("required")):
@@ -182,6 +209,7 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
             "/agents/{agent_id}/jobs/{job_id}/heartbeat",
             "/agents/{agent_id}/jobs/{job_id}/result",
             "/agents/{agent_id}/jobs/{job_id}/project-source",
+            MEDIA_UPLOAD,
             "/agents/{agent_id}/jobs/{job_id}/capability-requests",
             "/agents/{agent_id}/jobs/{job_id}/capability-requests/{request_id}/poll",
         }:

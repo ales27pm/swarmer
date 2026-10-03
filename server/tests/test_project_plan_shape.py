@@ -230,7 +230,26 @@ def test_planner_generation_schema_supports_mixed_project_dags_with_server_singl
                 "focus": "Créer une application utile et vérifiée",
                 "queries": ["documentation officielle"],
             }
-        assert validator.is_valid(wire(_plan([node, _node("summary", None)])))
+        if skill == "image.generate":
+            node["worker_arguments"] = {
+                "prompt": "Un paysage bleu",
+                "model_profile": "chroma1-hd-q4",
+                "width": 512,
+                "height": 512,
+                "steps": 40,
+                "seed": 42,
+            }
+        if skill == "audio.synthesize":
+            node["worker_arguments"] = {
+                "text": "Bonjour, voici le résumé du projet.",
+                "language": "fr-FR",
+                "voice": "ff_siwis",
+                "max_duration_seconds": 10,
+            }
+        assert validator.is_valid(wire(_plan([node, _node("summary", None)]))), skill
+        if skill in {"image.generate", "audio.synthesize"}:
+            del node["worker_arguments"]
+            assert not validator.is_valid(wire(_plan([node, _node("summary", None)])))
     for case in ("synthesis", "dependencies", "optional_dependencies", "independent"):
         assert validator.is_valid(wire(_plan(_mixed_nodes(case)))), case
     # Cross-node mutator limits are enforced

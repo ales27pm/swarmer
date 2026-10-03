@@ -10,6 +10,8 @@ import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.services.media_contracts import MediaArtifact
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = importlib.util.spec_from_file_location(
     "published_openapi_validator", REPO_ROOT / "scripts" / "validate_openapi.py"
@@ -20,6 +22,8 @@ SCRIPT.loader.exec_module(validator)
 
 SCREENSHOT = "/website-projects/{project_id}/screenshots/{sha256}"
 PROJECT_SOURCE = "/agents/{agent_id}/jobs/{job_id}/project-source"
+MEDIA_UPLOAD = "/agents/{agent_id}/jobs/{job_id}/media"
+MEDIA_DOWNLOAD = "/goals/{goal_id}/media/{artifact_id}"
 
 
 @pytest.fixture(scope="module")
@@ -106,6 +110,60 @@ def test_other_success_responses_still_require_json(
     }
     with pytest.raises(ValueError, match="missing JSON response schema"):
         validator.validate_operation_contracts(broken, test_app.openapi())
+
+
+@pytest.mark.parametrize(
+    "route,method,container",
+    [
+        (MEDIA_DOWNLOAD, "get", "response"),
+        (MEDIA_UPLOAD, "post", "request"),
+    ],
+)
+@pytest.mark.parametrize(
+    "content",
+    [
+        {},
+        {"application/json": {"schema": {"type": "string"}}},
+        {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+        {
+            "image/png": {"schema": {"type": "string", "format": "binary"}},
+            "audio/wav": {"schema": {"type": "object"}},
+        },
+    ],
+)
+def test_media_contract_keeps_both_exact_binary_formats(
+    published: dict[str, Any],
+    test_app: FastAPI,
+    route: str,
+    method: str,
+    container: str,
+    content: dict[str, Any],
+) -> None:
+    broken = copy.deepcopy(published)
+    operation = broken["paths"][route][method]
+    target = operation["requestBody"] if container == "request" else operation["responses"]["200"]
+    target["content"] = content
+    with pytest.raises(ValueError, match="media (upload|response)"):
+        validator.validate_operation_contracts(broken, test_app.openapi())
+
+
+def test_media_upload_requires_agent_authentication_and_raw_body(
+    published: dict[str, Any],
+    test_app: FastAPI,
+) -> None:
+    broken = copy.deepcopy(published)
+    operation = broken["paths"][MEDIA_UPLOAD]["post"]
+    operation["security"] = [{"bearerAuth": []}]
+    with pytest.raises(ValueError, match="security declaration mismatch"):
+        validator.validate_operation_contracts(broken, test_app.openapi())
+    operation["security"] = [{"agentBearer": []}]
+    operation["requestBody"]["required"] = False
+    with pytest.raises(ValueError, match="media upload must require"):
+        validator.validate_operation_contracts(broken, test_app.openapi())
+
+
+def test_media_receipt_schema_preserves_runtime_bounds(published: dict[str, Any]) -> None:
+    assert published["components"]["schemas"]["MediaArtifact"] == MediaArtifact.model_json_schema()
 
 
 def test_project_source_contract_requires_agent_authentication(

@@ -60,6 +60,25 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
             bodies[0] if len(bodies) == 1 else {"anyOf": bodies}
         )
 
+    dependency_names: dict[str, str] = {}
+
+    def dependency_reference(bounds: dict[str, Any], prior_ids: list[str]) -> dict[str, Any]:
+        dependency = _prior_dependencies(bounds, prior_ids)
+        title = dependency.pop("title", None)
+        fingerprint = json.dumps(dependency, sort_keys=True, separators=(",", ":"))
+        if fingerprint not in dependency_names:
+            name = f"PlannerGraphDependencies{len(dependency_names) + 1}"
+            if name in definitions:
+                raise ValueError("planner graph definitions collide with the source schema")
+            # Reuse exactly equal constraints, retaining each title at its use
+            # site. Hard/optional edges with different bounds never share them.
+            definitions[name] = dependency
+            dependency_names[fingerprint] = name
+        reference = {"$ref": f"#/$defs/{dependency_names[fingerprint]}"}
+        if title is not None:
+            reference["title"] = title
+        return reference
+
     for index in range(1, MAX_PLAN_NODES + 1):
         prior_ids = [f"step_{previous}" for previous in range(1, index)]
         alternatives = []
@@ -73,8 +92,8 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
                     "properties": {
                         "00_temporary_id": {"type": "string", "const": f"step_{index}"},
                         "01_node": {"$ref": f"#/$defs/PlannerGraphBody{group_index}"},
-                        "02_dependencies": _prior_dependencies(dependencies, prior_ids),
-                        "03_optional_dependencies": _prior_dependencies(optional, prior_ids),
+                        "02_dependencies": dependency_reference(dependencies, prior_ids),
+                        "03_optional_dependencies": dependency_reference(optional, prior_ids),
                     },
                     "required": list(_WRAPPER_FIELDS),
                 }
