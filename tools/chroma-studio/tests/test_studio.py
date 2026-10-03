@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import studio
 from runner import DockerRunner, Settings, acquire_gpu_lock, parse_progress, read_png
 from studio import JobManager, create_app
 
@@ -68,6 +70,7 @@ def test_real_lifecycle_persist_image_and_single_active(setup):
     identifier = created.json()["id"]
     assert 0 <= created.json()["seed"] <= 2147483647
     assert runner.started.wait(1)
+    assert settings.gpu_lock.read_bytes() == expected_marker(settings)
     assert client.post("/api/jobs", json={"prompt": "another"}, headers=headers).status_code == 409
     assert client.get(f"/api/jobs/{identifier}/image").status_code == 409
     status = client.get("/api/status").json()
@@ -86,10 +89,11 @@ def test_real_lifecycle_persist_image_and_single_active(setup):
     assert stored["status"] == "completed"
     assert (settings.state.stat().st_mode & 0o777) == 0o700
     assert client.get("/api/status").json()["ready"]
+    assert settings.gpu_lock.read_bytes() == b""
 
 
 def test_cancellation_is_idempotent_and_keeps_gpu_lock_until_stopped(setup):
-    client, runner, headers, *_ = setup
+    client, runner, headers, settings, _ = setup
     identifier = client.post("/api/jobs", json={"prompt": "A tree"}, headers=headers).json()["id"]
     assert runner.started.wait(1)
     response = client.post(f"/api/jobs/{identifier}/cancel", json={}, headers=headers)
@@ -98,6 +102,7 @@ def test_cancellation_is_idempotent_and_keeps_gpu_lock_until_stopped(setup):
     assert finished["image_url"] is None
     assert client.post(f"/api/jobs/{identifier}/cancel", json={}, headers=headers).json()["status"] == "cancelled"
     assert client.get("/api/status").json()["active_job"] is None
+    assert settings.gpu_lock.read_bytes() == b""
 
 
 @pytest.mark.parametrize("body", [
@@ -136,7 +141,7 @@ def test_busy_production_rejected_without_work(setup):
 
 
 def test_restart_marks_interrupted_failed_and_retains_completed(tmp_path):
-    settings = Settings(tmp_path, tmp_path / "models", tmp_path / "runtime", tmp_path / "db")
+    settings = Settings(tmp_path, tmp_path / "models", tmp_path / "runtime", tmp_path / "db", gpu_lock=tmp_path / "gpu.lock")
     for identifier, status in [("a" * 32, "running"), ("b" * 32, "completed")]:
         work = tmp_path / identifier
         work.mkdir()
@@ -193,7 +198,7 @@ def test_png_rejects_truncation_and_wrong_dimensions(tmp_path):
 
 
 def test_cleanup_failure_blocks_subsequent_generation(setup):
-    client, runner, headers, _, _ = setup
+    client, runner, headers, settings, _ = setup
     def fail_cleanup(*args):
         raise RuntimeError("renderer_cleanup_failed")
     runner.run = fail_cleanup
@@ -208,6 +213,7 @@ def test_cleanup_failure_blocks_subsequent_generation(setup):
     assert client.post("/api/jobs", json={"prompt": "again"}, headers=headers).status_code == 503
     with pytest.raises(BlockingIOError):
         acquire_gpu_lock(setup[3].gpu_lock)
+    assert settings.gpu_lock.read_bytes() == expected_marker(settings)
 
 
 def test_worker_shared_lock_rejects_before_job_is_queued(setup):
@@ -217,8 +223,10 @@ def test_worker_shared_lock_rejects_before_job_is_queued(setup):
         status = client.get("/api/status").json()
         assert not status["ready"]
         assert status["availability_code"] == "image_slot_reserved"
-        assert "worker" in status["message"]
-        assert client.post("/api/jobs", json={"prompt": "x"}, headers=headers).status_code == 409
+        assert status["message"] == "Le GPU est réservé à une autre tâche locale."
+        response = client.post("/api/jobs", json={"prompt": "x"}, headers=headers)
+        assert response.status_code == 409
+        assert response.json()["detail"] == status["message"]
         assert client.get("/api/status").json()["jobs"] == []
         assert not runner.started.is_set()
     finally:
@@ -275,6 +283,7 @@ def test_queued_persistence_failure_releases_shared_lock(setup, monkeypatch):
     assert manager.active is None
     descriptor = acquire_gpu_lock(settings.gpu_lock)
     os.close(descriptor)
+    assert settings.gpu_lock.read_bytes() == b""
 
 
 def test_shared_lock_default_and_operator_override(monkeypatch, tmp_path):
@@ -282,3 +291,256 @@ def test_shared_lock_default_and_operator_override(monkeypatch, tmp_path):
     assert Settings.from_env().gpu_lock == Path.home() / ".local/state/swarmer-gpu/image-generation.lock"
     monkeypatch.setenv("CHROMA_STUDIO_GPU_LOCK", str(tmp_path / "shared.lock"))
     assert Settings.from_env().gpu_lock == tmp_path / "shared.lock"
+
+
+def expected_marker(settings):
+    scope = hashlib.sha256(str(settings.state.resolve()).encode()).hexdigest()[:16]
+    return f"chroma-studio-v1:{scope}\n".encode()
+
+
+def isolated_settings(tmp_path):
+    return Settings(tmp_path / "state", tmp_path / "models", tmp_path / "runtime", tmp_path / "db",
+                    gpu_lock=tmp_path / "gpu.lock")
+
+
+def test_readiness_is_rechecked_under_lock_before_accepting_job(setup, monkeypatch):
+    client, runner, headers, settings, _ = setup
+    def backend_commits_before_studio_acquires(path):
+        descriptor = acquire_gpu_lock(path)
+        runner.busy = True
+        return descriptor
+    monkeypatch.setattr(studio, "acquire_gpu_lock", backend_commits_before_studio_acquires)
+    response = client.post("/api/jobs", json={"prompt": "x"}, headers=headers)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "GPU occupé"
+    assert not runner.started.is_set()
+    assert not list(settings.state.glob("*/job.json"))
+    assert settings.gpu_lock.read_bytes() == b""
+    descriptor = acquire_gpu_lock(settings.gpu_lock)
+    os.close(descriptor)
+
+
+def test_reservation_is_synced_before_thread_starts(setup, monkeypatch):
+    client, runner, headers, settings, _ = setup
+    real_fsync, real_run = os.fsync, runner.run
+    synced = threading.Event()
+    def observe_fsync(descriptor):
+        real_fsync(descriptor)
+        if os.fstat(descriptor).st_ino == settings.gpu_lock.stat().st_ino:
+            assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+            synced.set()
+    def assert_reserved(*args):
+        assert synced.is_set()
+        assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+        return real_run(*args)
+    monkeypatch.setattr(studio.os, "fsync", observe_fsync)
+    monkeypatch.setattr(runner, "run", assert_reserved)
+    client.post("/api/jobs", json={"prompt": "x"}, headers=headers)
+    assert runner.started.wait(1)
+    # Restore before the cancellation/terminal cleanup deliberately syncs empty.
+    monkeypatch.setattr(studio.os, "fsync", real_fsync)
+
+
+@pytest.mark.parametrize("marker", [b"another-worker-v1\n", b"chroma-studio-v1:foreign\n", b"\x00"])
+def test_foreign_marker_blocks_start_and_create_without_cleanup(tmp_path, marker):
+    settings = isolated_settings(tmp_path)
+    settings.gpu_lock.write_bytes(marker)
+    inode = settings.gpu_lock.stat().st_ino
+    runner = FakeRunner()
+    manager = JobManager(settings, runner)
+    manager.start()
+    try:
+        assert runner.cleanups == 0
+        assert manager.status()["availability_code"] == "cleanup_required"
+        with pytest.raises(studio.HTTPException) as error:
+            manager.create(studio.JobRequest(prompt="x"))
+        assert error.value.status_code == 409
+        assert not runner.started.is_set()
+        assert runner.cleanups == 0
+        assert settings.gpu_lock.read_bytes() == marker
+        assert settings.gpu_lock.stat().st_ino == inode
+    finally:
+        manager.close()
+    assert settings.gpu_lock.read_bytes() == marker
+
+
+def test_startup_with_worker_lock_defers_recovery_until_create(tmp_path):
+    settings = isolated_settings(tmp_path)
+    worker = acquire_gpu_lock(settings.gpu_lock)
+    runner = FakeRunner()
+    manager = JobManager(settings, runner)
+    manager.start()
+    try:
+        assert runner.cleanups == 0
+        assert manager.status()["availability_code"] == "image_slot_reserved"
+        os.close(worker)
+        worker = None
+        assert manager.status()["ready"]
+        manager.create(studio.JobRequest(prompt="x"))
+        assert runner.started.wait(1)
+        assert runner.cleanups == 1
+        assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+    finally:
+        if worker is not None:
+            os.close(worker)
+        manager.close()
+
+
+def test_readiness_recovers_own_marker_after_transient_startup_lock(tmp_path):
+    settings = isolated_settings(tmp_path)
+    settings.gpu_lock.write_bytes(expected_marker(settings))
+    inode = settings.gpu_lock.stat().st_ino
+    worker = acquire_gpu_lock(settings.gpu_lock)
+    runner = FakeRunner()
+    manager = JobManager(settings, runner)
+    manager.start()
+    try:
+        assert manager.status()["availability_code"] == "image_slot_reserved"
+        assert runner.cleanups == 0
+        os.close(worker)
+        worker = None
+        status = manager.status()
+        assert status["ready"]
+        assert status["availability_code"] == "ready"
+        assert runner.cleanups == 1
+        assert not manager.recovery_pending
+        assert settings.gpu_lock.read_bytes() == b""
+        assert settings.gpu_lock.stat().st_ino == inode
+        assert manager.jobs == {}
+        assert not runner.started.is_set()
+        assert manager.status()["ready"]
+        assert runner.cleanups == 1
+    finally:
+        if worker is not None:
+            os.close(worker)
+        manager.close()
+
+
+def test_readiness_cleanup_failure_is_closed_and_can_recover_later(tmp_path):
+    settings = isolated_settings(tmp_path)
+    settings.gpu_lock.write_bytes(expected_marker(settings))
+    worker = acquire_gpu_lock(settings.gpu_lock)
+    runner = FakeRunner()
+    manager = JobManager(settings, runner)
+    manager.start()
+    os.close(worker)
+    original = runner.cleanup_interrupted
+    def fail_cleanup():
+        raise RuntimeError("Docker cleanup is unavailable")
+    runner.cleanup_interrupted = fail_cleanup
+    try:
+        status = manager.status()
+        assert not status["ready"]
+        assert status["availability_code"] == "cleanup_required"
+        assert manager.recovery_pending
+        assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+        assert not runner.started.is_set()
+        # The failed probe releases flock but preserves the durable reservation.
+        descriptor = acquire_gpu_lock(settings.gpu_lock)
+        os.close(descriptor)
+        runner.cleanup_interrupted = original
+        assert manager.status()["ready"]
+        assert runner.cleanups == 1
+        assert settings.gpu_lock.read_bytes() == b""
+        assert manager.jobs == {}
+    finally:
+        manager.close()
+
+
+def test_restart_recovers_only_own_marker_after_cleanup(tmp_path):
+    settings = isolated_settings(tmp_path)
+    settings.gpu_lock.write_bytes(expected_marker(settings))
+    inode = settings.gpu_lock.stat().st_ino
+    runner = FakeRunner()
+    original = runner.cleanup_interrupted
+    def cleanup():
+        assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+        with pytest.raises(BlockingIOError):
+            acquire_gpu_lock(settings.gpu_lock)
+        original()
+    runner.cleanup_interrupted = cleanup
+    manager = JobManager(settings, runner)
+    manager.start()
+    try:
+        assert runner.cleanups == 1
+        assert settings.gpu_lock.read_bytes() == b""
+        assert settings.gpu_lock.stat().st_ino == inode
+    finally:
+        manager.close()
+
+
+def test_failed_startup_cleanup_retains_durable_marker(tmp_path):
+    settings = isolated_settings(tmp_path)
+    settings.gpu_lock.write_bytes(expected_marker(settings))
+    runner = FakeRunner()
+    def fail_cleanup():
+        raise RuntimeError("docker unavailable")
+    runner.cleanup_interrupted = fail_cleanup
+    manager = JobManager(settings, runner)
+    with pytest.raises(RuntimeError, match="docker unavailable"):
+        manager.start()
+    assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+    assert manager.state_lock is None
+
+
+def test_crash_releases_flock_but_not_durable_reservation(tmp_path):
+    settings = isolated_settings(tmp_path)
+    script = """
+import os, sys, threading, time
+from pathlib import Path
+from runner import Settings
+from studio import JobManager, JobRequest
+root = Path(sys.argv[1])
+class Runner:
+    def cleanup_interrupted(self): pass
+    def ready(self): return True, '', 'ready'
+    def run(self, *args):
+        (root / 'renderer-survives').write_text('running')
+        os._exit(23)
+manager = JobManager(Settings(root/'state', root/'models', root/'runtime', root/'db', gpu_lock=root/'gpu.lock'), Runner())
+manager.start()
+manager.create(JobRequest(prompt='crash fixture'))
+time.sleep(5)
+os._exit(24)
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], cwd=Path(studio.__file__).parent,
+                            timeout=10, capture_output=True, check=False)
+    assert result.returncode == 23, result.stderr.decode()
+    inode = settings.gpu_lock.stat().st_ino
+    descriptor = acquire_gpu_lock(settings.gpu_lock)
+    try:
+        assert os.read(descriptor, 128) == expected_marker(settings)
+    finally:
+        os.close(descriptor)
+    # Recovery represents positively stopping the renderer that survived the
+    # service process. The reservation must exist throughout that cleanup.
+    runner = FakeRunner()
+    def cleanup():
+        assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+        (tmp_path / "renderer-survives").unlink()
+    runner.cleanup_interrupted = cleanup
+    manager = JobManager(settings, runner)
+    manager.start()
+    try:
+        assert not (tmp_path / "renderer-survives").exists()
+        assert settings.gpu_lock.read_bytes() == b""
+        assert settings.gpu_lock.stat().st_ino == inode
+        assert all(job["status"] == "failed" for job in manager.jobs.values())
+    finally:
+        manager.close()
+
+
+def test_run_error_with_unconfirmed_cleanup_keeps_marker(setup, monkeypatch):
+    client, runner, headers, settings, _ = setup
+    def broken_run(*args):
+        raise OSError("receipt write failed after uncertain cleanup")
+    def broken_cleanup():
+        raise RuntimeError("cleanup unavailable")
+    monkeypatch.setattr(runner, "run", broken_run)
+    monkeypatch.setattr(runner, "cleanup_interrupted", broken_cleanup)
+    identifier = client.post("/api/jobs", json={"prompt": "x"}, headers=headers).json()["id"]
+    wait_status(client, identifier, "failed")
+    assert settings.gpu_lock.read_bytes() == expected_marker(settings)
+    assert client.get("/api/status").json()["availability_code"] == "cleanup_required"
+    # Permit fixture teardown to demonstrate a later positive cleanup can clear.
+    monkeypatch.setattr(runner, "cleanup_interrupted", lambda: None)

@@ -154,6 +154,7 @@ class MediaRenderer:
         residency: Callable[[], bool] = resident_gpu_models,
         sandbox_enabled: bool = False,
         gpu_lock_path: Path | None = None,
+        external_admission: bool = False,
     ) -> None:
         if timeout_seconds is None:
             timeout_seconds = 600 if skill == "image.generate" else 180
@@ -173,10 +174,13 @@ class MediaRenderer:
         self.residency = residency
         self.sandbox_enabled = sandbox_enabled
         self.gpu_lock_path = gpu_lock_path
+        self.external_admission = external_admission and skill == "image.generate"
+        if self.external_admission and gpu_lock_path is None:
+            raise ValueError("external admission requires a shared GPU lock")
         self._gpu_lock_fd: int | None = None
 
     def acquire_slot(self) -> bool:
-        """Reserve the operator's shared image slot before claiming any work."""
+        """Hold the shared image slot without clearing uncertain Studio ownership."""
         if self.skill != "image.generate" or self.gpu_lock_path is None:
             return True
         if self._gpu_lock_fd is not None:
@@ -189,11 +193,17 @@ class MediaRenderer:
                 or path.parent.resolve(strict=True) != path.parent
             ):
                 return False
-            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            descriptor = os.open(
+                path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+            )
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
                 return False
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Studio leaves a durable marker until renderer cleanup is confirmed.
+            # A process crash releases flock, but must not authorize a second job.
+            if os.fstat(descriptor).st_size:
+                return False
             self._gpu_lock_fd = descriptor
             descriptor = None
             return True
@@ -202,6 +212,30 @@ class MediaRenderer:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    def probe_slot(self) -> bool:
+        """Check the slot without holding it across the backend's claim transaction."""
+        try:
+            return self.acquire_slot()
+        finally:
+            self.release_slot()
+
+    def wait_for_slot(self, ensure_active: Callable[[], None]) -> None:
+        """Finish one claimed handoff while its existing lease is being renewed."""
+        deadline = time.monotonic() + 10
+        while True:
+            ensure_active()
+            if self.acquire_slot():
+                try:
+                    ensure_active()
+                except BaseException:
+                    self.release_slot()
+                    raise
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MediaError("resource_busy")
+            time.sleep(min(0.05, remaining))
 
     def release_slot(self) -> None:
         if self._gpu_lock_fd is not None:

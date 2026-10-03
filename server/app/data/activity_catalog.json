@@ -1741,6 +1741,44 @@
         "Appareil ou worker enregistré et disponible.",
         "Arguments validés ; permissions et configuration de la cible requises."
       ]
+    },
+    {
+      "id": "image.generate",
+      "title": "Créer une image locale",
+      "description": "Générer une image à partir d’un prompt et d’un profil de modèle pris en charge par le worker.",
+      "inputs": [
+        "Description de l’image (prompt, 2 000 caractères maximum)",
+        "Profil du modèle, dimensions, nombre d’étapes et graine"
+      ],
+      "output": "Fichier PNG avec dimensions, taille et empreinte vérifiées.",
+      "execution": {
+        "kind": "worker",
+        "target": "image.generate"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Action structurée avec un profil compatible : Chroma 512 × 512 en 40 étapes ou SDXL Lightning en 4 étapes.",
+        "Modèle installé et ressources disponibles ; ces conditions sont vérifiées à l’exécution."
+      ]
+    },
+    {
+      "id": "audio.synthesize",
+      "title": "Lire un texte en français",
+      "description": "Synthétiser une voix parlée locale à partir du texte fourni, avec la voix française prise en charge.",
+      "inputs": [
+        "Texte à prononcer (1 000 caractères maximum)",
+        "Langue fr-FR, voix ff_siwis et durée maximale de 1 à 30 secondes"
+      ],
+      "output": "Fichier WAV mono à 24 kHz avec durée, taille et empreinte vérifiées.",
+      "execution": {
+        "kind": "worker",
+        "target": "audio.synthesize"
+      },
+      "requirements": [
+        "Worker enregistré, autorisé et avec un heartbeat récent.",
+        "Action structurée précisant le texte, la langue, la voix et la limite de durée.",
+        "Modèle vocal installé ; cette compétence ne clone pas de voix et ne génère pas de musique."
+      ]
     }
   ],
   "roles": [
@@ -1926,6 +1964,7 @@
       "description": "Préparer des supports cohérents à partir d’un brief et d’éléments fournis.",
       "skill_ids": [
         "design.visual_brief",
+        "image.generate",
         "iphone.photos.pick",
         "design.image_variants",
         "design.asset_export"
@@ -2209,6 +2248,18 @@
       ],
       "examples": [
         "Vérifier un projet autorisé et fournir les preuves du résultat."
+      ]
+    },
+    {
+      "id": "french_voice_creator",
+      "domain_id": "communication",
+      "title": "Narrateur français",
+      "description": "Transformer un texte fourni en un fichier de voix parlée avec des paramètres explicites.",
+      "skill_ids": [
+        "audio.synthesize"
+      ],
+      "examples": [
+        "Créer une lecture audio d’un texte français avec la voix ff_siwis et une durée maximale de 30 secondes."
       ]
     }
   ]

@@ -55,6 +55,98 @@ def test_gpu_slot_rejects_symlink_and_busy_owner(tmp_path):
     renderer.release_slot()
 
 
+def test_nonempty_gpu_slot_marker_is_never_cleared_or_admitted(tmp_path):
+    lock = tmp_path / "image-generation.lock"
+    marker = b"chroma-studio-v1:operator-scope\n"
+    lock.write_bytes(marker)
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate", gpu_lock_path=lock
+    )
+    assert not renderer.acquire_slot()
+    assert renderer._gpu_lock_fd is None
+    assert lock.read_bytes() == marker
+    # Marker refusal must close its descriptor, not retain a hidden flock.
+    with lock.open("rb") as probe:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_external_admission_probe_releases_slot_for_backend_claim(tmp_path):
+    lock = tmp_path / "image-generation.lock"
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate", gpu_lock_path=lock,
+        external_admission=True,
+    )
+    assert renderer.probe_slot()
+    assert renderer._gpu_lock_fd is None
+    with lock.open("rb") as backend:
+        fcntl.flock(backend, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert not renderer.probe_slot()
+    renderer.wait_for_slot(lambda: None)
+    assert renderer._gpu_lock_fd is not None
+    renderer.release_slot()
+
+
+def test_external_admission_requires_a_shared_image_lock(tmp_path):
+    with pytest.raises(ValueError, match="shared GPU lock"):
+        runtime.MediaRenderer(
+            tmp_path / "profile.json", "image.generate", external_admission=True
+        )
+    audio = runtime.MediaRenderer(
+        tmp_path / "profile.json", "audio.synthesize", external_admission=True
+    )
+    assert not audio.external_admission
+    assert audio.acquire_slot()
+
+
+def test_handoff_wait_checks_lease_before_any_acquisition(tmp_path):
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate",
+        gpu_lock_path=tmp_path / "lock", external_admission=True,
+    )
+
+    def lost():
+        raise worker.protocol.LeaseLost("cancelled")
+
+    with pytest.raises(worker.protocol.LeaseLost):
+        renderer.wait_for_slot(lost)
+    assert renderer._gpu_lock_fd is None
+
+
+def test_handoff_wait_is_bounded_and_does_not_remove_marker(tmp_path, monkeypatch):
+    lock = tmp_path / "lock"
+    marker = b"chroma-studio-v1:unfinished\n"
+    lock.write_bytes(marker)
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate", gpu_lock_path=lock,
+        external_admission=True,
+    )
+    clock = [0.0]
+    checks = []
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runtime.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+    with pytest.raises(contract.MediaError, match="resource_busy"):
+        renderer.wait_for_slot(lambda: checks.append(clock[0]))
+    assert 10 <= clock[0] < 10.1
+    assert len(checks) > 1
+    assert lock.read_bytes() == marker and renderer._gpu_lock_fd is None
+
+
+def test_handoff_acquires_after_transient_owner_releases(tmp_path, monkeypatch):
+    lock = tmp_path / "lock"
+    owner = lock.open("a")
+    fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate", gpu_lock_path=lock,
+        external_admission=True,
+    )
+    checks = []
+    monkeypatch.setattr(runtime.time, "sleep", lambda _delay: owner.close())
+    renderer.wait_for_slot(lambda: checks.append(True))
+    assert owner.closed and renderer._gpu_lock_fd is not None
+    assert len(checks) >= 3
+    renderer.release_slot()
+
+
 @pytest.mark.parametrize("result,expected", [(b"", False), (b"container123\n", True)])
 def test_orphan_studio_container_prevents_claim(
     monkeypatch, tmp_path, result, expected

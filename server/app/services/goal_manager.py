@@ -46,7 +46,10 @@ from app.services.goal_state import (
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.media_contracts import MEDIA_SKILLS
 from app.services.media_store import MediaConflict, media_root, verify_media_result
-from app.services.model_resource_admission import active_local_model_work_locked
+from app.services.model_resource_admission import (
+    active_local_model_work_locked,
+    model_admission_connection,
+)
 from app.services.permission_policy import PermissionPolicy
 from app.services.plan_validation import (
     PlanValidationError,
@@ -1807,7 +1810,9 @@ class GoalManager:
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> str:
         call_id = f"gmc_{uuid4().hex}"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with model_admission_connection(
+            self.db_path, self.agent_dispatcher.local_model_gpu_lock_path
+        ) as (db, gpu_admission):
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             # Resource/lease expiry must be checked against time observed after
@@ -1870,7 +1875,8 @@ class GoalManager:
                     (now, str(pending["id"])),
                 )
             if provider_source == PlannerSource.UBUNTU_LOCAL.value and (
-                await active_local_model_work_locked(db, now=now_dt)
+                not gpu_admission.try_acquire()
+                or await active_local_model_work_locked(db, now=now_dt)
             ):
                 # No model call or budget credit exists yet. Reconciliation may
                 # try admission later without classifying contention as failure.

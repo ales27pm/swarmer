@@ -59,6 +59,62 @@ describe("project media results", () => {
     expect(screen.getByText("La génération du média a échoué.")).toBeOnTheScreen();
     expect(screen.getByText("Le moteur est indisponible.")).toBeOnTheScreen();
   });
+  it.each<[Exclude<PlanNode["status"], "completed">, string]>([
+    ["planned", "Génération du média planifiée."],
+    ["ready", "Génération du média prête, en attente d’exécution."],
+    ["dispatched", "Demande de génération transmise, en attente de démarrage."],
+    ["running", "Génération du média en cours…"],
+    ["waiting_permission", "Votre autorisation est nécessaire pour générer ce média."],
+    ["waiting_capability", "Aucun agent compatible n’est disponible pour générer ce média."],
+    ["failed", "La génération du média a échoué."],
+    ["blocked", "Cette étape de génération est bloquée."],
+    ["cancelled", "La génération a été annulée."],
+    ["skipped", "Cette étape de génération a été ignorée."],
+  ])("describes %s accurately without fetching media or offering a retry", async (status, message) => {
+    await render(<GoalMediaArtifacts {...props} nodes={[{ ...node, status, error_summary: "Diagnostic de cette étape." }]} />);
+    expect(screen.getByText(message)).toBeOnTheScreen();
+    expect(screen.getByText("Diagnostic de cette étape.")).toBeOnTheScreen();
+    expect(screen.queryByText("Génération du média en attente.")).not.toBeOnTheScreen();
+    expect(screen.queryByRole("button")).not.toBeOnTheScreen();
+    expect(getGoalMediaArtifacts).not.toHaveBeenCalled();
+    expect(getGoalMediaBytes).not.toHaveBeenCalled();
+    expect(createGoalMediaCache).not.toHaveBeenCalled();
+  });
+  it("updates audio status after permission and fetches only once the generation completes", async () => {
+    const audioNode = { ...node, required_skill: "audio.synthesize", title: "Créer un audio" };
+    jest.mocked(getGoalMediaArtifacts).mockResolvedValue([audio.artifact]);
+    await render(<GoalMediaArtifacts {...props} nodes={[{ ...audioNode, status: "waiting_permission" }]} />);
+    expect(screen.getByText("Votre autorisation est nécessaire pour générer ce média.")).toBeOnTheScreen();
+    await screen.rerender(<GoalMediaArtifacts {...props} nodes={[{ ...audioNode, status: "ready" }]} />);
+    expect(screen.queryByText("Votre autorisation est nécessaire pour générer ce média.")).not.toBeOnTheScreen();
+    expect(screen.getByText("Génération du média prête, en attente d’exécution.")).toBeOnTheScreen();
+    await screen.rerender(<GoalMediaArtifacts {...props} nodes={[{ ...audioNode, status: "running" }]} />);
+    expect(screen.getByText("Génération du média en cours…")).toBeOnTheScreen();
+    expect(getGoalMediaArtifacts).not.toHaveBeenCalled();
+    expect(getGoalMediaBytes).not.toHaveBeenCalled();
+    await screen.rerender(<GoalMediaArtifacts {...props} nodes={[audioNode]} />);
+    await screen.findByRole("button", { name: "Lire l’audio" });
+    expect(screen.queryByText("Génération du média en cours…")).not.toBeOnTheScreen();
+    expect(getGoalMediaArtifacts).toHaveBeenCalledTimes(1);
+    expect(getGoalMediaBytes).toHaveBeenCalledTimes(1);
+    expect(mockPlayer.play).not.toHaveBeenCalled();
+  });
+  it("discards pending media when a refreshed node is blocked instead of completed", async () => {
+    const waiting = deferred<typeof image.artifact[]>();
+    jest.mocked(getGoalMediaArtifacts).mockReturnValueOnce(waiting.promise);
+    await render(<GoalMediaArtifacts {...props} />);
+    const [, accepts, signal] = jest.mocked(getGoalMediaArtifacts).mock.calls[0];
+    await screen.rerender(<GoalMediaArtifacts {...props} nodes={[{ ...node, status: "blocked", error_summary: "Une étape préalable a échoué." }]} />);
+    expect(screen.getByText("Cette étape de génération est bloquée.")).toBeOnTheScreen();
+    expect(screen.getByText("Une étape préalable a échoué.")).toBeOnTheScreen();
+    expect(accepts?.()).toBe(false);
+    expect(signal?.aborted).toBe(true);
+    await act(async () => waiting.resolve([image.artifact]));
+    expect(screen.queryByRole("image")).not.toBeOnTheScreen();
+    expect(getGoalMediaArtifacts).toHaveBeenCalledTimes(1);
+    expect(getGoalMediaBytes).not.toHaveBeenCalled();
+    expect(createGoalMediaCache).not.toHaveBeenCalled();
+  });
   it("uses local audio only, starts on explicit play and pauses on leaving Results", async () => {
     jest.mocked(getGoalMediaArtifacts).mockResolvedValue([audio.artifact]); mockPut.mockReturnValueOnce("file:///private/cache/audio.wav");
     await render(<GoalMediaArtifacts {...props} />);

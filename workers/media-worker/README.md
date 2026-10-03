@@ -227,12 +227,40 @@ trusted parent retains its fixed control-plane and loopback Ollama connections.
 No arbitrary shell command is accepted.
 
 Set `MONGARS_MEDIA_GPU_LOCK` to the same operator-owned lock file used by Chroma
-Studio (`CHROMA_STUDIO_GPU_LOCK`). The image worker takes an exclusive nonblocking
-flock before claiming and holds it until the attempt finishes; a busy slot consumes
-no claim. Never unlink or replace that file while either service is running.
-A separate read-only Docker inventory check also blocks orphan Studio containers
-after a Studio crash; an unavailable Docker inventory fails closed. This complements
-the server's model admission and Ollama residency checks, without unloading models.
+Studio (`CHROMA_STUDIO_GPU_LOCK`) and the API (`MONGARS_LOCAL_MODEL_GPU_LOCK_PATH`).
+All three services must see the same local inode, owned by their shared operator
+account; use a private directory and mode 0600 for the file. Never unlink, replace
+or truncate it while any of these services is running. Any nonempty content is
+an unresolved Studio ownership marker: the worker fails closed even if the flock
+is free after a process crash. Only Studio's verified cleanup may clear its marker.
+A separate read-only Docker inventory check also blocks orphan Studio containers;
+an unavailable Docker inventory fails closed. Neither check unloads models.
+
+`MONGARS_MEDIA_EXTERNAL_ADMISSION=1` enables the coordinated protocol:
+
+1. The image worker probes the flock and releases it before asking for a job.
+2. The API holds a short nonblocking flock through the SQLite claim transaction's
+   commit or rollback. A busy slot defers admission before consuming an attempt.
+3. After claim, the worker starts lease renewal, then acquires the renderer flock.
+   This handoff waits at most 10 seconds and checks the lease throughout; timeout
+   reports `resource_busy` for that one claim, without a second claim or hidden retry.
+4. The worker holds the flock through renderer cleanup and result submission.
+   Studio rechecks database admission after acquiring the same flock, so it sees
+   the committed image lease before starting its own renderer.
+
+This flag requires a **coordinated rollout** of the compatible API, Studio and
+image worker. Stage all artifacts first; at idle, stop the image worker, configure
+the API lock path and worker opt-in together, activate the compatible services,
+then start the worker. Do not enable the API lock while a legacy preclaim-locking
+worker continues polling: it would block its own claim. Rollback must likewise
+restore a compatible configuration set, with the worker stopped during the switch,
+preserving the lock and any unresolved marker. Existing lease and cleanup checks
+still apply; a terminal HTTP response does not prove Ollama released GPU memory.
+
+With the opt-in omitted or `0`, the worker retains its legacy behavior: acquire
+before claim and hold until the attempt finishes. Audio synthesis ignores this
+setting, never takes the GPU flock, and remains on CPU. The shared-lock protocol
+does not change its model, dependencies or limits.
 
 Register the corresponding agent card, configure the environment using
 `.env.example`, and start with the chosen environment's Python:

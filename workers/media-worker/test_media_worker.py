@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import fcntl
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -418,6 +420,131 @@ def test_busy_shared_slot_never_claims_and_releases_after_failure():
     assert worker.run_once(client, renderer, heartbeat_factory=FakeHeartbeat)
     assert client.results[-1]["error"] == "runtime_error"
     assert released == [True, True]
+
+
+@pytest.mark.parametrize("external_admission", [False, True])
+def test_shared_slot_handoff_order_and_ownership_through_result(
+    tmp_path, monkeypatch, external_admission
+):
+    client = FakeClient("image.generate")
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate",
+        gpu_lock_path=tmp_path / "gpu.lock",
+        external_admission=external_admission,
+    )
+    monkeypatch.setattr(renderer, "available", lambda: True)
+    original_claim, original_result = client.claim, client.submit_result
+
+    def independent_lock_is_busy():
+        with (tmp_path / "gpu.lock").open("r+b") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            return False
+
+    def claim():
+        assert independent_lock_is_busy() is not external_admission
+        return original_claim()
+
+    def generate(payload, directory, ensure):
+        ensure()
+        assert "renewal_started" in client.events
+        assert independent_lock_is_busy()
+        client.events.append("generate")
+        path = directory / "output.png"
+        Image.new("RGB", (512, 512)).save(path)
+        return path
+
+    def submit_result(*args):
+        assert independent_lock_is_busy()
+        original_result(*args)
+
+    monkeypatch.setattr(client, "claim", claim)
+    monkeypatch.setattr(client, "submit_result", submit_result)
+    monkeypatch.setattr(renderer, "generate", generate)
+    assert worker.run_once(client, renderer, heartbeat_factory=FakeHeartbeat)
+    assert client.events.index("claim") < client.events.index("renewal_started")
+    assert client.events.index("renewal_started") < client.events.index("generate")
+    assert client.events.count("claim") == 1
+    assert client.results[0]["status"] == "completed"
+    assert client.heartbeat.stopped and not independent_lock_is_busy()
+
+
+def test_external_handoff_timeout_reports_once_and_preserves_marker(tmp_path, monkeypatch):
+    client = FakeClient("image.generate")
+    lock = tmp_path / "gpu.lock"
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate",
+        gpu_lock_path=lock, external_admission=True,
+    )
+    monkeypatch.setattr(renderer, "available", lambda: True)
+    original_claim = client.claim
+    marker = b"chroma-studio-v1:uncertain-cleanup\n"
+    clock = [0.0]
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def claim():
+        lock.write_bytes(marker)
+        return original_claim()
+
+    monkeypatch.setattr(client, "claim", claim)
+    monkeypatch.setattr(renderer, "generate", lambda *args: pytest.fail("must not render"))
+    assert worker.run_once(client, renderer, heartbeat_factory=FakeHeartbeat)
+    assert 10 <= clock[0] <= 10.1
+    assert client.events.count("claim") == 1 and "upload" not in client.events
+    assert client.results == [{"status": "failed", "error": "resource_busy"}]
+    assert client.heartbeat.stopped and renderer._gpu_lock_fd is None
+    assert lock.read_bytes() == marker
+
+
+def test_external_handoff_lost_lease_never_acquires_or_renders(tmp_path, monkeypatch):
+    client = FakeClient("image.generate")
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "image.generate",
+        gpu_lock_path=tmp_path / "gpu.lock", external_admission=True,
+    )
+    monkeypatch.setattr(renderer, "available", lambda: True)
+    original_claim, original_acquire = client.claim, renderer.acquire_slot
+    acquisitions = []
+
+    def acquire():
+        acquisitions.append(True)
+        return original_acquire()
+
+    def claim():
+        client.lost = True
+        return original_claim()
+
+    monkeypatch.setattr(client, "claim", claim)
+    monkeypatch.setattr(renderer, "acquire_slot", acquire)
+    monkeypatch.setattr(renderer, "generate", lambda *args: pytest.fail("must not render"))
+    assert worker.run_once(client, renderer, heartbeat_factory=FakeHeartbeat)
+    assert len(acquisitions) == 1  # Only the probe before claim.
+    assert client.events.count("claim") == 1 and "upload" not in client.events
+    assert not client.results and client.heartbeat.stopped
+    assert renderer._gpu_lock_fd is None
+
+
+def test_cpu_audio_ignores_external_admission_and_shared_gpu_owner(tmp_path, monkeypatch):
+    client = FakeClient()
+    renderer = runtime.MediaRenderer(
+        tmp_path / "profile.json", "audio.synthesize",
+        gpu_lock_path=tmp_path / "gpu.lock", external_admission=True,
+    )
+    fake = FakeRenderer()
+    monkeypatch.setattr(renderer, "generate", fake.generate)
+    monkeypatch.setattr(renderer, "probe_slot", lambda: pytest.fail("audio must not probe"))
+    monkeypatch.setattr(renderer, "wait_for_slot", lambda _: pytest.fail("audio must not wait"))
+    descriptor = os.open(tmp_path / "gpu.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.write(descriptor, b"chroma-studio-v1:active\n")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert worker.run_once(client, renderer, heartbeat_factory=FakeHeartbeat)
+        assert client.results[0]["status"] == "completed"
+    finally:
+        os.close(descriptor)
 
 
 def test_cancellation_after_upload_discards_result_and_scratch():

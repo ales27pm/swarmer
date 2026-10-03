@@ -126,7 +126,9 @@ def run_once(
         return False
     heartbeat = None
     try:
-        if not renderer.available() or not renderer.acquire_slot():
+        external_admission = getattr(renderer, "external_admission", False)
+        slot_ready = renderer.probe_slot if external_admission else renderer.acquire_slot
+        if not renderer.available() or not slot_ready():
             client.heartbeat_agent(renderer.unavailable_status)
             return False
         client.heartbeat_agent("online")
@@ -145,6 +147,10 @@ def run_once(
             if job.get("required_skill") != renderer.skill:
                 raise MediaError("invalid_arguments")
             payload = validate_payload(renderer.skill, job.get("payload"))
+            if external_admission:
+                # Claim committed the backend's resource lease. Its short flock
+                # is now released; renew the lease while taking renderer ownership.
+                renderer.wait_for_slot(heartbeat.ensure_active)
             with tempfile.TemporaryDirectory(prefix="swarmer-media-") as directory:
                 path = renderer.generate(
                     payload, Path(directory), heartbeat.ensure_active
@@ -216,6 +222,7 @@ def main() -> None:
         gpu_lock_path=Path(os.environ["MONGARS_MEDIA_GPU_LOCK"])
         if os.environ.get("MONGARS_MEDIA_GPU_LOCK")
         else None,
+        external_admission=os.environ.get("MONGARS_MEDIA_EXTERNAL_ADMISSION") == "1",
     )
     client = MediaClient(
         os.environ["MONGARS_SERVER_URL"],

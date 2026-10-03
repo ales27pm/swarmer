@@ -4,7 +4,7 @@ import logging
 import secrets
 import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -23,6 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.models import (
@@ -79,6 +80,7 @@ from app.services.code_proposal import (
 )
 from app.services.context_builder import ContextBuilder
 from app.services.control_plane_instance import ControlPlaneInstanceService
+from app.services.direct_model_admission import LocalGPUUnavailable, direct_model_admission
 from app.services.embedding_service import HttpEmbeddingService
 from app.services.episode_memory import EpisodeMemoryService
 from app.services.evaluator_provider import UbuntuEvaluatorProvider
@@ -362,6 +364,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
         else None
     )
     permission_policy = PermissionPolicy.from_yaml(settings.permissions_path)
+
+    def direct_model_slot() -> AbstractAsyncContextManager[None]:
+        return direct_model_admission(settings.db_path, settings.local_model_gpu_lock_path)
+
     memory_normalizer = (
         OpenAIMemoryNormalizationProvider(
             settings.memory_normalization_base_url or "",
@@ -370,6 +376,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             reviewer_model=settings.memory_reviewer_model,
             reviewer_revision=settings.memory_reviewer_revision,
             timeout_seconds=settings.memory_normalization_timeout_seconds,
+            model_admission=direct_model_slot,
         )
         if settings.memory_canonical_language == "en"
         else None
@@ -382,6 +389,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             reviewer_model=settings.memory_reviewer_model,
             reviewer_revision=settings.memory_reviewer_revision,
             timeout_seconds=settings.memory_normalization_timeout_seconds,
+            model_admission=direct_model_slot,
         )
         if settings.memory_canonical_language == "en"
         else None
@@ -443,6 +451,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         outbox_publication_lease_seconds=settings.outbox_publication_lease_seconds,
         agent_offline_timeout_seconds=settings.agent_offline_timeout_seconds,
         permission_policy=permission_policy,
+        local_model_gpu_lock_path=settings.local_model_gpu_lock_path,
     )
     activity_catalog = ActivityCatalogService(
         settings.db_path,
@@ -785,6 +794,15 @@ def create_app(config: Settings | None = None) -> FastAPI:
             await message_board.close()
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
+
+    @app.exception_handler(LocalGPUUnavailable)
+    async def local_gpu_unavailable(request: Request, exc: LocalGPUUnavailable) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Le GPU local est occupé ou indisponible. Réessayez plus tard."},
+            headers={"Retry-After": "5", "X-Mongars-Resource": "local_gpu_busy"},
+        )
+
     app.state.settings = settings
     app.state.website_workflow = website_workflow
     app.state.state_service = state_service
@@ -1378,30 +1396,31 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=409, detail=f"task cannot be planned from {task.status.value}"
             )
-        try:
-            await state_service.update_task_status(task_id, "planned")
-        except StateConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        await state_service.append_audit(
-            "orchestrator.requested",
-            {"model": settings.orchestrator_model},
-            task_id=task_id,
-            trace_id=task_id,
-        )
-        try:
-            proposal = await planner_provider.plan(task.input, task.mode.value)
-        except OrchestratorError as exc:
+        async with direct_model_slot():
             try:
-                await state_service.update_task_status(task_id, "failed", error=str(exc))
-            except StateConflict:
-                pass
+                await state_service.update_task_status(task_id, "planned")
+            except StateConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             await state_service.append_audit(
-                "orchestrator.failed",
-                {"error": str(exc)},
+                "orchestrator.requested",
+                {"model": settings.orchestrator_model},
                 task_id=task_id,
                 trace_id=task_id,
             )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            try:
+                proposal = await planner_provider.plan(task.input, task.mode.value)
+            except OrchestratorError as exc:
+                try:
+                    await state_service.update_task_status(task_id, "failed", error=str(exc))
+                except StateConflict:
+                    pass
+                await state_service.append_audit(
+                    "orchestrator.failed",
+                    {"error": str(exc)},
+                    task_id=task_id,
+                    trace_id=task_id,
+                )
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         if proposal["tool_name"] != "none":
             try:
@@ -2175,24 +2194,27 @@ def create_app(config: Settings | None = None) -> FastAPI:
             await broadcast({"type": "task.updated", "payload": task.model_dump(mode="json")})
             return {"conversation_id": conversation_id, "task": task.model_dump(mode="json")}
 
-        conversation_id, user_message = await state_service.append_chat_user_message(
-            request.content, request.conversation_id, str(principal["id"])
-        )
-        await broadcast({"type": "message.created", "payload": user_message})
-        history = await state_service.list_messages(conversation_id, 40)
-        try:
-            reply = await orchestrator_service.chat(
-                [
-                    {
-                        "role": "assistant" if item["role"] in {"agent", "assistant"} else "user",
-                        "content": item["content"],
-                    }
-                    for item in history
-                    if item["role"] in {"user", "agent", "assistant"}
-                ]
+        async with direct_model_slot():
+            conversation_id, user_message = await state_service.append_chat_user_message(
+                request.content, request.conversation_id, str(principal["id"])
             )
-        except OrchestratorError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            await broadcast({"type": "message.created", "payload": user_message})
+            history = await state_service.list_messages(conversation_id, 40)
+            try:
+                reply = await orchestrator_service.chat(
+                    [
+                        {
+                            "role": "assistant"
+                            if item["role"] in {"agent", "assistant"}
+                            else "user",
+                            "content": item["content"],
+                        }
+                        for item in history
+                        if item["role"] in {"user", "agent", "assistant"}
+                    ]
+                )
+            except OrchestratorError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
         assistant_message = await state_service.append_conversation_message(
             conversation_id, "agent", reply, agent_id="local-orchestrator"
         )

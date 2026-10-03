@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     goal_max_model_calls: int = Field(default=100, ge=1, le=100)
     goal_auto_continue_on_model_budget_exhausted: bool = True
     goal_model_call_lease_seconds: int = Field(default=120, ge=30, le=900)
+    # Opt-in host-local handshake with Studio; all participants use one inode.
+    local_model_gpu_lock_path: Path | None = None
     goal_model_timeout_seconds: float = Field(default=60, ge=10, le=120)
     goal_context_max_tokens: int = Field(default=8_192, ge=64, le=32_768)
     goal_context_max_memory_items: int = Field(default=6, ge=0, le=100)

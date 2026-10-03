@@ -27,6 +27,7 @@ from app.services.media_store import MediaConflict, media_root, verify_media_res
 from app.services.message_board import MessageBoard
 from app.services.model_resource_admission import (
     active_local_model_work_locked,
+    model_admission_connection,
     requires_local_model_resource,
 )
 from app.services.outbox import OutboxService
@@ -74,8 +75,10 @@ class AgentDispatcher:
         agent_offline_timeout_seconds: int = DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS,
         permission_policy: PermissionPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
+        local_model_gpu_lock_path: Path | None = None,
     ) -> None:
         self.db_path = db_path
+        self.local_model_gpu_lock_path = local_model_gpu_lock_path
         self.board = board
         self.outbox = OutboxService(
             db_path,
@@ -442,7 +445,9 @@ class AgentDispatcher:
         lease_id = f"lease_{uuid4().hex}"
         lease_token = secrets.token_urlsafe(32)
         token_hash = lease_token_hash(lease_token)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with model_admission_connection(
+            self.db_path, self.local_model_gpu_lock_path
+        ) as (db, gpu_admission):
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             # Writer contention may have delayed this transaction beyond an
@@ -496,9 +501,6 @@ class AgentDispatcher:
                 else:
                     await db.rollback()
                 return None
-            local_model_busy = any(requires_local_model_resource(skill) for skill in skills) and (
-                await active_local_model_work_locked(db, now=claimed_at)
-            )
             placeholders = ",".join("?" for _ in skills)
             rows = await (
                 await db.execute(
@@ -520,6 +522,12 @@ class AgentDispatcher:
                     (*skills, self.CLAIM_CANDIDATE_LIMIT),
                 )
             ).fetchall()
+            local_model_busy = any(
+                requires_local_model_resource(str(candidate["required_skill"])) for candidate in rows
+            ) and (
+                not gpu_admission.try_acquire()
+                or await active_local_model_work_locked(db, now=claimed_at)
+            )
             row: aiosqlite.Row | None = None
             selection = None
             for candidate in rows:

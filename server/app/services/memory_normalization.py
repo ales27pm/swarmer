@@ -14,10 +14,13 @@ import json
 import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from app.services.direct_model_admission import LocalGPUUnavailable
 
 MAX_SOURCE_BYTES = 8_000
 MAX_CANONICAL_BYTES = 16_000
@@ -355,6 +358,7 @@ class OpenAIMemoryNormalizationProvider:
         max_output_tokens: int = 2048,
         reasoning_effort: Literal["none"] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        model_admission: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> None:
         try:
             parsed = httpx.URL(base_url)
@@ -401,6 +405,7 @@ class OpenAIMemoryNormalizationProvider:
         self.translator_revision, self.reviewer_revision = translator_revision, reviewer_revision
         self.timeout_seconds, self.max_output_tokens = timeout_seconds, max_output_tokens
         self.reasoning_effort, self.transport = reasoning_effort, transport
+        self.model_admission = model_admission
         self.normalization_signature = _digest(
             {
                 "policy_sha256": POLICY_SHA256,
@@ -429,6 +434,7 @@ class OpenAIMemoryNormalizationProvider:
                 "max_output_tokens": self.max_output_tokens,
                 "reasoning_effort": self.reasoning_effort,
                 "transport_identity": id(self.transport),
+                "admission_identity": id(self.model_admission),
                 "normalization_signature": self.normalization_signature,
                 "identity": self.identity,
             }
@@ -482,16 +488,20 @@ class OpenAIMemoryNormalizationProvider:
             body["reasoning_effort"] = self.reasoning_effort
         if len(_json(body).encode("utf-8")) > request_budget_bytes:
             raise MemoryNormalizationError("invalid", "request_budget_exceeded")
-        async with client.stream(
-            "POST", f"{self.base_url}/chat/completions", json=body
-        ) as response:
-            if not 200 <= response.status_code < 300:
-                raise MemoryNormalizationError("unavailable", "provider_http_failure")
-            chunks = bytearray()
-            async for chunk in response.aiter_bytes():
-                chunks.extend(chunk)
-                if len(chunks) > MAX_RESPONSE_BYTES:
-                    raise MemoryNormalizationError("invalid", "response_budget_exceeded")
+        try:
+            async with (
+                self.model_admission() if self.model_admission else nullcontext(),
+                client.stream("POST", f"{self.base_url}/chat/completions", json=body) as response,
+            ):
+                if not 200 <= response.status_code < 300:
+                    raise MemoryNormalizationError("unavailable", "provider_http_failure")
+                chunks = bytearray()
+                async for chunk in response.aiter_bytes():
+                    chunks.extend(chunk)
+                    if len(chunks) > MAX_RESPONSE_BYTES:
+                        raise MemoryNormalizationError("invalid", "response_budget_exceeded")
+        except LocalGPUUnavailable as exc:
+            raise MemoryNormalizationError("unavailable", "local_gpu_busy") from exc
         self._assert_configuration()
         try:
             envelope = _strict_json(chunks)

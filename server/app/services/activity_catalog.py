@@ -18,6 +18,7 @@ from app.services.agent_card import (
 )
 from app.services.agent_liveness import DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS, agent_is_fresh
 from app.services.iphone_capability_service import EXTENDED_AGENDA_CAPABILITIES
+from app.services.media_contracts import MEDIA_SKILLS
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.worker_skill_policy import (
     WorkerSkillPolicySnapshot,
@@ -45,11 +46,12 @@ AvailabilityState = Literal[
     "unknown",
 ]
 
-# These two implemented jobs need explicit paths that a generic goal node does
-# not carry. The remaining worker targets have a bounded GoalManager mapping.
+# These jobs need explicit arguments that a generic objective does not carry.
+# The remaining worker targets have a bounded GoalManager mapping.
 PARAMETER_BOUND_SKILLS = (
     frozenset({"workspace.read_text", "code_review.static_analysis", "research.collect"})
     | SPECIALIST_SKILLS
+    | MEDIA_SKILLS
 )
 GOAL_READY_SKILLS = frozenset(
     {
@@ -321,6 +323,18 @@ class ActivityCatalogService:
         agent_ids = agents.get(target, [])[:250]
         if not agent_ids:
             return result("worker_unavailable", "Aucun agent compatible ne répond actuellement.")
+        if target in MEDIA_SKILLS:
+            parameters = (
+                "le prompt, le profil du modèle, les dimensions, les étapes et la graine"
+                if target == "image.generate"
+                else "le texte, la langue fr-FR, la voix ff_siwis et la durée maximale"
+            )
+            return result(
+                "parameters_required",
+                f"Agent compatible disponible ; {parameters} doivent être précisés dans une "
+                "action structurée. Le modèle et les ressources seront vérifiés à l’exécution.",
+                agent_ids,
+            )
         if target in PARAMETER_BOUND_SKILLS:
             return result(
                 "parameters_required",

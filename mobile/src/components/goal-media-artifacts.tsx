@@ -9,6 +9,18 @@ import { createGoalMediaCache } from "@/lib/goal-media-cache";
 import { subscribeConnectionChanges } from "@/lib/connection-events";
 
 const isMediaNode = (node: PlanNode) => node.required_skill === "image.generate" || node.required_skill === "audio.synthesize";
+const MEDIA_STATUS_LABELS: Record<Exclude<PlanNode["status"], "completed">, string> = {
+  planned: "Génération du média planifiée.",
+  ready: "Génération du média prête, en attente d’exécution.",
+  dispatched: "Demande de génération transmise, en attente de démarrage.",
+  running: "Génération du média en cours…",
+  waiting_permission: "Votre autorisation est nécessaire pour générer ce média.",
+  waiting_capability: "Aucun agent compatible n’est disponible pour générer ce média.",
+  failed: "La génération du média a échoué.",
+  blocked: "Cette étape de génération est bloquée.",
+  cancelled: "La génération a été annulée.",
+  skipped: "Cette étape de génération a été ignorée.",
+};
 let stopActiveMedia: (() => void) | undefined;
 
 function AudioPreview({ uri }: { uri: string }) {
@@ -154,11 +166,10 @@ export function GoalMediaArtifacts({ goalId, nodes, enabled, visible }: {
   if (!mediaNodes.length) return null;
   const jobs = mediaNodes.filter((node) => node.status === "completed" && node.worker_job_id).map((node) => node.worker_job_id!);
   return <View style={{ gap: 14 }}>
-    {mediaNodes.filter((node) => node.status !== "completed").map((node) => <Card key={node.id}>
+    {mediaNodes.map((node) => node.status === "completed" ? null : <Card key={node.id}>
       <Text style={{ color: COLORS.text, fontWeight: "700" }}>{node.title}</Text>
       <Text accessibilityLiveRegion="polite" style={{ color: COLORS.muted }}>
-        {node.status === "failed" ? "La génération du média a échoué." : node.status === "cancelled" ? "La génération a été annulée."
-          : node.status === "running" ? "Génération du média en cours…" : "Génération du média en attente."}
+        {MEDIA_STATUS_LABELS[node.status]}
       </Text>
       {node.error_summary ? <ErrorBanner message={node.error_summary} /> : null}
     </Card>)}

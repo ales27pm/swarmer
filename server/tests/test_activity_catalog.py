@@ -165,6 +165,44 @@ def test_catalogue_separates_goal_mapping_and_parameters_and_keeps_busy_workers(
             assert db.execute("SELECT COUNT(*) FROM " + table).fetchone() == (0,)
 
 
+@pytest.mark.parametrize(
+    "skill,required_terms",
+    [
+        ("image.generate", ("prompt", "profil", "dimensions", "étapes", "graine")),
+        ("audio.synthesize", ("texte", "fr-FR", "ff_siwis", "durée")),
+    ],
+)
+def test_media_catalogue_exposes_parameters_without_creating_generation(
+    client: TestClient,
+    paired_headers: dict[str, str],
+    test_app: FastAPI,
+    skill: str,
+    required_terms: tuple[str, ...],
+) -> None:
+    agent_id = _register(client, paired_headers, skill)
+    test_app.state.activity_catalog.clock = lambda: NOW
+    with sqlite3.connect(test_app.state.settings.db_path) as db:
+        db.execute(
+            "UPDATE agents SET status='online',last_seen_at=? WHERE id=?",
+            (NOW.isoformat(), agent_id),
+        )
+    payload = client.get("/catalog/activities", headers=paired_headers).json()
+    entry = next(item for item in payload["skills"] if item["id"] == skill)
+    assert entry["execution"] == {"kind": "worker", "target": skill}
+    assert entry["availability"]["state"] == "parameters_required"
+    assert entry["availability"]["agent_ids"] == [agent_id]
+    assert any(skill in role["skill_ids"] for role in payload["roles"])
+    guidance = " ".join([entry["availability"]["reason"], *entry["inputs"]])
+    for term in required_terms:
+        assert term in guidance
+    assert "fichiers à consulter" not in guidance
+    with pytest.raises(GoalManagerConflict, match="explicit bounded parameters"):
+        GoalManager._payload_for_node({"required_skill": skill, "objective": "Créer un média"})
+    with sqlite3.connect(test_app.state.settings.db_path) as db:
+        for table in ("goal_runs", "agent_jobs", "goal_model_calls", "plan_nodes"):
+            assert db.execute("SELECT COUNT(*) FROM " + table).fetchone() == (0,)
+
+
 def test_catalogue_caps_discovery_ids_without_changing_registered_workers(
     client: TestClient, paired_headers: dict[str, str], test_app: FastAPI
 ) -> None:

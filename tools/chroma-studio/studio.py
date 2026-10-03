@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -70,6 +71,8 @@ class JobManager:
         self.started_mono: dict[str, float] = {}
         self.blocked_reason: str | None = None
         self.gpu_lease: int | None = None
+        self.gpu_marker = b"chroma-studio-v1:" + hashlib.sha256(str(settings.state.resolve()).encode()).hexdigest()[:16].encode() + b"\n"
+        self.recovery_pending = True
 
     def start(self):
         self.settings.state.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -77,7 +80,17 @@ class JobManager:
         self.state_lock = (self.settings.state / ".service.lock").open("a")
         try:
             fcntl.flock(self.state_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.runner.cleanup_interrupted()
+            try:
+                descriptor = acquire_gpu_lock(self.settings.gpu_lock)
+            except BlockingIOError:
+                # Another renderer owns this inode. Retry our scoped recovery
+                # under its lock on the next readiness/create, never interrupt it.
+                pass
+            else:
+                try:
+                    self._recover_gpu(descriptor)
+                finally:
+                    os.close(descriptor)
             for path in sorted(self.settings.state.glob("*/job.json")):
                 if path.is_symlink() or path.parent.is_symlink():
                     continue
@@ -109,25 +122,51 @@ class JobManager:
             # Cleanup uncertainty retains the shared lease until positively
             # resolved, so the worker cannot start another image meanwhile.
             self.runner.cleanup_interrupted()
-            self._release_gpu_lease()
+            self._release_gpu_lease(cleanup_confirmed=True)
         if self.state_lock is not None:
             self.state_lock.close()
 
-    def _release_gpu_lease(self):
+    def _clear_own_marker(self, descriptor):
+        if os.pread(descriptor, len(self.gpu_marker) + 1, 0) == self.gpu_marker:
+            os.ftruncate(descriptor, 0)
+            os.fsync(descriptor)
+
+    def _recover_gpu(self, descriptor):
+        marker = os.pread(descriptor, len(self.gpu_marker) + 1, 0)
+        if marker and marker != self.gpu_marker:
+            return
+        self.runner.cleanup_interrupted()
+        self._clear_own_marker(descriptor)
+        self.recovery_pending = False
+
+    def _release_gpu_lease(self, *, cleanup_confirmed=False):
         if self.gpu_lease is not None:
-            os.close(self.gpu_lease)
-            self.gpu_lease = None
+            try:
+                if cleanup_confirmed:
+                    self._clear_own_marker(self.gpu_lease)
+            finally:
+                os.close(self.gpu_lease)
+                self.gpu_lease = None
 
     def _gpu_available(self):
         try:
             descriptor = acquire_gpu_lock(self.settings.gpu_lock)
         except BlockingIOError:
-            return False, "Le GPU est réservé au worker de création d’images Swarmer.", "image_slot_reserved"
+            return False, "Le GPU est réservé à une autre tâche locale.", "image_slot_reserved"
         except OSError:
             return False, "Le verrou partagé du GPU est indisponible.", "gpu_lock_unavailable"
         else:
-            os.close(descriptor)
-            return True, "", "ready"
+            try:
+                if self.recovery_pending:
+                    try:
+                        self._recover_gpu(descriptor)
+                    except Exception:  # noqa: BLE001 - A failed recovery stays pending and never admits work.
+                        return False, ERROR_MESSAGES["renderer_cleanup_failed"], "cleanup_required"
+                if os.fstat(descriptor).st_size:
+                    return False, ERROR_MESSAGES["renderer_cleanup_failed"], "cleanup_required"
+                return True, "", "ready"
+            finally:
+                os.close(descriptor)
 
     def _save(self, job):
         directory = self.settings.state / job["id"]
@@ -183,27 +222,48 @@ class JobManager:
             try:
                 self.gpu_lease = acquire_gpu_lock(self.settings.gpu_lock)
             except BlockingIOError:
-                raise HTTPException(409, "Le GPU est réservé au worker de création d’images Swarmer.") from None
+                raise HTTPException(409, "Le GPU est réservé à une autre tâche locale.") from None
             except OSError:
                 raise HTTPException(503, "Le verrou partagé du GPU est indisponible.") from None
-            identifier = uuid.uuid4().hex
-            data = request.model_dump()
-            data["seed"] = secrets.randbelow(2147483648) if request.seed is None else request.seed
-            job = {**data, "id": identifier, "status": "queued", "phase": "queued", "progress": None,
-                   "elapsed_seconds": 0, "created_at": datetime.now(timezone.utc).isoformat(), "image_url": None, "error": None}
-            self.jobs[identifier] = job
-            self.active = identifier
-            self.started_mono[identifier] = time.monotonic()
-            self.cancel_event = threading.Event()
+            identifier = None
+            marked = False
+            thread = None
             try:
+                if self.recovery_pending:
+                    self._recover_gpu(self.gpu_lease)
+                if os.fstat(self.gpu_lease).st_size:
+                    raise HTTPException(409, ERROR_MESSAGES["renderer_cleanup_failed"])
+                # The backend holds this same lock through its admission commit.
+                # Recheck DB/model readiness only after acquiring it, closing the
+                # interval where a new backend job could have become active.
+                ready, message, _ = self.runner.ready()
+                if not ready:
+                    raise HTTPException(409, message)
+                identifier = uuid.uuid4().hex
+                data = request.model_dump()
+                data["seed"] = secrets.randbelow(2147483648) if request.seed is None else request.seed
+                job = {**data, "id": identifier, "status": "queued", "phase": "queued", "progress": None,
+                       "elapsed_seconds": 0, "created_at": datetime.now(timezone.utc).isoformat(), "image_url": None, "error": None}
+                self.jobs[identifier] = job
+                self.active = identifier
+                self.started_mono[identifier] = time.monotonic()
+                self.cancel_event = threading.Event()
+                if os.write(self.gpu_lease, self.gpu_marker) != len(self.gpu_marker):
+                    raise OSError("Incomplete GPU reservation marker")
+                os.fsync(self.gpu_lease)
+                marked = True
                 self._save(job)
-                self.thread = threading.Thread(target=self._run, args=(identifier, self.cancel_event), daemon=True)
-                self.thread.start()
+                thread = threading.Thread(target=self._run, args=(identifier, self.cancel_event), daemon=True)
+                self.thread = thread
+                thread.start()
             except BaseException:
-                self._release_gpu_lease()
-                self.active = None
-                self.started_mono.pop(identifier, None)
-                self.jobs.pop(identifier, None)
+                if thread is not None and thread.is_alive():
+                    self.cancel_event.set()
+                else:
+                    self._release_gpu_lease(cleanup_confirmed=marked)
+                    self.active = None
+                    self.started_mono.pop(identifier, None)
+                    self.jobs.pop(identifier, None)
                 raise
             return self.public(job)
 
@@ -230,6 +290,13 @@ class JobManager:
             result = {"status": "failed", "phase": "failed", "error": code}
         with self.lock:
             job = self.jobs[identifier]
+            if result.get("error") != "renderer_cleanup_failed":
+                try:
+                    # Confirm own-container absence even if run raised while
+                    # writing its receipt, masking an earlier cleanup failure.
+                    self.runner.cleanup_interrupted()
+                except Exception:  # noqa: BLE001 - Any cleanup uncertainty must retain the durable reservation.
+                    result = {"status": "failed", "phase": "failed", "error": "renderer_cleanup_failed"}
             if result.get("error") == "renderer_cleanup_failed":
                 self.blocked_reason = ERROR_MESSAGES["renderer_cleanup_failed"]
             result["error"] = ERROR_MESSAGES.get(result.get("error"), result.get("error"))
@@ -243,7 +310,7 @@ class JobManager:
                 # runner.run returns only after container cleanup. If cleanup
                 # could not be confirmed, retain the lease and fail closed.
                 if not self.blocked_reason:
-                    self._release_gpu_lease()
+                    self._release_gpu_lease(cleanup_confirmed=True)
                 self.active = None
                 self.started_mono.pop(identifier, None)
 
