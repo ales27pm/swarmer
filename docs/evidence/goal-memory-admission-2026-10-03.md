@@ -330,10 +330,44 @@ private qualification directory. Neither artifact was deployed or installed by
 these build/qualification steps. They do not establish iPhone runtime behavior
 or Core ML Neural Engine compatibility.
 
+### Compatibility predecessor deployed, schema 27 retained
+
+The first rollout tranche activated
+`local-20261003-memory-compat27-397e979987a6`. Its provenance is the deployed
+`e4d52d1` application plus the reviewed compatibility patch; it is **not** a
+schema-28 deployment of `9288fd4`. Only `activity_contracts.py` and
+`state_service.py` differ from the previous live API. It retains schema 27 on
+initialization and can reopen schema 28 for a subsequent code rollback.
+
+The real private-copy stage checked 120 application files, unchanged dependency
+metadata and schema 27→27 across all 63 tables and rowids. The actual preceding
+release reopened that same copy without alteration. Stage SHA256:
+`ae88840b6dc545ec3f0e7cd8f59c0bfb8cabd0b9deb671b8bc621aa89fdab41f`.
+The reviewed completed coordinator config SHA256 is
+`2db5f0d971fb06acd359bbb8529172b237591f34650f644338898f01f70c6bd1`;
+prepare baseline SHA256:
+`573d037fecad2ded555f9a39b034d8f87f2a16f00aa74a464c8c2aaa6cc50967`.
+
+The supervised deployment completed successfully in **10.486 seconds** and
+reported no database restoration. Independent live verification at
+13:42:21 UTC confirmed nine active services, all **52 protected fingerprints
+identical**, seven retained Studio jobs and 37 Studio files unchanged, API health
+and Studio readiness. The canonical-language option remains unset (`legacy`).
+No model, policy or private configuration was changed. Deployment journal SHA256:
+`c1c9425b3e84355d46616c67b8cfddf4817d6404843a95294f6bc6e940afa005`.
+Independent verification receipt SHA256:
+`8c577c38144ee0958843b9f7b98d07bfb299d7cff1627e7eca90852d90477c93`.
+
+Local receipts: `compat27-deployment-inputs/live-verification/`. The source-
+preserving candidate and compatible iOS IPA are still separate artifacts. The
+known iPhone was connected but reported `passcodeRequired=true` at 13:24:29 UTC;
+it was not installed or relaunched by this tranche.
+
 ## Remaining proof
 
-- No server deployment, production canonical-memory activation or historical
-  backfill is included in this evidence.
+- The compatibility predecessor is deployed. The schema-28 candidate, compatible
+  iOS installation, production canonical-memory activation and historical
+  backfill remain outstanding.
 - The four-call trial proves exact original display for one French source, but
   semantic qualification of its English pivot is still not accepted. A broader
   fixed corpus must include faithful and altered claims; one mechanical success
