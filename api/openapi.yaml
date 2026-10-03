@@ -2899,6 +2899,327 @@ paths:
         remain null. Responses use Cache-Control: private, no-store. Refresh from the first page when the
         cursor is stale.'
 
+  /memory/concepts:
+    post:
+      summary: Create Memory Concept
+      operationId: create_memory_concept_memory_concepts_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SymbolicConceptCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConceptDefinition'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Source or proposal is absent or unavailable in the requested
+            scope.
+        '409':
+          description: Source revision, evidence binding, concept or relation is no
+            longer applicable.
+      tags:
+      - Memory
+      description: Paired-device symbolic proposals only. Source bindings are checked
+        against the current original revision and exact scope; claims remain unvalidated
+        and do not grant authority. Responses must not be cached.
+  /memory/{memory_id}/symbolic-source:
+    get:
+      summary: Describe Symbolic Memory Source
+      operationId: describe_symbolic_memory_source_memory__memory_id__symbolic_source_get
+      parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Memory Id
+      - name: scope
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolicSourceDescription'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Source or proposal is absent or unavailable in the requested
+            scope.
+        '409':
+          description: Source revision, evidence binding, concept or relation is no
+            longer applicable.
+      tags:
+      - Memory
+      description: Paired-device symbolic proposals only. Source bindings are checked
+        against the current original revision and exact scope; claims remain unvalidated
+        and do not grant authority. Responses must not be cached.
+  /memory/proposals:
+    post:
+      summary: Create Memory Proposal
+      operationId: create_memory_proposal_memory_proposals_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SymbolicProposalCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolicProposalRecord'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Source or proposal is absent or unavailable in the requested
+            scope.
+        '409':
+          description: Source revision, evidence binding, concept or relation is no
+            longer applicable.
+      tags:
+      - Memory
+      description: Paired-device symbolic proposals only. Source bindings are checked
+        against the current original revision and exact scope; claims remain unvalidated
+        and do not grant authority. Responses must not be cached.
+  /memory/{memory_id}/proposals:
+    get:
+      summary: List Memory Proposals
+      operationId: list_memory_proposals_memory__memory_id__proposals_get
+      parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Memory Id
+      - name: scope
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolicMemoryPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Source or proposal is absent or unavailable in the requested
+            scope.
+        '409':
+          description: Source revision, evidence binding, concept or relation is no
+            longer applicable.
+      tags:
+      - Memory
+      description: Paired-device symbolic proposals only. Source bindings are checked
+        against the current original revision and exact scope; claims remain unvalidated
+        and do not grant authority. Responses must not be cached.
+  /memory/proposals/{proposal_id}/relations:
+    post:
+      summary: Relate Memory Proposals
+      operationId: relate_memory_proposals_memory_proposals__proposal_id__relations_post
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Proposal Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SymbolicRelationCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolicRelationRecord'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Source or proposal is absent or unavailable in the requested
+            scope.
+        '409':
+          description: Source revision, evidence binding, concept or relation is no
+            longer applicable.
+      tags:
+      - Memory
+      description: Paired-device symbolic proposals only. Source bindings are checked
+        against the current original revision and exact scope; claims remain unvalidated
+        and do not grant authority. Responses must not be cached.
+
+  /memory/concepts/{concept_id}:
+    get:
+      summary: Read Memory Concept
+      operationId: read_memory_concept_memory_concepts__concept_id__get
+      parameters:
+      - name: concept_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^urn:swarmer:concept:[a-f0-9]{32}$
+          title: Concept Id
+      - name: scope
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConceptDefinition'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '404':
+          description: Concept not available in the requested scope.
+        '409':
+          description: Concept record is inconsistent.
+      tags:
+      - Memory
+      description: Read proposed multilingual labels in the exact requested scope. Concept
+        identity and labels do not grant authority or establish that a claim is true.
+
 x-websocket-endpoints:
   /ws:
     authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
@@ -7834,3 +8155,624 @@ components:
       - expected_version
       - build_digest
       title: WebsiteReview
+
+    ConceptDefinition:
+      properties:
+        concept_id:
+          type: string
+          pattern: ^urn:swarmer:concept:[a-f0-9]{32}$
+          title: Concept Id
+        scope:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+        namespace:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Namespace
+        scheme_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Scheme Id
+        labels:
+          items:
+            $ref: '#/components/schemas/ConceptLabel'
+          type: array
+          maxItems: 64
+          minItems: 1
+          title: Labels
+        curation_status:
+          type: string
+          enum:
+          - proposed
+          - curated
+          title: Curation Status
+          default: proposed
+        grants_authority:
+          type: boolean
+          const: false
+          title: Grants Authority
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - concept_id
+      - scope
+      - namespace
+      - scheme_id
+      - labels
+      title: ConceptDefinition
+    ConceptLabel:
+      properties:
+        text:
+          type: string
+          maxLength: 400
+          minLength: 1
+          title: Text
+        language:
+          $ref: '#/components/schemas/LanguageAnnotation'
+        role:
+          type: string
+          enum:
+          - pref
+          - alt
+          - hidden
+          title: Role
+          default: pref
+      additionalProperties: false
+      type: object
+      required:
+      - text
+      - language
+      title: ConceptLabel
+    EffectiveCondition:
+      properties:
+        relation:
+          type: string
+          enum:
+          - before
+          - after
+          - only_after
+          - until
+          - while
+          - unless
+          - if
+          - only_if
+          - at
+          title: Relation
+        argument:
+          oneOf:
+          - $ref: '#/components/schemas/IdentityTerm'
+          - $ref: '#/components/schemas/TypedLiteral'
+          title: Argument
+          discriminator:
+            propertyName: type
+            mapping:
+              identity: '#/components/schemas/IdentityTerm'
+              literal: '#/components/schemas/TypedLiteral'
+      additionalProperties: false
+      type: object
+      required:
+      - relation
+      - argument
+      title: EffectiveCondition
+    IdentityTerm:
+      properties:
+        type:
+          type: string
+          const: identity
+          title: Type
+          default: identity
+        namespace:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Namespace
+        identity:
+          type: string
+          maxLength: 1000
+          minLength: 1
+          title: Identity
+      additionalProperties: false
+      type: object
+      required:
+      - namespace
+      - identity
+      title: IdentityTerm
+    LanguageAnnotation:
+      properties:
+        tag:
+          type: string
+          title: Tag
+        origin:
+          type: string
+          enum:
+          - declared
+          - source_metadata
+          - detected
+          title: Origin
+      additionalProperties: false
+      type: object
+      required:
+      - tag
+      - origin
+      title: LanguageAnnotation
+    ProjectGuidanceRead:
+      properties:
+        path:
+          type: string
+          maxLength: 240
+          minLength: 1
+          title: Path
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - sha256
+      title: ProjectGuidanceRead
+    SymbolicClaim:
+      properties:
+        scope:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+        namespace:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Namespace
+        scheme_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Scheme Id
+        kind:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Kind
+        subject:
+          $ref: '#/components/schemas/IdentityTerm'
+        predicate:
+          $ref: '#/components/schemas/IdentityTerm'
+        object:
+          oneOf:
+          - $ref: '#/components/schemas/IdentityTerm'
+          - $ref: '#/components/schemas/TypedLiteral'
+          title: Object
+          discriminator:
+            propertyName: type
+            mapping:
+              identity: '#/components/schemas/IdentityTerm'
+              literal: '#/components/schemas/TypedLiteral'
+        polarity:
+          type: string
+          enum:
+          - affirmed
+          - negated
+          title: Polarity
+        modality:
+          type: string
+          enum:
+          - asserted
+          - possible
+          - permitted
+          - required
+          - forbidden
+          - preferred
+          - unknown
+          title: Modality
+        applicability:
+          additionalProperties: true
+          type: object
+          title: Applicability
+        version:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+          - type: 'null'
+          title: Version
+        effective_conditions:
+          items:
+            $ref: '#/components/schemas/EffectiveCondition'
+          type: array
+          maxItems: 32
+          title: Effective Conditions
+      additionalProperties: false
+      type: object
+      required:
+      - scope
+      - namespace
+      - scheme_id
+      - kind
+      - subject
+      - predicate
+      - object
+      - polarity
+      - modality
+      title: SymbolicClaim
+    SymbolicConceptCreate:
+      properties:
+        scope:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+        namespace:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Namespace
+        scheme_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Scheme Id
+        labels:
+          items:
+            $ref: '#/components/schemas/ConceptLabel'
+          type: array
+          maxItems: 64
+          minItems: 1
+          title: Labels
+      additionalProperties: false
+      type: object
+      required:
+      - scope
+      - namespace
+      - scheme_id
+      - labels
+      title: SymbolicConceptCreate
+    SymbolicMemoryPage:
+      properties:
+        memory_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Memory Id
+        scope:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+        proposals:
+          items:
+            $ref: '#/components/schemas/SymbolicProposalRecord'
+          type: array
+          maxItems: 50
+          title: Proposals
+        unavailable:
+          items:
+            $ref: '#/components/schemas/SymbolicUnavailableProposal'
+          type: array
+          maxItems: 50
+          title: Unavailable
+        relations:
+          items:
+            $ref: '#/components/schemas/SymbolicRelationRecord'
+          type: array
+          maxItems: 100
+          title: Relations
+        has_more:
+          type: boolean
+          title: Has More
+        grants_authority:
+          type: boolean
+          const: false
+          title: Grants Authority
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - memory_id
+      - scope
+      - proposals
+      - unavailable
+      - relations
+      - has_more
+      title: SymbolicMemoryPage
+    SymbolicProposalCreate:
+      properties:
+        claim:
+          $ref: '#/components/schemas/SymbolicClaim'
+        sources:
+          items:
+            $ref: '#/components/schemas/SymbolicSourceBinding'
+          type: array
+          maxItems: 32
+          minItems: 1
+          title: Sources
+      additionalProperties: false
+      type: object
+      required:
+      - claim
+      - sources
+      title: SymbolicProposalCreate
+    SymbolicProposalRecord:
+      properties:
+        proposal_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Proposal Id
+        claim:
+          $ref: '#/components/schemas/SymbolicClaim'
+        claim_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Claim Sha256
+        sources:
+          items:
+            $ref: '#/components/schemas/SymbolicResolvedSource'
+          type: array
+          maxItems: 32
+          minItems: 1
+          title: Sources
+        concept_ids:
+          items:
+            type: string
+            pattern: ^urn:swarmer:concept:[a-f0-9]{32}$
+          type: array
+          maxItems: 35
+          title: Concept Ids
+        lifecycle:
+          type: string
+          enum:
+          - active
+          - superseded
+          title: Lifecycle
+        validation_status:
+          type: string
+          const: unvalidated
+          title: Validation Status
+          default: unvalidated
+        grants_authority:
+          type: boolean
+          const: false
+          title: Grants Authority
+          default: false
+        created_at:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - proposal_id
+      - claim
+      - claim_sha256
+      - sources
+      - concept_ids
+      - lifecycle
+      - created_at
+      title: SymbolicProposalRecord
+    SymbolicRelationCreate:
+      properties:
+        target_proposal_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Target Proposal Id
+        relationship:
+          type: string
+          enum:
+          - supersedes
+          - contradicts
+          - related_to
+          title: Relationship
+      additionalProperties: false
+      type: object
+      required:
+      - target_proposal_id
+      - relationship
+      title: SymbolicRelationCreate
+    SymbolicRelationRecord:
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Id
+        proposal_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Proposal Id
+        target_proposal_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Target Proposal Id
+        relationship:
+          type: string
+          enum:
+          - supersedes
+          - contradicts
+          - related_to
+          title: Relationship
+        created_at:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Created At
+        grants_authority:
+          type: boolean
+          const: false
+          title: Grants Authority
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - proposal_id
+      - target_proposal_id
+      - relationship
+      - created_at
+      title: SymbolicRelationRecord
+    SymbolicResolvedSource:
+      properties:
+        binding:
+          $ref: '#/components/schemas/SymbolicSourceBinding'
+        scope:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+        origin:
+          type: string
+          enum:
+          - user_statement
+          - source_document
+          title: Origin
+        validation_status:
+          type: string
+          const: unvalidated
+          title: Validation Status
+          default: unvalidated
+      additionalProperties: false
+      type: object
+      required:
+      - binding
+      - scope
+      - origin
+      title: SymbolicResolvedSource
+    SymbolicSourceBinding:
+      properties:
+        memory_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Memory Id
+        revision:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 1.0
+          title: Revision
+        view_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: View Id
+        field:
+          type: string
+          enum:
+          - content
+          - summary
+          title: Field
+        field_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Field Sha256
+        document_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Document Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - memory_id
+      - revision
+      - view_id
+      - field
+      - field_sha256
+      - document_sha256
+      title: SymbolicSourceBinding
+    SymbolicSourceDescription:
+      properties:
+        memory_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Memory Id
+        scope:
+          type: string
+          pattern: ^(general|project:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})$
+          title: Scope
+        revision:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 1.0
+          title: Revision
+        view_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: View Id
+        language:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Language
+        bindings:
+          items:
+            $ref: '#/components/schemas/SymbolicSourceBinding'
+          type: array
+          maxItems: 2
+          minItems: 1
+          title: Bindings
+        grants_authority:
+          type: boolean
+          const: false
+          title: Grants Authority
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - memory_id
+      - scope
+      - revision
+      - view_id
+      - language
+      - bindings
+      title: SymbolicSourceDescription
+    SymbolicUnavailableProposal:
+      properties:
+        proposal_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$
+          title: Proposal Id
+        reason:
+          type: string
+          enum:
+          - stale_source
+          - missing_source
+          - invalid_source
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - proposal_id
+      - reason
+      title: SymbolicUnavailableProposal
+    TypedLiteral:
+      properties:
+        type:
+          type: string
+          const: literal
+          title: Type
+          default: literal
+        datatype:
+          type: string
+          enum:
+          - text
+          - code
+          - path
+          - url
+          - symbol
+          - integer
+          - decimal
+          - boolean
+          - date
+          - datetime
+          - version
+          - quantity
+          title: Datatype
+        lexical_value:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Lexical Value
+        language:
+          anyOf:
+          - $ref: '#/components/schemas/LanguageAnnotation'
+          - type: 'null'
+        unit:
+          anyOf:
+          - type: string
+            maxLength: 100
+            minLength: 1
+          - type: 'null'
+          title: Unit
+      additionalProperties: false
+      type: object
+      required:
+      - datatype
+      - lexical_value
+      title: TypedLiteral

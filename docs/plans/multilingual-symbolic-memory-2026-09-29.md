@@ -54,10 +54,12 @@ translated. The [integration evidence](../evidence/goal-memory-admission-2026-10
 distinguishes passing local checks from real-provider qualification and the
 schema/client rollout still required before production activation.
 
-The independent conceptual module is a deterministic contract foundation. Until
-its SQL links, API and retrieval path are integrated, it is not a working graph
-store. There is no production dual-vector index, RRF fusion, conceptual merge,
-automatic lesson promotion, or historical backfill in this slice.
+The conceptual module supplies deterministic contracts. The schema-30 candidate
+connects those contracts to scoped SQL concepts, multilingual labels, proposals,
+exact original-source bindings and explicit relations, exposed through paired
+API routes. It does not yet use those proposals in agent retrieval or promote
+them to validated lessons. There is no production dual-vector index, RRF fusion,
+conceptual merge, automatic lesson promotion or historical backfill in this slice.
 
 ## Integration sequence
 
@@ -97,9 +99,14 @@ raw bytes, whereas a text head's source hash covers the content/summary document
 these are different keys. Likewise, do not silently map legacy `global` or free
 scope strings to the conceptual contract's `general` or `project:*` scopes.
 Public proposal writes remain unvalidated and cannot request curated status.
-Supersession is explicit; forgetting a memory must also erase derived symbolic
-text. The conceptual module is currently imported only by its contract tests;
-its SQL/API/retrieval integration remains outstanding.
+Supersession is explicit; forgetting a memory also erases proposals derived from
+that source and their source/concept/relation links atomically. Standalone concept
+definitions remain separate records, including definitions shared by other
+proposals. The schema-30 SQL/API integration binds only current normal-sensitivity
+original views in the exact declared scope. It never promotes a proposal or
+labels a source as a verified user statement. Agent retrieval and a separately
+authorized validation/promotion path remain outstanding. See the
+[symbolic registry evidence](../evidence/memory-symbolic-registry-2026-10-03.md).
 
 ## Corrections required before adopting the supplied PoC
 

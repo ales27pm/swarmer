@@ -63,6 +63,11 @@ from app.services.memory_search_presentation import (
     _qualified,
     finalize_memory_search,
 )
+from app.services.memory_symbolic_store import (
+    MemorySymbolicStore,
+    forget_symbolic_memory_locked,
+    initialize_symbolic_schema_locked,
+)
 from app.services.memory_text_views import (
     ProjectionClaim,
     delete_text_views_locked,
@@ -90,7 +95,7 @@ from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.project_evidence_schema import migrate_project_evidence
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 _LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 _MEMORY_MODEL_ROLE_CHECK = (
     "CHECK(role IN ("
@@ -926,6 +931,7 @@ class StateService:
         embedding_admission: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> None:
         self.db_path = db_path
+        self.symbolic_memory = MemorySymbolicStore(db_path)
         self.embedding_service = embedding_service
         self.embedding_model_revision = embedding_model_revision
         self.embedding_admission = embedding_admission
@@ -1186,10 +1192,33 @@ class StateService:
                 await self._migrate_memory_model_roles(db)
             if version < 29:
                 await self._migrate_memory_text_views(db)
+            if version < 30:
+                await self._migrate_symbolic_memory(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():
                 database_file.chmod(0o600)
+
+    @staticmethod
+    async def _migrate_symbolic_memory(db: aiosqlite.Connection) -> None:
+        """Install empty symbolic storage; historical facts require explicit proposals."""
+        if db.in_transaction:
+            raise RuntimeError("symbolic memory migration needs its own transaction")
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            version_row = await (await db.execute("PRAGMA user_version")).fetchone()
+            version = int(version_row[0]) if version_row else -1
+            if version == 30:
+                await db.commit()
+                return
+            if version != 29:
+                raise RuntimeError("symbolic memory migration requires schema 29")
+            await initialize_symbolic_schema_locked(db)
+            await db.execute("PRAGMA user_version=30")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
     async def _migrate_memory_text_views(self, db: aiosqlite.Connection) -> None:
         """Add recoverable views without altering source rows or calling a model."""
@@ -3310,6 +3339,7 @@ class StateService:
             # SQLite foreign keys are connection-local; invalidate explicitly
             # even when the connection does not enable ON DELETE CASCADE.
             await db.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+            await forget_symbolic_memory_locked(db, memory_id)
             await delete_text_views_locked(db, memory_id=memory_id, now=now)
             await forget_canonical_sources(db, memory_id)
             await append_audit_event(

@@ -15,7 +15,7 @@ from app.services.embedding_service import EmbeddingServiceError
 from app.services.memory_normalization import MemoryNormalizationError
 from app.services.memory_text_views import claim_projection_batch
 from app.services.memory_vectors import embedding_identity
-from app.services.state_service import StateService
+from app.services.state_service import SCHEMA_VERSION, StateService
 from tests.test_memory_canonical_store import ReviewedNormalizer
 from tests.test_memory_indexing_regressions import LocalProvider
 
@@ -211,7 +211,7 @@ async def test_schema28_migration_is_additive_idempotent_and_never_calls_a_model
     assert await snapshot(state, before) == before
     assert len(provider.calls) == calls
     async with aiosqlite.connect(state.db_path) as db:
-        assert await (await db.execute("PRAGMA user_version")).fetchone() == (29,)
+        assert await (await db.execute("PRAGMA user_version")).fetchone() == (SCHEMA_VERSION,)
     assert len(await rows(state, "memory_text_heads")) == 2
     assert len(await rows(state, "memory_text_views")) == 3
     assert len(await rows(state, "memory_index_outbox")) == 2

@@ -111,6 +111,7 @@ from app.services.maintenance_lease import (
     MaintenanceLeaseService,
 )
 from app.services.media_routes import install_media_routes
+from app.services.memory_concepts import ConceptDefinition
 from app.services.memory_inspection import (
     MemoryInspectionCursorError,
     MemoryInspectionEvidenceError,
@@ -122,6 +123,19 @@ from app.services.memory_normalization import (
     OpenAIMemoryNormalizationProvider,
 )
 from app.services.memory_presentation import OpenAIMemoryPresentationProvider
+from app.services.memory_symbolic_contracts import (
+    SymbolicConceptCreate,
+    SymbolicConceptId,
+    SymbolicIdentifier,
+    SymbolicMemoryPage,
+    SymbolicProposalCreate,
+    SymbolicProposalRecord,
+    SymbolicRelationCreate,
+    SymbolicRelationRecord,
+    SymbolicScope,
+    SymbolicSourceDescription,
+)
+from app.services.memory_symbolic_store import SymbolicStoreError
 from app.services.memory_text_views import projection_status
 from app.services.memory_vectors import embedding_identity
 from app.services.message_board import (
@@ -2303,6 +2317,122 @@ def create_app(config: Settings | None = None) -> FastAPI:
             return {"approval": record, "tool_call": tool_call}
         result = await run_tool_call(tool_call["id"], tool_call["task_id"])
         return {"approval": record, "tool_call": result}
+
+    @app.post("/memory/concepts", response_model=ConceptDefinition, status_code=201)
+    async def create_memory_concept(
+        request: SymbolicConceptCreate,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> ConceptDefinition:
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await state_service.symbolic_memory.create_concept(
+                request, actor_id=str(principal["id"])
+            )
+        except SymbolicStoreError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.code,
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+
+    @app.get("/memory/concepts/{concept_id}", response_model=ConceptDefinition)
+    async def read_memory_concept(
+        concept_id: SymbolicConceptId,
+        scope: Annotated[SymbolicScope, Query()],
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> ConceptDefinition:
+        del principal
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await state_service.symbolic_memory.get_concept(concept_id, scope=scope)
+        except SymbolicStoreError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.code,
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+
+    @app.get("/memory/{memory_id}/symbolic-source", response_model=SymbolicSourceDescription)
+    async def describe_symbolic_memory_source(
+        memory_id: SymbolicIdentifier,
+        scope: Annotated[SymbolicScope, Query()],
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> SymbolicSourceDescription:
+        del principal
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await state_service.symbolic_memory.describe_source(memory_id, scope=scope)
+        except SymbolicStoreError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.code,
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+
+    @app.post("/memory/proposals", response_model=SymbolicProposalRecord, status_code=201)
+    async def create_memory_proposal(
+        request: SymbolicProposalCreate,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> SymbolicProposalRecord:
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await state_service.symbolic_memory.create_proposal(
+                request, actor_id=str(principal["id"])
+            )
+        except SymbolicStoreError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.code,
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+
+    @app.get("/memory/{memory_id}/proposals", response_model=SymbolicMemoryPage)
+    async def list_memory_proposals(
+        memory_id: SymbolicIdentifier,
+        scope: Annotated[SymbolicScope, Query()],
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+        limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    ) -> SymbolicMemoryPage:
+        del principal
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await state_service.symbolic_memory.list_for_memory(
+                memory_id, scope=scope, limit=limit
+            )
+        except SymbolicStoreError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.code,
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+
+    @app.post(
+        "/memory/proposals/{proposal_id}/relations",
+        response_model=SymbolicRelationRecord,
+        status_code=201,
+    )
+    async def relate_memory_proposals(
+        proposal_id: SymbolicIdentifier,
+        request: SymbolicRelationCreate,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> SymbolicRelationRecord:
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return await state_service.symbolic_memory.relate(
+                proposal_id, request, actor_id=str(principal["id"])
+            )
+        except SymbolicStoreError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.code,
+                headers={"Cache-Control": "no-store"},
+            ) from exc
 
     @app.get("/memory")
     async def list_memory(
