@@ -63,6 +63,11 @@ from app.services.memory_search_presentation import (
     _qualified,
     finalize_memory_search,
 )
+from app.services.memory_search_views import (
+    FILTER_SQL,
+    lexical_candidates,
+    qualify_search_rows,
+)
 from app.services.memory_symbolic_store import (
     MemorySymbolicStore,
     forget_symbolic_memory_locked,
@@ -2915,28 +2920,36 @@ class StateService:
                 query_vector = None
         # Read authoritative memories after provider I/O. A delete or update
         # during that call must not leak stale text from an earlier snapshot.
+        filters = (
+            request.scope or None,
+            request.scope or None,
+            request.kind or None,
+            request.kind or None,
+            scope_filter,
+            scope_filter,
+            required_sensitivity,
+            required_sensitivity,
+        )
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN")
-            item_rows = await (
-                await db.execute(
-                    """SELECT * FROM memory_items
-                    WHERE (? IS NULL OR scope=?) AND (? IS NULL OR kind=?)
-                    AND (? IS NULL OR scope IN (SELECT value FROM json_each(?)))
-                    AND (? IS NULL OR sensitivity=?)
-                    ORDER BY pinned DESC,updated_at DESC,id LIMIT 500""",
-                    (
-                        request.scope or None,
-                        request.scope or None,
-                        request.kind or None,
-                        request.kind or None,
-                        scope_filter,
-                        scope_filter,
-                        required_sensitivity,
-                        required_sensitivity,
-                    ),
-                )
-            ).fetchall()
+            hits, candidates = await lexical_candidates(
+                db,
+                filters=filters,
+                term_channels=term_channels,
+            )
+            # There is still one existing canonical/legacy vector channel.
+            # Its bounded recent pool is independent of lexical discovery, so
+            # an old exact lexical hit remains eligible even outside that pool.
+            if query_vector is not None:
+                item_rows = await (
+                    await db.execute(
+                        f"""SELECT m.* FROM memory_items m WHERE {FILTER_SQL}
+                        ORDER BY m.pinned DESC,m.updated_at DESC,m.id LIMIT 500""",
+                        filters,
+                    )
+                ).fetchall()
+                candidates.update(await qualify_search_rows(db, list(item_rows)))
             rows = (
                 await (
                     await db.execute(
@@ -2944,38 +2957,34 @@ class StateService:
                     JOIN memory_items m ON m.id=e.memory_id
                     WHERE e.provider=? AND e.updated_at=m.updated_at
                     AND e.memory_id IN (SELECT value FROM json_each(?))""",
-                        (identity, json.dumps([row["id"] for row in item_rows])),
+                        (identity, json.dumps(list(candidates))),
                     )
                 ).fetchall()
                 if query_vector is not None
                 else []
             )
-        items = [self._memory_from_row(row) for row in item_rows]
+        items = [self._memory_from_row(item.row) for item in candidates.values()]
         assert_query_current()
-        scored: list[dict[str, Any]] = []
-        for item in items:
-            if request.scope and item["scope"] != request.scope:
-                continue
-            if request.kind and item["kind"] != request.kind:
-                continue
-            haystack = f"{item['content']} {item.get('summary') or ''}".casefold()
-            score = max(
-                (
-                    sum(term in haystack for term in terms) / max(1, len(terms))
-                    for terms in term_channels
-                ),
-                default=0.0,
-            )
-            if score:
-                scored.append({**item, "score": score, "search_kind": "lexical"})
-        lexical = sorted(scored, key=lambda item: (-item["score"], not item["pinned"], item["id"]))[
-            :50
+        lexical = [
+            {**self._memory_from_row(item.row), "score": score, "search_kind": "lexical"}
+            for item, score in hits
         ]
 
         async def finalize(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
             selected = found[: request.limit]
             if normalizer is None:
                 return selected
+            # Persisted metadata is untrusted. Keep malformed canonical IDs on
+            # the normalization-error path before SQLite binds those values.
+            if any(
+                not isinstance(item.get("metadata"), dict)
+                or any(
+                    not isinstance(item["metadata"].get(key), str)
+                    for key in ("canonical_receipt_id", "source_id")
+                )
+                for item in selected
+            ):
+                raise MemoryNormalizationError("unavailable", "canonical_memory_unqualified")
 
             def assert_search_current() -> None:
                 assert_query_current()
@@ -2988,16 +2997,54 @@ class StateService:
                         "source_conflict", "query_embedding_provider_changed"
                     )
 
-            return await finalize_memory_search(
+            presentation_provider: tuple[MemoryPresenter, str] | None = None
+
+            def get_presenter() -> MemoryPresenter | None:
+                nonlocal presentation_provider
+                current = self.memory_presenter
+                if presentation_provider is None and current is not None:
+                    presentation_provider = current, current.presentation_signature
+                return current
+
+            result = await finalize_memory_search(
                 self.db_path,
                 selected,
                 french=source_language == "fr",
-                get_presenter=lambda: self.memory_presenter,
+                get_presenter=get_presenter,
                 gate=self.memory_normalization_gate,
                 timeout_seconds=self.memory_normalization_timeout_seconds,
                 assert_current=assert_search_current,
                 model_executor=model_executor,
             )
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                await db.execute("BEGIN")
+                current_rows = await (
+                    await db.execute(
+                        "SELECT * FROM memory_items WHERE id IN (SELECT value FROM json_each(?))",
+                        (json.dumps([item["id"] for item in selected]),),
+                    )
+                ).fetchall()
+                current = await qualify_search_rows(db, list(current_rows))
+            for item in selected:
+                previous = candidates[item["id"]]
+                latest = current.get(item["id"])
+                if (
+                    latest is None
+                    or latest.row != previous.row
+                    or latest.view_token != previous.view_token
+                    or latest.original != previous.original
+                ):
+                    raise MemoryNormalizationError("source_conflict", "memory_search_view_changed")
+            assert_search_current()
+            if presentation_provider is not None:
+                presenter, presentation_signature = presentation_provider
+                if (
+                    self.memory_presenter is not presenter
+                    or presenter.presentation_signature != presentation_signature
+                ):
+                    raise MemoryNormalizationError("source_conflict", "memory_presenter_changed")
+            return result
 
         if (
             query_vector is None
