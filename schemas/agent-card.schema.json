@@ -59,15 +59,30 @@
         "workspace.list_dir",
         "workspace.read_text",
         "research.query",
+        "research.collect",
         "code_review.git_status",
         "code_review.git_diff",
         "code_review.git_show",
-        "code_review.static_analysis"
+        "code_review.static_analysis",
+        "code.generate_python",
+        "code.build_project",
+        "writing.draft",
+        "database.sqlite.inspect",
+        "database.sqlite.query",
+        "database.sqlite.create",
+        "database.sqlite.backup",
+        "database.sqlite.migrate",
+        "crm.command",
+        "documents.extract",
+        "code.swift.build",
+        "code.swift.test",
+        "image.generate",
+        "audio.synthesize"
       ]
     },
     "skills": {
       "type": "array",
-      "maxItems": 7,
+      "maxItems": 22,
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/agentSkill"}
     },
@@ -79,10 +94,17 @@
         "memory_mb": {"type": "integer", "minimum": 1, "maximum": 4194304},
         "max_results": {"type": "integer", "minimum": 1, "maximum": 10},
         "max_query_characters": {"type": "integer", "minimum": 1, "maximum": 2000},
-        "max_result_bytes": {"type": "integer", "minimum": 1, "maximum": 524288},
-        "max_operation_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+        "max_queries": {"type": "integer", "minimum": 1, "maximum": 4},
+        "max_pages": {"type": "integer", "minimum": 1, "maximum": 6},
+        "max_page_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "max_page_characters": {"type": "integer", "minimum": 1, "maximum": 12000},
+        "max_source_urls": {"type": "integer", "minimum": 1, "maximum": 6},
+        "max_required_domains": {"type": "integer", "minimum": 1, "maximum": 6},
+        "max_result_bytes": {"type": "integer", "minimum": 1, "maximum": 4000000},
+        "max_operation_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
         "max_paths": {"type": "integer", "minimum": 1, "maximum": 50},
-        "max_selected_files": {"type": "integer", "minimum": 1, "maximum": 100}
+        "max_selected_files": {"type": "integer", "minimum": 1, "maximum": 100},
+        "symbolic_context_version": {"type": "integer", "const": 1}
       }
     },
     "agentCard": {

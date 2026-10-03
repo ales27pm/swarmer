@@ -26,6 +26,7 @@
     }
   ],
   "limits": {
+    "symbolic_context_version": 1,
     "max_concurrency": 1,
     "max_paths": 50,
     "max_selected_files": 100,

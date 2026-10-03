@@ -66,9 +66,12 @@ _CAPABILITY_METADATA_RANGES: Mapping[str, tuple[int, int]] = MappingProxyType(
         "max_operation_seconds": (1, 120),
         "max_paths": (1, 50),
         "max_selected_files": (1, 100),
+        "symbolic_context_version": (1, 1),
     }
 )
-_BASE_METADATA = frozenset({"max_concurrency", "memory_mb", "max_result_bytes"})
+_BASE_METADATA = frozenset(
+    {"max_concurrency", "memory_mb", "max_result_bytes", "symbolic_context_version"}
+)
 _FAMILY_METADATA: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "workspace": _BASE_METADATA | {"max_operation_seconds"},

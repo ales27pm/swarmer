@@ -19,7 +19,7 @@ from tests.test_swift_project_transfer import _approve, _claim, _prepare, _proof
 async def test_approved_swift_transport_queue_claim_heartbeat_source_result(
     client, paired_headers, test_app, invalidate
 ):
-    project = await _prepare(test_app)
+    project = await _prepare(test_app, symbolic=True)
     item, source = await memory(test_app.state.state_service, "Hello package source observation.")
     proposal = await propose(
         test_app.state.state_service, source.bindings, subject=identity("Hello")
@@ -43,7 +43,12 @@ async def test_approved_swift_transport_queue_claim_heartbeat_source_result(
         await test_app.state.state_service.update_memory(
             item["id"], MemoryUpdate(content="Changed."), "test"
         )
-        assert await test_app.state.agent_dispatcher.claim(agent["id"]) is None
+        assert (
+            await test_app.state.agent_dispatcher.claim(
+                agent["id"], context_protocols=("symbolic-v1",)
+            )
+            is None
+        )
         async with aiosqlite.connect(test_app.state.settings.db_path) as db:
             assert await (
                 await db.execute(
@@ -52,7 +57,7 @@ async def test_approved_swift_transport_queue_claim_heartbeat_source_result(
                 )
             ).fetchone() == ("cancelled", 0, "symbolic_context_changed")
         return
-    job, headers = _claim(client, project)
+    job, headers = _claim(client, project, symbolic=True)
     assert job["payload"] == payload
     path = f"/agents/{agent['id']}/jobs/{job['id']}"
     assert client.post(path + "/heartbeat", headers=headers, json=_proof(job)).status_code == 200

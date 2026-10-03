@@ -38,7 +38,12 @@ async def test_manual_task_selection_is_general_and_fenced_through_result(
     dispatcher = test_app.state.agent_dispatcher
     dispatcher.symbolic_catalogs = (SymbolicCatalog(namespace="software", scheme_id="engineering"),)
     agent = await state.register_agent(
-        AgentCreate(name="reader", endpoint="http://127.0.0.1", skills=["workspace.list_dir"]),
+        AgentCreate(
+            name="reader",
+            endpoint="http://127.0.0.1",
+            skills=["workspace.list_dir"],
+            capacity={"symbolic_context_version": 1},
+        ),
         "test",
     )
     await state.heartbeat_agent(agent["id"], "online", agent["credential"])
@@ -102,7 +107,7 @@ async def test_manual_task_selection_is_general_and_fenced_through_result(
                 (json.dumps({"path": "."}), queued["id"]),
             )
             await db.commit()
-    claimed = await dispatcher.claim(agent["id"])
+    claimed = await dispatcher.claim(agent["id"], context_protocols=("symbolic-v1",))
     if change in {"input", "source", "missing_binding"}:
         assert claimed is None
         record = await dispatcher.get_job(queued["id"])
@@ -155,7 +160,12 @@ async def test_catalog_revocation_during_audit_rolls_back_transition(tmp_path, m
         TaskRecord.new(TaskCreate(input="Inspect cache"), source="test-phone")
     )
     agent = await state.register_agent(
-        AgentCreate(name="reader", endpoint="http://127.0.0.1", skills=["workspace.list_dir"]),
+        AgentCreate(
+            name="reader",
+            endpoint="http://127.0.0.1",
+            skills=["workspace.list_dir"],
+            capacity={"symbolic_context_version": 1},
+        ),
         "test",
     )
     await state.heartbeat_agent(agent["id"], "online", agent["credential"])
@@ -169,7 +179,11 @@ async def test_catalog_revocation_during_audit_rolls_back_transition(tmp_path, m
         if stage == "queue"
         else await dispatcher.queue_job(task.id, "workspace.list_dir", {"path": "."})
     )
-    claimed = await dispatcher.claim(agent["id"]) if stage == "result" else None
+    claimed = (
+        await dispatcher.claim(agent["id"], context_protocols=("symbolic-v1",))
+        if stage == "result"
+        else None
+    )
 
     async def snapshot():
         async with aiosqlite.connect(state.db_path) as db:
@@ -205,7 +219,7 @@ async def test_catalog_revocation_during_audit_rolls_back_transition(tmp_path, m
         if stage == "queue":
             await dispatcher.queue_job(task.id, "workspace.list_dir", {"path": "."})
         elif stage == "claim":
-            await dispatcher.claim(agent["id"])
+            await dispatcher.claim(agent["id"], context_protocols=("symbolic-v1",))
         else:
             await dispatcher.submit_result(
                 agent["id"],

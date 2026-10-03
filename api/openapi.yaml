@@ -5756,6 +5756,20 @@ components:
         - code_review.git_diff
         - code_review.git_show
         - code_review.static_analysis
+        - code.generate_python
+        - code.build_project
+        - writing.draft
+        - database.sqlite.inspect
+        - database.sqlite.query
+        - database.sqlite.create
+        - database.sqlite.backup
+        - database.sqlite.migrate
+        - crm.command
+        - documents.extract
+        - code.swift.build
+        - code.swift.test
+        - image.generate
+        - audio.synthesize
     AgentCapabilities:
       type: object
       additionalProperties: false
@@ -5767,10 +5781,20 @@ components:
         memory_mb: {type: integer, minimum: 1, maximum: 4194304}
         max_results: {type: integer, minimum: 1, maximum: 10}
         max_query_characters: {type: integer, minimum: 1, maximum: 2000}
-        max_result_bytes: {type: integer, minimum: 1, maximum: 524288}
-        max_operation_seconds: {type: integer, minimum: 1, maximum: 120}
+        max_queries: {type: integer, minimum: 1, maximum: 4}
+        max_pages: {type: integer, minimum: 1, maximum: 6}
+        max_page_bytes: {type: integer, minimum: 1, maximum: 1048576}
+        max_page_characters: {type: integer, minimum: 1, maximum: 12000}
+        max_source_urls: {type: integer, minimum: 1, maximum: 6}
+        max_required_domains: {type: integer, minimum: 1, maximum: 6}
+        max_result_bytes: {type: integer, minimum: 1, maximum: 4000000}
+        max_operation_seconds: {type: integer, minimum: 1, maximum: 600}
         max_paths: {type: integer, minimum: 1, maximum: 50}
         max_selected_files: {type: integer, minimum: 1, maximum: 100}
+        symbolic_context_version:
+          type: integer
+          const: 1
+          description: Approved support for symbolic-v1; each claim must also announce it.
     AgentCreate:
       type: object
       additionalProperties: false
@@ -5793,7 +5817,7 @@ components:
         model_id: {type: [string, 'null'], maxLength: 500}
         skills:
           type: array
-          maxItems: 7
+          maxItems: 22
           uniqueItems: true
           items: {$ref: '#/components/schemas/AgentSkill'}
           description: Empty is inert; non-empty skills must belong to one server-approved worker family.
@@ -5816,7 +5840,7 @@ components:
         version: {type: string}
         skills:
           type: array
-          maxItems: 7
+          maxItems: 22
           uniqueItems: true
           items: {$ref: '#/components/schemas/AgentSkill'}
         model_id: {type: [string, 'null']}
@@ -5841,7 +5865,7 @@ components:
         status: {type: string, enum: [online, offline, busy, draining, unverified]}
         skills:
           type: array
-          maxItems: 7
+          maxItems: 22
           uniqueItems: true
           items: {$ref: '#/components/schemas/AgentSkill'}
         last_heartbeat_at: {type: [string, 'null'], format: date-time}
@@ -5875,6 +5899,12 @@ components:
       additionalProperties: false
       properties:
         wait_seconds: {type: integer, minimum: 0, maximum: 30, default: 0}
+        context_protocols:
+          type: array
+          maxItems: 1
+          items: {type: string, const: symbolic-v1}
+          default: []
+          description: Current binary support, required with registered capability for symbolic jobs.
     AgentJobHeartbeat:
       type: object
       additionalProperties: false

@@ -185,7 +185,10 @@ async def prepared_job(tmp_path):
     goal = await _create_and_start(manager, objective="Inspect cache")
     agent = await manager.state_service.register_agent(
         AgentCreate(
-            name="test reader", endpoint="http://127.0.0.1:9001", skills=["workspace.list_dir"]
+            name="test reader",
+            endpoint="http://127.0.0.1:9001",
+            skills=["workspace.list_dir"],
+            capacity={"symbolic_context_version": 1},
         ),
         "test",
     )
@@ -198,7 +201,7 @@ async def test_real_goal_queue_claim_preserves_typed_context_and_accepts_operati
     import aiosqlite
 
     manager, agent, item, proposal, _ = await prepared_job(tmp_path)
-    claimed = await manager.agent_dispatcher.claim(agent["id"])
+    claimed = await manager.agent_dispatcher.claim(agent["id"], context_protocols=("symbolic-v1",))
     assert claimed is not None
     [evidence] = claimed["payload"]["symbolic_context"]["evidence"]
     assert evidence["proposal"] == proposal.model_dump()
@@ -251,7 +254,10 @@ async def test_changed_context_is_cancelled_before_worker_lease_without_private_
                 "UPDATE agent_jobs SET payload_json=? WHERE id=?", (json.dumps(payload), row[0])
             )
             await db.commit()
-    assert await manager.agent_dispatcher.claim(agent["id"]) is None
+    assert (
+        await manager.agent_dispatcher.claim(agent["id"], context_protocols=("symbolic-v1",))
+        is None
+    )
     async with aiosqlite.connect(manager.db_path) as db:
         row = await (
             await db.execute(
@@ -305,7 +311,7 @@ async def test_source_deleted_after_claim_cannot_be_accepted_as_current_result(t
     from app.services.agent_dispatcher import AgentDispatchConflict
 
     manager, agent, item, _, _ = await prepared_job(tmp_path)
-    claimed = await manager.agent_dispatcher.claim(agent["id"])
+    claimed = await manager.agent_dispatcher.claim(agent["id"], context_protocols=("symbolic-v1",))
     assert claimed
     await manager.state_service.delete_memory(item["id"], "test")
     with pytest.raises(AgentDispatchConflict, match="^symbolic_context_changed$"):

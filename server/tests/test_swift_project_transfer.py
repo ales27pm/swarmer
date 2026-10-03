@@ -69,7 +69,9 @@ def _pair(client: TestClient) -> dict[str, str]:
     return headers
 
 
-async def _prepare(app: FastAPI, *, extra_path: str | None = None) -> dict[str, Any]:
+async def _prepare(
+    app: FastAPI, *, extra_path: str | None = None, symbolic: bool = False
+) -> dict[str, Any]:
     """Persist a native snapshot by the same authenticated result path as production."""
     manager = app.state.goal_manager
     plan = _worker_plan(objective="Create the reviewed Hello Swift test package")
@@ -133,7 +135,11 @@ async def _prepare(app: FastAPI, *, extra_path: str | None = None) -> dict[str, 
             name="hello-swift-fixture",
             endpoint="http://127.0.0.1",
             skills=["code.swift.build", "code.swift.test"],
-            capacity={"max_operation_seconds": 120, "max_result_bytes": 16_384},
+            capacity={
+                "max_operation_seconds": 120,
+                "max_result_bytes": 16_384,
+                **({"symbolic_context_version": 1} if symbolic else {}),
+            },
         ),
         "test-operator",
     )
@@ -183,11 +189,15 @@ def _proof(job: dict[str, Any]) -> dict[str, Any]:
     return {key: job[key] for key in ("claim_token", "lease_id", "lease_generation")}
 
 
-def _claim(client: TestClient, project: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+def _claim(
+    client: TestClient, project: dict[str, Any], *, symbolic: bool = False
+) -> tuple[dict[str, Any], dict[str, str]]:
     agent = project["agent"]
     headers = {"Authorization": f"Bearer {agent['credential']}"}
     response = client.post(
-        f"/agents/{agent['id']}/claim", headers=headers, json={"wait_seconds": 0}
+        f"/agents/{agent['id']}/claim",
+        headers=headers,
+        json={"wait_seconds": 0, **({"context_protocols": ["symbolic-v1"]} if symbolic else {})},
     )
     assert response.status_code == 200, response.text
     assert response.json() is not None

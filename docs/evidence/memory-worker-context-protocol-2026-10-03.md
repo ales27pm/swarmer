@@ -1,0 +1,100 @@
+# Symbolic context delivery to compatible workers
+
+The shared-memory requirement applies to every worker: required context must not
+silently disappear at a version boundary. The local-generation candidate was
+prepared on Ubuntu, but its live workers still used older consumers. The common
+`mongars-worker-v0.9` label did not prove symbolic-context support.
+
+## Execution contract
+
+The registration metadata now accepts `capacity.symbolic_context_version: 1`.
+Registration is an authenticated approval step; installing source or publishing
+an example agent card does not update an existing identity. The new API rejects
+coercion from booleans, floats or strings for this capability.
+
+Every compatible binary sends `context_protocols: ["symbolic-v1"]` with each
+claim. The server requires both approved SQL metadata and this request's
+handshake before leasing a job containing a symbolic envelope or binding. An
+`omitted_budget` envelope still requires the protocol. Jobs without either field
+retain the legacy contract. A skipped incompatible job consumes no lease,
+attempt or claim audit, and does not hide later eligible legacy work behind the
+bounded candidate window.
+
+For scheduling only, an authenticated claim advertises readiness for at most
+30 seconds, bounded by the agent freshness timeout. The readiness set is local
+to one scheduler instance. Empty claims remove the announcement; expired or
+future-dated entries are removed; restart begins with an empty set. A previously
+approved identity returning with an old executable therefore cannot claim a
+symbolic job or indefinitely outrank compatible claimants. Unseen peers become
+ready on their own next compatible claim. This readiness is not persisted as
+proof of a running binary, and cannot replace the current request's handshake.
+
+File, research and code-review provide the three actual HTTP clients. Code,
+text, project, personal, SQLite, Swift and media consume the shipped file client
+through their real imports. All ten families announce on every claim, and none
+retries against an older API by removing the field after HTTP 422.
+
+## Qualification
+
+The public regression reproduced the former API handing an `available` or
+`omitted_budget` symbolic job to a legacy worker, with a real lease and one
+attempt consumed. Network access is forbidden in those tests.
+
+The integrated server check passes **361 tests** across 16 affected files in
+149.88 seconds, with the candidate import origins and source hashes verified.
+It includes public registration/claim, memory consumers, Swift transfer,
+freshness, queue-window fairness, waiting on a SQLite write lock, independent
+API instances and published API contracts. These runs do not replace or imply a
+new full-server-suite result. Ruff and OpenAPI validation pass; type checking
+retains the two previously recorded `media_contracts`/Redis baseline errors.
+
+The complete worker suite passes **1,777 tests, 5 skipped** in 29.82 seconds with
+the candidate server path explicitly selected.
+The 28 added tests load each family's real client in a separate interpreter,
+inspect serialized authenticated requests across repeated claims, exercise
+HTTP 422 without downgrade, and inspect the eight source agent-card examples.
+Focused client tests, Ruff and strict typing also pass. These are local transport
+tests, not live worker or provider execution evidence.
+
+Eight real registration responses also validate against both public schemas.
+That test exposed stale published skill enums and metadata limits; the JSON and
+OpenAPI documents now include the existing code/media/specialist skills and
+research/project limits. Runtime skill policy and family-specific limits are
+unchanged. The standalone schema/route check passes 39 tests; those tests are
+also included in the 361-test integration run and are not an additional count.
+
+Private receipts are under
+`~/Library/Logs/SwarmerQualification/Memory/goal-model-admission-20261003/transport-capability-20261003/`.
+
+## Recovery and activation boundary
+
+The previous recovery32 package revalidates persisted agent cards on startup and
+would erase skills/capacity when it encountered the new key. A distinct private
+recovery package now preserves this approved metadata. Only its `agent_card.py`
+differs; the former package and staged release remain unchanged.
+
+The recovery regression has **15 expected failures and 5 passes** against the
+unchanged predecessor. The corrected recovery passes **84 tests from source and
+84 against its installed wheel**, with two inherited obsolete-version assertions
+deselected and newer equivalents included. The checks cover whole-database
+preservation across two starts for schemas 29–32, all worker families, unknown
+versions and no implicit capability on legacy registrations. Inherited cases
+cover erasure, rollback, malformed schemas and actual pending/accepted receipts.
+The independent generic installed probe also reopens a private schema32 copy
+twice with unchanged rows, rowids, schema and sequences. The package contains 128
+application files; archive, wheel and installed bytes match. All 121 loaded
+application modules have checked origins and hashes.
+
+Recovery wheel SHA256:
+`56832aa10432473109ba43e4c4ceb16b286f8e1cee3b82ec26fbb65d4fe3a977`.
+This recovery preserves metadata; it does not implement symbolic execution or
+the new claim field. Rollback must hold admission and restore a coherent legacy
+API/worker/configuration cohort, with no unresolved external effects. It never
+restores an old database or strips context from retained jobs. Schema27/28 still
+use the separately qualified compat27 predecessor.
+
+The staged c56 API and c527 worker archives predate this handshake and cannot be
+presented as its deployment. Fresh API/worker artifacts, corresponding approved
+registration metadata, and a coordinated activation including the active iMac
+Swift worker remain required. No production capability, service, database,
+configuration or model was changed by this local slice.

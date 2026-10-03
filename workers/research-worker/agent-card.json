@@ -16,6 +16,7 @@
     }
   ],
   "limits": {
+    "symbolic_context_version": 1,
     "max_concurrency": 1,
     "max_results": 10,
     "max_query_characters": 2000,

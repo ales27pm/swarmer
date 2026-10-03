@@ -15,7 +15,12 @@ import aiosqlite
 from app.services.agent_capsule import bound_symbolic_transport
 from app.services.agent_lease import lease_matches, lease_token_hash
 from app.services.agent_liveness import DEFAULT_AGENT_OFFLINE_TIMEOUT_SECONDS
-from app.services.agent_scheduler import SchedulerService
+from app.services.agent_scheduler import (
+    SYMBOLIC_CONTEXT_PROTOCOL,
+    SchedulerService,
+    approves_symbolic_context,
+    requires_symbolic_context,
+)
 from app.services.audit_log import append_audit_event
 from app.services.distributed_state import (
     AgentJobStateMachine,
@@ -475,7 +480,11 @@ class AgentDispatcher:
             await self._drain_outbox()
         return total_quarantined
 
-    async def claim(self, agent_id: str) -> dict[str, Any] | None:
+    async def claim(
+        self, agent_id: str, *, context_protocols: tuple[str, ...] = ()
+    ) -> dict[str, Any] | None:
+        if context_protocols not in ((), (SYMBOLIC_CONTEXT_PROTOCOL,)):
+            raise AgentDispatchConflict("unsupported job context protocol")
         lease_id = f"lease_{uuid4().hex}"
         lease_token = secrets.token_urlsafe(32)
         token_hash = lease_token_hash(lease_token)
@@ -505,6 +514,10 @@ class AgentDispatcher:
             if agent is None:
                 await db.rollback()
                 raise AgentDispatchConflict("agent not found")
+            self.scheduler.observe_context_claim(agent, context_protocols, now=claimed_at)
+            can_receive_symbolic = context_protocols == (
+                SYMBOLIC_CONTEXT_PROTOCOL,
+            ) and approves_symbolic_context(agent)
             if str(agent["status"]) != "online" or not self.scheduler.is_fresh(
                 agent, now=claimed_at
             ):
@@ -550,12 +563,16 @@ class AgentDispatcher:
                         FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
                         WHERE j.status='queued' AND j.required_skill IN ({placeholders})
                           AND j.attempt_count<j.max_attempts AND t.status='queued'
+                          AND (? OR (
+                            json_type(j.payload_json,'$.symbolic_context') IS NULL
+                            AND json_type(j.payload_json,'$.symbolic_context_binding') IS NULL
+                          ))
                     )
                     SELECT * FROM ranked_candidates
                     WHERE scheduler_skill_rank<=?
                     ORDER BY scheduler_task_priority DESC,created_at ASC,id ASC
                     """,  # nosec B608 - placeholders derive only from the list length
-                    (*skills, self.CLAIM_CANDIDATE_LIMIT),
+                    (*skills, can_receive_symbolic, self.CLAIM_CANDIDATE_LIMIT),
                 )
             ).fetchall()
             local_model_busy = any(
@@ -580,6 +597,8 @@ class AgentDispatcher:
                     # worker lease while a different local model is active.
                     continue
                 candidate_payload = json.loads(str(candidate["payload_json"]))
+                if requires_symbolic_context(candidate_payload) and not can_receive_symbolic:
+                    continue
                 try:
                     await require_symbolic_worker_context_locked(
                         db,

@@ -134,6 +134,17 @@ class AgentCreate(BaseModel):
     runtime: Literal["python"] = "python"
     supported_protocol_version: Literal["mongars-worker-v0.9"] = "mongars-worker-v0.9"
 
+    @field_validator("capacity", mode="before")
+    @classmethod
+    def strict_context_capability(cls, value: Any) -> Any:
+        # Preserve existing numeric metadata semantics; protocol approval must
+        # never be obtained by coercing True, 1.0 or "1" into an integer.
+        if isinstance(value, dict) and "symbolic_context_version" in value:
+            version = value["symbolic_context_version"]
+            if type(version) is not int or version != 1:
+                raise ValueError("symbolic_context_version must be integer 1")
+        return value
+
 
 class AgentCard(BaseModel):
     """Server-validated, metadata-only worker capability declaration."""
@@ -170,6 +181,7 @@ class AgentJobClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     wait_seconds: int = Field(default=0, ge=0, le=30)
+    context_protocols: list[Literal["symbolic-v1"]] = Field(default_factory=list, max_length=1)
 
 
 class AgentJobHeartbeat(BaseModel):

@@ -17,6 +17,25 @@ from app.services.agent_liveness import (
 )
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 
+SYMBOLIC_CONTEXT_PROTOCOL = "symbolic-v1"
+
+
+def requires_symbolic_context(payload: object) -> bool:
+    """Even an omitted/empty envelope requires its transport to be understood."""
+    return isinstance(payload, dict) and bool(
+        {"symbolic_context", "symbolic_context_binding"}.intersection(payload)
+    )
+
+
+def approves_symbolic_context(agent: dict[str, Any]) -> bool:
+    """Only the exact server-approved SQL capability grants eligibility."""
+    try:
+        capacity = json.loads(agent.get("capacity_json", "{}"))
+    except (TypeError, ValueError):
+        return False
+    version = capacity.get("symbolic_context_version") if isinstance(capacity, dict) else None
+    return type(version) is int and version == 1
+
 
 @dataclass(frozen=True, slots=True)
 class SchedulerSelection:
@@ -42,6 +61,34 @@ class SchedulerService:
         self.offline_timeout_seconds = offline_timeout_seconds
         self.permission_policy = permission_policy
         self.clock = clock or (lambda: datetime.now(UTC))
+        # Readiness is per instance, not durable capability approval. A worker
+        # returning with an older executable must announce on each real claim.
+        # One entry per authenticated approved agent; every claim prunes old or
+        # future-dated entries. Restart or another API instance starts empty.
+        self.context_claim_ttl_seconds = min(30, offline_timeout_seconds)
+        self._symbolic_claims: dict[str, datetime] = {}
+
+    def _recent_symbolic_claims(self, now: datetime) -> set[str]:
+        self._symbolic_claims = {
+            agent_id: observed
+            for agent_id, observed in self._symbolic_claims.items()
+            if 0 <= (now - observed).total_seconds() < self.context_claim_ttl_seconds
+        }
+        return set(self._symbolic_claims)
+
+    def observe_context_claim(
+        self, agent: dict[str, Any], protocols: tuple[str, ...], *, now: datetime
+    ) -> None:
+        self._recent_symbolic_claims(now)
+        agent_id = str(agent["id"])
+        if (
+            protocols == (SYMBOLIC_CONTEXT_PROTOCOL,)
+            and approves_symbolic_context(agent)
+            and self.eligible(agent, now=now)
+        ):
+            self._symbolic_claims[agent_id] = now
+        else:
+            self._symbolic_claims.pop(agent_id, None)
 
     def _now(self) -> datetime:
         value = self.clock()
@@ -153,6 +200,7 @@ class SchedulerService:
         required_skill: str,
         *,
         now: datetime | None = None,
+        symbolic: bool = False,
     ) -> list[dict[str, Any]]:
         db.row_factory = aiosqlite.Row
         rows = await (
@@ -173,10 +221,16 @@ class SchedulerService:
         ).fetchall()
         candidates = [self._agent_from_row(row) for row in rows]
         selected_now = now or self._now()
+        ready = self._recent_symbolic_claims(selected_now) if symbolic else set()
         candidates = [
             candidate
             for candidate in candidates
             if self.eligible(candidate, required_skill, now=selected_now)
+            and (
+                not symbolic
+                or approves_symbolic_context(candidate)
+                and str(candidate["id"]) in ready
+            )
         ]
         candidates.sort(key=self._ranking_key)
         return candidates
@@ -212,14 +266,15 @@ class SchedulerService:
     ) -> SchedulerSelection | None:
         row = await (
             await db.execute(
-                """SELECT required_skill,last_agent_id
+                """SELECT required_skill,last_agent_id,payload_json
                 FROM agent_jobs WHERE id=? AND status='queued'""",
                 (job_id,),
             )
         ).fetchone()
         if row is None:
             return None
-        candidates = await self._eligible_locked(db, str(row[0]), now=now)
+        symbolic = requires_symbolic_context(json.loads(str(row[2])))
+        candidates = await self._eligible_locked(db, str(row[0]), now=now, symbolic=symbolic)
         native = await (
             await db.execute(
                 "SELECT agent_id FROM swift_project_validations WHERE job_id=?", (job_id,)
@@ -245,8 +300,17 @@ class SchedulerService:
             candidates=public,
             scoring={
                 "algorithm": "deterministic-v2",
+                **(
+                    {
+                        "required_context_protocol": SYMBOLIC_CONTEXT_PROTOCOL,
+                        "context_claim_ttl_seconds": self.context_claim_ttl_seconds,
+                    }
+                    if symbolic
+                    else {}
+                ),
                 "order": [
                     "skill_and_protocol_eligibility",
+                    *(["approved_context_and_recent_claim"] if symbolic else []),
                     "load_ratio_ascending",
                     "observed_score_descending",
                     "latency_after_three_completions_ascending",

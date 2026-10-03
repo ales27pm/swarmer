@@ -2766,9 +2766,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: AgentJobClaim,
         principal: Annotated[dict[str, Any], Depends(require_agent)],
     ) -> dict[str, Any] | None:
-        del request, principal
+        del principal
         try:
-            job = await agent_dispatcher.claim(agent_id)
+            job = await agent_dispatcher.claim(
+                agent_id, context_protocols=tuple(request.context_protocols)
+            )
         except AgentDispatchConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if job:

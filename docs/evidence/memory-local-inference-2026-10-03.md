@@ -5,6 +5,10 @@ evidence to local goal planning and local tool proposals. It is local source and
 test evidence, not a deployed backend, installed iPhone build or measured model
 quality result.
 
+Follow-up: [compatible worker claims and recovery metadata](memory-worker-context-protocol-2026-10-03.md)
+close a transport-version gap found before activation. The staged candidate
+predates that handshake; it remains staging evidence, not its deployment.
+
 ## Selection and acceptance
 
 `POST /memory/local-context` derives the project and source scope from SQL and

@@ -283,7 +283,11 @@ class ControlPlaneClient:
         self._call(self._path("/heartbeat"), "POST", {"status": status})
 
     def claim(self) -> dict[str, Any] | None:
-        response = self._call(self._path("/claim"), "POST", {"wait_seconds": 0})
+        response = self._call(
+            self._path("/claim"),
+            "POST",
+            {"wait_seconds": 0, "context_protocols": ["symbolic-v1"]},
+        )
         if response is None:
             return None
         return self._object(response, "job claim")
