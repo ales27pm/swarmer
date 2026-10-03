@@ -4632,7 +4632,7 @@ components:
 
     MemoryPresentation:
       type: object
-      description: Temporary French rendering bound to the unchanged English source; never indexed as another memory.
+      description: French display bound to the current canonical revision; either a reviewed translation or the exact preserved original, never another indexed memory.
       required: [language, content, summary, canonical_sha256, summary_sha256, source_revision, validation_status, temporary, grants_authority]
       properties:
         language: {type: string, const: fr}
@@ -4641,9 +4641,20 @@ components:
         canonical_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
         summary_sha256: {type: [string, 'null'], pattern: '^[a-f0-9]{64}$'}
         source_revision: {type: string, description: Exact updated_at of the canonical memory item}
-        validation_status: {type: string, const: model_reviewed}
+        validation_status: {type: string, enum: [model_reviewed, source_preserved]}
+        mode: {type: string, const: original}
+        source_id: {type: string, minLength: 1}
+        source_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        canonical_receipt_id: {type: string, minLength: 1}
         temporary: {type: boolean, const: true}
         grants_authority: {type: boolean, const: false}
+      oneOf:
+        - properties:
+            validation_status: {const: model_reviewed}
+          not: {required: [mode]}
+        - required: [mode, source_id, source_sha256, canonical_receipt_id]
+          properties:
+            validation_status: {const: source_preserved}
 
     MemoryUsageRetrieval:
       properties:

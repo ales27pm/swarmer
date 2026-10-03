@@ -159,7 +159,120 @@ Before the fix, 14 new regression cases failed. After it, **292 affected tests
 passed in 27.53 seconds**, including 21 new cases. The changed source passes
 mypy, Ruff and formatting checks, and an independent review found no blocker.
 These focused results follow the full run above; the full run does not include
-this later correction. The corrected real-provider trial is still to run.
+this later correction. The correction is committed as `adbeff0`.
+
+### Corrected provider trial: execution passes, semantic presentation rejected
+
+An immutable `adbeff0` application bundle with explicit `reasoning_effort=none`
+completed six real requests in **33.335 seconds**. Each returned HTTP 200,
+`finish_reason=stop`, and zero reasoning characters. The write replay made no
+extra request, retrieval did not mutate storage, one original journal entry and
+one accepted canonical memory were retained, and no goal/task/project/job was
+created. All HTTP outcomes were known and the owned GPU marker was cleared.
+Fourteen harness tests, including cancellation, crash and foreign-marker cases,
+passed before this attempt.
+
+Independent reading rejected the French presentation despite its model review:
+the original asks to keep `rapport.csv`, while the French rendering says to
+archive it. That introduces a more specific action. Negation, uncertainty and
+the exact `30 ms` literal survived, but those successes do not erase the changed
+obligation. The initial review considered the English text faithful, but the
+subsequent review below identifies an ambiguity in it. The stored
+mechanical receipt remains unchanged; a separate `semantic-review.json` records
+the semantic rejection. This trial **does not qualify production activation**.
+
+Private evidence: `provider-adbeff08ab36/live-01/` in the qualification directory.
+A subsequent comparison must include both faithful and deliberately altered
+translations; simply making the reviewer approve this example is not success.
+
+### Reviewer comparison and source-preserving display
+
+Inspection of the actual pivot found `Keep exactly 30 ms and file
+\`rapport.csv\`.` Without `the`, `file` can also be read as a verb. This is a
+plausible contributor to the back-translation, not evidence of the model's
+internal reasoning. The presentation reviewer saw only that English pivot,
+not the original French noun phrase. Keeping the original is therefore useful
+at the read boundary as well as for provenance.
+
+Before any live comparison, the fixed three-case corpus was disambiguated to
+`Keep exactly 30 ms and the file \`rapport.csv\`.` The declared labels were
+accept for a faithful French rendering, reject for changing keep to archive,
+and reject for reversing the send prohibition. Six real requests compared the
+installed pinned 9B and 30B models, under the shared GPU lock and production-idle
+checks, without production database writes or automatic retries.
+
+The comparison completed in **103.902 seconds**. Every response was complete;
+the owned GPU marker was cleared. The 9B returned the expected accept/reject
+decisions for all three examples, but its action-change rejection set only
+`uncertainty_preserved=false`, while affirming meaning and no added facts.
+The 30B accepted the action change incorrectly and matched two of three labels.
+Neither result qualifies a model substitution or broad semantic correctness.
+Per-call times were 11.678/5.195/5.152 seconds for 9B and
+41.411/18.810/21.440 seconds for 30B, including their loading differences.
+No statistical speed or accuracy comparison is inferred from three examples.
+
+Private evidence: `reviewer-comparison-adbeff0/live-01/`. The v2 harness archive
+SHA256 is `44449adc9f5ab9027887df4f9a90df0a3cce2d98ef4cc5516f86ab17a3cfbeea`;
+the predeclared corpus SHA256 is
+`cba55bc83f5c3a868c3dedf9323e620159f1d7d62ee08540c4f895dd637457fb`.
+Sixteen private tests and independent review preceded the live run. Verdicts,
+durations and response hashes were retained; response reasoning was not exported.
+
+The new code instead reuses the exact qualified French original where available.
+It binds the journal, accepted canonical receipt, scope, source hashes and current
+canonical revision, including a final recheck after other items are translated.
+English sources and items containing mixed-language source fields retain the
+reviewed translation path. A mixed batch only sends those remaining items to the
+presenter. No original is rewritten, no source view is indexed as a second memory,
+and the display grants no additional authority. Mobile and strategy consumers
+distinguish `mode=original, validation_status=source_preserved` from the legacy
+`model_reviewed` translation contract. Language remains an assertion of the
+accepted normalizer metadata, not a property proven by the content hash.
+
+The combined post-change server regression has **270 passed** in 44.65 seconds,
+with one existing Starlette deprecation warning. It covers original and mixed
+source display, source/revision races, canonical writes, query normalization,
+provider output policy, API errors, strategy retrieval and goal-scoped request
+accounting. The first combined run had 265 passes and two assertions expecting
+the now-avoided presentation calls. Those cases now explicitly exercise both
+source languages: five actual memory calls for the French-source path, seven
+for the English-source path, including the existing embedding requests; planner
+credit, recorded call identities and degraded embedding behavior remain checked.
+These counts describe that integration fixture, not every search operation.
+
+Mobile display and screen tests have **41 passed**. TypeScript, changed-file
+ESLint, mypy on the three source modules, Ruff and formatting checks pass.
+The OpenAPI validator reports 83 paths, 91 operations, 622 references and seven
+schemas valid; twelve new schema cases cover the two presentation modes and
+reject missing bindings and mismatched statuses. Independent code review found
+no blocker. This correction does not establish that the English pivot itself
+is semantically reliable; production canonical activation remains unqualified.
+
+### Compatible mobile artifact prepared
+
+The activity-compatible mobile source built successfully in **111.535 seconds**.
+The signed DEBUG IPA contains the five memory role names in its embedded Hermes
+bundle; all 254 tracked/source inputs and 50 protected native files remained
+unchanged during the build. The ten existing Core ML fixtures and native audio
+symbols are retained. This is build and packaging evidence, not device behavior.
+
+IPA SHA256: `185734de1baafadd6a78189699036dd3498055d5f98c15249f0c04a7705d00b7`;
+embedded bundle SHA256:
+`c0075957290cd69273ba4aff3f6f210d8584d97bb0bfb0d3122a886ab0674d24`.
+Private receipts are in `mobile-activity-7d7e0a2/`. The displayed version/build
+number remains unchanged, so it cannot distinguish this artifact from the older
+installed one. The phone was freshly observed connected but passcode-locked;
+installation and activity-route runtime validation have not occurred.
+
+The corrected server package was rebuilt from `adbeff0`, separately from the
+earlier `b012fe0` artifact. Its 122 application files match source, wheel and
+isolated installation byte-for-byte; the installed copy initializes schema 28
+and accepts the explicit memory reasoning setting. Wheel SHA256:
+`d085a9f90a47e83f2fc19b3c28f2121ad4642b2291b6d9cca9331ab84e0dba1f`.
+This package is also not deployed.
+
+Both artifacts above predate the source-preserving display change. They must not
+be described as containing that newer server/client contract.
 
 ## Remaining proof
 

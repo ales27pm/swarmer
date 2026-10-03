@@ -38,6 +38,13 @@ French presentation of qualified results; that presentation is checked against
 the English source revision and hashes and is never written as another memory.
 The mobile memory screen can reveal the stored English text.
 
+For an original already reviewed as French, the current candidate instead returns
+the exact source journal fields after verifying their accepted receipt, scope,
+hashes and current canonical revision. It labels this as preserved source text.
+The temporary translation path remains for English sources and mixed-language
+items; a mixed batch does not retranslate its eligible French originals. This
+avoids a second translation changing an obligation through an ambiguous pivot.
+
 The 3 October candidate wires strategy retrieval to this path when canonical
 English memory is explicitly enabled. Actual model calls use goal-scoped
 admission, budgets and revision fencing; candidates remain limited to

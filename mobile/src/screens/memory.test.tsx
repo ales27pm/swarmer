@@ -90,6 +90,31 @@ describe("MemoryScreen", () => {
     expect(await screen.findByText(`Dernière recherche : classement ${label} déclaré par le serveur.`)).toBeOnTheScreen();
   });
 
+  it("labels the exact French original separately from a translated display", async () => {
+    const content = "Keep the file `rapport.csv`.";
+    const original = "Conserver le fichier `rapport.csv`.";
+    const sourceHash = sha256(JSON.stringify({ content: original, summary: null }));
+    mockSearchMemory.mockResolvedValue([{ ...memory, content, summary: null,
+      metadata: { canonical_language: "en", source_id: "msrc_one", source_sha256: sourceHash,
+        canonical_receipt_id: "receipt_one", summary: null,
+        content: { source_id: "msrc_one:content", source_language: "fr", source_sha256: sha256(original),
+          canonical_sha256: sha256(content), source_revalidated: true, grants_authority: false } },
+      presentation: { language: "fr", mode: "original", validation_status: "source_preserved",
+        content: original, summary: null, canonical_sha256: sha256(content), summary_sha256: null,
+        source_revision: memory.updated_at, temporary: true, grants_authority: false,
+        source_id: "msrc_one", source_sha256: sourceHash, canonical_receipt_id: "receipt_one" } }]);
+    const user = userEvent.setup();
+    await render(<MemoryScreen />); await screen.findByText(memory.content);
+    await fireEvent.changeText(screen.getByLabelText("Rechercher dans la mémoire"), "conserver fichier");
+    await user.press(screen.getByRole("button", { name: "Chercher" }));
+    expect(await screen.findByText(original)).toBeOnTheScreen();
+    expect(screen.getByText(/Texte français d’origine/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Traduction française temporaire/)).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Voir la version anglaise" }));
+    expect(screen.getByText(content)).toBeOnTheScreen();
+    expect(mockUpdateMemory).not.toHaveBeenCalled();
+  });
+
   it("ties the pin mutation to the selected memory record", async () => {
     const user = userEvent.setup();
     await render(<MemoryScreen />);

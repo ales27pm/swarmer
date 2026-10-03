@@ -64,8 +64,10 @@ def test_startup_uses_canonical_strategy_only_when_enabled(tmp_path, canonical):
     assert app.state.strategy_retrieval.episode_memory is app.state.episode_memory
 
 
-async def prepared(tmp_path: Path, monkeypatch):
-    normalizer = normalizer_provider(Model())
+async def prepared(tmp_path: Path, monkeypatch, *, source_language="fr"):
+    model = Model()
+    model.language = source_language
+    normalizer = normalizer_provider(model)
     presenter = presenter_provider(Models())
     state = StateService(
         tmp_path / "state.db",
@@ -95,7 +97,11 @@ async def prepared(tmp_path: Path, monkeypatch):
     ):
         item = await state.create_memory(
             MemoryCreate(
-                content="Ne pas envoyer automatiquement.",
+                content=(
+                    "Ne pas envoyer automatiquement."
+                    if source_language == "fr"
+                    else "Do not send automatically."
+                ),
                 kind="constraint",
                 scope=scope,
                 sensitivity=sensitivity,
@@ -104,6 +110,8 @@ async def prepared(tmp_path: Path, monkeypatch):
         )
         if scope != "project:other_project" and sensitivity == "normal":
             allowed.append(item)
+    # The query remains French even when its matching stored source is English.
+    model.language = "fr"
     episodes = EpisodeMemoryService(state.db_path)
     for goal_id, root_id in ((goal, root), (other_goal, other_root)):
         await episodes.record_episode(
@@ -134,11 +142,15 @@ async def prepared(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_language", ["fr", "en"])
 async def test_real_strategy_passes_executor_to_all_memory_calls_and_preserves_scope(
     tmp_path,
     monkeypatch,
+    source_language,
 ):
-    retrieval, state, goal, allowed, requests = await prepared(tmp_path, monkeypatch)
+    retrieval, state, goal, allowed, requests = await prepared(
+        tmp_path, monkeypatch, source_language=source_language
+    )
     executor = RecordingExecutor()
     hints = await retrieval.retrieve(
         "Dois-je envoyer automatiquement ?",
@@ -151,9 +163,7 @@ async def test_real_strategy_passes_executor_to_all_memory_calls_and_preserves_s
         "memory_normalizer",
         "memory_reviewer",
         "memory_embedder",
-        "memory_presenter",
-        "memory_presentation_reviewer",
-    ]
+    ] + (["memory_presenter", "memory_presentation_reviewer"] if source_language == "en" else [])
     assert len(requests) == 3
     assert len(hints.successful) == 1 and not hints.failures
     assert {hint.source_id for hint in hints.memory} == {item["id"] for item in allowed}
@@ -181,7 +191,7 @@ async def test_execution_control_is_not_hidden_by_empty_or_lexical_results(
     monkeypatch,
     role,
 ):
-    retrieval, _, goal, _, _ = await prepared(tmp_path, monkeypatch)
+    retrieval, _, goal, _, _ = await prepared(tmp_path, monkeypatch, source_language="en")
     executor = RecordingExecutor(reject_role=role)
     with pytest.raises(ModelExecutionControlError) as caught:
         await retrieval.retrieve(

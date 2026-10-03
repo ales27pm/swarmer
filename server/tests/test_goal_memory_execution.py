@@ -153,16 +153,27 @@ async def test_cancelled_operation_releases_its_receipt(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "budget,expected_memory_calls,embedding_failure", [(10, 7, False), (1, 0, False), (10, 7, True)]
+    "source_language,budget,expected_memory_calls,embedding_failure",
+    [
+        ("fr", 10, 5, False),
+        ("fr", 1, 0, False),
+        ("fr", 10, 5, True),
+        ("en", 10, 7, False),
+        ("en", 1, 0, False),
+        ("en", 10, 7, True),
+    ],
 )
 async def test_planner_path_accounts_for_real_memory_http_and_retains_provenance(
     tmp_path,
     monkeypatch,
+    source_language,
     budget,
     expected_memory_calls,
     embedding_failure,
 ):
-    retrieval, state, goal_id, allowed, requests = await prepared(tmp_path, monkeypatch)
+    retrieval, state, goal_id, allowed, requests = await prepared(
+        tmp_path, monkeypatch, source_language=source_language
+    )
     if embedding_failure:
         previous_client = httpx.AsyncClient
 
@@ -189,6 +200,14 @@ async def test_planner_path_accounts_for_real_memory_http_and_retains_provenance
     _, _, planner_call_id = await manager._obtain_plan(goal, GoalStartRequest())
     rows = await calls(manager)
     assert len(rows) == expected_memory_calls + 1
+    presentation_roles = [
+        r["role"] for r in rows if r["role"] in {"memory_presenter", "memory_presentation_reviewer"}
+    ]
+    assert presentation_roles == (
+        ["memory_presenter", "memory_presentation_reviewer"]
+        if source_language == "en" and expected_memory_calls
+        else []
+    )
     assert [r["status"] for r in rows[:-1]] == [
         "failed" if embedding_failure and r["role"] == "memory_embedder" else "completed"
         for r in rows[:-1]
@@ -215,7 +234,7 @@ async def test_planner_path_accounts_for_real_memory_http_and_retains_provenance
         memories = [x for x in receipt["sources"].values() if x.get("canonical_language")]
         assert {x["source_id"] for x in memories} == {x["id"] for x in allowed}
         assert all(x["canonical_content_sha256"] and x["source_revision"] for x in memories)
-        assert any("model_calls=7/10" in c["summary"] for c in cards)
+        assert any(f"model_calls={expected_memory_calls}/10" in c["summary"] for c in cards)
     else:
         assert receipt["status"] == "budget_unavailable" and not receipt["sources"]
         assert any(c["kind"] == "memory_retrieval_status" for c in cards)

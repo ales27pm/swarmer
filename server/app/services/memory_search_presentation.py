@@ -109,7 +109,10 @@ def _qualified(
     return True
 
 
-async def _recheck(db_path: Path, items: list[dict[str, Any]], *, initial: bool) -> None:
+async def _recheck(
+    db_path: Path, items: list[dict[str, Any]], *, initial: bool
+) -> dict[str, dict[str, Any]]:
+    sources = {}
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN")
@@ -147,6 +150,41 @@ async def _recheck(db_path: Path, items: list[dict[str, Any]], *, initial: bool)
                     "unavailable" if initial else "source_conflict",
                     "canonical_memory_unqualified" if initial else "canonical_memory_changed",
                 )
+            assert source is not None
+            sources[item["id"]] = dict(source)
+    return sources
+
+
+def _presentation_batch(items: list[dict[str, Any]]) -> MemoryPresentationBatch:
+    batch = MemoryPresentationBatch(
+        items=[
+            MemoryPresentationSource(
+                memory_id=item["id"],
+                scope=item["scope"],
+                source_revision=item["updated_at"],
+                canonical_sha256=canonical_text_sha256(item["content"]),
+                content=item["content"],
+                summary=item["summary"],
+                summary_sha256=canonical_text_sha256(item["summary"])
+                if item["summary"] is not None
+                else None,
+            )
+            for item in items
+        ]
+    )
+    if len({item.memory_id for item in batch.items}) != len(batch.items):
+        raise MemoryNormalizationError("invalid", "duplicate_presentation_memory")
+    if (
+        sum(
+            len(value.encode("utf-8"))
+            for item in batch.items
+            for value in (item.content, item.summary)
+            if value is not None
+        )
+        > MAX_PRESENTATION_SOURCE_BYTES
+    ):
+        raise MemoryNormalizationError("invalid", "presentation_source_budget_exceeded")
+    return batch
 
 
 async def finalize_memory_search(
@@ -164,10 +202,93 @@ async def finalize_memory_search(
     assert_current()
     if not items:
         return []
-    await _recheck(db_path, items, initial=True)
+    sources = await _recheck(db_path, items, initial=True)
     assert_current()
     if not french:
         return items
+    try:
+        # Validate the entire selection before splitting it, so mixed batches
+        # retain the same item and input byte limits as translated batches.
+        _presentation_batch(items)
+        original = {}
+        translated = []
+        for item in items:
+            source = sources[item["id"]]
+            metadata = item["metadata"]
+            if not all(
+                metadata[field]["source_language"] == "fr"
+                for field in ("content", "summary")
+                if source[field] is not None
+            ):
+                translated.append(item)
+                continue
+            # The language declaration is trusted persisted normalization
+            # metadata; _recheck binds each exact original to its accepted
+            # receipt, scope, revision and current English canonical text.
+            original[item["id"]] = {
+                **item,
+                "presentation": {
+                    "mode": "original",
+                    "language": "fr",
+                    "content": source["content"],
+                    "summary": source["summary"],
+                    "canonical_sha256": canonical_text_sha256(item["content"]),
+                    "summary_sha256": canonical_text_sha256(item["summary"])
+                    if item["summary"] is not None
+                    else None,
+                    "source_revision": item["updated_at"],
+                    "validation_status": "source_preserved",
+                    "temporary": True,
+                    "grants_authority": False,
+                    "source_id": source["id"],
+                    "source_sha256": source["source_sha256"],
+                    "canonical_receipt_id": metadata["canonical_receipt_id"],
+                },
+            }
+        if translated:
+            rendered = await _translate_memory_search(
+                db_path,
+                translated,
+                all_items=items,
+                get_presenter=get_presenter,
+                gate=gate,
+                timeout_seconds=timeout_seconds,
+                assert_current=assert_current,
+                model_executor=model_executor,
+            )
+            original.update((item["id"], item) for item in rendered)
+        output = [original[item["id"]] for item in items]
+        if (
+            sum(
+                len(value.encode("utf-8"))
+                for item in output
+                for value in (item["presentation"]["content"], item["presentation"]["summary"])
+                if value is not None
+            )
+            > MAX_PRESENTATION_OUTPUT_BYTES
+        ):
+            raise MemoryNormalizationError("invalid", "presentation_output_budget_exceeded")
+        # Translation already finishes by rechecking the whole mixed selection
+        # and its presenter identity. Do not insert an unchecked await after it.
+        if not translated:
+            await _recheck(db_path, items, initial=False)
+        assert_current()
+        return output
+    except (ValidationError, ValueError, TypeError, KeyError, UnicodeError) as exc:
+        raise MemoryNormalizationError("invalid", "invalid_presentation_receipt") from exc
+
+
+async def _translate_memory_search(
+    db_path: Path,
+    items: list[dict[str, Any]],
+    *,
+    all_items: list[dict[str, Any]],
+    get_presenter: Callable[[], MemoryPresenter | None],
+    gate: asyncio.Lock,
+    timeout_seconds: float,
+    assert_current: Callable[[], None],
+    model_executor: ModelRequestExecutor | None,
+) -> list[dict[str, Any]]:
     presenter = get_presenter()
     if presenter is None:
         raise MemoryNormalizationError("unavailable", "presenter_not_configured")
@@ -179,39 +300,14 @@ async def finalize_memory_search(
             raise MemoryNormalizationError("source_conflict", "memory_presenter_changed")
 
     try:
-        batch = MemoryPresentationBatch(
-            items=[
-                MemoryPresentationSource(
-                    memory_id=item["id"],
-                    scope=item["scope"],
-                    source_revision=item["updated_at"],
-                    canonical_sha256=canonical_text_sha256(item["content"]),
-                    content=item["content"],
-                    summary=item["summary"],
-                    summary_sha256=canonical_text_sha256(item["summary"])
-                    if item["summary"] is not None
-                    else None,
-                )
-                for item in items
-            ]
-        )
-        if (
-            sum(
-                len(value.encode("utf-8"))
-                for item in batch.items
-                for value in (item.content, item.summary)
-                if value is not None
-            )
-            > MAX_PRESENTATION_SOURCE_BYTES
-        ):
-            raise MemoryNormalizationError("invalid", "presentation_source_budget_exceeded")
+        batch = _presentation_batch(items)
         batch_hash = _digest(batch.model_dump())
 
         async def recheck(candidate: MemoryPresentationBatch) -> bool:
             assert_providers()
             if _digest(candidate.model_dump()) != batch_hash:
                 return False
-            await _recheck(db_path, items, initial=False)
+            await _recheck(db_path, all_items, initial=False)
             assert_providers()
             return True
 
@@ -281,7 +377,7 @@ async def finalize_memory_search(
                             },
                         }
                     )
-                await _recheck(db_path, items, initial=False)
+                await _recheck(db_path, all_items, initial=False)
                 assert_providers()
                 return output
     except (ModelExecutionControlError, MemoryNormalizationError):

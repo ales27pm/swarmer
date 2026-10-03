@@ -195,7 +195,9 @@ function MemoryRecordCard({
       {presentation ? (
         <>
           <Text style={{ color: COLORS.subtle, fontSize: 11 }}>
-            {showCanonical ? "Version anglaise enregistrée." : "Traduction française temporaire · version enregistrée en anglais."}
+            {showCanonical ? "Version anglaise enregistrée." : presentation.mode === "original"
+              ? "Texte français d’origine · version anglaise disponible."
+              : "Traduction française temporaire · version enregistrée en anglais."}
           </Text>
           <ActionButton
             label={showCanonical ? "Revenir au français" : "Voir la version anglaise"}

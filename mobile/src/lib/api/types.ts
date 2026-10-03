@@ -454,10 +454,15 @@ export type MemoryItem = {
     canonical_sha256: string;
     summary_sha256: string | null;
     source_revision: string;
-    validation_status: "model_reviewed";
     temporary: true;
     grants_authority: false;
-  };
+  } & ({ validation_status: "model_reviewed"; mode?: never } | {
+    validation_status: "source_preserved";
+    mode: "original";
+    source_id: string;
+    source_sha256: string;
+    canonical_receipt_id: string;
+  });
 };
 
 export type Agent = {

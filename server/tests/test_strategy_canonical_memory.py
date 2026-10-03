@@ -111,7 +111,7 @@ async def test_french_agent_query_returns_french_hint_from_verified_english_with
     assert hint.as_dict()["source_revision"] == memory["updated_at"]
     assert hint.as_dict()["canonical_content_sha256"] == canonical_text_sha256(memory["content"])
     assert await _counts(state.db_path) == before
-    assert len(normalizer.calls) == 2 and len(presenter.calls) == 1
+    assert len(normalizer.calls) == 2 and not presenter.calls
     assert (await state.get_memory(memory["id"]))["content"] == "Do not send automatically."
 
 

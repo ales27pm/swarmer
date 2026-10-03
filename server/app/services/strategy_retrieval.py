@@ -13,6 +13,7 @@ import aiosqlite
 from app.models import MemorySearch
 from app.services.context_builder import safe_context_text
 from app.services.episode_memory import EpisodeMemoryService, EpisodeSearchResult
+from app.services.memory_display_validation import bound_memory_presentation
 from app.services.memory_normalization import MemoryNormalizationError, canonical_text_sha256
 from app.services.memory_relevance import (
     general_fact_is_relevant,
@@ -368,16 +369,7 @@ class StrategyRetrieval:
             ):
                 raise MemoryNormalizationError("invalid", "strategy_memory_presentation_invalid")
             if presentation is not None:
-                if (
-                    not isinstance(presentation, dict)
-                    or presentation.get("language") != "fr"
-                    or presentation.get("temporary") is not True
-                    or presentation.get("validation_status") != "model_reviewed"
-                    or presentation.get("grants_authority") is not False
-                    or presentation.get("canonical_sha256") != content_hash
-                    or presentation.get("summary_sha256") != summary_hash
-                    or presentation.get("source_revision") != item["updated_at"]
-                ):
+                if not bound_memory_presentation(item):
                     raise MemoryNormalizationError(
                         "invalid", "strategy_memory_presentation_invalid"
                     )
