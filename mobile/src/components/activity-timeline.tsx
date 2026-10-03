@@ -22,7 +22,12 @@ type Props = {
 };
 const KIND_LABELS = { model_call: "Modèle", worker_job: "Agent", tool_call: "Outil", project_revision: "Révision", project_check: "Vérification" };
 const STATUS_LABELS = { queued: "En file", running: "En cours au dernier relevé", waiting: "En attente", completed: "Terminée", failed: "Échouée", cancelled: "Annulée", skipped: "Ignorée", recorded: "Enregistrée" };
-const ROLE_LABELS = { planner: "Planification", evaluator: "Évaluation", summarizer: "Résumé", synthesizer: "Synthèse" };
+const ROLE_LABELS: Record<NonNullable<ActivityItem["role"]>, string> = {
+  planner: "Planification", evaluator: "Évaluation", summarizer: "Résumé", synthesizer: "Synthèse",
+  memory_normalizer: "Préparation de la recherche", memory_reviewer: "Vérification de la traduction",
+  memory_presenter: "Présentation des souvenirs", memory_presentation_reviewer: "Vérification de la présentation",
+  memory_embedder: "Recherche sémantique",
+};
 const COVERAGE = "Seules les preuves enregistrées sont affichées, pas les opérations internes en direct. Les durées inconnues ne sont pas estimées.";
 const KIND_FILTERS: { key: ActivityItem["kind"] | "all"; label: string }[] = [
   { key: "all", label: "Toutes" },

@@ -4,6 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.services.model_request_execution import MemoryModelRole
+
 Identifier = Annotated[
     str, StringConstraints(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 ]
@@ -11,6 +13,9 @@ ActivityKind = Literal["model_call", "worker_job", "tool_call", "project_revisio
 ActivityStatus = Literal[
     "queued", "running", "waiting", "completed", "failed", "cancelled", "skipped", "recorded"
 ]
+
+
+ActivityModelRole = Literal["planner", "evaluator", "summarizer", "synthesizer"] | MemoryModelRole
 
 
 class PublicModel(BaseModel):
@@ -39,7 +44,7 @@ class ActivityItem(PublicModel):
     node_id: Identifier | None = None
     agent_id: Identifier | None = None
     model_id: str | None = Field(default=None, max_length=200)
-    role: Literal["planner", "evaluator", "summarizer", "synthesizer"] | None = None
+    role: ActivityModelRole | None = None
     tool_name: str | None = Field(default=None, max_length=200)
     detail: ActivityDetail = Field(default_factory=ActivityDetail)
 

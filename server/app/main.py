@@ -491,9 +491,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
         max_result_chars_per_node=settings.goal_context_max_result_chars_per_node,
     )
     episode_memory = EpisodeMemoryService(settings.db_path, embedding_service)
-    # Agent translation requires model-call admission/accounting before wiring
-    # the optional canonical-memory seam; explicit memory API remains separate.
-    strategy_retrieval = StrategyRetrieval(settings.db_path, episode_memory)
+    strategy_retrieval = StrategyRetrieval(
+        settings.db_path,
+        episode_memory,
+        canonical_memory=state_service if settings.memory_canonical_language == "en" else None,
+    )
     model_router = ModelRouter(
         [
             ModelRoleConfig(

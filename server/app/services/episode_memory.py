@@ -15,6 +15,7 @@ import aiosqlite
 from app.services.context_builder import safe_context_text
 from app.services.embedding_service import EmbeddingService, EmbeddingServiceError
 from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
+from app.services.model_request_execution import ModelExecutionControlError, ModelRequestExecutor
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 _OUTCOME = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
@@ -380,6 +381,7 @@ class EpisodeMemoryService:
         outcomes: Sequence[str] | None = None,
         limit: int = 10,
         goal_run_id: str | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> list[EpisodeSearchResult]:
         safe_query = safe_context_text(query, max_chars=512)
         if not safe_query:
@@ -412,7 +414,12 @@ class EpisodeMemoryService:
         project_id = str(project[0])
         provider = self.embedding_service
         identity = self._embedding_identity()
-        query_vector = await self._query_vector(safe_query, provider, identity)
+        query_vector = await self._query_vector(
+            safe_query,
+            provider,
+            identity,
+            **({"model_executor": model_executor} if model_executor is not None else {}),
+        )
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA query_only=ON")
@@ -561,12 +568,20 @@ class EpisodeMemoryService:
         return embedding_identity(self.embedding_service, input_format="episode-search-text-v1")
 
     async def _query_vector(
-        self, query: str, provider: EmbeddingService | None, identity: str
+        self,
+        query: str,
+        provider: EmbeddingService | None,
+        identity: str,
+        *,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> list[float] | None:
         if provider is None:
             return None
         try:
-            vectors = await provider.embed([query])
+            vectors = await provider.embed(
+                [query],
+                **({"model_executor": model_executor} if model_executor is not None else {}),
+            )
             if (
                 len(vectors) != 1
                 or provider is not self.embedding_service
@@ -574,6 +589,9 @@ class EpisodeMemoryService:
             ):
                 return None
             return memory_vector(vectors[0], getattr(provider, "dimensions", None))
+        except ModelExecutionControlError:
+            # A revoked goal, budget or admission is not a provider outage.
+            raise
         except (EmbeddingServiceError, TypeError, ValueError):
             return None
 

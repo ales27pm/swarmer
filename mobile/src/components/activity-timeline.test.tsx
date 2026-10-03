@@ -28,6 +28,25 @@ async function open() {
 
 describe("persisted activity timeline", () => {
   beforeEach(() => { jest.restoreAllMocks(); jest.clearAllMocks(); load.mockReset(); AppState.currentState = "active"; load.mockResolvedValue(activityPage()); });
+  it.each([
+    { role: "memory_normalizer", label: "Préparation de la recherche" },
+    { role: "memory_reviewer", label: "Vérification de la traduction" },
+    { role: "memory_presenter", label: "Présentation des souvenirs" },
+    { role: "memory_presentation_reviewer", label: "Vérification de la présentation" },
+    { role: "memory_embedder", label: "Recherche sémantique" },
+  ] as const)("labels $role in the live summary and detailed history", async ({ role, label }) => {
+    load.mockResolvedValue(activityPage([activityItem(`model_call:${role}`, {
+      kind: "model_call", role, title: "Appel modèle", node_id: null, tool_name: null,
+    })]));
+    const user = userEvent.setup();
+    await render(<ActivityTimeline {...props} follow />);
+    expect(await screen.findByText(`Modèle · ${label} · Terminée`)).toBeOnTheScreen();
+    expect(screen.queryByText(new RegExp(role))).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Opérations détaillées" }));
+    expect(await screen.findByText(`Modèle · ${label}`)).toBeOnTheScreen();
+    expect(screen.queryByText(new RegExp(role))).not.toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(1);
+  });
   it("shows compact evidence and discloses technical details without estimating unknown timing", async () => {
     const model = activityItem("model_call:model_1", { kind: "model_call", role: "planner", title: "Appel modèle", model_id: "local-model-7b", duration_ms: null });
     const check = activityItem("project_check:rev_1:00", { kind: "project_check", title: "Vérification du projet", duration_ms: 0,

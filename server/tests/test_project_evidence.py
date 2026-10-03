@@ -14,7 +14,7 @@ from app.services.project_evidence import (
 )
 from app.services.project_evidence_contracts import EvidenceMappingRequest, RequirementEvidenceView
 from app.services.project_graph import read_project_graph
-from app.services.state_service import StateService
+from app.services.state_service import SCHEMA_VERSION, StateService
 from app.services.swarm_contracts import GoalCreateRequest
 from tests.test_project_graph import graph_evidence
 
@@ -396,7 +396,7 @@ async def test_schema26_migrates_idempotently_without_synthesizing_coverage(tmp_
     view = await read_project_evidence(path, goal["id"])
     assert view.criteria[0].status == "unmapped"
     async with aiosqlite.connect(path) as db:
-        assert (await (await db.execute("PRAGMA user_version")).fetchone())[0] == 27
+        assert (await (await db.execute("PRAGMA user_version")).fetchone())[0] == SCHEMA_VERSION
 
 
 @pytest.mark.asyncio

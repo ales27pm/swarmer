@@ -6,11 +6,15 @@ from typing import Protocol
 
 import httpx
 
+from app.services.model_request_execution import ModelExecutionControlError, ModelRequestExecutor
+
 
 class EmbeddingService(Protocol):
     provider_name: str
 
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(
+        self, texts: list[str], *, model_executor: ModelRequestExecutor | None = None
+    ) -> list[list[float]]: ...
 
 
 class EmbeddingServiceError(RuntimeError):
@@ -23,7 +27,9 @@ class DeterministicEmbeddingService:
     def __init__(self, dimensions: int = 16) -> None:
         self.dimensions = dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self, texts: list[str], *, model_executor: ModelRequestExecutor | None = None
+    ) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
             values = [0.0] * self.dimensions
@@ -41,27 +47,45 @@ class HttpEmbeddingService:
         self.model = model
         self.provider_name = f"http:{model}"
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/embeddings", json={"model": self.model, "input": texts}
-                )
-                response.raise_for_status()
-            body = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise EmbeddingServiceError("local embedding provider unavailable") from exc
-        if not isinstance(body, dict):
-            raise EmbeddingServiceError("invalid embedding response")
-        data = body.get("data")
-        if not isinstance(data, list):
-            raise EmbeddingServiceError("invalid embedding response")
-        vectors = [item.get("embedding") for item in data if isinstance(item, dict)]
-        if len(vectors) != len(texts) or not all(
-            isinstance(vector, list) and all(isinstance(value, (int, float)) for value in vector)
-            for vector in vectors
-        ):
-            raise EmbeddingServiceError("invalid embedding vectors")
-        return [
-            [float(value) for value in vector] for vector in vectors if isinstance(vector, list)
-        ]
+    async def embed(
+        self, texts: list[str], *, model_executor: ModelRequestExecutor | None = None
+    ) -> list[list[float]]:
+        endpoint = f"{self.base_url}/embeddings"
+        model = self.model
+        request_body = {"model": model, "input": list(texts)}
+
+        async def request() -> list[list[float]]:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(endpoint, json=request_body)
+                    response.raise_for_status()
+                body = response.json()
+            except ModelExecutionControlError:
+                raise
+            except (httpx.HTTPError, ValueError) as exc:
+                raise EmbeddingServiceError("local embedding provider unavailable") from exc
+            if not isinstance(body, dict):
+                raise EmbeddingServiceError("invalid embedding response")
+            data = body.get("data")
+            if not isinstance(data, list):
+                raise EmbeddingServiceError("invalid embedding response")
+            vectors = [item.get("embedding") for item in data if isinstance(item, dict)]
+            if len(vectors) != len(texts) or not all(
+                isinstance(vector, list)
+                and all(isinstance(value, (int, float)) for value in vector)
+                for vector in vectors
+            ):
+                raise EmbeddingServiceError("invalid embedding vectors")
+            return [
+                [float(value) for value in vector] for vector in vectors if isinstance(vector, list)
+            ]
+
+        if model_executor is not None:
+            return await model_executor.execute(
+                role="memory_embedder",
+                model_id=model,
+                endpoint=endpoint,
+                request_body=request_body,
+                operation=request,
+            )
+        return await request()

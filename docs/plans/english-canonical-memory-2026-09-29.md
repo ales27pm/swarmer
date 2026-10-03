@@ -58,7 +58,9 @@ French memory queries from the app or the agent strategy path obtain a temporary
 
 ## Integration order
 
-First deliver the normalizer/validator contract and a narrow general-memory write path, with an isolated real-provider qualification on benign French and English examples. The strategy-hint seam is implemented and tested with scoped general/project-item searches, but is not connected in app startup until model-call admission and budgeting are integrated. Then route the remaining project knowledge and episodes through the same service, and build the migration projection without activating it. Finally qualify multilingual retrieval and expose translation/validation status in the memory UI. The current signature and passive-inspection corrections are prerequisites; they do not, by themselves, translate existing memories.
+The normalizer/validator contract and a narrow general-memory write path are implemented. The 3 October candidate now connects the strategy-hint seam at startup when canonical English memory is explicitly enabled. Each real normalization, review, presentation or embedding request uses goal-scoped admission, accounting and revision fencing; retrieval preserves one call for the planner and makes a provider failure or budget fallback explicit. Context receipts retain the selected source revisions and hashes. See the [integration evidence and rollout limits](../evidence/goal-memory-admission-2026-10-03.md).
+
+This candidate is not an activation of canonical memory in production. Real-provider semantic qualification and a schema-compatible rollback release are still required. Then route the remaining project knowledge and episodes through the same service, and build the migration projection without activating it. Finally qualify multilingual retrieval and expose translation/validation status in the memory UI. The current signature and passive-inspection corrections are prerequisites; they do not, by themselves, translate existing memories.
 
 ## Local configuration and rollout boundary
 

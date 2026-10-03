@@ -31,6 +31,7 @@ from app.services.memory_presentation import (
     MemoryPresentationSource,
     PresentationRecheck,
 )
+from app.services.model_request_execution import ModelExecutionControlError, ModelRequestExecutor
 
 
 class MemoryPresenter(Protocol):
@@ -38,7 +39,11 @@ class MemoryPresenter(Protocol):
     def presentation_signature(self) -> str: ...
 
     async def present(
-        self, batch: MemoryPresentationBatch, *, recheck_sources: PresentationRecheck | None = None
+        self,
+        batch: MemoryPresentationBatch,
+        *,
+        recheck_sources: PresentationRecheck | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> MemoryPresentationResult: ...
 
 
@@ -153,6 +158,7 @@ async def finalize_memory_search(
     gate: asyncio.Lock,
     timeout_seconds: float,
     assert_current: Callable[[], None],
+    model_executor: ModelRequestExecutor | None = None,
 ) -> list[dict[str, Any]]:
     """Qualify the authorized selected snapshots and optionally display them in FR."""
     assert_current()
@@ -213,7 +219,13 @@ async def finalize_memory_search(
             raise MemoryNormalizationError("unavailable", "normalizer_busy")
         async with gate:
             async with asyncio.timeout(timeout_seconds):
-                result = await presenter.present(batch, recheck_sources=recheck)
+                result = (
+                    await presenter.present(batch, recheck_sources=recheck)
+                    if model_executor is None
+                    else await presenter.present(
+                        batch, recheck_sources=recheck, model_executor=model_executor
+                    )
+                )
                 result = MemoryPresentationResult.model_validate(result.model_dump())
                 assert_providers()
                 if (
@@ -272,7 +284,7 @@ async def finalize_memory_search(
                 await _recheck(db_path, items, initial=False)
                 assert_providers()
                 return output
-    except MemoryNormalizationError:
+    except (ModelExecutionControlError, MemoryNormalizationError):
         raise
     except TimeoutError as exc:
         raise MemoryNormalizationError("unavailable", "presentation_deadline_exceeded") from exc

@@ -19,6 +19,7 @@ from app.services.memory_relevance import (
     general_fact_may_be_relevant,
     memory_relevance_terms,
 )
+from app.services.model_request_execution import ModelRequestExecutor
 
 if TYPE_CHECKING:
     from app.services.state_service import StateService
@@ -110,6 +111,7 @@ class StrategyRetrieval:
         *,
         skills: Sequence[str] = (),
         goal_run_id: str | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> StrategyHints:
         safe_query = safe_context_text(query, max_chars=512)
         if not safe_query:
@@ -122,6 +124,9 @@ class StrategyRetrieval:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA query_only=ON")
             project_id = await self._project_locked(db, goal_run_id)
+        execution: dict[str, Any] = (
+            {"model_executor": model_executor} if model_executor is not None else {}
+        )
         successes = await self._episodes(
             safe_query,
             skills=skills,
@@ -129,6 +134,7 @@ class StrategyRetrieval:
             limit=self.max_success_hints,
             kind="success",
             goal_run_id=goal_run_id,
+            **execution,
         )
         failures = await self._episodes(
             safe_query,
@@ -137,8 +143,9 @@ class StrategyRetrieval:
             limit=self.max_failure_hints,
             kind="failure",
             goal_run_id=goal_run_id,
+            **execution,
         )
-        memory = await self._memory_hints(safe_query, goal_run_id=goal_run_id)
+        memory = await self._memory_hints(safe_query, goal_run_id=goal_run_id, **execution)
         # Retrieval may await different providers between each group. Close the
         # scope over all selected provenance in one final read snapshot; never
         # combine old/new projects or a source moved out of this project.
@@ -214,6 +221,7 @@ class StrategyRetrieval:
         limit: int,
         kind: str,
         goal_run_id: str | None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> tuple[StrategyHint, ...]:
         if limit == 0 or goal_run_id is None:
             return ()
@@ -224,6 +232,7 @@ class StrategyRetrieval:
             outcomes=outcomes,
             limit=limit,
             goal_run_id=goal_run_id,
+            **({"model_executor": model_executor} if model_executor is not None else {}),
         )
         return tuple(self._episode_hint(result, kind=kind) for result in results)
 
@@ -245,12 +254,20 @@ class StrategyRetrieval:
         )
 
     async def _memory_hints(
-        self, query: str, *, goal_run_id: str | None
+        self,
+        query: str,
+        *,
+        goal_run_id: str | None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> tuple[StrategyHint, ...]:
         if self.max_memory_hints == 0:
             return ()
         if self.canonical_memory is not None:
-            return await self._canonical_memory_hints(query, goal_run_id=goal_run_id)
+            return await self._canonical_memory_hints(
+                query,
+                goal_run_id=goal_run_id,
+                **({"model_executor": model_executor} if model_executor is not None else {}),
+            )
         query_terms = _terms(query)
         fact_query_terms = memory_relevance_terms(query)
         rows: list[aiosqlite.Row] = []
@@ -314,7 +331,11 @@ class StrategyRetrieval:
         return tuple(item[2] for item in ranked[: self.max_memory_hints])
 
     async def _canonical_memory_hints(
-        self, query: str, *, goal_run_id: str | None
+        self,
+        query: str,
+        *,
+        goal_run_id: str | None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> tuple[StrategyHint, ...]:
         if self.canonical_memory is None or self.canonical_memory.canonical_language != "en":
             raise MemoryNormalizationError("unavailable", "canonical_memory_not_enabled")
@@ -326,6 +347,7 @@ class StrategyRetrieval:
             MemorySearch(query=query, limit=self.max_memory_hints),
             allowed_scopes=scopes,
             required_sensitivity="normal",
+            **({"model_executor": model_executor} if model_executor is not None else {}),
         )
         hints: list[StrategyHint] = []
         for item in items:

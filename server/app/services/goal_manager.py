@@ -36,6 +36,7 @@ from app.services.goal_limits import (
     runtime_expired,
     runtime_remaining_seconds,
 )
+from app.services.goal_memory_execution import GoalMemoryExecutor
 from app.services.goal_project import GoalProjectConflict, GoalProjectService
 from app.services.goal_state import (
     GoalStateConflict,
@@ -46,6 +47,11 @@ from app.services.goal_state import (
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.media_contracts import MEDIA_SKILLS
 from app.services.media_store import MediaConflict, media_root, verify_media_result
+from app.services.memory_normalization import MemoryNormalizationError
+from app.services.model_request_execution import (
+    ModelExecutionControlError,
+    ModelRequestBudgetUnavailable,
+)
 from app.services.model_resource_admission import (
     active_local_model_work_locked,
     model_admission_connection,
@@ -92,6 +98,7 @@ from app.services.result_aggregator import (
     validate_worker_evidence,
 )
 from app.services.state_service import StateService
+from app.services.strategy_retrieval import StrategyRetrieval
 from app.services.swarm_contracts import (
     AutonomyProfile,
     EvaluationConversationMessage,
@@ -126,6 +133,14 @@ from app.services.writing_drafts import (
 
 logger = logging.getLogger(__name__)
 _PLANNER_RETRY_COOLDOWN_SECONDS = 60
+_MEMORY_RETRIEVAL_FAILURE_PHASES = frozenset(
+    {
+        "memory_retrieval_invalid",
+        "memory_retrieval_uncertain",
+        "memory_retrieval_unavailable",
+        "memory_retrieval_source_conflict",
+    }
+)
 _EVALUATOR_RETRY_COOLDOWN_SECONDS = 60
 _MAX_INVALID_EVALUATOR_ATTEMPTS = 3
 _MAX_UNPRODUCTIVE_PROJECT_ITERATIONS = 3
@@ -176,7 +191,7 @@ _PLANNER_FAILURE_DETAILS = {
 }
 
 
-class GoalManagerConflict(RuntimeError):
+class GoalManagerConflict(ModelExecutionControlError):
     """An authoritative goal invariant rejected a requested transition."""
 
 
@@ -701,6 +716,9 @@ class GoalManager:
                 goal_id, status="budget_exhausted", reason="goal replan budget exhausted"
             )
             return
+        async with aiosqlite.connect(self.db_path) as db:
+            if await self._memory_retrieval_cooling_down_locked(db, goal, now=self._now()):
+                return
         # Failed routing remains recoverable, but reconciliation must not consume
         # a fresh model call on every tick while older ready nodes still exist.
         async with aiosqlite.connect(self.db_path) as db:
@@ -1597,11 +1615,70 @@ class GoalManager:
                         provenance_ids=(goal_id,),
                     )
                 )
-        if self.strategy_retrieval is not None:
-            hints = await self.strategy_retrieval.retrieve(
-                str(goal["objective"]), goal_run_id=goal_id
+        memory_executor = (
+            GoalMemoryExecutor(
+                self, goal_id, int(goal.get("conversation_revision") or 0), maintenance_guard
             )
-            raw_hints = hints.as_dict()
+            if isinstance(self.strategy_retrieval, StrategyRetrieval)
+            else None
+        )
+        retrieval_status = "completed"
+        raw_hints: dict[str, Any] = {}
+        if self.strategy_retrieval is not None:
+            try:
+                hints = await self.strategy_retrieval.retrieve(
+                    str(goal["objective"]),
+                    goal_run_id=goal_id,
+                    **({"model_executor": memory_executor} if memory_executor is not None else {}),
+                )
+                raw_hints = hints.as_dict()
+            except ModelRequestBudgetUnavailable:
+                # Lessons are optional, but absence must be explicit and the
+                # planner still gets its reserved credit and mandatory inputs.
+                retrieval_status = "budget_unavailable"
+                raw_hints = {"successful": [], "failures": [], "memory": []}
+                additional_cards.append(
+                    ContextCard(
+                        card_id="strategy:availability",
+                        kind="memory_retrieval_status",
+                        summary="Memory retrieval unavailable: remaining model budget is reserved for planning. No retrieved lesson is asserted.",
+                        provenance_ids=(goal_id,),
+                    )
+                )
+            except MemoryNormalizationError as exc:
+                await self._record_recoverable_error(
+                    goal_id,
+                    f"memory_retrieval_{exc.category}",
+                    conversation_revision=int(goal.get("conversation_revision") or 0),
+                    maintenance_guard=maintenance_guard,
+                )
+                raise GoalManagerConflict(
+                    f"memory retrieval {exc.category}: {exc.reason}; goal remains recoverable"
+                ) from exc
+            except ModelExecutionControlError as exc:
+                if isinstance(exc, GoalManagerConflict):
+                    raise
+                raise GoalManagerConflict(
+                    "memory retrieval was fenced; goal remains recoverable"
+                ) from exc
+            refreshed = await self.graph.get_goal(goal_id)
+            if (
+                refreshed is None
+                or refreshed["status"] in self.graph.GOAL_TERMINAL
+                or int(refreshed.get("conversation_revision") or 0)
+                != int(goal.get("conversation_revision") or 0)
+            ):
+                raise GoalManagerConflict("goal changed during strategy retrieval")
+            goal = refreshed
+            if memory_executor is not None and memory_executor.failures:
+                additional_cards.append(
+                    ContextCard(
+                        card_id="strategy:degraded",
+                        kind="memory_retrieval_status",
+                        summary="Some memory provider requests failed. Search used the remaining retrieval channels; no matching result is not proof that no relevant memory exists.",
+                        provenance_ids=(goal_id,),
+                    )
+                )
             for group in ("successful", "failures", "memory"):
                 values = raw_hints.get(group)
                 if not isinstance(values, list):
@@ -1700,6 +1777,28 @@ class GoalManager:
                 "purpose": "planner",
                 "cards": [card.as_model_dict() for card in fallback_cards],
             }
+        if memory_executor is not None:
+            presented_cards = context_payload.get("cards")
+            selected_card_ids = (
+                {
+                    str(card["card_id"])
+                    for card in presented_cards
+                    if isinstance(card, dict) and "card_id" in card
+                }
+                if isinstance(presented_cards, list)
+                else set()
+            )
+            try:
+                await memory_executor.bind_context(
+                    context_id,
+                    hints=raw_hints,
+                    status=retrieval_status,
+                    selected_card_ids=selected_card_ids,
+                )
+            except ModelExecutionControlError as exc:
+                raise GoalManagerConflict(
+                    "memory context was fenced; goal remains recoverable"
+                ) from exc
         feedback = await self._planner_validation_feedback(goal)
         if feedback is not None:
             context_payload["planner_validation_feedback"] = feedback
@@ -1807,8 +1906,11 @@ class GoalManager:
         conversation_revision: int | None = None,
         evaluator_state_fingerprint: str | None = None,
         explicit_user_action: bool = False,
+        reserved_followup_calls: int = 0,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> str:
+        if type(reserved_followup_calls) is not int or reserved_followup_calls not in (0, 1):
+            raise ValueError("invalid model followup reservation")
         call_id = f"gmc_{uuid4().hex}"
         async with model_admission_connection(
             self.db_path, self.agent_dispatcher.local_model_gpu_lock_path
@@ -1856,7 +1958,16 @@ class GoalManager:
                     raise GoalManagerConflict("evaluator retry cooldown is active")
             if int(row["model_call_count"]) >= int(row["max_model_calls"]):
                 await db.rollback()
+                if reserved_followup_calls:
+                    raise ModelRequestBudgetUnavailable("memory budget preserves planner credit")
                 raise GoalManagerConflict("goal model call budget exhausted")
+            if reserved_followup_calls and (
+                int(row["model_call_count"]) + 1 + reserved_followup_calls
+                > int(row["max_model_calls"])
+            ):
+                raise ModelRequestBudgetUnavailable("memory budget preserves planner credit")
+            if reserved_followup_calls and self._runtime_expired(dict(row)):
+                raise GoalManagerConflict("goal runtime budget exhausted")
             pending = await (
                 await db.execute(
                     """SELECT id,lease_expires_at FROM goal_model_calls
@@ -2109,6 +2220,28 @@ class GoalManager:
         if current is None:
             raise GoalManagerConflict("model call lease expired or was fenced")
 
+    @staticmethod
+    async def _memory_retrieval_cooling_down_locked(
+        db: aiosqlite.Connection, goal: Mapping[str, Any], *, now: str
+    ) -> bool:
+        if goal.get("current_phase") not in _MEMORY_RETRIEVAL_FAILURE_PHASES:
+            return False
+        row = await (
+            await db.execute(
+                """SELECT 1 FROM audit_events WHERE trace_id=?
+            AND event_type='goal.memory.retrieval.failed'
+            AND json_extract(payload_json,'$.conversation_revision')=?
+            AND julianday(created_at)+?/86400.0>julianday(?) LIMIT 1""",
+                (
+                    goal["id"],
+                    int(goal.get("conversation_revision") or 0),
+                    _PLANNER_RETRY_COOLDOWN_SECONDS,
+                    now,
+                ),
+            )
+        ).fetchone()
+        return row is not None
+
     async def _record_recoverable_error(
         self,
         goal_run_id: str,
@@ -2122,7 +2255,7 @@ class GoalManager:
             await db.execute("BEGIN IMMEDIATE")
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
-            await db.execute(
+            changed = await db.execute(
                 """UPDATE goal_runs SET current_phase=?,failure_reason=?,updated_at=?
                 WHERE id=? AND status NOT IN ('completed','failed','cancelled','budget_exhausted')
                 AND (? IS NULL OR conversation_revision=?)""",
@@ -2135,6 +2268,18 @@ class GoalManager:
                     conversation_revision,
                 ),
             )
+            if changed.rowcount == 1 and phase in _MEMORY_RETRIEVAL_FAILURE_PHASES:
+                await append_audit_event(
+                    db,
+                    "goal.memory.retrieval.failed",
+                    {
+                        "goal_run_id": goal_run_id,
+                        "conversation_revision": conversation_revision,
+                        "phase": phase,
+                    },
+                    trace_id=goal_run_id,
+                    created_at=now,
+                )
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
             await db.commit()
@@ -5354,6 +5499,16 @@ class GoalManager:
                         )
                         OR julianday(updated_at)<=julianday(?) - ? / 86400.0
                       )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM audit_events memory_failure
+                        WHERE memory_failure.trace_id=goal_runs.id
+                          AND memory_failure.event_type='goal.memory.retrieval.failed'
+                          AND json_extract(memory_failure.payload_json,'$.phase')
+                              =goal_runs.current_phase
+                          AND json_extract(memory_failure.payload_json,'$.conversation_revision')
+                              =goal_runs.conversation_revision
+                          AND julianday(memory_failure.created_at)+?/86400.0>julianday(?)
+                      )
                       AND (
                         current_phase NOT IN (
                             'evaluator_unavailable','evaluator_request_rejected',
@@ -5425,6 +5580,8 @@ class GoalManager:
                         selection_now,
                         selection_now,
                         _PLANNER_RETRY_COOLDOWN_SECONDS,
+                        _PLANNER_RETRY_COOLDOWN_SECONDS,
+                        selection_now,
                         selection_now,
                         _EVALUATOR_RETRY_COOLDOWN_SECONDS,
                         int(self.require_execution_workers),

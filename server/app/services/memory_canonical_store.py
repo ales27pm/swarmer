@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from app.services.memory_normalization import MemoryNormalizationResult, MemoryNormalizationSource
+from app.services.model_request_execution import ModelRequestExecutor
 
 
 class MemoryNormalizer(Protocol):
@@ -16,6 +17,7 @@ class MemoryNormalizer(Protocol):
         source: MemoryNormalizationSource,
         *,
         recheck_source: Callable[[MemoryNormalizationSource], Awaitable[bool]] | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> MemoryNormalizationResult: ...
 
 

@@ -20,6 +20,14 @@ function deferred<T>() {
 }
 
 describe("activity response contract", () => {
+  it.each([
+    "memory_normalizer", "memory_reviewer", "memory_presenter",
+    "memory_presentation_reviewer", "memory_embedder",
+  ] as const)("accepts the persisted memory role %s", (role) => {
+    const value = activityPage([activityItem(`model_call:${role}`, { kind: "model_call", role })]);
+    expect(parse(value)).toEqual(value);
+  });
+
   it("preserves nullable evidence and zero values without inventing live operations", () => {
     const value = activityPage([activityItem("project_check:revision_1:00", {
       kind: "project_check", duration_ms: 0, started_at: null, completed_at: null,

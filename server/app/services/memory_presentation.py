@@ -27,6 +27,7 @@ from app.services.memory_normalization import (
     _Translation,
     canonical_text_sha256,
 )
+from app.services.model_request_execution import ModelExecutionControlError, ModelRequestExecutor
 
 MAX_PRESENTATION_ITEMS = 20
 MAX_PRESENTATION_SOURCE_BYTES = 16_000
@@ -223,7 +224,11 @@ class OpenAIMemoryPresentationProvider(OpenAIMemoryNormalizationProvider):
         )
 
     async def present(
-        self, batch: MemoryPresentationBatch, *, recheck_sources: PresentationRecheck | None = None
+        self,
+        batch: MemoryPresentationBatch,
+        *,
+        recheck_sources: PresentationRecheck | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> MemoryPresentationResult:
         signature = self.presentation_signature
         try:
@@ -241,7 +246,7 @@ class OpenAIMemoryPresentationProvider(OpenAIMemoryNormalizationProvider):
                     current = await recheck_sources(batch)
                 except asyncio.CancelledError:
                     raise
-                except MemoryNormalizationError:
+                except (MemoryNormalizationError, ModelExecutionControlError):
                     raise
                 except Exception as exc:
                     raise MemoryNormalizationError(
@@ -277,6 +282,8 @@ class OpenAIMemoryPresentationProvider(OpenAIMemoryNormalizationProvider):
                         },
                         _TranslatedBatch,
                         request_budget_bytes=MAX_PRESENTATION_REQUEST_BYTES,
+                        model_executor=model_executor,
+                        role="memory_presenter",
                     )
                     expected = {unit["unit_id"]: unit for unit in units}
                     if Counter(unit.unit_id for unit in translated.units) != Counter(
@@ -326,6 +333,8 @@ class OpenAIMemoryPresentationProvider(OpenAIMemoryNormalizationProvider):
                         {"units": reviews},
                         _ReviewedBatch,
                         request_budget_bytes=MAX_PRESENTATION_REQUEST_BYTES,
+                        model_executor=model_executor,
+                        role="memory_presentation_reviewer",
                     )
                     if Counter(unit.unit_id for unit in reviewed.units) != Counter(expected.keys()):
                         raise MemoryNormalizationError("invalid", "presentation_unit_mismatch")
@@ -352,6 +361,8 @@ class OpenAIMemoryPresentationProvider(OpenAIMemoryNormalizationProvider):
                                 "uncertain", "presentation_review_not_accepted"
                             )
                 await recheck()
+        except ModelExecutionControlError:
+            raise
         except TimeoutError as exc:
             raise MemoryNormalizationError("unavailable", "deadline_exceeded") from exc
         except httpx.HTTPError as exc:

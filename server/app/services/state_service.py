@@ -57,13 +57,33 @@ from app.services.memory_normalization import (
 )
 from app.services.memory_search_presentation import MemoryPresenter, finalize_memory_search
 from app.services.memory_vectors import embedding_identity, memory_cosine, memory_vector
+from app.services.model_request_execution import (
+    MEMORY_MODEL_ROLES,
+    ModelExecutionControlError,
+    ModelRequestExecutor,
+)
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.project_evidence_schema import migrate_project_evidence
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
+_LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
+_MEMORY_MODEL_ROLE_CHECK = (
+    "CHECK(role IN ("
+    + ",".join(
+        f"'{role}'"
+        for role in (
+            "planner",
+            "evaluator",
+            "summarizer",
+            "synthesizer",
+            *sorted(MEMORY_MODEL_ROLES),
+        )
+    )
+    + "))"
+)
 PUBLIC_ERROR_AUDIT_EVENTS = frozenset({"tool.failed", "tool.execution_rejected"})
 
 TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -863,6 +883,7 @@ class StateConflict(RuntimeError):
 
 from app.services.swift_project_validation import SWIFT_PROJECT_SCHEMA
 
+SCHEMA = SCHEMA.replace(_LEGACY_MODEL_ROLE_CHECK, _MEMORY_MODEL_ROLE_CHECK)
 SCHEMA += COMPACTION_SCHEMA + SWIFT_PROJECT_SCHEMA + MEMORY_CANONICAL_SCHEMA
 
 
@@ -1006,11 +1027,11 @@ class StateService:
                 WHERE status NOT IN ('completed','denied','failed','cancelled','expired')
                 """
             )
-            if version < SCHEMA_VERSION:
+            if version < 27:
                 if version < 23:
                     await db.execute("DELETE FROM pairing_codes")
                     await db.execute("DELETE FROM pairing_candidates")
-                await db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                await db.execute("PRAGMA user_version=27")
             interrupted = [
                 (str(row[0]), str(row[1]), "running")
                 for row in await (
@@ -1131,10 +1152,87 @@ class StateService:
                 if updated.rowcount != 1:
                     raise RuntimeError("agent job operational metrics are unavailable")
             await db.commit()
+            if version < 28:
+                await self._migrate_memory_model_roles(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():
                 database_file.chmod(0o600)
+
+    @staticmethod
+    async def _migrate_memory_model_roles(db: aiosqlite.Connection) -> None:
+        """Rebuild the role CHECK atomically, preserving rowids and incoming FKs.
+
+        Earlier migrations keep their normal foreign-key semantics and commit
+        schema 27 first. SQLite requires FK enforcement disabled *outside* the
+        rebuild transaction: compaction rows reference this parent table. No
+        data is deleted from those children and all FKs are checked before the
+        new table and version are committed together. Failure leaves version 27.
+        """
+        if db.in_transaction:
+            raise RuntimeError("model role migration needs its own transaction")
+        await db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            version_row = await (await db.execute("PRAGMA user_version")).fetchone()
+            version = int(version_row[0]) if version_row else -1
+            if version == 28:
+                await db.commit()
+                return
+            if version != 27:
+                raise RuntimeError("model role migration requires schema 27")
+            row = await (
+                await db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='goal_model_calls'"
+                )
+            ).fetchone()
+            original_sql = str(row[0]) if row else ""
+            if original_sql.count(_LEGACY_MODEL_ROLE_CHECK) == 1:
+                objects = await (
+                    await db.execute(
+                        """SELECT sql FROM sqlite_master WHERE tbl_name='goal_model_calls'
+                        AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name"""
+                    )
+                ).fetchall()
+                columns = await (await db.execute("PRAGMA table_info(goal_model_calls)")).fetchall()
+                names = ",".join(
+                    '"' + str(column[1]).replace('"', '""') + '"' for column in columns
+                )
+                projection = "rowid," + names
+                definition = original_sql[original_sql.index("(") :].replace(
+                    _LEGACY_MODEL_ROLE_CHECK, _MEMORY_MODEL_ROLE_CHECK
+                )
+                await db.execute("CREATE TABLE goal_model_calls_v28 " + definition)
+                await db.execute(
+                    f"INSERT INTO goal_model_calls_v28({projection}) "
+                    f"SELECT {projection} FROM goal_model_calls"
+                )
+                for left, right in (
+                    ("goal_model_calls", "goal_model_calls_v28"),
+                    ("goal_model_calls_v28", "goal_model_calls"),
+                ):
+                    delta = await (
+                        await db.execute(
+                            f"SELECT {projection} FROM {left} EXCEPT SELECT {projection} FROM {right}"
+                        )
+                    ).fetchone()
+                    if delta is not None:
+                        raise RuntimeError("model call rows changed during migration")
+                await db.execute("DROP TABLE goal_model_calls")
+                await db.execute("ALTER TABLE goal_model_calls_v28 RENAME TO goal_model_calls")
+                for (sql,) in objects:
+                    await db.execute(str(sql))
+            elif original_sql.count(_MEMORY_MODEL_ROLE_CHECK) != 1:
+                raise RuntimeError("unrecognized model role constraint; migration refused")
+            if await (await db.execute("PRAGMA foreign_key_check")).fetchone() is not None:
+                raise RuntimeError("foreign key violation during model role migration")
+            await db.execute("PRAGMA user_version=28")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+        finally:
+            await db.execute("PRAGMA foreign_keys=ON")
 
     async def _migrate_legacy_schema(self, db: aiosqlite.Connection) -> None:
         additions = {
@@ -2543,6 +2641,7 @@ class StateService:
         *,
         allowed_scopes: tuple[str, ...] | None = None,
         required_sensitivity: str | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> list[dict[str, Any]]:
         # Internal agent callers provide their authoritative scope. Invalid or
         # empty scope must not become an unrestricted search or trigger a model.
@@ -2599,8 +2698,14 @@ class StateService:
 
                 async with self.memory_normalization_gate:
                     async with asyncio.timeout(self.memory_normalization_timeout_seconds):
-                        translated = await normalizer.normalize(
-                            source, recheck_source=recheck_query
+                        translated = (
+                            await normalizer.normalize(source, recheck_source=recheck_query)
+                            if model_executor is None
+                            else await normalizer.normalize(
+                                source,
+                                recheck_source=recheck_query,
+                                model_executor=model_executor,
+                            )
                         )
                     assert_query_current()
                     if (
@@ -2622,7 +2727,7 @@ class StateService:
                         raise MemoryNormalizationError("invalid", "query_translation_mismatch")
                     query = translated.canonical_text
                     source_language = translated.source_language
-            except MemoryNormalizationError:
+            except (ModelExecutionControlError, MemoryNormalizationError):
                 raise
             except TimeoutError as exc:
                 raise MemoryNormalizationError("unavailable", "query_deadline_exceeded") from exc
@@ -2641,9 +2746,15 @@ class StateService:
         query_vector: list[float] | None = None
         if provider is not None:
             try:
-                vectors = await provider.embed([query])
+                vectors = (
+                    await provider.embed([query])
+                    if model_executor is None
+                    else await provider.embed([query], model_executor=model_executor)
+                )
                 if len(vectors) == 1:
                     query_vector = memory_vector(vectors[0], getattr(provider, "dimensions", None))
+            except ModelExecutionControlError:
+                raise
             except EmbeddingServiceError:
                 pass
             if provider is not self.embedding_service or identity != embedding_identity(
@@ -2733,6 +2844,7 @@ class StateService:
                 gate=self.memory_normalization_gate,
                 timeout_seconds=self.memory_normalization_timeout_seconds,
                 assert_current=assert_search_current,
+                model_executor=model_executor,
             )
 
         if (

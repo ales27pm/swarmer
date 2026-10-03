@@ -2,6 +2,9 @@
 export type ActivityKind = "model_call" | "worker_job" | "tool_call" | "project_revision" | "project_check";
 export type ActivityStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "skipped" | "recorded";
 export type ActivityScopeType = "task" | "goal";
+export type ActivityModelRole = "planner" | "evaluator" | "summarizer" | "synthesizer"
+  | "memory_normalizer" | "memory_reviewer" | "memory_presenter"
+  | "memory_presentation_reviewer" | "memory_embedder";
 export type ActivityDetail = {
   revision_id: string | null;
   check_index: number | null;
@@ -23,7 +26,7 @@ export type ActivityItem = {
   node_id: string | null;
   agent_id: string | null;
   model_id: string | null;
-  role: "planner" | "evaluator" | "summarizer" | "synthesizer" | null;
+  role: ActivityModelRole | null;
   tool_name: string | null;
   detail: ActivityDetail;
 };
@@ -38,7 +41,10 @@ export type ActivityPage = {
 
 const KINDS: ActivityKind[] = ["model_call", "worker_job", "tool_call", "project_revision", "project_check"];
 const STATUSES: ActivityStatus[] = ["queued", "running", "waiting", "completed", "failed", "cancelled", "skipped", "recorded"];
-const ROLES: NonNullable<ActivityItem["role"]>[] = ["planner", "evaluator", "summarizer", "synthesizer"];
+const ROLES: ActivityModelRole[] = [
+  "planner", "evaluator", "summarizer", "synthesizer", "memory_normalizer", "memory_reviewer",
+  "memory_presenter", "memory_presentation_reviewer", "memory_embedder",
+];
 function invalid(): never { throw new Error("Les preuves d’activité reçues sont invalides. Actualisez pour réessayer."); }
 function record(value: unknown, keys: string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();

@@ -6661,6 +6661,13 @@ components:
             - evaluator
             - summarizer
             - synthesizer
+          - type: string
+            enum:
+            - memory_normalizer
+            - memory_reviewer
+            - memory_presenter
+            - memory_presentation_reviewer
+            - memory_embedder
           - type: 'null'
           title: Role
         tool_name:

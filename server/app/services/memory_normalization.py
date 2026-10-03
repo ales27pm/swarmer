@@ -21,6 +21,11 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.services.direct_model_admission import LocalGPUUnavailable
+from app.services.model_request_execution import (
+    MemoryModelRole,
+    ModelExecutionControlError,
+    ModelRequestExecutor,
+)
 
 MAX_SOURCE_BYTES = 8_000
 MAX_CANONICAL_BYTES = 16_000
@@ -459,6 +464,8 @@ class OpenAIMemoryNormalizationProvider:
         schema: type[_Response],
         *,
         request_budget_bytes: int = MAX_REQUEST_BYTES,
+        model_executor: ModelRequestExecutor | None = None,
+        role: MemoryModelRole = "memory_normalizer",
     ) -> _Response:
         self._assert_configuration()
         if (
@@ -488,11 +495,10 @@ class OpenAIMemoryNormalizationProvider:
             body["reasoning_effort"] = self.reasoning_effort
         if len(_json(body).encode("utf-8")) > request_budget_bytes:
             raise MemoryNormalizationError("invalid", "request_budget_exceeded")
-        try:
-            async with (
-                self.model_admission() if self.model_admission else nullcontext(),
-                client.stream("POST", f"{self.base_url}/chat/completions", json=body) as response,
-            ):
+        endpoint = f"{self.base_url}/chat/completions"
+
+        async def request() -> _Response:
+            async with client.stream("POST", endpoint, json=body) as response:
                 if not 200 <= response.status_code < 300:
                     raise MemoryNormalizationError("unavailable", "provider_http_failure")
                 chunks = bytearray()
@@ -500,30 +506,57 @@ class OpenAIMemoryNormalizationProvider:
                     chunks.extend(chunk)
                     if len(chunks) > MAX_RESPONSE_BYTES:
                         raise MemoryNormalizationError("invalid", "response_budget_exceeded")
+            self._assert_configuration()
+            try:
+                envelope = _strict_json(chunks)
+                choices = envelope["choices"]
+                if not isinstance(choices, list) or len(choices) != 1:
+                    raise ValueError
+                choice = choices[0]
+                message = choice["message"]
+                if choice.get("finish_reason") != "stop" or message.get("tool_calls"):
+                    raise ValueError
+                content = message["content"]
+                if not isinstance(content, str):
+                    raise TypeError
+                content.encode("utf-8")
+                validated = schema.model_validate(_strict_json(content))
+                _json(validated.model_dump()).encode("utf-8")
+                return validated
+            except (
+                ValueError,
+                KeyError,
+                IndexError,
+                TypeError,
+                AttributeError,
+                RecursionError,
+            ) as exc:
+                raise MemoryNormalizationError("invalid", "invalid_provider_response") from exc
+
+        # A goal owns admission and its receipt around the actual request and
+        # strict parsing. Direct callers retain their existing admission path.
+        if model_executor is not None:
+            return await model_executor.execute(
+                role=role,
+                model_id=model,
+                endpoint=endpoint,
+                request_body=body,
+                operation=request,
+            )
+        try:
+            async with self.model_admission() if self.model_admission else nullcontext():
+                return await request()
+        except ModelExecutionControlError:
+            raise
         except LocalGPUUnavailable as exc:
             raise MemoryNormalizationError("unavailable", "local_gpu_busy") from exc
-        self._assert_configuration()
-        try:
-            envelope = _strict_json(chunks)
-            choices = envelope["choices"]
-            if not isinstance(choices, list) or len(choices) != 1:
-                raise ValueError
-            choice = choices[0]
-            message = choice["message"]
-            if choice.get("finish_reason") != "stop" or message.get("tool_calls"):
-                raise ValueError
-            content = message["content"]
-            if not isinstance(content, str):
-                raise TypeError
-            content.encode("utf-8")
-            validated = schema.model_validate(_strict_json(content))
-            _json(validated.model_dump()).encode("utf-8")
-            return validated
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError) as exc:
-            raise MemoryNormalizationError("invalid", "invalid_provider_response") from exc
 
     async def normalize(
-        self, source: MemoryNormalizationSource, *, recheck_source: SourceRecheck | None = None
+        self,
+        source: MemoryNormalizationSource,
+        *,
+        recheck_source: SourceRecheck | None = None,
+        model_executor: ModelRequestExecutor | None = None,
     ) -> MemoryNormalizationResult:
         # Frozen models may still contain mutable lists; detach caller-owned data.
         self._assert_configuration()
@@ -542,7 +575,7 @@ class OpenAIMemoryNormalizationProvider:
                     current = await recheck_source(source)
                 except asyncio.CancelledError:
                     raise
-                except MemoryNormalizationError:
+                except (MemoryNormalizationError, ModelExecutionControlError):
                     raise
                 except Exception as exc:
                     raise MemoryNormalizationError(
@@ -575,6 +608,8 @@ class OpenAIMemoryNormalizationProvider:
                             "protected_tokens": list(literals),
                         },
                         _Translation,
+                        model_executor=model_executor,
+                        role="memory_normalizer",
                     )
                     if translated.source_sha256 != source.source_sha256:
                         raise MemoryNormalizationError("invalid", "translation_source_mismatch")
@@ -618,6 +653,8 @@ class OpenAIMemoryNormalizationProvider:
                             "protected_literals": list(literals.values()),
                         },
                         _Review,
+                        model_executor=model_executor,
+                        role="memory_reviewer",
                     )
                     if (
                         reviewed.source_sha256 != source.source_sha256
@@ -636,6 +673,8 @@ class OpenAIMemoryNormalizationProvider:
                     ):
                         raise MemoryNormalizationError("uncertain", "review_not_accepted")
                 await recheck()
+        except ModelExecutionControlError:
+            raise
         except TimeoutError as exc:
             raise MemoryNormalizationError("unavailable", "deadline_exceeded") from exc
         except httpx.HTTPError as exc:
