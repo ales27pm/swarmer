@@ -95,15 +95,37 @@ Ruff passes. OpenAPI validates **91 paths and 99 operations**. Mypy retains the
 two previously reported baseline issues in `media_contracts.py` and the missing
 `redis.asyncio` stub; no new issue was reported for this slice.
 
+## Commit, package and Ubuntu staging
+
+Commit `c56e7eeacf80ab5f856d541a50b9b787abcf99d5` was pushed to `main`.
+All **139 application files** and the package configuration match the immutable
+wheel `bead51e3834fa057a68114bd05c29d8abc9de3defc8f86af1fe721e191fd0103`.
+An independent run against that installed wheel passed **89 tests** in 48.73
+seconds, with all 133 loaded application module origins/hashes checked and no
+network connections. The test fixture source tree contained no application code.
+
+The new stage-only kit passed **50 private tests**, including six migration
+prefixes, interrupted schema-32 DDL, recovery and installed stage behavior.
+It then prepared both the candidate and recovery runtime on Ubuntu. Staging
+verified the 139 application files and preservation of all **63 existing tables**
+on the private database copy. Its receipts confirm no activation or production
+database write and unchanged bindings/configuration for all nine services.
+
+An independent read afterward confirmed that production still points to
+`local-20261003-memory-compat27-397e979987a6`, retains schema **27**, and reports
+healthy API **0.14.2**. The staged candidate is
+`local-20261003-memory-local-c56e7eeacf80`; it is not the active release.
+
 ## Remaining release evidence
 
-- Bind the reviewed source commit to the immutable API package and staged release.
-- Qualify a distinct schema-32 recovery runtime and immutable candidate. The
-  previously qualified recovery reads only through schema 31 and is not a
-  fallback for this migration.
+- Complete coordinated API/worker activation from the staged artifacts, with
+  the qualified recovery chain: compat27 for schema 27/28 and recovery32 for
+  schema 29–32. The recovery does not expose the new local-context endpoint.
 - Deploy compatible backend and mobile versions, then verify the actual local
   provider/device path. The new app requires the local-context endpoint even
   when the server explicitly disables symbolic retrieval.
 - Measure language retrieval quality and implement evidence-gated lesson
   validation/promotion. Transporting an unvalidated claim does not establish
   that the model learned a correct, currently applicable procedure.
+  The [actual FR/EN provider trial](memory-provider-qualification-2026-10-03.md)
+  currently stops on a false rejection by the translation reviewer.
