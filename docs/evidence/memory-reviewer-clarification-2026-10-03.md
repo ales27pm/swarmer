@@ -6,6 +6,10 @@ a translation that weakened a prerequisite. The predeclared integration gate
 failed. No prompt, acceptance rule, model configuration or production memory was
 promoted or changed by this experiment.
 
+Follow-up: a [four-call thinking diagnostic](memory-reviewer-thinking-diagnostic-2026-10-03.md)
+retained the baseline prompt and tested a runtime control instead. Both default-mode
+responses ended with `finish_reason: length`; this did not qualify a replacement reviewer.
+
 This follows the [quoted-issue comparison](memory-reviewer-comparison-2026-10-03.md).
 It tests the next hypothesis stated there: clarify Boolean conditions, permission
 versus factual uncertainty, and English technical spans within French prose,
