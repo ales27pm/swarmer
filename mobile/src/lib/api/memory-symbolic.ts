@@ -86,7 +86,7 @@ function bounded(value: unknown): void {
 }
 
 /** Validate transport shape and scope, not the truth of a claim or the server's database state. */
-export function memorySymbolicEvidence(item: MemoryItem): SymbolicEvidence[] {
+export function memorySymbolicEvidence(item: Pick<MemoryItem, "id" | "scope" | "sensitivity" | "symbolic_evidence" | "symbolic_status">): SymbolicEvidence[] {
   if (item.symbolic_evidence === undefined && item.symbolic_status === undefined) return [];
   check(item.symbolic_status === "available" && item.sensitivity === "normal");
   const evidence = array(item.symbolic_evidence, 0, 50);

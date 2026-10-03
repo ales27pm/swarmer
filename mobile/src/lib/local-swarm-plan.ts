@@ -1,5 +1,6 @@
 import type { Agent, GoalMemoryContext, GoalRecord, SwarmPlanNodeProposal, SwarmPlanProposal } from "@/lib/api/types";
 import { parseGoalMemoryContext } from "@/lib/api/goal-memory";
+import { appendLocalSymbolicContext, type LocalMemoryContext } from "./api/local-memory-context";
 import { assertUnambiguousJson } from "@/lib/local-inference";
 
 export type LocalSwarmPlanContext = {
@@ -8,6 +9,7 @@ export type LocalSwarmPlanContext = {
   // The caller must fetch an authoritative snapshot again before submission.
   agents: readonly Pick<Agent, "id" | "status" | "skills" | "model_id" | "runtime" | "supported_protocol_version">[];
   memory?: GoalMemoryContext;
+  local_context?: LocalMemoryContext;
   durable_context?: import("./api/project-context").DurableProjectContext;
 };
 
@@ -148,7 +150,7 @@ export function buildLocalSwarmPlanPrompt(context: LocalSwarmPlanContext): strin
       limits: { max_nodes: available.maxNodes, max_parallelism: available.parallelism, remaining_model_calls: available.remainingCalls } }),
   ].join("\n");
   if (utf8Bytes(prompt) > 32_000) fail("contexte trop volumineux pour la planification locale");
-  return prompt;
+  return appendLocalSymbolicContext(prompt, context.local_context?.symbolic_context ?? null);
 }
 
 function parseConstraints(value: unknown, node: SwarmPlanNodeProposal, available: ReturnType<typeof contextDetails>) {

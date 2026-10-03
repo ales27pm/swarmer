@@ -16,6 +16,7 @@ import { AppState } from "react-native";
 import { getDocumentAsync } from "expo-document-picker";
 import { createApplicationProtocol } from "./protocol";
 import { invokeApplicationCommand } from "./registry";
+import symbolicHttp from "@/testing/symbolic-http-ordinary.json";
 
 jest.mock("expo/fetch", () => ({ fetch: jest.fn() }));
 jest.mock("expo-document-picker", () => ({ getDocumentAsync: jest.fn() }));
@@ -29,7 +30,7 @@ jest.mock("@/lib/api/client", () => ({
   ...jest.requireActual<typeof import("@/lib/api/client")>("@/lib/api/client"),
   listAgents: jest.fn(), createGoal: jest.fn(), createGoalFeedback: jest.fn(), getGoal: jest.fn(), planTask: jest.fn(), sendChat: jest.fn(),
   listAudit: jest.fn(), getProjectGraph: jest.fn(), getActivity: jest.fn(), getGoalMemoryUsage: jest.fn(), getGoalWritingDraft: jest.fn(),
-  getSwiftProjectValidation: jest.fn(), cancelSwiftProjectValidation: jest.fn(), createLocalGoalPlanSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
+  getSwiftProjectValidation: jest.fn(), cancelSwiftProjectValidation: jest.fn(), createLocalGoalPlanSession: jest.fn(), createLocalToolSubmissionSession: jest.fn(), reviewGoalProject: jest.fn(), getGoalConversation: jest.fn(),
 }));
 jest.mock("@/lib/local-inference", () => ({
   ...jest.requireActual<typeof import("@/lib/local-inference")>("@/lib/local-inference"),
@@ -298,6 +299,11 @@ describe("application API contract", () => {
       getGoal: jest.fn<() => Promise<server.GoalDetail>>().mockResolvedValue(detail),
       assertCurrent: jest.fn<() => Promise<void>>().mockResolvedValue(),
       memoryContext: jest.fn<() => Promise<server.GoalMemoryContext>>().mockResolvedValue(memory),
+      localContext: jest.fn<() => Promise<server.LocalMemoryContext>>().mockResolvedValue({
+        schema_version: "local-context-v1", enabled: false, purpose: "goal_plan", goal_id: detail.goal.id,
+        goal_updated_at: detail.goal.updated_at, project_id: null, input_sha256: "a".repeat(64),
+        symbolic_context: null, receipt: null,
+      }),
       bootstrapSync: jest.fn<() => Promise<server.Bootstrap>>().mockResolvedValue({ agents: [{ id: "agent_project", status: "online", skills: ["code.build_project"],
         model_id: "builder", runtime: "python", supported_protocol_version: "mongars-worker-v0.9" }] } as server.Bootstrap),
       startGoal: jest.fn<() => Promise<server.GoalDetail>>().mockResolvedValue({ ...detail, goal: { ...detail.goal, status: "running", planner_source: "iphone_local" } }),
@@ -360,8 +366,7 @@ describe("application API contract", () => {
   it("classifies an unusable prompt snapshot before inference as invalid_context", async () => {
     const { session } = setupPlan();
     session.bootstrapSync.mockResolvedValue({ agents: [] } as unknown as server.Bootstrap);
-    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: "goal_1" })).data as { handle: string };
-    const result = await planProtocolResult("goals.plan.generate", { handle, runtime: "mlx", modelId: "test/model" });
+    const result = await planProtocolResult("goals.plan.prepare", { id: "goal_1" });
     expect(result).toMatchObject({ job: { state: "failed", error: { code: "invalid_context" } } });
     expect(native.generateLocalProposal).not.toHaveBeenCalled();
     expect(session.startGoal).not.toHaveBeenCalled();
@@ -399,6 +404,89 @@ describe("application API contract", () => {
     expect(session.startGoal).toHaveBeenCalledWith("goal_1", { plan_proposal: plan, planner_source: "iphone_local", memory_context_fingerprint: "b".repeat(64) });
     await expect(applicationApi.execute("goals.plan.start", { handle: prepared.handle, confirm: true })).rejects.toMatchObject({ code: "invalid_state" });
     expect(session.startGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers whole symbolic evidence to the goal model and submits the generated receipt, not a refreshed nonce", async () => {
+    const { session, detail, memory } = setupPlan();
+    session.memoryContext.mockResolvedValue({ ...memory, project_id: "symbolic-acceptance" });
+    const symbolic: server.SymbolicContext = { schema_version: "symbolic-context-v1", status: "available", grants_authority: false,
+      evidence: symbolicHttp[0].symbolic_evidence as unknown as server.SymbolicContext["evidence"] };
+    const envelope = (id: string): server.LocalMemoryContext => ({ schema_version: "local-context-v1", enabled: true,
+      purpose: "goal_plan", goal_id: detail.goal.id, goal_updated_at: detail.goal.updated_at, project_id: "symbolic-acceptance",
+      input_sha256: "d".repeat(64), symbolic_context: symbolic,
+      receipt: { id, context_sha256: "e".repeat(64), expires_at: "2099-01-01T00:00:00Z" } });
+    session.localContext.mockResolvedValueOnce(envelope("prepared")).mockResolvedValueOnce(envelope("generated"))
+      .mockResolvedValue(envelope("refreshed"));
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: detail.goal.id })).data as { handle: string };
+    await applicationApi.execute("goals.plan.generate", { handle, runtime: "mlx", modelId: "test/model" });
+    const prompt = jest.mocked(native.generateLocalProposal).mock.calls[0][0].prompt;
+    expect(prompt).toContain(JSON.stringify(symbolic));
+    expect(prompt).toContain(detail.goal.objective);
+    expect(prompt).toContain(JSON.stringify(detail.goal.completion_criteria));
+    expect(prompt).not.toContain('"id":"generated"');
+    await applicationApi.execute("goals.plan.start", { handle, confirm: true });
+    expect(session.startGoal).toHaveBeenCalledWith(detail.goal.id, expect.objectContaining({
+      local_context_receipt: { id: "generated", context_sha256: "e".repeat(64) },
+    }));
+  });
+
+  it("rejects a changed symbolic fingerprint after goal review without starting", async () => {
+    const { session, detail } = setupPlan();
+    const envelope: server.LocalMemoryContext = { schema_version: "local-context-v1", enabled: true,
+      purpose: "goal_plan", goal_id: detail.goal.id, goal_updated_at: detail.goal.updated_at, project_id: null,
+      input_sha256: "d".repeat(64), symbolic_context: { schema_version: "symbolic-context-v1", status: "available", evidence: [], grants_authority: false },
+      receipt: { id: "context", context_sha256: "e".repeat(64), expires_at: "2099-01-01T00:00:00Z" } };
+    session.localContext.mockResolvedValue(envelope);
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: detail.goal.id })).data as { handle: string };
+    await applicationApi.execute("goals.plan.generate", { handle, runtime: "mlx", modelId: "test/model" });
+    session.localContext.mockResolvedValue({ ...envelope, receipt: { ...envelope.receipt!, context_sha256: "f".repeat(64) } });
+    await expect(applicationApi.execute("goals.plan.start", { handle, confirm: true })).rejects.toMatchObject({ code: "stale_context" });
+    expect(session.startGoal).not.toHaveBeenCalled();
+  });
+
+  it("requires the captured goal pairing to remain current after local generation", async () => {
+    const { session, plan, detail } = setupPlan();
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: detail.goal.id })).data as { handle: string };
+    jest.mocked(native.generateLocalProposal).mockImplementation(async () => {
+      session.assertCurrent.mockRejectedValue(new server.ConnectionChangedError());
+      return { text: JSON.stringify(plan), finishReason: "stop", tokenCount: 100 };
+    });
+    await expect(applicationApi.execute("goals.plan.generate", { handle, runtime: "mlx", modelId: "test/model" }))
+      .rejects.toMatchObject({ code: "connection_changed" });
+    await expect(applicationApi.execute("goals.plan.start", { handle, confirm: true })).rejects.toMatchObject({ code: "invalid_state" });
+    expect(session.startGoal).not.toHaveBeenCalled();
+  });
+
+  it("binds tool inference and submission to one preparation and complete evidence", async () => {
+    const symbolic = { schema_version: "symbolic-context-v1", status: "available", grants_authority: false,
+      evidence: JSON.parse(JSON.stringify(symbolicHttp[0].symbolic_evidence).replaceAll("project:symbolic-acceptance", "general")),
+    } as server.SymbolicContext;
+    const context: server.LocalMemoryContext = { schema_version: "local-context-v1", enabled: true,
+      purpose: "tool_proposal", goal_id: null, goal_updated_at: null, project_id: null,
+      input_sha256: "d".repeat(64), symbolic_context: symbolic,
+      receipt: { id: "tool_context", context_sha256: "e".repeat(64), expires_at: "2099-01-01T00:00:00Z" } };
+    const proposal = { tool_name: "workspace.read_text", arguments: { path: "README.md" }, summary: "Lire sans modifier" };
+    const session = { assertCurrent: jest.fn<() => Promise<void>>().mockResolvedValue(),
+      localContext: jest.fn<() => Promise<server.LocalMemoryContext>>().mockResolvedValue(context),
+      createTask: jest.fn<() => ReturnType<Awaited<ReturnType<typeof server.createLocalToolSubmissionSession>>["createTask"]>>()
+        .mockResolvedValue({ task: { id: "task_tool" } as server.Task, conversation_id: "conv_tool" }),
+      submit: jest.fn<() => Promise<server.ToolCall>>().mockResolvedValue({ id: "call_tool" } as server.ToolCall) };
+    jest.mocked(server.createLocalToolSubmissionSession).mockResolvedValue(session);
+    jest.mocked(native.generateLocalProposal).mockImplementation(async (input) => {
+      expect(session.localContext).toHaveBeenCalledTimes(1);
+      expect(input.prompt).toContain(JSON.stringify(symbolic));
+      expect(input.prompt).toContain("Ne jamais modifier README.md");
+      expect(session.createTask).not.toHaveBeenCalled();
+      return { text: JSON.stringify(proposal), finishReason: "stop", tokenCount: 42 };
+    });
+    const { handle } = (await applicationApi.execute("inference.proposal.generate", { intent: "Ne jamais modifier README.md" })).data as { handle: string };
+    await applicationApi.execute("tasks.proposal.submit", { handle, confirm: true });
+    expect(server.createLocalToolSubmissionSession).toHaveBeenCalledTimes(1);
+    expect(session.submit).toHaveBeenCalledWith("task_tool", { ...proposal,
+      local_context_receipt: { id: "tool_context", context_sha256: "e".repeat(64) },
+    }, expect.any(Function));
+    await expect(applicationApi.execute("tasks.proposal.submit", { handle, confirm: true })).rejects.toMatchObject({ code: "invalid_state" });
+    expect(session.submit).toHaveBeenCalledTimes(1);
   });
 
   it("accepts a caller-selected goal-plan output limit up to the native ceiling", async () => {

@@ -40,7 +40,15 @@ async def set_agent_seen(database: Path, agent_id: str, at: datetime) -> None:
 
 async def restore_schema30_memory_fixture(db: aiosqlite.Connection) -> None:
     """Construct the actual pre-31 memory layout without changing agent/job data."""
-    assert await (await db.execute("PRAGMA user_version")).fetchone() == (31,)
+    assert await (await db.execute("PRAGMA user_version")).fetchone() == (32,)
+    assert await (
+        await db.execute("SELECT COUNT(*) FROM memory_local_context_receipts")
+    ).fetchone() == (0,)
+    assert await (
+        await db.execute("SELECT COUNT(*) FROM memory_local_context_sources")
+    ).fetchone() == (0,)
+    await db.execute("DROP TABLE memory_local_context_sources")
+    await db.execute("DROP TABLE memory_local_context_receipts")
     vectors = await (await db.execute("SELECT COUNT(*) FROM memory_view_embeddings")).fetchone()
     assert vectors == (0,)
     await db.execute("DROP TABLE memory_view_embeddings")

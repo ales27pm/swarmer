@@ -192,6 +192,20 @@ async def make_schema28_fixture(tmp_path):
     )
     await canonical.create_memory(MemoryCreate(content="Ne pas envoyer automatiquement."), "phone")
     async with aiosqlite.connect(legacy.db_path) as db:
+        # Remove later, empty additions as well as generated projections: merely
+        # lowering user_version leaves an invalid historical migration preimage.
+        for name in (
+            "memory_local_context_sources",
+            "memory_local_context_receipts",
+            "memory_symbolic_relations",
+            "memory_symbolic_links",
+            "memory_symbolic_sources",
+            "memory_symbolic_proposals",
+            "memory_symbolic_labels",
+            "memory_symbolic_concepts",
+        ):
+            assert await (await db.execute(f"SELECT count(*) FROM {name}")).fetchone() == (0,)
+            await db.execute(f"DROP TABLE {name}")
         await db.execute("DROP TABLE memory_view_embeddings")
         for name in reversed(PROJECTIONS):
             await db.execute(f"DROP TABLE {name}")

@@ -2,9 +2,11 @@ import { ApiError, ConnectionChangedError, createLocalGoalPlanSession, type Goal
 import { buildLocalSwarmPlanPrompt, parseLocalSwarmPlan, type LocalSwarmPlanContext } from "@/lib/local-swarm-plan";
 import type { LocalGenerationResult } from "@/lib/local-inference";
 import { ApplicationApiError } from "./schema";
+import { symbolicPromptBudget } from "@/lib/api/local-memory-context";
+import { assertLocalMemoryContextFresh, freezeLocalMemoryContext } from "./tool-proposal";
 
 type Session = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
-export type GoalPlanSession = Omit<Session, "projectContext"> & Partial<Pick<Session, "projectContext">>;
+export type GoalPlanSession = Session;
 export type GoalPlanSnapshot = { detail: GoalDetail; context: LocalSwarmPlanContext & { memory: GoalMemoryContext }; fingerprint: string };
 
 export async function readInitialGoal(session: GoalPlanSession, goalId: string): Promise<GoalPlanSnapshot> {
@@ -18,7 +20,7 @@ export async function readInitialGoal(session: GoalPlanSession, goalId: string):
     throw new ApplicationApiError("invalid_state", "Ce but a déjà démarré ou changé. Consulte son état avant de préparer un plan initial.");
   }
   const memory = await session.memoryContext(goalId, before.goal.updated_at);
-  const durableContext = await session.projectContext?.(goalId);
+  const durableContext = await session.projectContext(goalId);
   // Retrieval can reserve one model call. Only the server's traced planning credits allow it.
   const detail = await session.getGoal(goalId);
   await session.assertCurrent();
@@ -35,13 +37,26 @@ export async function readInitialGoal(session: GoalPlanSession, goalId: string):
     id: agent.id, status: agent.status, skills: [...agent.skills].sort(), model_id: agent.model_id,
     runtime: agent.runtime, supported_protocol_version: agent.supported_protocol_version,
   })).sort((left, right) => left.id.localeCompare(right.id));
-  const context = { goal: {
+  const mandatoryContext = { goal: {
     objective: goal.objective, completion_criteria: goal.completion_criteria,
     max_steps: goal.max_steps, step_count: goal.step_count, max_parallelism: goal.max_parallelism,
     max_model_calls: goal.max_model_calls, model_call_count: goal.model_call_count,
   }, agents, memory, ...(durableContext ? { durable_context: durableContext } : {}) };
+  let basePrompt: string;
+  try { basePrompt = buildLocalSwarmPlanPrompt(mandatoryContext); }
+  catch { throw new ApplicationApiError("invalid_context", "Le contexte du but ne permet pas de construire un plan local valide. Actualisez le but et ses capacités."); }
+  const localContext = freezeLocalMemoryContext(await session.localContext(goalId, goal.updated_at, symbolicPromptBudget(basePrompt)));
+  await session.assertCurrent();
+  if (localContext.purpose !== "goal_plan" || localContext.goal_id !== goalId
+      || localContext.goal_updated_at !== goal.updated_at
+      || (localContext.enabled && localContext.project_id !== memory.project_id)) {
+    throw new ApplicationApiError("stale_context", "Le contexte symbolique ne correspond plus au but et à son projet. Actualisez le contexte.");
+  }
+  assertLocalMemoryContextFresh(localContext);
+  const context = { ...mandatoryContext, local_context: localContext };
   return { detail, context, fingerprint: JSON.stringify({ goal, agents, memory: memory.context_fingerprint,
-    provider: memory.provider_fingerprint, durable: durableContext?.fingerprint ?? null }) };
+    provider: memory.provider_fingerprint, durable: durableContext?.fingerprint ?? null,
+    symbolic: { enabled: localContext.enabled, context_sha256: localContext.receipt?.context_sha256 ?? null } }) };
 }
 
 
@@ -89,16 +104,23 @@ export async function startReviewedLocalGoalPlan(
   session: GoalPlanSession, goalId: string, reviewed: GoalPlanSnapshot, rawText: string,
   options: { shouldAccept?: () => boolean; assertReviewCurrent?: () => void; onAttempt?: () => void } = {},
 ): Promise<GoalDetail | null> {
+  const localContext = reviewed.context.local_context;
+  if (!localContext) throw new ApplicationApiError("invalid_context", "Le plan relu ne possède pas son contexte mémoire authentifié.");
+  assertLocalMemoryContextFresh(localContext);
   const snapshot = await readInitialGoal(session, goalId);
   if (options.shouldAccept && !options.shouldAccept()) return null;
   assertGoalPlanSnapshotCurrent(snapshot, reviewed);
   const plan = parseReviewedLocalGoalPlan(rawText, snapshot);
   await session.assertCurrent();
+  assertLocalMemoryContextFresh(localContext);
   if (options.shouldAccept && !options.shouldAccept()) return null;
   options.assertReviewCurrent?.();
   options.onAttempt?.();
   const detail = await session.startGoal(goalId, { plan_proposal: plan, planner_source: "iphone_local",
-    memory_context_fingerprint: snapshot.context.memory.context_fingerprint });
+    memory_context_fingerprint: reviewed.context.memory.context_fingerprint,
+    ...(localContext.receipt ? { local_context_receipt: {
+      id: localContext.receipt.id, context_sha256: localContext.receipt.context_sha256,
+    } } : {}) });
   if (detail.goal.id !== goalId || detail.goal.planner_source !== "iphone_local") {
     throw new ApplicationApiError("outcome_unknown", "Le serveur n’a pas confirmé ce plan initial iPhone.");
   }

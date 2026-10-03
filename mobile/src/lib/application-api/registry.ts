@@ -14,7 +14,7 @@ import { outputDescriptor, type CommandOutputDescriptor } from "./outputs";
 import { pairApplicationConnection, type PairApplicationConnectionInput } from "./connection";
 import { readApplicationSyncState } from "./sync-state";
 import { memorySearchResult } from "./memory-search";
-import { submitReviewedToolProposal } from "./tool-proposal";
+import { assertLocalMemoryContextFresh, prepareLocalToolProposal, submitReviewedToolProposal, type LocalToolPreparation } from "./tool-proposal";
 import { assertGoalPlanSnapshotCurrent, buildLocalGoalPlanPrompt, localPlanPreparationError, parseCompletedLocalGoalPlan, readInitialGoal, startReviewedLocalGoalPlan, type GoalPlanSession, type GoalPlanSnapshot } from "./goal-plan";
 import {
   ApplicationApiError, boolean, choice, identifier, integer, list, number, object,
@@ -44,6 +44,7 @@ type InvocationContext = {
   // In-process ownership only: never accepted from command JSON or exposed over HTTP.
   nativeOwner?: symbol;
   expectedModel?: Pick<inference.LocalInferenceStatus, "runtime" | "modelId" | "revision">;
+  assertPreparationCurrent?: () => Promise<void>;
 };
 type Definition = ApplicationCommand & {
   handler?: (input: Record<string, unknown>, context: InvocationContext) => Promise<unknown>;
@@ -299,6 +300,7 @@ register<Parameters<typeof inference.generateLocalProposal>[0]>("inference.gener
         throw new ApplicationApiError("model_not_ready", "Le modèle chargé ne correspond plus au modèle affiché. Actualisez son état.");
       }
     }
+    await context.assertPreparationCurrent?.();
     assertActive();
     if (context.shouldAccept && !context.shouldAccept()) throw new ApplicationApiError("cancelled", "Cette session locale est fermée.");
     return inference.generateLocalProposal(input);
@@ -310,15 +312,19 @@ register("inference.cancel", noInput, (_, context) => {
   nativeOperation.cancelled = true;
   return inference.cancelLocalGeneration();
 }, { ...device, ...mutation, requiresForeground: true });
-type ToolReview = { intent: string; proposal: server.ToolProposalInput; state: "review" | "sending" | "submitted" | "uncertain"; taskId: string | null };
+type ToolReview = { intent: string; proposal: server.ToolProposalInput; preparation: LocalToolPreparation; state: "review" | "sending" | "submitted" | "uncertain"; taskId: string | null };
 register<{ intent: string; maxTokens?: number; temperature?: number }>("inference.proposal.generate", object({ intent: text(30_000), ...generationProperties }, ["intent"]),
   ({ intent, maxTokens, temperature }) => withNativeOperation("generate", async (assertActive) => {
-    const result = await inference.generateLocalProposal({ prompt: inference.buildLocalProposalPrompt(intent), maxTokens, temperature });
+    const preparation = await prepareLocalToolProposal(intent);
+    assertActive();
+    const result = await inference.generateLocalProposal({ prompt: inference.buildLocalProposalPrompt(intent, preparation.context.symbolic_context), maxTokens, temperature });
+    await preparation.session.assertCurrent();
+    assertLocalMemoryContextFresh(preparation.context);
     assertActive();
     if (result.finishReason !== "stop") throw new ApplicationApiError(result.finishReason === "length" ? "generation_truncated" : "cancelled", "La génération n’est pas complète ; aucune proposition ne peut être soumise.");
     const proposal = inference.parseLocalToolProposal(result.text);
     const handle = inference.isActionableToolProposal(proposal)
-      ? applicationSessions.put<ToolReview>("tool-review", { intent, proposal, state: "review", taskId: null }) : null;
+      ? applicationSessions.put<ToolReview>("tool-review", { intent, proposal, preparation, state: "review", taskId: null }) : null;
     return { handle, proposal, tokenCount: result.tokenCount, finishReason: result.finishReason };
   }), { ...device, ...mutation, readiness: "loaded_model", requiresForeground: true });
 register<{ handle: string; confirm: true }>("tasks.proposal.submit", object({ handle: identifier, confirm: { type: "boolean", enum: [true] } }), async ({ handle }) => {
@@ -328,7 +334,7 @@ register<{ handle: string; confirm: true }>("tasks.proposal.submit", object({ ha
   try {
     const receipt = await submitReviewedToolProposal(review.intent, review.proposal, (task) => { review.taskId = task.id; }, () => {
       if (applicationSessions.get<ToolReview>(handle, "tool-review") !== review) throw new ApplicationApiError("session_expired", "Cette revue n’est plus actuelle.");
-    });
+    }, review.preparation);
     review.state = "submitted";
     return receipt;
   } catch {
@@ -452,6 +458,8 @@ register<{ handle: string; runtime: inference.LocalInferenceRuntime; modelId: st
         assertActive();
         assertReview();
         const result = await inference.generateLocalProposal({ prompt: buildLocalGoalPlanPrompt(snapshot), maxTokens: maxTokens ?? DEFAULT_GOAL_PLAN_MAX_TOKENS, temperature: temperature ?? 0.1 });
+        await review.session.assertCurrent();
+        if (snapshot.context.local_context) assertLocalMemoryContextFresh(snapshot.context.local_context);
         assertActive();
         assertReview();
         const plan = parseCompletedLocalGoalPlan(result, snapshot);

@@ -14,7 +14,7 @@ import {
   useAccessibilityAnnouncement,
 } from "@/components/swarm-ui";
 import { createLocalGoalPlanSession, type SwarmPlanProposal } from "@/lib/application-api/server";
-import { submitReviewedToolProposal } from "@/lib/application-api/tool-proposal";
+import { assertLocalMemoryContextFresh, prepareLocalToolProposal, submitReviewedToolProposal, type LocalToolPreparation } from "@/lib/application-api/tool-proposal";
 import { buildLocalSwarmPlanPrompt } from "@/lib/local-swarm-plan";
 import { readInitialGoal, parseCompletedLocalGoalPlan, startReviewedLocalGoalPlan, type GoalPlanSession, type GoalPlanSnapshot } from "@/lib/application-api/goal-plan";
 import {
@@ -348,6 +348,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const [rawText, setRawText] = useState<string | null>(null);
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [proposal, setProposal] = useState<LocalToolProposal | null>(null);
+  const toolPreparation = useRef<LocalToolPreparation | null>(null);
   const goalSession = useRef<GoalPlanSession | null>(null);
   const startAttempted = useRef(false);
   const localStartInFlight = useRef(false);
@@ -377,6 +378,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
 
   const invalidateProposal = useCallback(() => {
     generationVersion.current += 1;
+    toolPreparation.current = null;
     setRawText(null);
     setTokenCount(null);
     setProposal(null);
@@ -704,12 +706,16 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setProposal(null);
     setLocalPlan(null);
     setNotice(goalMode ? "Vérification du but avant la génération du plan initial sur l’iPhone…" : "Le modèle génère une proposition locale non vérifiée…");
+    toolPreparation.current = null;
     try {
       let snapshot: GoalPlanSnapshot | null = null;
+      let planningSession: GoalPlanSession | null = null;
+      let preparation: LocalToolPreparation | null = null;
       if (goalMode) {
         const session = goalSession.current;
         if (!session || !goalId || !goalSnapshot) throw new Error("Le contexte authentifié du but n’est pas disponible.");
         snapshot = await readInitialGoal(session, goalId);
+        planningSession = session;
         if (!mounted.current || generationVersion.current !== version) return;
         setGoalSnapshot(snapshot);
         if (snapshot.fingerprint !== goalSnapshot.fingerprint) {
@@ -720,14 +726,33 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         await session.assertCurrent();
         if (!mounted.current || generationVersion.current !== version) return;
         setNotice("Le modèle génère le plan initial sur l’iPhone. Aucun démarrage serveur n’est envoyé…");
+      } else {
+        preparation = await prepareLocalToolProposal(intent);
+        if (!mounted.current || generationVersion.current !== version) return;
       }
       const session = generationSession.current;
       const expectedModel = loadedModel.current;
       if (!session || !expectedModel) throw new Error("Le modèle chargé n’a pas été confirmé. Actualisez son état.");
       const result = await session.generate({
-        prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent),
+        prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent, preparation?.context.symbolic_context),
         ...parseGenerationSettings(maxTokens, temperature),
-      }, expectedModel);
+      }, expectedModel, async () => {
+        if (!mounted.current || generationVersion.current !== version) throw new Error("Cette préparation locale n’est plus actuelle.");
+        if (planningSession) await planningSession.assertCurrent();
+        if (snapshot?.context.local_context) assertLocalMemoryContextFresh(snapshot.context.local_context);
+        if (preparation) {
+          await preparation.session.assertCurrent();
+          assertLocalMemoryContextFresh(preparation.context);
+        }
+        if (!mounted.current || generationVersion.current !== version) throw new Error("Cette préparation locale n’est plus actuelle.");
+      });
+      if (!mounted.current || generationVersion.current !== version) return;
+      if (planningSession) await planningSession.assertCurrent();
+      if (snapshot?.context.local_context) assertLocalMemoryContextFresh(snapshot.context.local_context);
+      if (preparation) {
+        await preparation.session.assertCurrent();
+        assertLocalMemoryContextFresh(preparation.context);
+      }
       if (!mounted.current || generationVersion.current !== version) return;
       setRawText(result.text);
       setTokenCount(result.tokenCount);
@@ -746,6 +771,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         return;
       }
       const parsed = parseLocalToolProposal(result.text);
+      toolPreparation.current = preparation;
       setProposal(parsed);
       setNotice(
         parsed.tool_name === "none"
@@ -801,11 +827,17 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
 
   async function submitProposal() {
     if (locked || !proposal || !isActionableToolProposal(proposal)) return;
+    const preparation = toolPreparation.current;
+    const version = generationVersion.current;
     setBusy("submit");
     setError(null);
     let taskId: string | null = null;
     try {
-      const { task } = await submitReviewedToolProposal(prompt.trim(), proposal, (created) => { taskId = created.id; });
+      const { task } = await submitReviewedToolProposal(prompt.trim(), proposal, (created) => { taskId = created.id; }, () => {
+        if (!mounted.current || generationVersion.current !== version || toolPreparation.current !== preparation) {
+          throw new Error("Cette proposition locale n’est plus la proposition relue.");
+        }
+      }, preparation ?? undefined);
       if (!mounted.current) return;
       setNotice(
         "La proposition a été transmise au control plane authentifié. Son état d’exécution reste visible dans la tâche.",

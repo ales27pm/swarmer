@@ -1,0 +1,304 @@
+{
+  "provenance": "Disposable paired HTTP TestClient and real SQLite; no model, production or credentials",
+  "now": "2026-10-03T20:53:59.010120+00:00",
+  "goal_expected": {
+    "goal_id": "goal_78aa695056e8453781887eecfea7dab5",
+    "expected_goal_updated_at": "2026-10-03T20:53:58.856004+00:00",
+    "project_id": "project_9e69e6a93fab4b22bbc17b9e2336d980"
+  },
+  "goal_plan": {
+    "schema_version": "local-context-v1",
+    "enabled": true,
+    "purpose": "goal_plan",
+    "goal_id": "goal_78aa695056e8453781887eecfea7dab5",
+    "goal_updated_at": "2026-10-03T20:53:58.856004+00:00",
+    "project_id": "project_9e69e6a93fab4b22bbc17b9e2336d980",
+    "input_sha256": "25be0bdc17afc211fee59861f059f5a99d0527c816dc0a17d51481bd0574c06b",
+    "symbolic_context": {
+      "schema_version": "symbolic-context-v1",
+      "evidence": [
+        {
+          "schema_version": "symbolic-evidence-v1",
+          "catalog": {
+            "namespace": "software",
+            "scheme_id": "engineering"
+          },
+          "proposal": {
+            "proposal_id": "msp_c527e96b495a414d94daa6e82b51239b",
+            "claim": {
+              "scope": "general",
+              "namespace": "software",
+              "scheme_id": "engineering",
+              "kind": "constraint",
+              "subject": {
+                "type": "identity",
+                "namespace": "software",
+                "identity": "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6"
+              },
+              "predicate": {
+                "type": "identity",
+                "namespace": "software",
+                "identity": "preserve"
+              },
+              "object": {
+                "type": "identity",
+                "namespace": "software",
+                "identity": "Archive.py"
+              },
+              "polarity": "negated",
+              "modality": "forbidden",
+              "applicability": {},
+              "version": null,
+              "effective_conditions": [
+                {
+                  "relation": "only_after",
+                  "argument": {
+                    "type": "literal",
+                    "datatype": "path",
+                    "lexical_value": "Cache/State.py",
+                    "language": null,
+                    "unit": null
+                  }
+                }
+              ]
+            },
+            "claim_sha256": "3880dc91044adda8acd7c7d4314740723bdb8e81929906e049748223ef55709e",
+            "sources": [
+              {
+                "binding": {
+                  "memory_id": "mem_28672e82c65149489f562236f79037ab",
+                  "revision": 1,
+                  "view_id": "mtv_9e433f1b8a7807e446ee31f48c44d36505ff204114ae241d222b8f945c05c748",
+                  "field": "content",
+                  "field_sha256": "25ed40ffb55dc8706adfe19af224331078493794252cbc8bcfa301bb5b67671b",
+                  "document_sha256": "4d6a1af4ea6f773711b530231e5e16076ddf793414b9c642e2a52e541b559a67"
+                },
+                "scope": "general",
+                "origin": "source_document",
+                "validation_status": "unvalidated"
+              }
+            ],
+            "concept_ids": [
+              "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6"
+            ],
+            "lifecycle": "active",
+            "validation_status": "unvalidated",
+            "grants_authority": false,
+            "created_at": "2026-10-03T20:53:58.704577+00:00"
+          },
+          "matches": [
+            {
+              "channel": "concept_label",
+              "value": "silent clock",
+              "concept_id": "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6",
+              "language": "en",
+              "field": null
+            }
+          ],
+          "concepts": [
+            {
+              "concept_id": "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6",
+              "scope": "general",
+              "namespace": "software",
+              "scheme_id": "engineering",
+              "labels": [
+                {
+                  "text": "horloge silencieuse",
+                  "language": {
+                    "tag": "fr-CA",
+                    "origin": "declared"
+                  },
+                  "role": "pref"
+                },
+                {
+                  "text": "silent clock",
+                  "language": {
+                    "tag": "en",
+                    "origin": "declared"
+                  },
+                  "role": "pref"
+                }
+              ],
+              "curation_status": "proposed",
+              "grants_authority": false
+            }
+          ],
+          "relations": [],
+          "read_token": "c61a973b338d0c6a471ec5e3b67f505fa3ed7c40b2e394120cf0f3aa18bfc498",
+          "validation_status": "unvalidated",
+          "grants_authority": false
+        }
+      ],
+      "status": "available",
+      "grants_authority": false
+    },
+    "receipt": {
+      "id": "lmctx_f6598e9ff5854b3e881e3d2ee816b758",
+      "context_sha256": "240a1eb3c22a34b16b06f2588d36aaa04482c7c01e98b48b737cf16a43d864d1",
+      "expires_at": "2026-10-03T21:23:58.971190+00:00"
+    }
+  },
+  "tool_proposal": {
+    "schema_version": "local-context-v1",
+    "enabled": true,
+    "purpose": "tool_proposal",
+    "goal_id": null,
+    "goal_updated_at": null,
+    "project_id": null,
+    "input_sha256": "b222584b6a897e24aa3e9293aae70ae0d32b9fe1bc72143732d1b309e0fa0f5c",
+    "symbolic_context": {
+      "schema_version": "symbolic-context-v1",
+      "evidence": [
+        {
+          "schema_version": "symbolic-evidence-v1",
+          "catalog": {
+            "namespace": "software",
+            "scheme_id": "engineering"
+          },
+          "proposal": {
+            "proposal_id": "msp_c527e96b495a414d94daa6e82b51239b",
+            "claim": {
+              "scope": "general",
+              "namespace": "software",
+              "scheme_id": "engineering",
+              "kind": "constraint",
+              "subject": {
+                "type": "identity",
+                "namespace": "software",
+                "identity": "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6"
+              },
+              "predicate": {
+                "type": "identity",
+                "namespace": "software",
+                "identity": "preserve"
+              },
+              "object": {
+                "type": "identity",
+                "namespace": "software",
+                "identity": "Archive.py"
+              },
+              "polarity": "negated",
+              "modality": "forbidden",
+              "applicability": {},
+              "version": null,
+              "effective_conditions": [
+                {
+                  "relation": "only_after",
+                  "argument": {
+                    "type": "literal",
+                    "datatype": "path",
+                    "lexical_value": "Cache/State.py",
+                    "language": null,
+                    "unit": null
+                  }
+                }
+              ]
+            },
+            "claim_sha256": "3880dc91044adda8acd7c7d4314740723bdb8e81929906e049748223ef55709e",
+            "sources": [
+              {
+                "binding": {
+                  "memory_id": "mem_28672e82c65149489f562236f79037ab",
+                  "revision": 1,
+                  "view_id": "mtv_9e433f1b8a7807e446ee31f48c44d36505ff204114ae241d222b8f945c05c748",
+                  "field": "content",
+                  "field_sha256": "25ed40ffb55dc8706adfe19af224331078493794252cbc8bcfa301bb5b67671b",
+                  "document_sha256": "4d6a1af4ea6f773711b530231e5e16076ddf793414b9c642e2a52e541b559a67"
+                },
+                "scope": "general",
+                "origin": "source_document",
+                "validation_status": "unvalidated"
+              }
+            ],
+            "concept_ids": [
+              "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6"
+            ],
+            "lifecycle": "active",
+            "validation_status": "unvalidated",
+            "grants_authority": false,
+            "created_at": "2026-10-03T20:53:58.704577+00:00"
+          },
+          "matches": [
+            {
+              "channel": "concept_label",
+              "value": "silent clock",
+              "concept_id": "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6",
+              "language": "en",
+              "field": null
+            }
+          ],
+          "concepts": [
+            {
+              "concept_id": "urn:swarmer:concept:cd2dc8e88f71450a9563b910b13878f6",
+              "scope": "general",
+              "namespace": "software",
+              "scheme_id": "engineering",
+              "labels": [
+                {
+                  "text": "horloge silencieuse",
+                  "language": {
+                    "tag": "fr-CA",
+                    "origin": "declared"
+                  },
+                  "role": "pref"
+                },
+                {
+                  "text": "silent clock",
+                  "language": {
+                    "tag": "en",
+                    "origin": "declared"
+                  },
+                  "role": "pref"
+                }
+              ],
+              "curation_status": "proposed",
+              "grants_authority": false
+            }
+          ],
+          "relations": [],
+          "read_token": "c61a973b338d0c6a471ec5e3b67f505fa3ed7c40b2e394120cf0f3aa18bfc498",
+          "validation_status": "unvalidated",
+          "grants_authority": false
+        }
+      ],
+      "status": "available",
+      "grants_authority": false
+    },
+    "receipt": {
+      "id": "lmctx_5220e896e13044af8dc228912f7778c0",
+      "context_sha256": "5c36de0634f8c6384d3b1fc67794e73f6acd8b856786b158d343238c476a2af9",
+      "expires_at": "2026-10-03T21:23:58.812856+00:00"
+    }
+  },
+  "omitted_budget": {
+    "schema_version": "local-context-v1",
+    "enabled": true,
+    "purpose": "tool_proposal",
+    "goal_id": null,
+    "goal_updated_at": null,
+    "project_id": null,
+    "input_sha256": "b222584b6a897e24aa3e9293aae70ae0d32b9fe1bc72143732d1b309e0fa0f5c",
+    "symbolic_context": {
+      "schema_version": "symbolic-context-v1",
+      "evidence": [],
+      "status": "omitted_budget",
+      "grants_authority": false
+    },
+    "receipt": {
+      "id": "lmctx_879881662213415ab0c6fe531614cfcf",
+      "context_sha256": "568ec2d2dd681068d620c597cd8fc0860d147319886c61c409489aa974a847b2",
+      "expires_at": "2026-10-03T21:23:58.992502+00:00"
+    }
+  },
+  "disabled": {
+    "schema_version": "local-context-v1",
+    "enabled": false,
+    "purpose": "tool_proposal",
+    "goal_id": null,
+    "goal_updated_at": null,
+    "project_id": null,
+    "input_sha256": "b222584b6a897e24aa3e9293aae70ae0d32b9fe1bc72143732d1b309e0fa0f5c",
+    "symbolic_context": null,
+    "receipt": null
+  }
+}

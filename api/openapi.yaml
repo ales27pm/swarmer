@@ -817,6 +817,60 @@ paths:
         '426': {$ref: '#/components/responses/SecureTransportRequired'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /memory/local-context:
+    post:
+      summary: Prepare server-bound symbolic evidence for reviewed local generation
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - $ref: '#/components/schemas/GoalLocalContextRequest'
+              - $ref: '#/components/schemas/ToolLocalContextRequest'
+              discriminator:
+                propertyName: purpose
+                mapping:
+                  goal_plan: '#/components/schemas/GoalLocalContextRequest'
+                  tool_proposal: '#/components/schemas/ToolLocalContextRequest'
+              title: Request
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalContextResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Context changed, is unavailable, or cannot be selected for this
+            goal
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      tags:
+      - Memory
+      description: SQL-only paired-device selection. Catalogs and scopes are server-derived.
+        Enabled receipts expire after 30 minutes and bind the exact context, input and
+        device; evidence never grants authority. Budget overflow omits whole evidence.
+        Disabled mode issues no receipt. Preparation never creates a task or calls a
+        model.
+
   /memory/search:
     post:
       tags: [Memory]
@@ -4420,10 +4474,22 @@ components:
         planner_source:
           type: [string, 'null']
           enum: [iphone_local, manual, null]
+        local_context_receipt:
+          anyOf:
+            - $ref: '#/components/schemas/LocalContextReceipt'
+            - type: 'null'
         memory_context_fingerprint:
           type: [string, 'null']
           pattern: '^[a-f0-9]{64}$'
       allOf:
+        - if:
+            required: [local_context_receipt]
+            properties:
+              local_context_receipt: {type: object}
+          then:
+            required: [plan_proposal, planner_source]
+            properties:
+              planner_source: {const: iphone_local}
         - if:
             required: [memory_context_fingerprint]
             properties:
@@ -4995,6 +5061,11 @@ components:
           type: string
           enum: [iphone_local, ubuntu_local, manual, test]
           default: manual
+        local_context_receipt:
+          description: Required for iphone_local when symbolic catalogs are enabled; supplied receipts are always checked against the paired device, input and current SQL evidence.
+          anyOf:
+            - $ref: '#/components/schemas/LocalContextReceipt'
+            - type: 'null'
         summary:
           type: string
           minLength: 1
@@ -9324,3 +9395,165 @@ components:
       - status
       title: SymbolicContext
       type: object
+
+    GoalLocalContextRequest:
+      properties:
+        purpose:
+          type: string
+          const: goal_plan
+          title: Purpose
+        goal_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Goal Id
+        expected_goal_updated_at:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Expected Goal Updated At
+        max_context_bytes:
+          type: integer
+          maximum: 16384.0
+          minimum: 0.0
+          title: Max Context Bytes
+          default: 16384
+      additionalProperties: false
+      type: object
+      required:
+      - purpose
+      - goal_id
+      - expected_goal_updated_at
+      title: GoalLocalContextRequest
+
+    ToolLocalContextRequest:
+      properties:
+        purpose:
+          type: string
+          const: tool_proposal
+          title: Purpose
+        intent:
+          type: string
+          maxLength: 32000
+          minLength: 1
+          title: Intent
+        mode:
+          type: string
+          enum:
+          - normal
+          - commandant
+          - review
+          - autonome
+          title: Mode
+        source:
+          type: string
+          const: iphone_local
+          title: Source
+        max_context_bytes:
+          type: integer
+          maximum: 16384.0
+          minimum: 0.0
+          title: Max Context Bytes
+          default: 16384
+      additionalProperties: false
+      type: object
+      required:
+      - purpose
+      - intent
+      - mode
+      - source
+      title: ToolLocalContextRequest
+
+    LocalContextReceipt:
+      properties:
+        id:
+          type: string
+          pattern: ^lmctx_[a-f0-9]{32}$
+          title: Id
+        context_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Context Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - context_sha256
+      title: LocalContextReceipt
+
+    IssuedLocalContextReceipt:
+      properties:
+        id:
+          type: string
+          pattern: ^lmctx_[a-f0-9]{32}$
+          title: Id
+        context_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Context Sha256
+        expires_at:
+          type: string
+          title: Expires At
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - context_sha256
+      - expires_at
+      title: IssuedLocalContextReceipt
+
+    LocalContextResponse:
+      properties:
+        schema_version:
+          type: string
+          const: local-context-v1
+          title: Schema Version
+          default: local-context-v1
+        enabled:
+          type: boolean
+          title: Enabled
+        purpose:
+          type: string
+          enum:
+          - goal_plan
+          - tool_proposal
+          title: Purpose
+        goal_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Goal Id
+        goal_updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Goal Updated At
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        input_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Input Sha256
+        symbolic_context:
+          anyOf:
+          - $ref: '#/components/schemas/SymbolicContext'
+          - type: 'null'
+        receipt:
+          anyOf:
+          - $ref: '#/components/schemas/IssuedLocalContextReceipt'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - enabled
+      - purpose
+      - goal_id
+      - goal_updated_at
+      - project_id
+      - input_sha256
+      - symbolic_context
+      - receipt
+      title: LocalContextResponse

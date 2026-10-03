@@ -24,10 +24,11 @@ export function createLocalGenerationSession() {
   let active = true;
   const cancel = (): Promise<void> => invokeApplicationCommand("inference.cancel", {}, { nativeOwner });
   return {
-    generate(input: Parameters<typeof adapter.generateLocalProposal>[0], expectedModel: Pick<adapter.LocalInferenceStatus, "runtime" | "modelId" | "revision">) {
+    generate(input: Parameters<typeof adapter.generateLocalProposal>[0], expectedModel: Pick<adapter.LocalInferenceStatus, "runtime" | "modelId" | "revision">,
+      assertPreparationCurrent?: () => Promise<void>) {
       if (!active) return Promise.reject(new ApplicationApiError("cancelled", "Cette session locale est fermée."));
       return invokeApplicationCommand<adapter.LocalGenerationResult>("inference.generate", input, {
-        nativeOwner, expectedModel, shouldAccept: () => active,
+        nativeOwner, expectedModel, shouldAccept: () => active, assertPreparationCurrent,
       });
     },
     cancel,

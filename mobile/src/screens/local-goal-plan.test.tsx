@@ -27,6 +27,7 @@ jest.mock("@/lib/local-inference", () => ({
 type Session = Awaited<ReturnType<typeof createLocalGoalPlanSession>>;
 const getGoal = jest.fn<Session["getGoal"]>();
 const memoryContext = jest.fn<Session["memoryContext"]>();
+const localContext = jest.fn<Session["localContext"]>();
 const bootstrapSync = jest.fn<Session["bootstrapSync"]>();
 const assertCurrent = jest.fn<Session["assertCurrent"]>();
 const startGoal = jest.fn<Session["startGoal"]>();
@@ -96,10 +97,13 @@ describe("initial local goal plan", () => {
     mockParams = { goalId: "goal_crm" };
     getGoal.mockResolvedValue(detail);
     memoryContext.mockResolvedValue(memory);
+    localContext.mockImplementation(async (goalId, updatedAt) => ({ schema_version: "local-context-v1", enabled: false,
+      purpose: "goal_plan", goal_id: goalId, goal_updated_at: updatedAt, project_id: null,
+      input_sha256: "a".repeat(64), symbolic_context: null, receipt: null }));
     bootstrapSync.mockResolvedValue(bootstrap);
     assertCurrent.mockResolvedValue();
     startGoal.mockResolvedValue({ ...detail, goal: { ...detail.goal, status: "running", planner_source: "iphone_local" } });
-    jest.mocked(createLocalGoalPlanSession).mockResolvedValue({ getGoal, memoryContext, bootstrapSync, assertCurrent, startGoal, projectContext: jest.fn<() => Promise<null>>().mockResolvedValue(null) });
+    jest.mocked(createLocalGoalPlanSession).mockResolvedValue({ getGoal, memoryContext, localContext, bootstrapSync, assertCurrent, startGoal, projectContext: jest.fn<() => Promise<null>>().mockResolvedValue(null) });
     jest.mocked(readLocalModelSettings).mockResolvedValue(null);
     jest.mocked(isLocalInferenceAvailable).mockReturnValue(true);
     jest.mocked(getLocalInferenceCapabilities).mockResolvedValue({ coreml: true, mlx: true, llamaCpp: true, platform: "ios" });

@@ -192,6 +192,7 @@ async def test_actual_startup_from_committed_schema30_is_model_free_and_preserve
 
     with monkeypatch.context() as patch:
         patch.setattr(state_service, "migrate_memory_view_vectors", stop_at_committed_schema30)
+        patch.setattr(state_service, "migrate_local_context_receipts", stop_at_committed_schema30)
         await state.initialize()
     async with aiosqlite.connect(state.db_path) as db:
         await db.execute(
@@ -216,10 +217,14 @@ async def test_actual_startup_from_committed_schema30_is_model_free_and_preserve
     before = await database_snapshot(state.db_path)
     await state.initialize()
     after = await database_snapshot(state.db_path)
-    assert after["version"] == (31,)
+    assert after["version"] == (32,)
     assert {name: after["tables"][name] for name in before["tables"]} == before["tables"]
     assert after["tables"]["memory_view_embeddings"]["rows"] == []
-    assert set(after["tables"]) - set(before["tables"]) == {"memory_view_embeddings"}
+    assert set(after["tables"]) - set(before["tables"]) == {
+        "memory_view_embeddings",
+        "memory_local_context_receipts",
+        "memory_local_context_sources",
+    }
     assert forbidden.calls == 0
     await state.initialize()
     assert await database_snapshot(state.db_path) == after

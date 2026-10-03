@@ -57,6 +57,10 @@ from app.services.memory_index_coverage import (
     MemoryIndexCoverageRequest,
     inspect_index_coverage,
 )
+from app.services.memory_local_context_schema import (
+    forget_local_contexts_locked,
+    migrate_local_context_receipts,
+)
 from app.services.memory_normalization import (
     MAX_CANONICAL_BYTES,
     MemoryNormalizationError,
@@ -107,7 +111,7 @@ from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.project_evidence_schema import migrate_project_evidence
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 _LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 _MEMORY_MODEL_ROLE_CHECK = (
     "CHECK(role IN ("
@@ -1206,7 +1210,9 @@ class StateService:
                 await self._migrate_memory_text_views(db)
             if version < 30:
                 await self._migrate_symbolic_memory(db)
-            await migrate_memory_view_vectors(db)
+            if version <= 31:
+                await migrate_memory_view_vectors(db)
+            await migrate_local_context_receipts(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():
@@ -3612,6 +3618,7 @@ class StateService:
         now = datetime.now(UTC).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
+            await forget_local_contexts_locked(db, memory_id)
             cursor = await db.execute("DELETE FROM memory_items WHERE id=?", (memory_id,))
             if cursor.rowcount != 1:
                 await db.rollback()

@@ -31,7 +31,7 @@ import {
   type Bootstrap,
   type GoalDetail,
 } from "@/lib/api/client";
-import type { GoalMemoryContext, GoalStartInput, SwarmPlanProposal } from "@/lib/api/types";
+import type { GoalMemoryContext, GoalStartInput, SwarmPlanProposal, ToolProposalInput } from "@/lib/api/types";
 import type { CapabilityTransportSession } from "@/lib/iphone-capabilities/transport";
 import type {
   CapabilityRequestDetail,
@@ -1282,7 +1282,7 @@ describe("goal API contract and connection fencing", () => {
     expect(await session.bootstrapSync()).toEqual(verifiedBootstrap);
     await session.assertCurrent();
     await expect(session.startGoal("goal_1", localInput())).resolves.toEqual(goalDetail);
-    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "memoryContext", "projectContext", "startGoal"]);
+    expect(Object.keys(session).sort()).toEqual(["assertCurrent", "bootstrapSync", "getGoal", "localContext", "memoryContext", "projectContext", "startGoal"]);
     expect(mockApplyBootstrap).not.toHaveBeenCalled();
     expect(request.mock.calls.map(([url]) => String(url))).toEqual([
       "https://control.example/goals/goal_1", "https://control.example/sync/bootstrap", "https://control.example/goals/goal_1/start",
@@ -1298,6 +1298,101 @@ describe("goal API contract and connection fencing", () => {
     embedding: { configured: false, model: null, model_revision: null, storage: "ubuntu_sqlite" },
     local_planning_eligible: true, planning_embedding_call_count: 0, recent_conversation: [],
   };
+
+  function localContextResponse(purpose: "goal_plan" | "tool_proposal", enabled = true) {
+    return {
+      schema_version: "local-context-v1", enabled, purpose,
+      goal_id: purpose === "goal_plan" ? "goal_1" : null,
+      goal_updated_at: purpose === "goal_plan" ? goalDetail.goal.updated_at : null,
+      project_id: null, input_sha256: "c".repeat(64),
+      symbolic_context: enabled ? { schema_version: "symbolic-context-v1", evidence: [],
+        status: "available", grants_authority: false } : null,
+      receipt: enabled ? { id: `lmctx_${"a".repeat(32)}`, context_sha256: "d".repeat(64),
+        expires_at: new Date(Date.now() + 1_800_000).toISOString() } : null,
+    };
+  }
+
+  it("prepares local goal evidence at the captured version and sends only its reviewed receipt on start", async () => {
+    const session = await createLocalGoalPlanSession();
+    const response = localContextResponse("goal_plan");
+    request.mockResolvedValueOnce(successfulJson(response)).mockResolvedValueOnce(successfulJson(goalDetail));
+    expect(await session.localContext("goal_1", goalDetail.goal.updated_at, 4096)).toEqual(response);
+    expect(request).toHaveBeenNthCalledWith(1, "https://control.example/memory/local-context", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ purpose: "goal_plan", goal_id: "goal_1",
+        expected_goal_updated_at: goalDetail.goal.updated_at, max_context_bytes: 4096 }),
+      headers: expect.objectContaining({ Authorization: "Bearer device-token" }),
+    }));
+    const receipt = { id: response.receipt!.id, context_sha256: response.receipt!.context_sha256 };
+    await session.startGoal("goal_1", { ...localInput(), local_context_receipt: receipt });
+    expect(JSON.parse(String(request.mock.calls[1]?.[1]?.body))).toEqual({ ...localInput(), local_context_receipt: receipt });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("prepares a tool selection without creating or executing a task", async () => {
+    const session = await createLocalToolSubmissionSession();
+    const response = localContextResponse("tool_proposal");
+    request.mockResolvedValueOnce(successfulJson(response));
+    expect(await session.localContext("Lire `README.md` — sans écrire", 1024)).toEqual(response);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("https://control.example/memory/local-context", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ purpose: "tool_proposal", intent: "Lire `README.md` — sans écrire",
+        mode: "normal", source: "iphone_local", max_context_bytes: 1024 }),
+    }));
+    await session.assertCurrent();
+  });
+
+  it("distinguishes an explicitly disabled server feature from an unavailable local-context endpoint", async () => {
+    const session = await createLocalToolSubmissionSession();
+    const disabled = localContextResponse("tool_proposal", false);
+    request.mockResolvedValueOnce(successfulJson(disabled))
+      .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ detail: "Not Found" }) } as never);
+    await expect(session.localContext("Lire README")).resolves.toEqual(disabled);
+    await expect(session.localContext("Lire README")).rejects.toMatchObject({ status: 404 });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["goal_plan", "tool_proposal"] as const)("discards %s evidence when pairing changes during preparation", async (purpose) => {
+    const goalSession = await createLocalGoalPlanSession();
+    const toolSession = await createLocalToolSubmissionSession();
+    request.mockImplementationOnce(async () => {
+      mockConnections({ [CONNECTION_KEY]: storedConnection("https://control.example", "replacement-token") });
+      return successfulJson(localContextResponse(purpose));
+    });
+    const preparation = purpose === "goal_plan"
+      ? goalSession.localContext("goal_1", goalDetail.goal.updated_at)
+      : toolSession.localContext("Lire README");
+    await expect(preparation).rejects.toMatchObject({ name: "ConnectionChangedError" });
+    await expect(toolSession.assertCurrent()).rejects.toMatchObject({ name: "ConnectionChangedError" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects preparation for a different goal revision and rejects excess receipt fields before submission", async () => {
+    const session = await createLocalGoalPlanSession();
+    request.mockResolvedValueOnce(successfulJson({ ...localContextResponse("goal_plan"), goal_updated_at: "2031-01-01T00:00:00Z" }));
+    await expect(session.localContext("goal_1", goalDetail.goal.updated_at)).rejects.toThrow("contexte mémoire local");
+    const receipt = localContextResponse("goal_plan").receipt;
+    await expect(session.startGoal("goal_1", { ...localInput(), local_context_receipt: receipt! })).rejects.toThrow("contexte mémoire local");
+    const toolSession = await createLocalToolSubmissionSession();
+    await expect(toolSession.submit("tsk_test", { tool_name: "workspace.list_dir", arguments: { path: "." },
+      summary: "Lire", local_context_receipt: receipt } as never)).rejects.toThrow("contexte mémoire local");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the prepared tool receipt unchanged and rejects invalid request budgets before HTTP", async () => {
+    const session = await createLocalToolSubmissionSession();
+    for (const budget of [-1, 16385, 0.5, Number.NaN]) {
+      await expect(session.localContext("Lire README", budget)).rejects.toThrow();
+    }
+    expect(request).not.toHaveBeenCalled();
+    const issued = localContextResponse("tool_proposal").receipt!;
+    const proposal: ToolProposalInput = { tool_name: "workspace.list_dir", arguments: { path: "." }, summary: "Lire",
+      local_context_receipt: { id: issued.id, context_sha256: issued.context_sha256 } };
+    request.mockResolvedValueOnce(successfulJson({ accepted: true }));
+    await session.submit("tsk_test", proposal);
+    expect(request.mock.calls[0]?.[0]).toBe("https://control.example/tasks/tsk_test/tool-calls");
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ ...proposal, planner_source: "iphone_local" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 
   it("allows an older server without durable context, while preserving other errors", async () => {
     const session = await createLocalGoalPlanSession();

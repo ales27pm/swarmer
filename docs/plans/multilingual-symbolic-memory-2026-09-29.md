@@ -63,6 +63,12 @@ source-qualified agent/worker context and mobile inspection; its
 tracks local checks and outstanding combined/device qualification. It does not
 promote proposals to validated lessons.
 
+The next schema-32 slice connects these complete cards to the iPhone's local
+goal planner and tool-proposal flow, with server-issued expiring selection
+receipts and transactional source revalidation at acceptance. Its
+[local-inference evidence](../evidence/memory-local-inference-2026-10-03.md)
+separates mobile tests from server, recovery and physical-device qualification.
+
 The locally qualified schema-31 candidate adds current original/pivot vectors,
 scoped lexical/semantic rank fusion and bounded explicit backfill. The
 [semantic retrieval evidence](../evidence/memory-dual-view-semantic-2026-10-03.md)

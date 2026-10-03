@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
+import aiosqlite
 import httpx
 from fastapi import (
     Depends,
@@ -124,6 +125,16 @@ from app.services.memory_inspection import (
     read_memory_usage,
 )
 from app.services.memory_inspection_contracts import MemoryUsagePage
+from app.services.memory_local_context import (
+    LocalContextConflict,
+    LocalContextReplay,
+    context_digest,
+)
+from app.services.memory_local_context_contracts import (
+    LocalContextReceipt,
+    LocalContextRequest,
+    LocalContextResponse,
+)
 from app.services.memory_normalization import (
     MemoryNormalizationError,
     OpenAIMemoryNormalizationProvider,
@@ -263,6 +274,7 @@ class ApprovalDecision(BaseModel):
 
 class ToolProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    local_context_receipt: LocalContextReceipt | None = None
 
     tool_name: str
     arguments: dict[str, Any]
@@ -824,6 +836,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="monGARS Control Plane", version=API_VERSION, lifespan=lifespan)
 
+    @app.exception_handler(LocalContextConflict)
+    async def local_context_conflict(request: Request, exc: LocalContextConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     @app.exception_handler(DirectSymbolicConflict)
     async def direct_symbolic_conflict(
         request: Request, exc: DirectSymbolicConflict
@@ -869,6 +885,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.state.research_evaluator = research_evaluator
     app.state.goal_manager = goal_manager
     app.state.project_memory = project_memory
+    app.state.local_contexts = goal_manager.local_contexts
     app.state.project_context = project_context
     app.state.project_compaction = project_compaction
     app.state.vector_projection = vector_projection
@@ -1381,6 +1398,38 @@ def create_app(config: Settings | None = None) -> FastAPI:
         symbolic_selection: DirectSymbolicSelection | None = None,
         planning_proposal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        local_catalogs = None
+        local_service = goal_manager.local_contexts
+        if request.local_context_receipt is not None and request.planner_source != "iphone_local":
+            raise LocalContextConflict("local_context_source_invalid")
+        local_digest = context_digest(
+            request.model_dump(mode="json", exclude={"local_context_receipt"})
+        )
+        if request.planner_source == "iphone_local":
+            local_service.require_receipt(request.local_context_receipt)
+
+        async def accept_local(db: aiosqlite.Connection, call_id: str) -> None:
+            nonlocal local_catalogs
+            local_service.require_receipt(request.local_context_receipt)
+            if request.local_context_receipt is not None:
+                local_catalogs = await local_service.accept_locked(
+                    db,
+                    request.local_context_receipt,
+                    device_id=str(principal["id"]),
+                    purpose="tool_proposal",
+                    subject_id=task_id,
+                    target_id=call_id,
+                    proposal_sha256=local_digest,
+                )
+
+        def check_context() -> None:
+            if symbolic_selection:
+                symbolic_selection.check_catalogs()
+            if request.planner_source == "iphone_local":
+                local_service.require_receipt(request.local_context_receipt)
+                if local_catalogs is not None:
+                    local_service.check_catalogs(local_catalogs)
+
         try:
             record = await execution_engine.create_tool_call(
                 task_id=task_id,
@@ -1392,8 +1441,16 @@ def create_app(config: Settings | None = None) -> FastAPI:
                     name=str(principal["name"]),
                 ),
                 acceptance_guard=symbolic_selection.accept_locked if symbolic_selection else None,
-                commit_guard=symbolic_selection.check_catalogs if symbolic_selection else None,
+                commit_guard=check_context,
+                local_context_guard=accept_local
+                if request.planner_source == "iphone_local"
+                else None,
             )
+        except LocalContextReplay as replay:
+            existing = await execution_engine.get(replay.target_id)
+            if existing is None:
+                raise LocalContextConflict("local_context_outcome_unavailable") from replay
+            return existing
         except ExecutionConflict as exc:
             status_code = 404 if str(exc) == "task not found" else 409
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -1727,6 +1784,22 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="goal not found")
         return detail
 
+    @app.post("/memory/local-context", response_model=LocalContextResponse)
+    async def prepare_local_context(
+        request: LocalContextRequest,
+        response: Response,
+        principal: Annotated[DevicePrincipal, Depends(require_device)],
+    ) -> LocalContextResponse:
+        try:
+            result = await goal_manager.local_contexts.prepare(request, str(principal["id"]))
+        except ProjectMemoryConflict as exc:
+            raise HTTPException(
+                status_code=404 if str(exc) == "goal not found" else 409,
+                detail="local_context_goal_unavailable",
+            ) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return result
+
     @app.post("/goals/{goal_id}/memory-context", response_model=GoalMemoryContextResponse)
     async def goal_memory_context(
         goal_id: str,
@@ -1962,9 +2035,15 @@ def create_app(config: Settings | None = None) -> FastAPI:
         request: GoalStartRequest,
         principal: Annotated[DevicePrincipal, Depends(require_device)],
     ) -> dict[str, Any]:
-        del principal
         try:
-            detail = await goal_manager.start_goal(goal_id, request)
+            detail = await goal_manager.start_goal(
+                goal_id, request, local_context_device_id=str(principal["id"])
+            )
+        except LocalContextReplay as replay:
+            replay_detail = await goal_manager.get_goal(replay.target_id)
+            if replay_detail is None:
+                raise LocalContextConflict("local_context_outcome_unavailable") from replay
+            return replay_detail
         except GoalManagerConflict as exc:
             raise goal_conflict_http_exception(exc) from exc
         await broadcast_goal_detail(detail)

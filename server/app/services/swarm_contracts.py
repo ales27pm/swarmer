@@ -14,6 +14,7 @@ from pydantic import (
 
 from app.services.agent_capsule import validate_agent_capsule
 from app.services.agent_card import SUPPORTED_AGENT_SKILLS
+from app.services.memory_local_context_contracts import LocalContextReceipt
 from app.services.memory_symbolic_contracts import SymbolicContext
 from app.services.project_contracts import ProjectMemoryContext
 
@@ -152,11 +153,14 @@ class GoalStartRequest(BaseModel):
     plan_proposal: SwarmPlanProposal | None = None
     planner_source: Literal["iphone_local", "manual"] | None = None
     memory_context_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    local_context_receipt: LocalContextReceipt | None = None
 
     @model_validator(mode="after")
     def validate_supplied_plan_source(self) -> GoalStartRequest:
         if (self.plan_proposal is None) != (self.planner_source is None):
             raise ValueError("plan_proposal and planner_source must be supplied together")
+        if self.local_context_receipt is not None and self.planner_source != "iphone_local":
+            raise ValueError("local_context_receipt requires an iPhone plan")
         if self.memory_context_fingerprint is not None and self.planner_source != "iphone_local":
             raise ValueError("memory_context_fingerprint requires an iPhone plan")
         return self

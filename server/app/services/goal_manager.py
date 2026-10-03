@@ -47,6 +47,8 @@ from app.services.goal_state import (
 from app.services.maintenance_lease import MaintenanceLeaseGuard
 from app.services.media_contracts import MEDIA_SKILLS
 from app.services.media_store import MediaConflict, media_root, verify_media_result
+from app.services.memory_local_context import LocalContextService, context_digest
+from app.services.memory_local_context_contracts import LocalContextReceipt
 from app.services.memory_normalization import MemoryNormalizationError
 from app.services.memory_symbolic_contracts import (
     SymbolicCatalog,
@@ -264,6 +266,10 @@ class GoalManager:
         self.permission_policy = permission_policy
         self.context_builder = context_builder
         self.strategy_retrieval = strategy_retrieval
+        self.local_contexts = LocalContextService(
+            db_path,
+            current_catalogs=lambda: getattr(self.strategy_retrieval, "symbolic_catalogs", ()),
+        )
         self.project_memory = project_memory
         self.episode_memory = episode_memory
         self.result_aggregator = result_aggregator or ResultAggregator(db_path)
@@ -1299,9 +1305,24 @@ class GoalManager:
         goal_run_id: str,
         request: GoalStartRequest,
         *,
+        local_context_device_id: str | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> dict[str, Any]:
         async with self._lock(goal_run_id):
+            local_digest = context_digest(
+                request.model_dump(mode="json", exclude={"local_context_receipt"})
+            )
+            if request.planner_source == "iphone_local":
+                self.local_contexts.require_receipt(request.local_context_receipt)
+                if request.local_context_receipt is not None:
+                    await self.local_contexts.replay(
+                        request.local_context_receipt,
+                        local_context_device_id or "",
+                        "goal_plan",
+                        "goal",
+                        goal_run_id,
+                        local_digest,
+                    )
             goal = await self.graph.get_goal(goal_run_id)
             if goal is None:
                 raise GoalManagerConflict("goal not found")
@@ -1317,7 +1338,7 @@ class GoalManager:
                 raise GoalManagerConflict("this continuation requires its reviewed iPhone plan")
             if memory_fingerprint is not None:
                 await self._assert_local_memory_current(goal_run_id, memory_fingerprint)
-            else:
+            elif request.local_context_receipt is None:
                 await self._resume_evaluator_retry(goal_run_id, maintenance_guard=maintenance_guard)
                 if (
                     request.plan_proposal is not None
@@ -1351,7 +1372,7 @@ class GoalManager:
                 or int(goal["conversation_revision"]) != initial_manual_revision
             ):
                 raise GoalManagerConflict("goal changed before its manual plan could start")
-            if memory_fingerprint is not None and (
+            if (memory_fingerprint is not None or request.local_context_receipt is not None) and (
                 nodes or goal["status"] != "planning" or goal["started_at"] is not None
             ):
                 raise GoalManagerConflict("goal changed before its local plan could start")
@@ -1425,6 +1446,9 @@ class GoalManager:
                         source=source,
                         model_call_id=call_id,
                         memory_context_fingerprint=memory_fingerprint,
+                        local_context_receipt=request.local_context_receipt,
+                        local_context_device_id=local_context_device_id,
+                        local_proposal_sha256=local_digest,
                         expected_conversation_revision=initial_manual_revision,
                         maintenance_guard=maintenance_guard,
                     )
@@ -2409,6 +2433,9 @@ class GoalManager:
         source: PlannerSource,
         model_call_id: str | None,
         memory_context_fingerprint: str | None = None,
+        local_context_receipt: LocalContextReceipt | None = None,
+        local_context_device_id: str | None = None,
+        local_proposal_sha256: str | None = None,
         expected_conversation_revision: int | None = None,
         maintenance_guard: MaintenanceLeaseGuard | None = None,
     ) -> None:
@@ -2435,6 +2462,19 @@ class GoalManager:
             await db.execute("BEGIN IMMEDIATE")
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
+            local_catalogs = None
+            if source == PlannerSource.IPHONE_LOCAL:
+                self.local_contexts.require_receipt(local_context_receipt)
+                if local_context_receipt is not None:
+                    local_catalogs = await self.local_contexts.accept_locked(
+                        db,
+                        local_context_receipt,
+                        device_id=local_context_device_id or "",
+                        purpose="goal_plan",
+                        subject_id=str(goal["id"]),
+                        target_id=str(goal["id"]),
+                        proposal_sha256=local_proposal_sha256 or "",
+                    )
             if memory_context_fingerprint is not None:
                 await self._assert_local_memory_current(
                     str(goal["id"]), memory_context_fingerprint, db=db
@@ -2599,6 +2639,10 @@ class GoalManager:
                     raise GoalManagerConflict("planner model call lease was fenced")
             if maintenance_guard is not None:
                 await maintenance_guard.require_current_locked(db)
+            if source == PlannerSource.IPHONE_LOCAL:
+                self.local_contexts.require_receipt(local_context_receipt)
+                if local_catalogs is not None:
+                    self.local_contexts.check_catalogs(local_catalogs)
             await db.commit()
         await self.graph.refresh_ready_nodes(
             str(goal["id"]),

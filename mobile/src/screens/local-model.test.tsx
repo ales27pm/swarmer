@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, userEvent, waitFor } from "@testing-lib
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 import LocalModelScreen from "@/../app/local-model";
-import { sendChat, submitToolProposal, type Task } from "@/lib/api/client";
+import { createLocalToolSubmissionSession, sendChat, submitToolProposal, type LocalMemoryContext, type Task } from "@/lib/api/client";
 import {
   cancelLocalGeneration,
   cancelLocalModelDownload,
@@ -25,6 +25,7 @@ import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { readLocalModelSettings, saveLocalModelSettings } from "@/lib/local-model-settings";
 import { applicationApi } from "@/lib/application-api/registry";
 import { resolveHuggingFaceModels } from "@/lib/hugging-face-models";
+import symbolicHttp from "@/testing/symbolic-http-ordinary.json";
 
 jest.mock("@/lib/hugging-face-models", () => ({ resolveHuggingFaceModels: jest.fn() }));
 
@@ -43,14 +44,7 @@ jest.mock("@/lib/api/client", () => {
   const submitToolProposal = jest.fn();
   return {
     sendChat, submitToolProposal,
-    createLocalToolSubmissionSession: async () => ({
-      createTask: async (intent: string, onTaskCreated?: (task: Task) => void) => {
-        const chat = await sendChat(intent, undefined, "normal", true);
-        if (chat.task) onTaskCreated?.(chat.task);
-        return chat;
-      },
-      submit: (id: string, proposal: unknown) => submitToolProposal(id, proposal),
-    }),
+    createLocalToolSubmissionSession: jest.fn(),
   };
 });
 jest.mock("@/lib/local-inference", () => {
@@ -103,6 +97,8 @@ const mockPickAndImportDirectory = jest.mocked(pickAndImportLocalModelDirectory)
 const mockUnload = jest.mocked(unloadLocalModel);
 const mockSendChat = jest.mocked(sendChat);
 const mockSubmit = jest.mocked(submitToolProposal);
+const mockPairingCurrent = jest.fn<() => Promise<void>>();
+const mockLocalContext = jest.fn<() => Promise<LocalMemoryContext>>();
 
 async function prepareMlxModel(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText(/Choisis un modèle local/);
@@ -166,6 +162,20 @@ describe("LocalModelScreen", () => {
     });
     mockSendChat.mockResolvedValue({ conversation_id: "conv_local", task });
     mockSubmit.mockResolvedValue({ id: "call_local" } as never);
+    mockPairingCurrent.mockResolvedValue();
+    mockLocalContext.mockResolvedValue({ schema_version: "local-context-v1", enabled: false,
+      purpose: "tool_proposal", goal_id: null, goal_updated_at: null, project_id: null,
+      input_sha256: "a".repeat(64), symbolic_context: null, receipt: null });
+    jest.mocked(createLocalToolSubmissionSession).mockResolvedValue({
+      assertCurrent: mockPairingCurrent, localContext: mockLocalContext,
+      createTask: async (intent, onTaskCreated, assertReviewCurrent) => {
+        assertReviewCurrent?.();
+        const chat = await sendChat(intent, undefined, "normal", true);
+        if (chat.task) onTaskCreated?.(chat.task);
+        return chat;
+      },
+      submit: (id, proposal) => submitToolProposal(id, proposal),
+    });
     mockUnload.mockResolvedValue();
   });
 
@@ -569,6 +579,76 @@ describe("LocalModelScreen", () => {
       pathname: "/task/[id]",
       params: { id: task.id },
     });
+  });
+
+  it("passes whole symbolic cards through the screen and keeps the reviewed receipt until submit", async () => {
+    const symbolic = { schema_version: "symbolic-context-v1", status: "available", grants_authority: false,
+      evidence: JSON.parse(JSON.stringify(symbolicHttp[0].symbolic_evidence).replaceAll("project:symbolic-acceptance", "general")),
+    } as NonNullable<LocalMemoryContext["symbolic_context"]>;
+    const envelope: LocalMemoryContext = { schema_version: "local-context-v1", enabled: true,
+      purpose: "tool_proposal", goal_id: null, goal_updated_at: null, project_id: null,
+      input_sha256: "d".repeat(64), symbolic_context: symbolic,
+      receipt: { id: "screen_reviewed", context_sha256: "e".repeat(64), expires_at: "2099-01-01T00:00:00Z" } };
+    mockLocalContext.mockResolvedValue(envelope);
+    mockGenerate.mockResolvedValue({ text: JSON.stringify({ tool_name: "workspace.read_text", arguments: { path: "README.md" }, summary: "Lire sans modifier" }), finishReason: "stop", tokenCount: 42 });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await prepareMlxModel(user);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Ne jamais modifier README.md");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    await screen.findByText("Lire sans modifier");
+    expect(mockGenerate.mock.calls[0][0].prompt).toContain(JSON.stringify(symbolic));
+    expect(mockGenerate.mock.calls[0][0].prompt).toContain("Ne jamais modifier README.md");
+    expect(mockSendChat).not.toHaveBeenCalled();
+    await user.press(screen.getByRole("button", { name: "Soumettre au control plane" }));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledTimes(1));
+    expect(createLocalToolSubmissionSession).toHaveBeenCalledTimes(1);
+    expect(mockLocalContext).toHaveBeenCalledTimes(1);
+    expect(mockSubmit).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      local_context_receipt: { id: "screen_reviewed", context_sha256: "e".repeat(64) },
+    }));
+  });
+
+  it("does not generate when the server has no compatible local context endpoint", async () => {
+    mockLocalContext.mockRejectedValue(new Error("API mémoire locale indisponible"));
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await prepareMlxModel(user);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Lire README.md");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    expect(await screen.findByText("API mémoire locale indisponible")).toBeOnTheScreen();
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("discards a complete tool generation when its captured pairing changes", async () => {
+    mockGenerate.mockImplementation(async () => {
+      mockPairingCurrent.mockRejectedValue(new Error("Jumelage modifié"));
+      return { text: JSON.stringify({ tool_name: "workspace.read_text", arguments: { path: "README.md" }, summary: "Lire" }), finishReason: "stop", tokenCount: 42 };
+    });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await prepareMlxModel(user);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Lire README.md");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    expect(await screen.findByText("Jumelage modifié")).toBeOnTheScreen();
+    expect(screen.queryByRole("button", { name: "Soumettre au control plane" })).not.toBeOnTheScreen();
+    expect(mockSendChat).not.toHaveBeenCalled();
+  });
+
+  it("rechecks pairing after the last native status await and before starting inference", async () => {
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await prepareMlxModel(user);
+    jest.mocked(getLocalInferenceStatus).mockImplementation(async () => {
+      if (mockLocalContext.mock.calls.length) mockPairingCurrent.mockRejectedValue(new Error("Jumelage changé avant calcul"));
+      return { state: "ready", runtime: "mlx", modelId: "mlx-community/test-model", revision: "a".repeat(40) };
+    });
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Lire README.md");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    expect(await screen.findByText("Jumelage changé avant calcul")).toBeOnTheScreen();
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockSendChat).not.toHaveBeenCalled();
   });
 
   it("never offers submission for a none proposal", async () => {

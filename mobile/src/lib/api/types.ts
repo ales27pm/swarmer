@@ -120,7 +120,7 @@ export type ToolCall =
   | ProjectWriteToolCall
   | ProcessToolCall;
 
-export type ToolProposalInput =
+export type ToolProposalInput = (
   | {
       tool_name: "workspace.list_dir";
       arguments: { path: string };
@@ -144,7 +144,7 @@ export type ToolProposalInput =
         timeout_seconds?: number;
       };
       summary: string;
-    };
+    }) & { local_context_receipt?: import("./local-memory-context").LocalContextReceipt };
 
 export type PlannerSource = "iphone_local" | "ubuntu_local" | "manual" | "test";
 
@@ -284,6 +284,7 @@ export type GoalStartInput = {
   plan_proposal: SwarmPlanProposal;
   planner_source: "iphone_local";
   memory_context_fingerprint?: string;
+  local_context_receipt?: import("./local-memory-context").LocalContextReceipt;
 };
 
 export type GoalMemoryContext = {

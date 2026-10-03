@@ -3,6 +3,7 @@ import { goalMediaIdentifier, parseGoalMedia, parseGoalMediaArtifact, verifyGoal
 import { validateMemoryPresentations } from "./memory-presentation";
 import { memorySearchRequest, type MemorySearchOptions } from "./memory-search";
 import { memorySymbolicEvidence } from "./memory-symbolic";
+import { parseLocalMemoryContext, validateLocalContextReceipt, type LocalMemoryContext } from "./local-memory-context";
 import { parseProjectContext } from "./project-context";
 import { parseProjectGraph, type ProjectGraph } from "./project-graph";
 import { parseProjectEvidence, type ProjectEvidenceView, type ProjectEvidenceWrite } from "./project-evidence";
@@ -86,6 +87,8 @@ import type {
   ToolCall,
   ToolProposalInput,
 } from "@/lib/api/types";
+
+export type { LocalMemoryContext, LocalContextReceipt, SymbolicContext } from "./local-memory-context";
 
 export type {
   Agent,
@@ -1044,11 +1047,12 @@ export async function publishWebsiteProject(id: string, input: WebsitePublish, s
 function goalStartBody(input?: GoalStartInput): string {
   if (input !== undefined && (
     !input || input.planner_source !== "iphone_local" || !input.plan_proposal
-    || Object.keys(input).some((key) => !["plan_proposal", "planner_source", "memory_context_fingerprint"].includes(key))
+    || Object.keys(input).some((key) => !["plan_proposal", "planner_source", "memory_context_fingerprint", "local_context_receipt"].includes(key))
     || (input.memory_context_fingerprint !== undefined && (
       typeof input.memory_context_fingerprint !== "string" || !MEMORY_FINGERPRINT.test(input.memory_context_fingerprint)
     ))
   )) throw new Error("La demande de plan local doit inclure sa proposition et sa provenance iPhone.");
+  if (input?.local_context_receipt !== undefined) validateLocalContextReceipt(input.local_context_receipt);
   return JSON.stringify(input ?? {});
 }
 
@@ -1075,6 +1079,20 @@ export async function createLocalGoalPlanSession() {
   return {
     assertCurrent,
     getGoal: (goalId: string) => read<GoalDetail>(`/goals/${resourceId(goalId)}`),
+    localContext: async (goalId: string, expectedGoalUpdatedAt: string, maxContextBytes = 16 * 1024): Promise<LocalMemoryContext> => {
+      if (!Number.isFinite(Date.parse(expectedGoalUpdatedAt)) || expectedGoalUpdatedAt.length > 100
+          || !Number.isSafeInteger(maxContextBytes) || maxContextBytes < 0 || maxContextBytes > 16 * 1024) {
+        throw new Error("La version ou le budget du contexte local est invalide.");
+      }
+      projectIdentifier(goalId);
+      await assertCurrent();
+      const value = await requestAt<unknown>(connection.baseUrl, "/memory/local-context", {
+        method: "POST", body: JSON.stringify({ purpose: "goal_plan", goal_id: goalId,
+          expected_goal_updated_at: expectedGoalUpdatedAt, max_context_bytes: maxContextBytes }),
+      }, connection.token);
+      await assertMutationConnectionCurrent(connection);
+      return parseLocalMemoryContext(value, { purpose: "goal_plan", goalId, goalUpdatedAt: expectedGoalUpdatedAt });
+    },
     projectContext: async (goalId: string) => {
       await assertCurrent();
       let result: unknown;
@@ -1377,7 +1395,22 @@ export function submitToolProposal(
 export async function createLocalToolSubmissionSession() {
   const connection = await captureRequestConnectionFence();
   if (!connection.token) throw new Error("Un jumelage authentifié est requis pour soumettre la proposition.");
+  const assertCurrent = () => assertRequestConnectionCurrent(connection);
   return {
+    assertCurrent,
+    localContext: async (intent: string, maxContextBytes = 16 * 1024): Promise<LocalMemoryContext> => {
+      if (typeof intent !== "string" || !intent.trim() || Array.from(intent).length > 32_000
+          || !Number.isSafeInteger(maxContextBytes) || maxContextBytes < 0 || maxContextBytes > 16 * 1024) {
+        throw new Error("L’intention ou le budget du contexte local est invalide.");
+      }
+      await assertCurrent();
+      const value = await requestAt<unknown>(connection.baseUrl, "/memory/local-context", {
+        method: "POST", body: JSON.stringify({ purpose: "tool_proposal", intent, mode: "normal",
+          source: "iphone_local", max_context_bytes: maxContextBytes }),
+      }, connection.token);
+      await assertMutationConnectionCurrent(connection);
+      return parseLocalMemoryContext(value, { purpose: "tool_proposal" });
+    },
     createTask: async (intent: string, onTaskCreated?: (task: Task) => void, assertReviewCurrent?: () => void) => {
       await assertRequestConnectionCurrent(connection);
       assertReviewCurrent?.();
@@ -1390,6 +1423,7 @@ export async function createLocalToolSubmissionSession() {
       return chat;
     },
     submit: async (taskId: string, proposal: ToolProposalInput, assertReviewCurrent?: () => void) => {
+      if (proposal.local_context_receipt !== undefined) validateLocalContextReceipt(proposal.local_context_receipt);
       await assertRequestConnectionCurrent(connection);
       assertReviewCurrent?.();
       const result = await requestAt<ToolCall>(connection.baseUrl, `/tasks/${resourceId(taskId)}/tool-calls`, {

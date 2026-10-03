@@ -409,6 +409,7 @@ class ExecutionEngine:
         requester: AuthenticatedRequester,
         acceptance_guard: Callable[[aiosqlite.Connection], Awaitable[None]] | None = None,
         commit_guard: Callable[[], None] | None = None,
+        local_context_guard: Callable[[aiosqlite.Connection, str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """Atomically create one call and, when required, its one-shot approval."""
 
@@ -454,6 +455,8 @@ class ExecutionEngine:
             await db.execute("BEGIN IMMEDIATE")
             if acceptance_guard is not None:
                 await acceptance_guard(db)
+            if local_context_guard is not None:
+                await local_context_guard(db, tool_call_id)
             task = await (
                 await db.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
             ).fetchone()

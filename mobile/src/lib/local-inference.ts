@@ -1,4 +1,5 @@
 import { requireOptionalNativeModule } from "expo";
+import { appendLocalSymbolicContext, type SymbolicContext } from "./api/local-memory-context";
 
 import type { ToolProposalInput } from "@/lib/api/types";
 import { MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
@@ -403,13 +404,13 @@ export function isActionableToolProposal(
   return proposal.tool_name !== "none";
 }
 
-export function buildLocalProposalPrompt(intent: string): string {
+export function buildLocalProposalPrompt(intent: string, symbolicContext: SymbolicContext | null = null): string {
   const normalized = intent.trim();
   if (!normalized) throw new Error("Saisis une intention avant de lancer le modèle local.");
   if (normalized.length > 32_000) {
     throw new Error("L’intention locale dépasse la limite de 32 000 caractères.");
   }
-  return [
+  const prompt = [
     "Tu es le planificateur local de Swarmer.",
     "Retourne exactement un objet JSON, sans Markdown ni prose autour.",
     "Schéma: {\"tool_name\":string,\"arguments\":object,\"summary\":string}.",
@@ -422,6 +423,7 @@ export function buildLocalProposalPrompt(intent: string): string {
     "Tu proposes seulement la prochaine action. Ne prétends jamais qu’elle a été exécutée.",
     `Intention: ${normalized}`,
   ].join("\n");
+  return appendLocalSymbolicContext(prompt, symbolicContext);
 }
 
 export function isImmutableHuggingFaceRevision(value: string): boolean {
