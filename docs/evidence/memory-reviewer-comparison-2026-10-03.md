@@ -45,8 +45,8 @@ Each arm therefore leaves **4 of 24 faithful observations unaccepted**. Moving a
 false rejection into the invalid category does not improve that outcome. The
 quoted-issue arm has 22 invalid observations: 18 have missing required quotation
 sides, and four have a quotation/occurrence mismatch as their first validation
-error. Some contain further defects, including duplicate issues and confusing a
-character position with the occurrence number. No raw model reasoning was saved.
+error. Some contain further defects, including duplicate issues and incorrect
+occurrence indices. No raw model reasoning was saved.
 
 Eight of each arm's 22 negative observations would already be stopped by the
 existing exact-literal or unchanged-English gates. Both false accepts concern

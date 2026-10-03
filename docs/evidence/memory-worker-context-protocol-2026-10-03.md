@@ -66,6 +66,46 @@ also included in the 361-test integration run and are not an additional count.
 Private receipts are under
 `~/Library/Logs/SwarmerQualification/Memory/goal-model-admission-20261003/transport-capability-20261003/`.
 
+## Immutable package qualification
+
+The new local cohort is built from exact Git commit
+`243e913c3126a1cb15d290fbbac36e6f5024b7fe`. Its 139 application files match
+the source archive, wheel and offline installation. The installed wheel passes
+48 public capability/claim/schema tests; this is package-boundary evidence, not
+an additional independent source-suite count.
+
+All ten separately extracted worker bundles pass positive symbolic-context and
+invalid-authority checks, repeated claim serialization, and refusal by an old API
+without a retry that removes the protocol. Their shared capsules match the API
+capsule byte-for-byte. Modified client bytes and a missing capsule are rejected
+by the package verifier. The parent independently reran the cohort byte checks
+and all ten isolated probes successfully.
+
+API wheel SHA256:
+`d79d9b41fb6f085c935ed422a2c6f976514e1ad18c268becacf83d4128235853`.
+Cohort archive SHA256:
+`677c2efab654345193f54f06e98fd29c4157b3c3272f22159eb5e527a81d92a2`.
+Cohort index SHA256:
+`cf0cc1850ee18cf9bf1d0387c90d36bd74927f1fe13321919f48dbea5663224a`.
+
+These artifacts are in the private `candidate-243e913` directory. The API and
+Ubuntu workers have not yet been staged or activated. Local import and wire
+tests do not qualify active service bindings, model quality, media generation,
+Swift compilation, or iPhone execution. The
+[real reviewer comparison](memory-reviewer-comparison-2026-10-03.md)
+remains a separate failed semantic-quality check; transport compatibility does
+not make its incorrect judgments trustworthy.
+
+The iMac Swift bundle was separately staged in its immutable release directory
+`~/.local/share/swarmer-swift-worker/releases/243e913c3126a1cb15d290fbbac36e6f5024b7fe`.
+All seven files match its manifest. The installed existing Python 3.12.13 ran the
+isolated symbolic/wire probe successfully with network, subprocess and database
+access forbidden inside the probe. The launchd plist, old entrypoint and credential
+bytes stayed unchanged. No service was stopped or restarted and no capacity was
+approved; the active worker still uses its previous release. This stage receipt
+cannot replace the fresh stopped-service receipt required at coordinated cutover.
+Its SHA256 is `40defb376ba6569d891df2a5e6f3a9998af47a321f29144a21e4f6d7c3fefeda`.
+
 ## Recovery and activation boundary
 
 The previous recovery32 package revalidates persisted agent cards on startup and
