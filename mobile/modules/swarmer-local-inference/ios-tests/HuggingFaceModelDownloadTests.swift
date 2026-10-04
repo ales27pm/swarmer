@@ -258,6 +258,7 @@ private struct HuggingFaceModelDownloadTests {
     let record = try await download.downloadAndImport(into: store, progress: tracker,
       temporaryRoot: workspace.temporary, fetch: fetcher(workspace, contents))
     let resolved = try await store.resolve(modelId: record.modelId)
+    try ANEMLLModelProfile.validateDirectory(resolved.runtimeURL)
     try expect(resolved.runtimeURL == resolved.tokenizerURL, "pipeline resolved to one component instead of shared root")
     try expect(record.downloadOrigin == download.origin, "pinned pipeline provenance lost")
     for path in download.localPaths {
@@ -266,6 +267,7 @@ private struct HuggingFaceModelDownloadTests {
     }
     let restarted = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
     let afterRestart = try await restarted.resolve(modelId: record.modelId)
+    try ANEMLLModelProfile.validateDirectory(afterRestart.runtimeURL)
     try expect(afterRestart.runtimeURL == resolved.runtimeURL && afterRestart.stored == resolved.stored, "pipeline did not survive store reload")
     try expect(tracker.snapshot.state == "completed", "pipeline download did not complete")
     try workspace.assertClean()

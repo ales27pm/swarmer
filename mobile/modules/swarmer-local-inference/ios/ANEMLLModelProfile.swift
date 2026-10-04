@@ -38,11 +38,12 @@ enum ANEMLLModelProfile {
         let properties = try item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard properties.isSymbolicLink != true else { throw LocalInferenceError.symbolicLinkRejected }
         if properties.isRegularFile == true {
-          let prefix = directory.path + "/"
-          guard item.path.hasPrefix(prefix), (properties.fileSize ?? 0) > 0 else {
+          let prefix = directory.standardizedFileURL.path + "/"
+          let itemPath = item.standardizedFileURL.path
+          guard itemPath.hasPrefix(prefix), (properties.fileSize ?? 0) > 0 else {
             throw LocalInferenceError.unsupportedModel("invalid ANEMLL component file")
           }
-          actual.insert(String(item.path.dropFirst(prefix.count)))
+          actual.insert(String(itemPath.dropFirst(prefix.count)))
         } else if properties.isDirectory != true {
           throw LocalInferenceError.unsupportedModel("invalid ANEMLL component contents")
         }

@@ -25,4 +25,14 @@ Référence de comparaison : code ANEMLL 0.3.0 au commit `921489c9b241d678c3ca2c
 
 Revue indépendante des raccordements, du moteur et des helpers : aucun défaut concret retenu. Les fixtures de téléchargement natives contiennent de petits fichiers factices et testent le transport/stockage, pas les graphes Core ML.
 
-Les reçus privés se trouvent dans `Library/Logs/SwarmerQualification/CoreML/anemll-native-runtime-20261004/checks` et `anemll-integration-20261004`. La compilation complète, l'installation et la génération dans monGARS restent à qualifier à ce stade. Même un succès en configuration CPU + Neural Engine ne mesure pas à lui seul l'activité matérielle du Neural Engine.
+- 26 tests du pont UI et du protocole passent avec le vrai verrou partagé ; lint ciblé vert. Les anciennes attentes du pont UI ont été mises à jour pour annuler pendant une opération réellement active.
+
+## Premier passage réel dans monGARS
+
+La révision `873e662` a été compilée en Debug pour iPhone en **128,90 s**, signée, puis installée par IPA complète sur l'iPhone 16 Pro (`iPhone17,1`, iOS 26.7 bêta). Les fixtures de diagnostic sont inchangées. Une première installation a rencontré une coupure CoreDevice ; la seconde a réussi, sans désinstallation ni suppression des modèles existants.
+
+L'appel `models.huggingface.download` a téléchargé et importé les **18 fichiers / 1 073 756 426 octets en 105,45 s**, avec la provenance épinglée. Le chargement demandé ensuite en `cpuAndNeuralEngine` s'est arrêté à **`validateArtifact` en 1,26 ms**, avant les appels Core ML. Le reçu initial incertain a été résolu par une lecture d'état explicite : moteur `failed`, aucune génération lancée. Ce n'est pas une reproduction de l'erreur Core ML −14.
+
+La comparaison brute des chemins du profil ANEMLL a été identifiée comme cause : le stockage résout un chemin sous `/var`, tandis que Foundation peut énumérer les mêmes fichiers sous `/private/var`. La correction et sa qualification sont suivies séparément dans les reçus de `anemll-integration-20261004/path-fix`.
+
+Les reçus privés se trouvent dans `Library/Logs/SwarmerQualification/CoreML/anemll-native-runtime-20261004/checks` et `anemll-integration-20261004`. La génération dans monGARS reste à qualifier après cette correction. Même un succès en configuration CPU + Neural Engine ne mesure pas à lui seul l'activité matérielle du Neural Engine.
