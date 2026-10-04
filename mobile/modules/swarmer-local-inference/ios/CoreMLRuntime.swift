@@ -494,15 +494,7 @@ actor CoreMLRuntime {
 // compute plan; they are not measurements of hardware execution.
 @available(iOS 18.0, *)
 enum CoreMLFixtureProbe {
-  static let fixtureIDs: Set<String> = [
-    "attention-stateful-fused", "attention-stateful-decomposed",
-    "attention-stateless-fused", "attention-stateless-decomposed",
-    "dolphin-attention-int4-block32", "dolphin-attention-int4-perchannel",
-    "dolphin-attention-int4-perchannel-cache28",
-    "dolphin-attention-int4-perchannel-cache28-two-blocks",
-    "dolphin-attention-int4-perchannel-cache28-slot1",
-    "dolphin-attention-int4-perchannel-cache28-two-blocks-independent",
-  ]
+  static let fixtureIDs = CoreMLProbeCatalog.fixtureIDs
   static let timeoutSeconds: UInt64 = 90
   private static let maximumElements = 1_000_000
   private static let maximumPackageBytes = 32 * 1024 * 1024
@@ -628,9 +620,7 @@ enum CoreMLFixtureProbe {
       let manifestURL = try resourceURL("manifest.json", root: root, directory: false)
       let manifestData = try boundedData(manifestURL, maximumBytes: 128 * 1024)
       let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
-      guard manifest.schemaVersion == 1, (1...10).contains(manifest.fixtures.count),
-            Set(manifest.fixtures.map(\.id)).count == manifest.fixtures.count,
-            manifest.fixtures.allSatisfy({ fixtureIDs.contains($0.id) }),
+      guard manifest.schemaVersion == 1, CoreMLProbeCatalog.accepts(manifest.fixtures.map(\.id)),
             let fixture = manifest.fixtures.first(where: { $0.id == fixtureID }),
             (1...3).contains(fixture.steps.count),
             fixture.absoluteTolerance.isFinite, (0...0.1).contains(fixture.absoluteTolerance),

@@ -76,6 +76,9 @@ describe("application API contract", () => {
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-independent", computeUnits: "cpuOnly" },
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-independent", computeUnits: "cpuAndGPU" },
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-independent", computeUnits: "cpuAndNeuralEngine" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", computeUnits: "cpuOnly" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", computeUnits: "cpuAndGPU" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", computeUnits: "cpuAndNeuralEngine" },
   ])("restricts Core ML probe $fixtureID/$computeUnits to its native diagnostic capability", async (input) => {
     jest.mocked(native.probeCoreMLFixture).mockResolvedValue({ schemaVersion: 1, ...input, outcome: "passed", stage: "complete",
       loadMilliseconds: 1, predictionMilliseconds: 1, preferredDeviceCounts: { cpu: 0, gpu: 0, neuralEngine: 1, unknown: 0 },
@@ -89,6 +92,15 @@ describe("application API contract", () => {
     jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(false);
     await expect(applicationApi.execute("models.coreml-probe", input)).rejects.toMatchObject({ code: "unavailable" });
     expect(native.probeCoreMLFixture).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes the bounded eleven-fixture diagnostic catalog", () => {
+    const command = applicationApi.catalog().commands.find(item => item.name === "models.coreml-probe");
+    expect(command?.inputSchema).toMatchObject({ properties: { fixtureID: { enum: expect.arrayContaining([
+      "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states",
+    ]) } } });
+    const properties = command?.inputSchema.properties as Record<string, { enum: string[] }>;
+    expect(properties.fixtureID.enum).toHaveLength(11);
   });
 
   it("exposes background status through the existing model status command without adding execution authority", async () => {
