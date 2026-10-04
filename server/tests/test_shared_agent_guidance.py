@@ -81,6 +81,7 @@ async def test_writing_failure_becomes_measured_history_without_rejected_text(
     async with aiosqlite.connect(manager.db_path) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA query_only=ON")
+        await db.execute("BEGIN")
         assert await read_worker_experiences(db, "unrelated_project") == {
             "items": [],
             "omitted_count": 0,

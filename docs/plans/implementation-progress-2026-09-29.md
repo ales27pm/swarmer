@@ -18,8 +18,9 @@ et leur [rattachement serveur aux tâches et révisions](../evidence/project-exe
 sont implémentés et vérifiés localement. Pour le second lot, 129 tests ciblés,
 115 tests voisins, cinq contre-tests indépendants et un contrôle supplémentaire
 de redémarrage sur base peuplée passent. Il ne crée pas de leçons
-fiables automatiquement et n'est pas déployé. La récupération conditionnelle,
-la qualification du producteur et la promotion restent à réaliser.
+fiables automatiquement et n'est pas déployé.
+
+Le troisième lot raccorde la [lecture historique et les contrôles aux frontières des workers](../evidence/project-execution-history-2026-10-04.md) : les mesures sont revérifiées avec leur tâche, lease et révision ; une expérience effacée ou altérée ne passe plus à la mise en file, à la prise en charge ou à l'acceptation du résultat. Un job de construction attend son rattachement au nœud avant d'être pris, sans consommer de tentative. **310 tests combinés et 12 contrôles indépendants passent** ; Ruff et le typage ciblé passent. Le typage transitif conserve deux diagnostics reproduits sur la version précédente. Ce lot est local, sans nouvelle migration ni activation Ubuntu. Les expériences restent historiques et non fiables par défaut ; qualification du producteur, leçons conditionnelles et promotion restent à réaliser.
 
 Le cadre de mémoire versionnée fourni par l’utilisateur est intégré au [plan d’architecture et de qualification](evidence-backed-memory-2026-09-29.md), avec une [vérification séparée des publications](../research/memory-literature-verification-2026-09-29.md). Les tableaux des lots antérieurs ci-dessous décrivent leurs gels successifs, pas l’absence des ajouts plus récents.
 

@@ -7,7 +7,7 @@ import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import aiosqlite
@@ -54,6 +54,10 @@ from app.services.swift_project_validation import (
 from app.services.worker_context import (
     attach_symbolic_task_context_locked,
     require_symbolic_worker_context_locked,
+)
+from app.services.worker_experience_context import (
+    EXPERIENCE_CONTEXT_CHANGED,
+    require_worker_experience_context_locked,
 )
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 from app.services.writing_contracts import (
@@ -251,6 +255,16 @@ class AgentDispatcher:
                 )
             except ValueError as exc:
                 raise AgentDispatchConflict("symbolic_context_changed") from exc
+            try:
+                await require_worker_experience_context_locked(
+                    db,
+                    payload,
+                    task_id=task_id,
+                    required_skill=required_skill,
+                    task_statuses=("created", "planned"),
+                )
+            except ValueError as exc:
+                raise AgentDispatchConflict(EXPERIENCE_CONTEXT_CHANGED) from exc
             try:
                 payload, encoded_payload = bound_symbolic_transport(payload, max_payload_bytes)
             except ValueError as exc:
@@ -555,6 +569,10 @@ class AgentDispatcher:
                     await db.rollback()
                 return None
             placeholders = ",".join("?" for _ in skills)
+            # A goal project job cannot accept a measured result until its
+            # node link is published. Filter these before ranking so an
+            # unpublished backlog cannot hide eligible work. Stale NULL
+            # bindings remain candidates for the existing cancellation path.
             rows = await (
                 await db.execute(
                     f"""
@@ -567,6 +585,19 @@ class AgentDispatcher:
                         FROM agent_jobs j JOIN tasks t ON t.id=j.task_id
                         WHERE j.status='queued' AND j.required_skill IN ({placeholders})
                           AND j.attempt_count<j.max_attempts AND t.status='queued'
+                          AND (
+                            j.required_skill<>'code.build_project' OR substr(t.source,1,5)<>'goal:'
+                            OR EXISTS (
+                                SELECT 1 FROM plan_nodes n JOIN goal_runs g ON g.id=n.goal_run_id
+                                WHERE n.task_id=j.task_id AND n.required_skill=j.required_skill
+                                  AND n.node_type='worker' AND t.source='goal:' || g.id
+                                  AND (
+                                    n.worker_job_id=j.id OR (n.worker_job_id IS NULL
+                                      AND n.status IN ('dispatched','running')
+                                      AND n.conversation_revision<>g.conversation_revision)
+                                  )
+                            )
+                          )
                           AND (? OR (
                             json_type(j.payload_json,'$.symbolic_context') IS NULL
                             AND json_type(j.payload_json,'$.symbolic_context_binding') IS NULL
@@ -614,6 +645,21 @@ class AgentDispatcher:
                     )
                 except ValueError:
                     await self._cancel_symbolic_job_locked(db, candidate, now=now)
+                    quarantined += 1
+                    continue
+                try:
+                    await require_worker_experience_context_locked(
+                        db,
+                        candidate_payload,
+                        task_id=str(candidate["task_id"]),
+                        required_skill=str(candidate["required_skill"]),
+                        task_statuses=("queued",),
+                        job_id=str(candidate["id"]),
+                    )
+                except ValueError:
+                    await self._cancel_context_job_locked(
+                        db, candidate, now=now, reason=EXPERIENCE_CONTEXT_CHANGED
+                    )
                     quarantined += 1
                     continue
                 if "project_revision" in candidate_payload:
@@ -742,7 +788,22 @@ class AgentDispatcher:
         *,
         now: str,
     ) -> None:
-        reason = "symbolic_context_changed"
+        await self._cancel_context_job_locked(db, row, now=now, reason="symbolic_context_changed")
+
+    async def _cancel_context_job_locked(
+        self,
+        db: aiosqlite.Connection,
+        row: aiosqlite.Row,
+        *,
+        now: str,
+        reason: Literal["symbolic_context_changed", "worker_experience_context_changed"],
+    ) -> None:
+        dedupe_suffixes = {
+            "symbolic_context_changed": "symbolic-context-cancelled",
+            "worker_experience_context_changed": "worker-experience-context-cancelled",
+        }
+        if reason not in dedupe_suffixes:
+            raise ValueError("unsupported context cancellation reason")
         await AgentJobStateMachine.transition_locked(
             db,
             job_id=str(row["id"]),
@@ -783,7 +844,7 @@ class AgentDispatcher:
             payload={"job_id": row["id"], "status": "cancelled"},
             task_id=str(row["task_id"]),
             message_id=str(row["id"]),
-            dedupe_key=f"agent-job:{row['id']}:symbolic-context-cancelled",
+            dedupe_key=f"agent-job:{row['id']}:{dedupe_suffixes[reason]}",
             created_at=now,
         )
 
@@ -1107,7 +1168,9 @@ class AgentDispatcher:
                 if row["required_skill"] == "code.build_project":
                     try:
                         await require_project_execution_replay_locked(
-                            db, dict(row), json.loads(result_json) if result_json is not None else None
+                            db,
+                            dict(row),
+                            json.loads(result_json) if result_json is not None else None,
                         )
                     except (TypeError, ValueError, KeyError, RecursionError) as exc:
                         await db.rollback()
@@ -1153,6 +1216,21 @@ class AgentDispatcher:
                 await self._cancel_symbolic_job_locked(db, row, now=now)
                 await db.commit()
                 raise AgentDispatchConflict("symbolic_context_changed") from exc
+            try:
+                await require_worker_experience_context_locked(
+                    db,
+                    native_payload,
+                    task_id=str(row["task_id"]),
+                    required_skill=str(row["required_skill"]),
+                    task_statuses=("running",),
+                    job_id=job_id,
+                )
+            except ValueError as exc:
+                await self._cancel_context_job_locked(
+                    db, row, now=now, reason=EXPERIENCE_CONTEXT_CHANGED
+                )
+                await db.commit()
+                raise AgentDispatchConflict(EXPERIENCE_CONTEXT_CHANGED) from exc
             if (
                 status == "completed"
                 and row["required_skill"] == "research.collect"
@@ -1244,8 +1322,11 @@ class AgentDispatcher:
             if status == "completed" and row["required_skill"] == "code.build_project":
                 try:
                     await accept_project_execution_locked(
-                        db, dict(row), json.loads(result_json) if result_json is not None else None,
-                        agent_id=agent_id, now=now
+                        db,
+                        dict(row),
+                        json.loads(result_json) if result_json is not None else None,
+                        agent_id=agent_id,
+                        now=now,
                     )
                 except (TypeError, ValueError, KeyError, RecursionError) as exc:
                     await db.rollback()
