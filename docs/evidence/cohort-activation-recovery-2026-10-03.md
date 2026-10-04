@@ -279,8 +279,11 @@ compatible schema-27 predecessor. Its receipt is
 `coordinator-independent-review-20261003/orderfix-01/prestop-audit-readback-04.json`,
 SHA256 `4f52073e2c41fd3811cefd09afd10e2e5ae9344c9e7e37eb7d24b17bbd6c44e0`.
 Root restored the original Mac plist; launchd reported the old Swift worker
-running as PID 10691. That local process observation is not a fresh server
-heartbeat proof.
+running as PID 10691. A subsequent independent readback verified its old
+entrypoint, plist and credential identity, plus a server heartbeat at
+02:09:51 UTC on 4 October, aged 0.93 seconds when observed and later than the
+restoration. Receipt: `coordinator-independent-review-20261003/orderfix-01/swift-heartbeat-and-work-followup.json`,
+SHA256 `b66533158f0b2592d34ce3bf9c7c6bb728d5aaee52639bfe810012cf4f5737ce`.
 
 Evidence is retained under `root-cohort-orderfix-transfer-01/`. The full memory
 cohort is still not activated. Another attempt requires fresh idle evidence,

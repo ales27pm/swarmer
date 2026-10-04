@@ -25,6 +25,7 @@ from app.services.project_contracts import (
     ProjectWriteArguments,
     project_digest,
 )
+from app.services.project_execution_store import link_project_execution_locked
 from app.services.project_guidance import validate_guidance_reads
 from app.services.project_memory import ProjectMemoryService
 from app.services.project_progress import project_progress_message
@@ -211,6 +212,12 @@ class GoalProjectService:
             if existing:
                 if existing["worker_job_id"] != job_id or existing["goal_run_id"] != goal_id:
                     raise GoalProjectConflict("project result belongs to another job")
+                try:
+                    await link_project_execution_locked(
+                        db, revision_id=str(existing["id"]), now=self._now(), replay=True
+                    )
+                except (TypeError, ValueError, KeyError, RecursionError) as exc:
+                    raise GoalProjectConflict("project execution binding is invalid") from exc
                 return self._captured(dict(existing))
             row = await (
                 await db.execute(
@@ -286,6 +293,10 @@ class GoalProjectService:
             await db.execute(
                 "UPDATE coding_projects SET updated_at=? WHERE id=?", (now, project_id)
             )
+            try:
+                await link_project_execution_locked(db, revision_id=revision_id, now=now)
+            except (TypeError, ValueError, KeyError, RecursionError) as exc:
+                raise GoalProjectConflict("project execution binding is invalid") from exc
             await append_audit_event(
                 db,
                 "goal.project.revision",

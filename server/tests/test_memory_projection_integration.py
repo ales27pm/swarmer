@@ -195,6 +195,8 @@ async def make_schema28_fixture(tmp_path):
         # Remove later, empty additions as well as generated projections: merely
         # lowering user_version leaves an invalid historical migration preimage.
         for name in (
+            "project_execution_revision_links",
+            "project_execution_acceptances",
             "memory_local_context_sources",
             "memory_local_context_receipts",
             "memory_symbolic_relations",

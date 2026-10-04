@@ -109,9 +109,13 @@ from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
 from app.services.project_compaction import COMPACTION_SCHEMA
 from app.services.project_evidence_schema import migrate_project_evidence
+from app.services.project_execution_schema import (
+    migrate_project_execution_receipts,
+    validate_project_execution_prefix,
+)
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 _LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 _MEMORY_MODEL_ROLE_CHECK = (
     "CHECK(role IN ("
@@ -996,6 +1000,10 @@ class StateService:
             version = int(version_row[0])
             if version > SCHEMA_VERSION:
                 raise RuntimeError("state database schema is newer than this control plane")
+            if version in {32, 33}:
+                await db.execute("BEGIN")
+                await validate_project_execution_prefix(db, version)
+                await db.commit()
             await db.executescript(SCHEMA)
             await db.execute("BEGIN IMMEDIATE")
             await self._migrate_legacy_schema(db)
@@ -1212,7 +1220,9 @@ class StateService:
                 await self._migrate_symbolic_memory(db)
             if version <= 31:
                 await migrate_memory_view_vectors(db)
-            await migrate_local_context_receipts(db)
+            if version <= 32:
+                await migrate_local_context_receipts(db)
+            await migrate_project_execution_receipts(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():

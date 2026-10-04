@@ -39,6 +39,10 @@ from app.services.model_resource_admission import (
 )
 from app.services.outbox import OutboxService
 from app.services.permission_policy import PermissionPolicy, PermissionPolicyError
+from app.services.project_execution_store import (
+    accept_project_execution_locked,
+    require_project_execution_replay_locked,
+)
 from app.services.remote_job_policy import validate_remote_job
 from app.services.research_contracts import valid_research_collect_receipt
 from app.services.swift_contracts import valid_swift_receipt, validate_swift_project_payload
@@ -1097,9 +1101,18 @@ class AgentDispatcher:
                     pass
                 else:
                     same = str(row["status"]) == status and recorded_result_json == result_json
-                await db.rollback()
                 if not same:
+                    await db.rollback()
                     raise AgentDispatchConflict("terminal job result differs from recorded result")
+                if row["required_skill"] == "code.build_project":
+                    try:
+                        await require_project_execution_replay_locked(
+                            db, dict(row), json.loads(result_json) if result_json is not None else None
+                        )
+                    except (TypeError, ValueError, KeyError, RecursionError) as exc:
+                        await db.rollback()
+                        raise AgentDispatchConflict("project execution binding is invalid") from exc
+                await db.rollback()
                 return self._job_from_row(row), False
             if str(row["status"]) not in {"claimed", "running"}:
                 await db.rollback()
@@ -1228,6 +1241,15 @@ class AgentDispatcher:
             ):
                 # Fixed diagnostic codes only, never arbitrary remote error text.
                 public_error = error
+            if status == "completed" and row["required_skill"] == "code.build_project":
+                try:
+                    await accept_project_execution_locked(
+                        db, dict(row), json.loads(result_json) if result_json is not None else None,
+                        agent_id=agent_id, now=now
+                    )
+                except (TypeError, ValueError, KeyError, RecursionError) as exc:
+                    await db.rollback()
+                    raise AgentDispatchConflict("project execution binding is invalid") from exc
             try:
                 await AgentJobStateMachine.transition_locked(
                     db,

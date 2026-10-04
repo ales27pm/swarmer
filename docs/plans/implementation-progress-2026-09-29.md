@@ -12,6 +12,15 @@ Les engagements à suivre restent : résultats conformes et visibles ; mémoire 
 
 ## Troisième lot : identité, reçus mémoire et pages sources
 
+Complément du 4 octobre 2026 UTC — **M09 reste partiel** : les
+[mesures du runner](../evidence/project-execution-measurements-2026-10-04.md)
+et leur [rattachement serveur aux tâches et révisions](../evidence/project-execution-persistence-2026-10-04.md)
+sont implémentés et vérifiés localement. Pour le second lot, 129 tests ciblés,
+115 tests voisins, cinq contre-tests indépendants et un contrôle supplémentaire
+de redémarrage sur base peuplée passent. Il ne crée pas de leçons
+fiables automatiquement et n'est pas déployé. La récupération conditionnelle,
+la qualification du producteur et la promotion restent à réaliser.
+
 Le cadre de mémoire versionnée fourni par l’utilisateur est intégré au [plan d’architecture et de qualification](evidence-backed-memory-2026-09-29.md), avec une [vérification séparée des publications](../research/memory-literature-verification-2026-09-29.md). Les tableaux des lots antérieurs ci-dessous décrivent leurs gels successifs, pas l’absence des ajouts plus récents.
 
 - **M01 implémenté localement** : une identité de projet est créée atomiquement avec tout nouveau but ; les continuations conservent cette identité. Une ancienne lignée sans lien est réconciliée uniquement lors d’une continuation explicite, après admission et vérification des sources. Deux identités contradictoires ne sont pas fusionnées. Les propositions de fichiers déjà enregistrées sont conservées avec leur provenance. La limite de 128 buts est vérifiée avant d’en créer un 129e. L’identité seule n’autorise aucune compilation ou continuation iPhone ; une révision et des fichiers valides restent nécessaires. Les GET ne créent plus de liens.
