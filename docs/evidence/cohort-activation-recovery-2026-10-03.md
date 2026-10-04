@@ -82,3 +82,47 @@ The previous immutable kit and failed journal must remain unchanged. A new
 attempt requires a new pinned kit, current idle baseline and fresh stopped-Mac
 receipt. Passing these checks still does not qualify semantic translation or
 the complete iPhone workflow.
+
+## Replacement coordinator qualification
+
+A separate `coordinated-activation-243e913-stopfix` kit corrects both boundaries;
+the failed kit is unchanged. The only existing runtime modules changed are
+`cohort_cutover.py` and `linux_cohort.py`. It records an owned signal intent with
+process identity, service invocation and binding before SIGKILL. Normalization
+requires the matching stopped invocation and exit signal; all nine units must
+still be inactive before the unchanged metadata operator proceeds.
+
+Both deployment and recovery release the website reservation before startup,
+retain the GPU reservation, compare the complete database/website snapshot
+across the release boundary, and recheck the held-Mac receipt. Changes at that
+boundary prevent startup rather than being ignored as expected runtime churn.
+
+The integrated suite passes **77 tests**. It includes the actual installed
+`WebsiteWorkflow` initializer in a separate process against private SQLite
+data, as well as interrupted handoff and recovery cases. **Four independent
+tests** additionally verify snapshot divergence, expired Mac evidence and
+exclusive operator locking. These are local checks, not a production cutover.
+
+A real Ubuntu systemd probe then exercised the same owned-stop adapter. Its
+random transient unit ignored SIGTERM, received the owned SIGKILL, entered
+`failed/PID0`, and was reset to `inactive/PID0`. Every mutation command was
+restricted to that exact disposable unit. Production service PIDs, invocation
+IDs and active states were identical before and after the probe.
+
+The first probe stopped in its fixture because a transient unit without an
+environment-file property could not be read by the existing binding helper.
+The second adds `/dev/null` as an empty environment file and a private working
+directory; runtime code is unchanged. The fixture bounds its own stop timeout
+to three seconds. Both attempts remain recorded; the failed attempt is not
+counted as runtime success.
+
+| Evidence | SHA256 |
+| --- | --- |
+| Integrated 77-test receipt | `1d46994e044da1489eed880f38b74bda7f1ddd0f5e0f205615af9b0e48ebd96d` |
+| Successful Ubuntu probe command receipt | `357222e3707a3b6637b62c5b43700713dfff8cdc8dbaab2b104c4640c5ddc14e` |
+| Independent final review receipt | `119c0312c043789af844164ff82117c969c0cd05325bdac68bbdb93d6987d168` |
+| Corrected state machine | `30f57a4bfde65bfdaf30b52bfe2fcb4c33fa98daa33b3f41ad602bb2a0897331` |
+| Corrected Linux adapter | `faa1d1d22ce897f6921310bd04e1dd120df12919c9aa81a3a375d818317938ea` |
+
+The full memory cohort has not been activated by these checks. A new supervised
+attempt and independent live verification remain required.
