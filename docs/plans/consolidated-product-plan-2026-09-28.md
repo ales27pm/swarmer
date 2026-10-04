@@ -6,6 +6,8 @@ Avancement séparé : [lots d’implémentation et preuves locales du 29 septemb
 
 Direction mémoire affinée après le cadre fourni par l’utilisateur : [autorité SQL, preuves versionnées, index hybrides et protocole de qualification](evidence-backed-memory-2026-09-29.md). Ce complément relie les décisions aux travaux M01–M12 et sépare les implémentations locales des étapes encore proposées.
 
+Complément du 4 octobre : [analyse des écarts du PDF de mémoire multilingue](../architecture/multilingual-memory-gap-analysis-2026-10-04.md), avec preuves dans le code et lots rattachés à M01–M12. La première tranche traite les reçus des lectures réelles de fichiers (M02/M06/M09) ; l'observation durable, l'extraction qualifiée et MemoryBench restent des étapes distinctes. Cette analyse ne transforme pas les états historiques ci-dessous en preuves de déploiement.
+
 **Ce document prépare le travail. Il ne constitue ni une implémentation, ni une autorisation de relancer les projets existants, ni une preuve de déploiement.** Il consolide la conversation, les captures, les audits du jour, les preuves du dépôt et les préférences mémorisées. Les fichiers des projets utilisateur restent intacts.
 
 ## Direction à conserver

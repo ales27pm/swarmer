@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -515,9 +516,20 @@ def _read_safe_text(root: Path, relative: str) -> str:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 1_000_000:
             raise ValueError("file is unavailable or too large")
-        with os.fdopen(descriptor, encoding="utf-8") as handle:
-            descriptor = -1
-            return handle.read()
+        # Bound the read itself, including a file that grows after fstat. Strict
+        # decoding preserves CRLF and never silently substitutes source bytes.
+        remaining = 1_000_001
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, min(8192, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > 1_000_000:
+            raise ValueError("file is unavailable or too large")
+        return raw.decode("utf-8")
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -551,7 +563,24 @@ def execute(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     if skill == "workspace.list_dir":
         return {"entries": _list_safe_directory(root, relative)}
     if skill == "workspace.read_text":
-        return {"content": _read_safe_text(root, relative)}
+        content = _read_safe_text(root, relative)
+        raw = content.encode("utf-8")
+        return {
+            "content": content,
+            "read_receipt": {
+                "schema_version": "workspace-read-v1",
+                "path": Path(*_validated_relative_parts(relative)).as_posix(),
+                "encoding": "utf-8",
+                "byte_scope": "returned_utf8_text",
+                "returned_bytes": len(raw),
+                "returned_sha256": hashlib.sha256(raw).hexdigest(),
+                "complete": True,
+                "truncated": False,
+                "provenance": "worker_reported_measurement",
+                "source_snapshot": "not_captured",
+                "execution_attested": False,
+            },
+        }
     raise ValueError("unsupported worker skill")
 
 

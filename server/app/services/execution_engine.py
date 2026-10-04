@@ -33,6 +33,7 @@ from app.services.permission_policy import PermissionPolicy
 from app.services.process_sandbox import ProcessSandbox, ProcessSandboxError
 from app.services.project_contracts import ProjectWriteArguments
 from app.services.project_publication import publish_project
+from app.services.workspace_read_receipts import read_binding_locked, read_receipt
 
 ExecutionDiagnostic = Literal["unknown_tool", "invalid_arguments", "policy_denied"]
 
@@ -268,7 +269,16 @@ class ExecutionEngine:
             text = decoder.decode(visible, final=not truncated)
         except UnicodeDecodeError as exc:
             raise ExecutionError("workspace file is not valid UTF-8 text") from exc
-        return {"text": text, "truncated": truncated}
+        return {
+            "text": text,
+            "truncated": truncated,
+            "read_receipt": read_receipt(
+                text,
+                relative.as_posix(),
+                truncated=truncated,
+                provenance="local_executor_measurement",
+            ),
+        }
 
     def _write_workspace_text(self, relative: Path, content: str) -> dict[str, Any]:
         encoded = content.encode("utf-8")
@@ -946,6 +956,26 @@ class ExecutionEngine:
         task_error_json = json.dumps({"message": task_error}) if task_error else None
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
+            read_binding = None
+            if status == "completed" and record["tool_name"] == "workspace.read_text":
+                stored = await (
+                    await db.execute(
+                        "SELECT tool_name,arguments_json FROM tool_calls WHERE id=? AND task_id=?",
+                        (record["id"], record["task_id"]),
+                    )
+                ).fetchone()
+                if stored is None or stored[0] != "workspace.read_text" or result_json is None:
+                    raise ExecutionConflict("invalid_workspace_read_receipt")
+                try:
+                    read_binding = await read_binding_locked(
+                        db,
+                        task_id=record["task_id"],
+                        arguments=json.loads(stored[1]),
+                        result=json.loads(result_json),
+                        tool_call_id=record["id"],
+                    )
+                except ValueError as exc:
+                    raise ExecutionConflict("invalid_workspace_read_receipt") from exc
             tool_cursor = await db.execute(
                 """
                 UPDATE tool_calls SET status=?,result_json=?,error=?,updated_at=?
@@ -995,6 +1025,8 @@ class ExecutionEngine:
             payload: dict[str, Any] = {"tool_call_id": record["id"]}
             if status == "completed":
                 payload["tool_name"] = record["tool_name"]
+                if read_binding is not None:
+                    payload["read_receipt_binding"] = read_binding
             else:
                 payload.update({"error": task_error, "durable_status": "failed"})
             await append_audit_event(

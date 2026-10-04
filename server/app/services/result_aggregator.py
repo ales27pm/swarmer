@@ -18,6 +18,7 @@ from app.services.project_contracts import PROJECT_SKILL, ProjectResult
 from app.services.research_contracts import valid_research_collect_result
 from app.services.swarm_contracts import GoalRunStatus, PlanNodeStatus, PlanNodeType
 from app.services.swift_contracts import SWIFT_SKILLS, valid_swift_receipt
+from app.services.workspace_read_receipts import validate_read_receipt
 from app.services.writing_contracts import (
     WRITING_SKILL,
     checked_research_url,
@@ -404,7 +405,13 @@ def validate_worker_evidence(required_skill: object, value: object) -> bool:
             and all(isinstance(item, str) and len(item) <= 4_096 for item in entries)
         )
     if required_skill == "workspace.read_text":
-        if not _only_result_fields(value, required={"content"}, optional={"capability_result"}):
+        if not _only_result_fields(
+            value, required={"content"}, optional={"capability_result", "read_receipt"}
+        ):
+            return False
+        try:
+            validate_read_receipt(value)
+        except (TypeError, ValueError):
             return False
         return isinstance(value.get("content"), str)
     if required_skill == "research.collect":

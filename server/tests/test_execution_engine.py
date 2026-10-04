@@ -208,6 +208,7 @@ async def test_safe_file_hardlinks_remain_usable(tmp_path: Path) -> None:
         "workspace.write_text", {"path": "alias.txt", "content": "updated alias"}
     )
 
+    assert read_result.pop("read_receipt")["path"] == "alias.txt"
     assert read_result == {"text": "safe content", "truncated": False}
     assert write_result == {"path": "alias.txt", "bytes": 13}
     assert original.read_text(encoding="utf-8") == "safe content"
@@ -359,6 +360,7 @@ async def test_read_holds_parent_descriptor_across_symlink_swap(
     result = await engine._dispatch("workspace.read_text", {"path": "safe/secret.txt"})
 
     assert swapped is True
+    assert result.pop("read_receipt")["path"] == "safe/secret.txt"
     assert result == {"text": "inside", "truncated": False}
     assert (workspace / "safe" / "secret.txt").read_text(encoding="utf-8") == "outside"
 

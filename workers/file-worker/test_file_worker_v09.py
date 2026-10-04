@@ -513,4 +513,5 @@ def test_descriptor_relative_traversal_reads_and_lists_nested_paths(
     )
 
     assert listing == {"entries": ["safe.txt"]}
+    assert content.pop("read_receipt")["path"] == "nested/safe.txt"
     assert content == {"content": "verified content"}

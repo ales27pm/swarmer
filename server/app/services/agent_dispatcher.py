@@ -60,6 +60,7 @@ from app.services.worker_experience_context import (
     require_worker_experience_context_locked,
 )
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
+from app.services.workspace_read_receipts import read_binding_locked
 from app.services.writing_contracts import (
     UnsupportedCitationError,
     WritingRequirementsError,
@@ -569,7 +570,7 @@ class AgentDispatcher:
                     await db.rollback()
                 return None
             placeholders = ",".join("?" for _ in skills)
-            # A goal project job cannot accept a measured result until its
+            # A goal project/read job cannot accept a measured result until its
             # node link is published. Filter these before ranking so an
             # unpublished backlog cannot hide eligible work. Stale NULL
             # bindings remain candidates for the existing cancellation path.
@@ -586,7 +587,8 @@ class AgentDispatcher:
                         WHERE j.status='queued' AND j.required_skill IN ({placeholders})
                           AND j.attempt_count<j.max_attempts AND t.status='queued'
                           AND (
-                            j.required_skill<>'code.build_project' OR substr(t.source,1,5)<>'goal:'
+                            j.required_skill NOT IN ('code.build_project','workspace.read_text')
+                            OR substr(t.source,1,5)<>'goal:'
                             OR EXISTS (
                                 SELECT 1 FROM plan_nodes n JOIN goal_runs g ON g.id=n.goal_run_id
                                 WHERE n.task_id=j.task_id AND n.required_skill=j.required_skill
@@ -1331,6 +1333,32 @@ class AgentDispatcher:
                 except (TypeError, ValueError, KeyError, RecursionError) as exc:
                     await db.rollback()
                     raise AgentDispatchConflict("project execution binding is invalid") from exc
+            read_binding = None
+            frozen_result = (
+                json.loads(result_json)
+                if row["required_skill"] == "workspace.read_text" and result_json is not None
+                else None
+            )
+            if (
+                row["required_skill"] == "workspace.read_text"
+                and isinstance(frozen_result, dict)
+                and "read_receipt" in frozen_result
+            ):
+                try:
+                    if status != "completed" or not {"content", "read_receipt"} <= set(
+                        frozen_result
+                    ) <= {"content", "read_receipt", "capability_result"}:
+                        raise ValueError("invalid_workspace_read_receipt")
+                    read_binding = await read_binding_locked(
+                        db,
+                        task_id=str(row["task_id"]),
+                        arguments=native_payload,
+                        result=frozen_result,
+                        job=dict(row),
+                    )
+                except (TypeError, ValueError, KeyError) as exc:
+                    await db.rollback()
+                    raise AgentDispatchConflict("invalid_workspace_read_receipt") from exc
             try:
                 await AgentJobStateMachine.transition_locked(
                     db,
@@ -1364,6 +1392,7 @@ class AgentDispatcher:
                     "job_id": job_id,
                     "agent_id": agent_id,
                     "lease_generation": int(row["lease_generation"]),
+                    **({"read_receipt_binding": read_binding} if read_binding is not None else {}),
                 },
                 actor_type="agent",
                 actor_id=agent_id,

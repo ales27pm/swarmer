@@ -4,6 +4,8 @@
 
 ## Décision
 
+Mise à jour de travail du 4 octobre : l'[analyse du PDF multilingue face au code actuel](../architecture/multilingual-memory-gap-analysis-2026-10-04.md) précise les écarts de chaque couche et l'ordre d'intégration. Priorité immédiate : reçu mesuré pour `workspace.read_text`, avant le pont vers observation/proposition/outbox. Aucun changement de base de données ou de modèle n'est requis pour cette première tranche ; l'acceptation d'un reçu ne donne pas autorité à son contenu.
+
 Conserver SQLite comme autorité derrière les services du control plane. Les agents distants utilisent l’API ; ils n’ouvrent pas le fichier SQLite à distance. Faire évoluer les services existants vers une interface commune de mémoire et d’état, avec projections lexicales, symboliques et vectorielles reconstruisibles. Une recherche retourne des candidats ; leur admission dans le contexte dépend aussi de leur portée, de leur version, de leur origine et du travail en cours.
 
 Les consignes de confiance restent dans le chemin de configuration et le contrat actif du projet. Elles ne dépendent pas d’une similarité vectorielle. Les pages web, les fichiers du dépôt, les sorties d’outils et les souvenirs récupérés restent des données ; ils ne peuvent pas modifier les permissions.
