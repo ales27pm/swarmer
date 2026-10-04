@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>%WEB_TITLE%</title>
+    <meta name="description" content="vibecode.dev Generated Project" />
+    <meta name="author" content="vibecode.dev" />
+    <meta property="og:title" content="%WEB_TITLE%" />
+    <meta property="og:description" content="vibecode.dev Generated Project" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og-base.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@vibecodeapp" />
+    <meta name="twitter:image" content="/og-base.png" />
+    <!--
+      Early error reporter. Must run before the app bundle executes (the bundle
+      script is appended at the end of <body>): bundle parse-time errors
+      (e.g. SyntaxError) prevent any in-bundle error reporter from ever running.
+      ES5 only.
+    -->
+    <script>
+      (function () {
+        try {
+          var lastPosted = {};
+          var lastPostedCount = 0;
+          var errorCount = 0;
+          var firstMessage = null;
+          var loadedAt = Date.now();
+
+          function report(message, stack) {
+            try {
+              var msg = String(message || 'Unknown error');
+              var now = Date.now();
+              if (lastPosted[msg] && now - lastPosted[msg] < 1000) return;
+              if (lastPostedCount > 50) { lastPosted = {}; lastPostedCount = 0; }
+              lastPosted[msg] = now;
+              lastPostedCount++;
+              errorCount++;
+              if (firstMessage === null) firstMessage = msg;
+              if (now - loadedAt > 10000) setTimeout(maybeShowFallback, 0);
+              var payload = { type: 'vibecode:error', error: { message: msg, timestamp: now } };
+              if (stack) payload.error.stack = String(stack);
+              var sentToNative = false;
+              try {
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.vibecodeBridge) {
+                  window.webkit.messageHandlers.vibecodeBridge.postMessage(payload);
+                  sentToNative = true;
+                }
+              } catch (e) {}
+              try {
+                if (window.parent && window.parent !== window) {
+                  window.parent.postMessage(payload, '*');
+                } else if (!sentToNative) {
+                  window.postMessage(payload, '*');
+                }
+              } catch (e) {}
+            } catch (e) {}
+          }
+
+          window.addEventListener('error', function (event) {
+            try {
+              if (event && event.target && event.target !== window && event.target.tagName) return;
+              var msg = event && event.message ? event.message : (event && event.error ? String(event.error) : 'Script error');
+              var stack = event && event.error && event.error.stack ? event.error.stack : null;
+              report(msg, stack);
+            } catch (e) {}
+          }, true);
+
+          window.addEventListener('unhandledrejection', function (event) {
+            try {
+              var reason = event ? event.reason : null;
+              var msg = reason && reason.message ? reason.message : String(reason);
+              report('Unhandled promise rejection: ' + msg, reason && reason.stack ? reason.stack : null);
+            } catch (e) {}
+          });
+
+          function rootMounted() {
+            var root = document.getElementById('root');
+            return root && (root.children.length > 0 || (root.textContent && root.textContent.replace(/\s/g, '') !== ''));
+          }
+
+          function maybeShowFallback() {
+            try {
+              if (document.getElementById('vibecode-error-fallback')) return;
+              if (rootMounted() || errorCount === 0) return;
+              // Mirrors the website's WebRuntimeError card
+              // (components/workspace/app-preview/web/web-runtime-error.tsx)
+              var dark = false;
+              try { dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {}
+              var cardBg = dark ? '#27272a' : '#f4f4f5';
+              var red = dark ? '#f87171' : '#dc2626';
+              var redSub = dark ? 'rgba(248,113,113,0.8)' : 'rgba(220,38,38,0.8)';
+
+              var overlay = document.createElement('div');
+              overlay.id = 'vibecode-error-fallback';
+              overlay.setAttribute('style', 'position:fixed;top:0;left:0;right:0;bottom:0;background:' + (dark ? '#09090b' : '#ffffff') + ';font-family:-apple-system,system-ui,sans-serif;z-index:2147483647;');
+
+              var card = document.createElement('div');
+              card.setAttribute('style', 'position:absolute;bottom:16px;right:16px;left:16px;max-width:380px;margin-left:auto;background:' + cardBg + ';border-radius:12px;padding:16px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);');
+
+              var row = document.createElement('div');
+              row.setAttribute('style', 'display:flex;align-items:flex-start;gap:12px;');
+
+              var iconWrap = document.createElement('div');
+              iconWrap.setAttribute('style', 'padding:8px;background:rgba(239,68,68,0.2);border-radius:9999px;flex-shrink:0;margin-top:2px;line-height:0;');
+              iconWrap.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9"/><path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg>';
+
+              var content = document.createElement('div');
+              content.setAttribute('style', 'flex:1;min-width:0;');
+
+              var title = document.createElement('h4');
+              title.setAttribute('style', 'font-size:14px;font-weight:600;color:' + red + ';margin:0 0 4px;');
+              title.appendChild(document.createTextNode('Runtime Error'));
+
+              var detail = document.createElement('p');
+              detail.setAttribute('style', 'font-size:12px;color:' + redSub + ';margin:0 0 12px;font-family:ui-monospace,Menlo,monospace;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;');
+              detail.appendChild(document.createTextNode(firstMessage || ''));
+
+              var reload = document.createElement('button');
+              reload.setAttribute('style', 'appearance:none;border:0;border-radius:6px;height:32px;width:100%;font-size:12px;font-weight:500;cursor:pointer;background:#ef4444;color:#ffffff;');
+              reload.appendChild(document.createTextNode('Reload to Try Again'));
+              reload.onclick = function () { try { window.location.reload(); } catch (e) {} };
+
+              content.appendChild(title);
+              content.appendChild(detail);
+              content.appendChild(reload);
+              row.appendChild(iconWrap);
+              row.appendChild(content);
+              card.appendChild(row);
+              overlay.appendChild(card);
+              document.body.appendChild(overlay);
+              var clearCheck = setInterval(function () {
+                try {
+                  if (!rootMounted()) return;
+                  clearInterval(clearCheck);
+                  var el = document.getElementById('vibecode-error-fallback');
+                  if (el && el.parentNode) el.parentNode.removeChild(el);
+                } catch (e) {}
+              }, 1000);
+            } catch (e) {}
+          }
+
+          setTimeout(maybeShowFallback, 10000);
+        } catch (e) {}
+      })();
+    </script>
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      /* These styles make the body full-height */
+      html,
+      body {
+        height: 100%;
+      }
+      /* These styles disable body scrolling if you are using <ScrollView> */
+      body {
+        overflow: hidden;
+      }
+      /* These styles make the root element full-height */
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Use static rendering with Expo Router to support running without JavaScript. -->
+    <noscript>
+      You need to enable JavaScript to run this app.
+    </noscript>
+    <!-- The root element for your Expo app. -->
+    <div id="root"></div>
+  </body>
+</html>
