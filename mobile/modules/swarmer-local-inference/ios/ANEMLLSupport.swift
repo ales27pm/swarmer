@@ -16,6 +16,22 @@ enum ANEMLLSupport {
 
   enum InvalidInput: Error { case context, tokens, mask, logits, sampling, busy }
 
+  enum FeatureShapeConstraint {
+    case unspecified
+    case enumerated([[Int]])
+    case unsupported
+  }
+
+  static func matchesFeatureShape(_ shape: [Int], expected: [Int],
+                                  constraint: FeatureShapeConstraint) -> Bool {
+    guard shape == expected else { return false }
+    switch constraint {
+    case .unspecified: return expected.isEmpty
+    case .enumerated(let shapes): return !expected.isEmpty && shapes == [expected]
+    case .unsupported: return false
+    }
+  }
+
   struct Plan: Equatable, Sendable {
     let prefillRanges: [Range<Int>]
     let firstDecodePosition: Int

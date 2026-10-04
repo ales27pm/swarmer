@@ -12,6 +12,31 @@ struct ANEMLLSupportTests {
   }
 
   static func main() throws {
+    // Actual Core ML fixed tensors expose one enumerated shape, not unspecified.
+    // The embedding output alone has no shape until prediction resolves it.
+    for shape in [[1, 1, 2048], [1, 1, 16032], [1, 64, 2048], [64], [1], [1, 1, 64, 512], [1, 1, 1, 512]] {
+      try expect(ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .enumerated([shape])),
+                 "fixed Core ML singleton rejected")
+      try expect(!ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .enumerated([shape, [2]])),
+                 "alternative shape accepted")
+      try expect(!ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .enumerated([shape, shape])),
+                 "non-singleton shape list accepted")
+      try expect(!ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .enumerated([[2]])),
+                 "different enumerated shape accepted")
+      try expect(!ANEMLLSupport.matchesFeatureShape([2], expected: shape, constraint: .enumerated([shape])),
+                 "different default shape accepted")
+      try expect(!ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .enumerated([])),
+                 "missing fixed shape accepted")
+      try expect(!ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .unspecified),
+                 "unspecified fixed shape accepted")
+      try expect(!ANEMLLSupport.matchesFeatureShape(shape, expected: shape, constraint: .unsupported),
+                 "range or unknown shape constraint accepted")
+    }
+    try expect(ANEMLLSupport.matchesFeatureShape([], expected: [], constraint: .unspecified), "unresolved embedding shape rejected")
+    try expect(!ANEMLLSupport.matchesFeatureShape([], expected: [], constraint: .enumerated([[]])), "empty enumerated shape accepted")
+    try expect(!ANEMLLSupport.matchesFeatureShape([], expected: [], constraint: .unsupported), "empty range accepted")
+    print("PASS: exact fixed singleton and empty unspecified Core ML shapes; alternative/range shapes rejected")
+
     // No truncation, omission, duplicated prompt token, or out-of-cache batch.
     for count in [1, 63, 64, 65, 511] {
       let plan = try ANEMLLSupport.plan(tokenCount: count, requestedTokens: 1024)

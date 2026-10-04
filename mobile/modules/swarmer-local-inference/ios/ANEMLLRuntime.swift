@@ -233,8 +233,15 @@ actor ANEMLLRuntime {
       guard let constraint = desc?.multiArrayConstraint else {
         throw LocalInferenceError.unsupportedCoreMLContract("missing ANEMLL tensor")
       }
-      try require(constraint.dataType == type && constraint.shape.map(\.intValue) == shape)
-      try require(constraint.shapeConstraint.type == .unspecified)
+      let featureShape: ANEMLLSupport.FeatureShapeConstraint
+      switch constraint.shapeConstraint.type {
+      case .unspecified: featureShape = .unspecified
+      case .enumerated:
+        featureShape = .enumerated(constraint.shapeConstraint.enumeratedShapes.map { $0.map(\.intValue) })
+      default: featureShape = .unsupported
+      }
+      try require(constraint.dataType == type && ANEMLLSupport.matchesFeatureShape(
+        constraint.shape.map(\.intValue), expected: shape, constraint: featureShape))
     }
     let embedding = embeddings.modelDescription
     try require(Set(embedding.inputDescriptionsByName.keys) == ["input_ids"])
