@@ -147,6 +147,11 @@ Private copies and the independent readback are in
 
 ## Recovery and activation boundary
 
+Subsequent live attempt: [activation incident and verified predecessor
+restoration](cohort-activation-recovery-2026-10-03.md). The cutover stopped before
+migration and capability changes; the candidate remains inactive. That report
+records two deployment-coordinator defects not covered by the stage-only tests.
+
 The previous recovery32 package revalidates persisted agent cards on startup and
 would erase skills/capacity when it encountered the new key. A distinct private
 recovery package now preserves this approved metadata. Only its `agent_card.py`
