@@ -32,9 +32,10 @@ Validation on the frozen seven-file mobile change:
 - Independent review found no concrete defect and matched the source and bundle
   pins. The new Swift file must appear in the generated native build target.
 
-The signed Debug app is now installed on the physical iPhone, as detailed below.
-The target-device matrix remains unverified. Selecting CPU + Neural Engine will
-not by itself prove hardware execution on the Neural Engine.
+The signed Debug app is installed on the physical iPhone. The completed target
+matrix below passes CPU and CPU + GPU, but fails CPU + Neural Engine at load
+with execution-plan error -14. Selecting CPU + Neural Engine does not by itself
+prove hardware execution on the Neural Engine.
 
 Private evidence:
 `Library/Logs/SwarmerQualification/CoreML/two-attention-separated-states-20261004/`.
@@ -89,3 +90,57 @@ result, execution-plan diagnosis or ANE activity is claimed for this fixture.
 Private evidence is under `app-build-a85df77/` and
 `device-a85df77-20261004/` within the qualification directory above. Session
 credentials and device identifiers are excluded from this report and Git.
+
+## Resumed physical-device matrix, 05:48–05:50 UTC
+
+After the user resumed voice mode, fresh CoreDevice inspection found the same
+iPhone available over a changed IPv6 tunnel. Foreground activation without
+terminating the app succeeded, but the old HTTPS session remained unreachable,
+including at the fresh route with the original TLS pin and instance fence.
+The first CPU attempt remains unknown; its receipt was not overwritten or
+reclassified. A newly launched API session started with zero active/retained
+jobs, and each case below was submitted once with a new idempotency key.
+
+All three API jobs completed and returned native reports. API job success means
+that the diagnostic returned a report, **not** that the tested model passed.
+
+| Fixture / requested compute units | Native result | Load (ms) | Predictions (ms) | Values compared | Maximum absolute error |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Two sequential blocks, separate states / CPU | Passed | 204.378 | 23.822 | 61,440 | 0.0009765625 |
+| Same fixture / CPU + GPU | Passed | 167.785 | 461.349 | 61,440 | 0.0001220703125 |
+| Same fixture / CPU + Neural Engine | Failed at load, execution-plan -14 | 399.406 | 0 | 0 | Not available |
+| Single-block slot 1 control / CPU + Neural Engine | Passed | 450.604 | 11.230 | 30,720 | 0.0009765625 |
+
+The three-case matrix took 2.333, 2.298 and 2.272 seconds per client call,
+including polling. The additional same-build control took 2.258 seconds. These
+single-run synthetic timings are not a throughput benchmark for full Dolphin.
+The numerical tests exercise prefill, cached decode and reset/full-sequence
+predictions using the fixture's existing reference tensors and tolerances.
+
+After the three-case matrix, health remained foreground with zero active jobs
+and all three receipts retained; `models.status` returned idle. The subsequent
+single-block control also completed normally. No full model was loaded, no
+application rebuild was needed, and no backend state was changed by these tests.
+
+Separating the two blocks' state tensors does not resolve this load failure.
+The same-build single-block control rules out a blanket failure of this app's
+CPU + Neural Engine diagnostic path. It does **not** establish whether the
+remaining cause is graph composition, state allocation, a compiler limitation
+or another interaction. The separate-state fixture also doubles logical state
+storage, so its failure cannot isolate state sharing as the sole cause.
+
+For the control, `MLComputePlan` reports 61 preferred Neural Engine operations,
+23 CPU operations and 120 unknown assignments. These are plan descriptions,
+not execution telemetry; `hardwareExecutionMeasured` remains false throughout.
+Full Dolphin correctness and Neural Engine execution remain unqualified.
+
+Private evidence: `device-a85df77-voice-resume-20261004-01/` beneath the same
+qualification directory. The prior attempt remains in its original directory.
+
+| Receipt | SHA256 |
+| --- | --- |
+| Three-case matrix | `18e9b0c79362dfaf7e8c88964dd72395798bb47d14eeb0173cce61ccdd3c9b9e` |
+| CPU result | `442162eb8e4e67f07bc5a9a884b00f0b3052ea2619034d9e1ac087fbba3b42a2` |
+| CPU + GPU result | `3d6914961a0152bedfdd8c11244938b44311e99d7d73f0f9308762c2d1497269` |
+| CPU + Neural Engine result | `fdabe4246bc2c3248a09794931c5ac9980e2ff15db5a14b56ec3e56c89996698` |
+| Single-block slot 1 control | `93709d0e9656de14ab2e3563760b4af544b37037e942dfa3d8ec2dc8b08cf307` |
