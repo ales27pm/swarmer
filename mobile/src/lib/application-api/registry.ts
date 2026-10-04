@@ -8,6 +8,7 @@ import { COREML_PROBE_FIXTURES, type CoreMLProbeFixture } from "@/lib/coreml-pro
 import * as embeddings from "@/lib/local-embeddings";
 import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
+import { resolveHuggingFaceModels, type HuggingFaceDownloadPlan } from "@/lib/hugging-face-models";
 import * as settings from "@/lib/local-model-settings";
 import { applicationSessions } from "./sessions";
 import { outputDescriptor, type CommandOutputDescriptor } from "./outputs";
@@ -72,18 +73,51 @@ const taskMode = choice("normal", "commandant", "review", "autonome");
 const taskStatus = choice("created", "planned", "queued", "running", "blocked", "waiting_permission", "completed", "failed", "cancelled");
 const idInput = object({ id: identifier });
 const noInput = object();
-type NativeOperation = { kind: "load" | "unload" | "generate" | "download" | "import" | "probe"; cancelled: boolean; owner?: symbol };
+type NativeOperation = { kind: "load" | "unload" | "generate" | "download" | "import" | "probe"; cancelled: boolean; settled: boolean; owner?: symbol; cancel?: () => Promise<void> };
 let nativeOperation: NativeOperation | null = null;
+const huggingFaceUIOwner = Symbol("hugging-face-ui-download");
 
-async function withNativeOperation<T>(kind: NativeOperation["kind"], operation: (assertActive: () => void) => Promise<T>, owner?: symbol): Promise<T> {
+async function withNativeOperation<T>(kind: NativeOperation["kind"], operation: (assertActive: () => void) => Promise<T>, owner?: symbol, cancel?: () => Promise<void>): Promise<T> {
   const interrupts = kind === "unload" && nativeOperation && nativeOperation.kind !== "unload";
   if (nativeOperation && !interrupts) throw new ApplicationApiError("busy", "Une opération locale est déjà en cours.");
-  const ticket = { kind, cancelled: false, owner };
+  const interrupted = interrupts ? nativeOperation : null;
+  const ticket = { kind, cancelled: false, settled: false, owner, cancel };
   nativeOperation = ticket;
   const assertActive = () => {
     if (ticket.cancelled || nativeOperation !== ticket) throw new ApplicationApiError("cancelled", "L’opération locale a été annulée.");
   };
-  try { return await operation(assertActive); } finally { if (nativeOperation === ticket) nativeOperation = null; }
+  try {
+    if (interrupted?.cancel) {
+      interrupted.cancelled = true;
+      try { await interrupted.cancel(); }
+      catch (error) {
+        // An unconfirmed cancellation must not release another owner's live
+        // download. Its original finally will clear the restored ticket.
+        if (!interrupted.settled && nativeOperation === ticket) nativeOperation = interrupted;
+        throw error;
+      }
+    }
+    return await operation(assertActive);
+  } finally { ticket.settled = true; if (nativeOperation === ticket) nativeOperation = null; }
+}
+
+/** In-process UI only: resolved plans never become a public command input. */
+export function downloadUIHuggingFaceModel(plan: HuggingFaceDownloadPlan): Promise<inference.LocalModel> {
+  return withNativeOperation("download", async (assertActive) => {
+    try {
+      const model = await inference.downloadHuggingFaceModel(plan);
+      assertActive();
+      return model;
+    } catch (error) { assertActive(); throw error; }
+  }, huggingFaceUIOwner, () => inference.cancelHuggingFaceModelDownload());
+}
+
+export function cancelUIHuggingFaceModelDownload(): Promise<void> {
+  if (nativeOperation?.kind !== "download" || nativeOperation.owner !== huggingFaceUIOwner || !nativeOperation.cancel) {
+    return Promise.reject(new ApplicationApiError("not_running", "Aucun téléchargement de cette interface n’est en cours."));
+  }
+  nativeOperation.cancelled = true;
+  return nativeOperation.cancel();
 }
 
 register("app.status", noInput, async () => ({
@@ -294,10 +328,48 @@ if (inference.isCoreMLDiagnosticImportAvailable()) {
 register("models.unload", noInput, () => withNativeOperation("unload", () => inference.unloadLocalModel()), { ...device, ...mutation, requiresForeground: true });
 register<{ preset: "dolphin-gguf" }>("models.download", object({ preset: choice("dolphin-gguf") }),
   () => withNativeOperation("download", () => inference.downloadLocalGgufModel(LOCAL_MODEL_PRESETS["llama.cpp"].download!)), { ...device, ...mutation, requiresForeground: true });
+register<{ runtime: inference.LocalInferenceRuntime; url: string; choiceId?: string }>("models.huggingface.download",
+  object({ runtime, url: text(2048), choiceId: text(4096) }, ["runtime", "url"]),
+  ({ runtime: selectedRuntime, url, choiceId }, context) => {
+    const controller = new AbortController();
+    let nativeStarted = false;
+    const cancel = async () => {
+      controller.abort();
+      if (nativeStarted) await inference.cancelHuggingFaceModelDownload();
+    };
+    return withNativeOperation("download", async (assertActive) => {
+      const assertCurrent = () => {
+        assertActive();
+        if (controller.signal.aborted || (context.shouldAccept && !context.shouldAccept())) {
+          controller.abort();
+          throw new ApplicationApiError("cancelled", "Le téléchargement Hugging Face a été annulé.");
+        }
+        if (AppState.currentState !== "active") throw new ApplicationApiError("foreground_required", "Garde l’app au premier plan pour importer ce modèle.");
+      };
+      assertCurrent();
+      let choices: Awaited<ReturnType<typeof resolveHuggingFaceModels>>;
+      try { choices = await resolveHuggingFaceModels(url, selectedRuntime, controller.signal); }
+      catch {
+        assertCurrent();
+        throw new ApplicationApiError("resolution_failed", "Le lien Hugging Face n’a pas pu être résolu en modèle pris en charge.");
+      }
+      assertCurrent();
+      const selected = choiceId === undefined
+        ? (choices.length === 1 ? choices[0] : undefined)
+        : choices.find(item => item.id === choiceId);
+      if (!selected) throw new ApplicationApiError("invalid_selection", "Choisis un modèle unique parmi les choix de cette révision Hugging Face.");
+      nativeStarted = true;
+      try {
+        const model = await inference.downloadHuggingFaceModel(selected.plan);
+        assertCurrent();
+        return model;
+      } catch (error) { assertCurrent(); throw error; }
+    }, undefined, cancel);
+  }, { ...device, ...mutation, requiresForeground: true });
 register("models.download.cancel", noInput, () => {
-  if (nativeOperation?.kind !== "download") throw new ApplicationApiError("not_running", "Aucun téléchargement de cette API n’est en cours.");
+  if (nativeOperation?.kind !== "download" || nativeOperation.owner !== undefined) throw new ApplicationApiError("not_running", "Aucun téléchargement de cette API n’est en cours.");
   nativeOperation.cancelled = true;
-  return inference.cancelLocalModelDownload();
+  return nativeOperation.cancel ? nativeOperation.cancel() : inference.cancelLocalModelDownload();
 }, { ...device, ...mutation, requiresForeground: true });
 register<Parameters<typeof inference.generateLocalProposal>[0]>("inference.generate", object({ prompt: text(32_000), ...generationProperties }, ["prompt"]),
   (input, context) => withNativeOperation("generate", async (assertActive) => {

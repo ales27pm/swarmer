@@ -93,7 +93,7 @@ struct HuggingFaceModelDownload: Sendable {
       total = sum
     }
     guard total > 0 else { throw LocalInferenceError.invalidDownloadMetadata }
-    let localPaths = try Self.assemblyPaths(runtime: runtime, files: files)
+    let localPaths = try Self.assemblyPaths(runtime: runtime, repoId: repoId, revision: revision, files: files)
     guard Set(localPaths.map { $0.lowercased() }).count == localPaths.count else {
       throw LocalInferenceError.invalidDownloadMetadata
     }
@@ -119,7 +119,8 @@ struct HuggingFaceModelDownload: Sendable {
     }
   }
 
-  private static func assemblyPaths(runtime: LocalRuntime, files: [HuggingFaceModelFile]) throws -> [String] {
+  private static func assemblyPaths(runtime: LocalRuntime, repoId: String, revision: String,
+                                    files: [HuggingFaceModelFile]) throws -> [String] {
     let paths = files.map(\.path)
     let names = paths.map { ($0 as NSString).lastPathComponent }
     switch runtime {
@@ -138,6 +139,12 @@ struct HuggingFaceModelDownload: Sendable {
       }
       return names.map { "model/\($0)" }
     case .coreML:
+      if let pipeline = try ANEMLLModelProfile.downloadPaths(
+        paths: paths, repoId: repoId, sourceRevision: revision, sidecars: sidecars
+      ) {
+        guard files.allSatisfy({ $0.sizeBytes > 0 }) else { throw LocalInferenceError.invalidDownloadMetadata }
+        return pipeline
+      }
       let packages = Set(paths.compactMap { path -> String? in
         let parts = path.split(separator: "/")
         guard let end = parts.firstIndex(where: { $0.hasSuffix(".mlpackage") }) else { return nil }

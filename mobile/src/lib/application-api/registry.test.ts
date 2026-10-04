@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
 import * as server from "@/lib/api/client";
 import * as native from "@/lib/local-inference";
 import { applicationApi, ApplicationApiError } from "./index";
 import { createGoal, getActivity, getProjectGraph, getGoalWritingDraft, getGoalMemoryUsage, listAgents, planTask, sendChat } from "./server";
-import { createLocalGenerationSession, generateLocalProposal, pickAndImportLocalModel } from "./local-inference";
+import { createLocalGenerationSession, generateLocalProposal, pickAndImportLocalModel,
+  downloadHuggingFaceModel as downloadUIHuggingFaceModel, cancelHuggingFaceModelDownload as cancelUIHuggingFaceModelDownload } from "./local-inference";
 import { applicationSessions, ApplicationSessions } from "./sessions";
 import { notifyConnectionChanged } from "@/lib/connection-events";
 import { projectGraphFixture } from "@/testing/project-graph-fixtures";
@@ -17,8 +18,10 @@ import { getDocumentAsync } from "expo-document-picker";
 import { createApplicationProtocol } from "./protocol";
 import { invokeApplicationCommand } from "./registry";
 import symbolicHttp from "@/testing/symbolic-http-ordinary.json";
+import { resolveHuggingFaceModels, type HuggingFaceModelChoice } from "@/lib/hugging-face-models";
 
 jest.mock("expo/fetch", () => ({ fetch: jest.fn() }));
+jest.mock("@/lib/hugging-face-models", () => ({ resolveHuggingFaceModels: jest.fn() }));
 jest.mock("expo-document-picker", () => ({ getDocumentAsync: jest.fn() }));
 jest.mock("@/lib/state/mutation-outbox", () => ({ mutationOutbox: { pendingCount: jest.fn() } }));
 jest.mock("@/lib/state/replica", () => ({ applyBootstrap: jest.fn(), upsertEvent: jest.fn(), localSwarmSnapshot: jest.fn() }));
@@ -35,6 +38,7 @@ jest.mock("@/lib/api/client", () => ({
 jest.mock("@/lib/local-inference", () => ({
   ...jest.requireActual<typeof import("@/lib/local-inference")>("@/lib/local-inference"),
   generateLocalProposal: jest.fn(), loadLocalModel: jest.fn(), cancelLocalGeneration: jest.fn(), unloadLocalModel: jest.fn(), downloadLocalGgufModel: jest.fn(),
+  downloadHuggingFaceModel: jest.fn(), cancelHuggingFaceModelDownload: jest.fn(), cancelLocalModelDownload: jest.fn(),
   importLocalModel: jest.fn(), probeCoreMLFixture: jest.fn(), directLoadCoreMLFixture: jest.fn(), importCoreMLDiagnosticCandidate: jest.fn(),
   getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(),
   isCoreMLDiagnosticsAvailable: jest.fn(() => true),
@@ -782,5 +786,162 @@ describe("Swift revision API commands", () => {
     await expect(applicationApi.execute("project.swift.cancel", { id: "goal_1", validationId: "swift_1", confirm: false })).rejects.toMatchObject({ code: "invalid_arguments" });
     await applicationApi.execute("project.swift.cancel", { id: "goal_1", validationId: "swift_1", confirm: true });
     expect(server.cancelSwiftProjectValidation).toHaveBeenCalledWith("goal_1", "swift_1");
+  });
+});
+
+describe("Hugging Face application download", () => {
+  const input = { runtime: "coreml", url: "anemll/anemll-Llama-3.2-1B-FAST-iOS_0.3.0" } as const;
+  const model: native.LocalModel = { modelId: "imported-anemll", runtime: "coreml", purpose: "generation",
+    displayName: "ANEMLL", source: "Hugging Face", sizeBytes: 100, importedAt: "2026-10-04T00:00:00Z" };
+  const choice: HuggingFaceModelChoice = { id: "c6461a77:.", label: "ANEMLL", sizeBytes: 100,
+    plan: { runtime: "coreml", repoId: input.url, revision: "c6461a77a6f803424ec347f9537aadac37094879", displayName: "ANEMLL",
+      files: [{ path: "config.json", sizeBytes: 100, sha256: "a".repeat(64) }] } };
+  let previousState: typeof AppState.currentState;
+  beforeEach(() => {
+    jest.clearAllMocks(); previousState = AppState.currentState; AppState.currentState = "active";
+    jest.mocked(resolveHuggingFaceModels).mockResolvedValue([choice]);
+    jest.mocked(native.downloadHuggingFaceModel).mockResolvedValue(model);
+    jest.mocked(native.cancelHuggingFaceModelDownload).mockResolvedValue(undefined);
+    jest.mocked(native.cancelLocalModelDownload).mockResolvedValue(undefined);
+    jest.mocked(native.unloadLocalModel).mockResolvedValue(undefined);
+  });
+  afterEach(() => { AppState.currentState = previousState; });
+
+  it("resolves a unique immutable plan and exposes its existing parsed model result", async () => {
+    expect((await applicationApi.execute("models.huggingface.download", input)).data).toEqual(model);
+    expect(resolveHuggingFaceModels).toHaveBeenCalledWith(input.url, "coreml", expect.any(AbortSignal));
+    expect(native.downloadHuggingFaceModel).toHaveBeenCalledWith(choice.plan);
+    expect(applicationApi.catalog().commands.find(c => c.name === "models.huggingface.download")).toMatchObject({
+      effect: "mutation", requiresForeground: true, osInteraction: false,
+      output: { dataType: "LocalModel", validation: "existing_parser" },
+    });
+    expect(getDocumentAsync).not.toHaveBeenCalled();
+  });
+
+  it("requires an exact choice for multiple models, never silently selecting the first", async () => {
+    const second = { ...choice, id: "c6461a77:other", plan: { ...choice.plan, displayName: "Other" } };
+    jest.mocked(resolveHuggingFaceModels).mockResolvedValue([choice, second]);
+    await expect(applicationApi.execute("models.huggingface.download", input)).rejects.toMatchObject({ code: "invalid_selection" });
+    await expect(applicationApi.execute("models.huggingface.download", { ...input, choiceId: "stale-choice" })).rejects.toMatchObject({ code: "invalid_selection" });
+    expect(native.downloadHuggingFaceModel).not.toHaveBeenCalled();
+    await applicationApi.execute("models.huggingface.download", { ...input, choiceId: second.id });
+    expect(native.downloadHuggingFaceModel).toHaveBeenCalledWith(second.plan);
+  });
+
+  it("rejects raw manifests, filesystem input fields and missing runtime", async () => {
+    for (const bad of [{ url: input.url }, { ...input, plan: choice.plan }, { ...input, uri: "file:///private" }, { ...input, runtime: "arbitrary" }]) {
+      await expect(applicationApi.execute("models.huggingface.download", bad)).rejects.toMatchObject({ code: "invalid_arguments" });
+    }
+    expect(resolveHuggingFaceModels).not.toHaveBeenCalled();
+    expect(native.downloadHuggingFaceModel).not.toHaveBeenCalled();
+  });
+
+  it("reports resolution failure before any native mutation without leaking source error text", async () => {
+    jest.mocked(resolveHuggingFaceModels).mockRejectedValue(new Error("private metadata stack"));
+    await expect(applicationApi.execute("models.huggingface.download", input)).rejects.toMatchObject({ code: "resolution_failed" });
+    expect(native.downloadHuggingFaceModel).not.toHaveBeenCalled();
+  });
+
+  it.each(["cancel", "unload"] as const)("aborts pending metadata resolution on %s without later import", async (action) => {
+    let finish!: (value: HuggingFaceModelChoice[]) => void;
+    let signal: AbortSignal | undefined;
+    jest.mocked(resolveHuggingFaceModels).mockImplementation((_url, _runtime, value) => {
+      signal = value; return new Promise(resolve => { finish = resolve; });
+    });
+    const pending = applicationApi.execute("models.huggingface.download", input);
+    const rejected = expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: "one" })).rejects.toMatchObject({ code: "busy" });
+    await applicationApi.execute(action === "cancel" ? "models.download.cancel" : "models.unload", {});
+    expect(signal?.aborted).toBe(true);
+    finish([choice]); await rejected;
+    expect(native.downloadHuggingFaceModel).not.toHaveBeenCalled();
+    expect(native.cancelLocalModelDownload).not.toHaveBeenCalled();
+  });
+
+  it("routes native cancellation to Hugging Face and retains exclusion until the native await returns", async () => {
+    let finish!: (model: native.LocalModel) => void;
+    jest.mocked(native.downloadHuggingFaceModel).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const pending = applicationApi.execute("models.huggingface.download", input);
+    const rejected = expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    await Promise.resolve();
+    await applicationApi.execute("models.download.cancel", {});
+    expect(native.cancelHuggingFaceModelDownload).toHaveBeenCalledTimes(1);
+    expect(native.cancelLocalModelDownload).not.toHaveBeenCalled();
+    await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: "one" })).rejects.toMatchObject({ code: "busy" });
+    finish(model); await rejected;
+  });
+
+  it("refuses API download/cancel while the UI owns a native download", async () => {
+    let finish!: (model: native.LocalModel) => void;
+    jest.mocked(native.downloadHuggingFaceModel).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const uiPending = downloadUIHuggingFaceModel(choice.plan);
+    await expect(applicationApi.execute("models.huggingface.download", input)).rejects.toMatchObject({ code: "busy" });
+    await expect(applicationApi.execute("models.download.cancel", {})).rejects.toMatchObject({ code: "not_running" });
+    expect(native.downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    expect(native.cancelHuggingFaceModelDownload).not.toHaveBeenCalled();
+    expect(resolveHuggingFaceModels).not.toHaveBeenCalled();
+    finish(model); await expect(uiPending).resolves.toEqual(model);
+  });
+
+  it("refuses UI download/cancel while the API owns its download", async () => {
+    let finish!: (model: native.LocalModel) => void;
+    jest.mocked(native.downloadHuggingFaceModel).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const pending = applicationApi.execute("models.huggingface.download", input);
+    await Promise.resolve();
+    await expect(downloadUIHuggingFaceModel(choice.plan)).rejects.toMatchObject({ code: "busy" });
+    await expect(cancelUIHuggingFaceModelDownload()).rejects.toMatchObject({ code: "not_running" });
+    expect(native.downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    expect(native.cancelHuggingFaceModelDownload).not.toHaveBeenCalled();
+    finish(model); await expect(pending).resolves.toMatchObject({ data: model });
+  });
+
+  it("waits for Hugging Face cancel before unload and preserves the unload ticket after late download completion", async () => {
+    let finish!: (model: native.LocalModel) => void;
+    let finishCancel!: () => void;
+    let finishUnload!: () => void;
+    let didStartUnload!: () => void;
+    const unloadStarted = new Promise<void>(resolve => { didStartUnload = resolve; });
+    jest.mocked(native.downloadHuggingFaceModel).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    jest.mocked(native.cancelHuggingFaceModelDownload).mockReturnValue(new Promise(resolve => { finishCancel = resolve; }));
+    jest.mocked(native.unloadLocalModel).mockImplementation(() => {
+      didStartUnload(); return new Promise(resolve => { finishUnload = resolve; });
+    });
+    const pending = applicationApi.execute("models.huggingface.download", input);
+    const rejected = expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    await Promise.resolve();
+    const unloading = applicationApi.execute("models.unload", {});
+    expect(native.cancelHuggingFaceModelDownload).toHaveBeenCalledTimes(1);
+    expect(native.unloadLocalModel).not.toHaveBeenCalled();
+    finish(model); await rejected;
+    await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: "one" })).rejects.toMatchObject({ code: "busy" });
+    finishCancel(); await unloadStarted;
+    expect(native.unloadLocalModel).toHaveBeenCalledTimes(1);
+    finishUnload(); await unloading;
+  });
+
+  it("retains the original owner when unload cancellation fails before the download drains", async () => {
+    let finish!: (model: native.LocalModel) => void;
+    jest.mocked(native.downloadHuggingFaceModel).mockRejectedValue(new Error("native busy"))
+      .mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    jest.mocked(native.cancelHuggingFaceModelDownload).mockRejectedValue(new Error("bridge outcome unknown"));
+    const pending = downloadUIHuggingFaceModel(choice.plan);
+    const rejected = expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    await expect(applicationApi.execute("models.unload", {})).rejects.toMatchObject({ code: "outcome_unknown" });
+    try {
+      await expect(applicationApi.execute("models.huggingface.download", input)).rejects.toMatchObject({ code: "busy" });
+      expect(native.unloadLocalModel).not.toHaveBeenCalled();
+      expect(native.downloadHuggingFaceModel).toHaveBeenCalledTimes(1);
+    } finally { finish(model); await rejected; }
+  });
+
+  it.each(["session", "background"] as const)("revalidates %s after metadata and refuses late native import", async (cause) => {
+    let active = true;
+    let finish!: (value: HuggingFaceModelChoice[]) => void;
+    jest.mocked(resolveHuggingFaceModels).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const pending = invokeApplicationCommand("models.huggingface.download", input, { shouldAccept: () => active });
+    const rejected = expect(pending).rejects.toMatchObject({ code: cause === "session" ? "cancelled" : "foreground_required" });
+    if (cause === "session") active = false; else AppState.currentState = "background";
+    finish([choice]); await rejected;
+    expect(native.downloadHuggingFaceModel).not.toHaveBeenCalled();
   });
 });

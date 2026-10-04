@@ -54,6 +54,8 @@ private struct HuggingFaceModelDownloadTests {
       ("nested GGUF download imports, persists origin and removes temp files", ggufImport),
       ("nested MLX import preserves exact remote paths", mlxImport),
       ("CoreML package assembles parent tokenizer sidecars", coreMLImport),
+      ("ANEMLL profile rejects partial, mixed and unpinned compiled pipelines", anemllLayouts),
+      ("ANEMLL three-component download persists and resolves as one pipeline", anemllImport),
       ("HTTP error and checksum mismatch cannot import", failures),
       ("cancel while downloading cleans the partial operation", downloadCancellation),
       ("cancel while importing leaves the library unchanged", importCancellation),
@@ -213,6 +215,60 @@ private struct HuggingFaceModelDownloadTests {
   static func mlxImport() async throws { try await imported(.mlx, files: mlxFiles, contents: ["nested/config.json": "{}", "nested/tokenizer.json": "{}", "nested/model.safetensors": "abc"]) }
   static func coreMLImport() async throws {
     try await imported(.coreML, files: coreFiles, contents: Dictionary(uniqueKeysWithValues: coreFiles.map { ($0.path, $0.path.hasSuffix(".json") ? "{}" : "abc") }))
+  }
+
+  // File-layout fixtures only: these strings are not executable Core ML graphs.
+  static let anemllFiles: [HuggingFaceModelFile] = [
+    "llama_embeddings_lut8.mlmodelc", "llama_lm_head_lut8.mlmodelc", "llama_FFN_PF_lut4_chunk_01of01.mlmodelc"
+  ].flatMap { component in
+    ["analytics/coremldata.bin", "coremldata.bin", "metadata.json", "model.mil", "weights/weight.bin"].map {
+      file("pinned/" + component + "/" + $0)
+    }
+  } + [file("pinned/config.json"), file("pinned/tokenizer.json"), file("pinned/tokenizer_config.json")]
+
+  static func anemllPlan(_ files: [HuggingFaceModelFile]) throws -> HuggingFaceModelDownload {
+    try HuggingFaceModelDownload(runtime: .coreML, repoId: "anemll/anemll-Llama-3.2-1B-FAST-iOS_0.3.0",
+      revision: "c6461a77a6f803424ec347f9537aadac37094879", displayName: "ANEMLL 1B", files: files)
+  }
+
+  static func anemllLayouts() async throws {
+    let accepted = try anemllPlan(anemllFiles)
+    try expect(accepted.localPaths.count == 18 && accepted.localPaths.contains("model/llama_FFN_PF_lut4_chunk_01of01.mlmodelc/model.mil"), "pipeline component lost")
+    try expect(accepted.localPaths.contains("model/config.json"), "pipeline config lost")
+    try reject { _ = try plan(.coreML, anemllFiles) }
+    try reject { _ = try HuggingFaceModelDownload(runtime: .coreML, repoId: ANEMLLModelProfile.repository,
+      revision: revision, displayName: "other revision", files: anemllFiles) }
+    for bad in [
+      Array(anemllFiles.dropFirst()),
+      Array(anemllFiles.dropLast()),
+      anemllFiles + [file("pinned/llama_embeddings_lut8.mlmodelc/script.py")],
+      anemllFiles + [file("pinned/Other.mlpackage/Manifest.json")],
+      anemllFiles + [file("other/tokenizer.json")],
+      anemllFiles + [file("pinned/tokenizer.py")],
+      anemllFiles.filter { !$0.path.hasSuffix("weights/weight.bin") } + [file("pinned/llama_embeddings_lut8.mlmodelc/weights/weight.bin", "")]
+    ] { try reject { _ = try anemllPlan(bad) } }
+  }
+
+  static func anemllImport() async throws {
+    let workspace = try Workspace(); defer { workspace.remove() }
+    let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let download = try anemllPlan(anemllFiles)
+    let tracker = ModelDownloadProgressTracker(totalBytes: download.totalBytes, totalFiles: anemllFiles.count)
+    let contents = Dictionary(uniqueKeysWithValues: anemllFiles.map { ($0.path, "abc") })
+    let record = try await download.downloadAndImport(into: store, progress: tracker,
+      temporaryRoot: workspace.temporary, fetch: fetcher(workspace, contents))
+    let resolved = try await store.resolve(modelId: record.modelId)
+    try expect(resolved.runtimeURL == resolved.tokenizerURL, "pipeline resolved to one component instead of shared root")
+    try expect(record.downloadOrigin == download.origin, "pinned pipeline provenance lost")
+    for path in download.localPaths {
+      let local = String(path.dropFirst("model/".count))
+      try expect(try String(contentsOf: resolved.runtimeURL.appendingPathComponent(local), encoding: .utf8) == "abc", "component changed during import")
+    }
+    let restarted = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let afterRestart = try await restarted.resolve(modelId: record.modelId)
+    try expect(afterRestart.runtimeURL == resolved.runtimeURL && afterRestart.stored == resolved.stored, "pipeline did not survive store reload")
+    try expect(tracker.snapshot.state == "completed", "pipeline download did not complete")
+    try workspace.assertClean()
   }
 
   static func failures() async throws {

@@ -3,6 +3,7 @@ import Foundation
 actor LocalInferenceCoordinator {
   private enum Handle: Sendable {
     case coreML(CoreMLRuntime)
+    case anemll(ANEMLLRuntime)
     case mlx(MLXRuntime)
     case llamaCpp(LlamaCppRuntime)
   }
@@ -483,6 +484,8 @@ actor LocalInferenceCoordinator {
           maxTokens: maxTokens,
           temperature: temperature
         )
+      case .anemll(let runtime):
+        return try await runtime.generate(prompt: prompt, maxTokens: maxTokens, temperature: temperature)
       case .mlx(let runtime):
         try Task.checkCancellation()
         let executionDevice = await BackgroundGenerationController.shared.prepare(operationId: operationId, maxTokens: maxTokens) {
@@ -742,12 +745,23 @@ actor LocalInferenceCoordinator {
           guard let tokenizerURL = resolved.tokenizerURL else {
             throw LocalInferenceError.unsupportedModel("the Core ML tokenizer sidecar is missing")
           }
-          let runtime = CoreMLRuntime()
-          loaded = .coreML(runtime)
-          loading = loaded
-          diagnostic = try await runtime.load(
-            modelURL: resolved.runtimeURL, tokenizerURL: tokenizerURL, diagnosticUnits: diagnosticUnits
-          )
+          if resolved.runtimeURL.standardizedFileURL == tokenizerURL.standardizedFileURL {
+            // Only the validated ANEMLL import resolves a pipeline directory.
+            // The runtime validates all three model contracts before becoming ready.
+            let runtime = ANEMLLRuntime()
+            loaded = .anemll(runtime)
+            loading = loaded
+            diagnostic = try await runtime.load(
+              modelURL: resolved.runtimeURL, tokenizerURL: tokenizerURL, diagnosticUnits: diagnosticUnits
+            )
+          } else {
+            let runtime = CoreMLRuntime()
+            loaded = .coreML(runtime)
+            loading = loaded
+            diagnostic = try await runtime.load(
+              modelURL: resolved.runtimeURL, tokenizerURL: tokenizerURL, diagnosticUnits: diagnosticUnits
+            )
+          }
         case .mlx:
           let runtime = MLXRuntime()
           loaded = .mlx(runtime)
@@ -794,6 +808,7 @@ actor LocalInferenceCoordinator {
   private static func unload(_ handle: Handle) async {
     switch handle {
     case .coreML(let runtime): await runtime.unload()
+    case .anemll(let runtime): await runtime.unload()
     case .mlx(let runtime): await runtime.unload()
     case .llamaCpp(let runtime): await runtime.unload()
     }
@@ -802,6 +817,7 @@ actor LocalInferenceCoordinator {
   private static func cancel(_ handle: Handle) async {
     switch handle {
     case .coreML(let runtime): await runtime.cancel()
+    case .anemll(let runtime): await runtime.cancel()
     case .mlx(let runtime): await runtime.cancel()
     case .llamaCpp(let runtime): await runtime.cancel()
     }

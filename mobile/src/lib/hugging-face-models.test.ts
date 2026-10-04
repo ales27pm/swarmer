@@ -16,6 +16,17 @@ const mlx = (prefix = "") => [file(`${prefix}config.json`), file(`${prefix}token
 const coreml = (prefix = "model.mlpackage") => [directory(prefix), file(`${prefix}/Manifest.json`),
   file(`${prefix}/Data/com.apple.CoreML/model.mlmodel`), weight(`${prefix}/Data/com.apple.CoreML/weights/weight.bin`)];
 const tokenizers = (prefix = "") => [file(`${prefix}tokenizer.json`), file(`${prefix}tokenizer_config.json`)];
+const anemllRepo = "anemll/anemll-Llama-3.2-1B-FAST-iOS_0.3.0";
+const anemllRevision = "c6461a77a6f803424ec347f9537aadac37094879";
+const anemllComponents = ["llama_embeddings_lut8.mlmodelc", "llama_lm_head_lut8.mlmodelc",
+  "llama_FFN_PF_lut4_chunk_01of01.mlmodelc"];
+const compiledFiles = ["analytics/coremldata.bin", "coremldata.bin", "metadata.json", "model.mil", "weights/weight.bin"];
+const anemll = (prefix = "") => [
+  ...anemllComponents.flatMap((component) => [directory(`${prefix}${component}`),
+    ...compiledFiles.map((name) => name.endsWith(".bin")
+      ? weight(`${prefix}${component}/${name}`) : file(`${prefix}${component}/${name}`))]),
+  file(`${prefix}config.json`), ...tokenizers(prefix),
+];
 
 function response(value: unknown, options: { status?: number; link?: string; url?: string; redirected?: boolean; length?: string } = {}): Response {
   const status = options.status ?? 200;
@@ -91,6 +102,89 @@ describe("public Hugging Face download resolution", () => {
   it("does not propose Core ML packages whose contents the native importer rejects", async () => {
     repository([...tokenizers(), ...coreml(), file("model.mlpackage/Data/custom.py")]);
     await expect(resolveHuggingFaceModels("owner/model", "coreml")).rejects.toThrow("Aucun modèle");
+  });
+
+  it("selects the pinned ANEMLL three-component reference as one immutable plan", async () => {
+    repository([...anemll(), file("README.md"), file("meta.yaml"), file("chat.py"), file("chat_full.py")],
+      { ...info, sha: anemllRevision });
+    const [choice] = await resolveHuggingFaceModels(anemllRepo, "coreml");
+    expect(mockedFetch.mock.calls.map(([url]) => url)).toEqual([
+      `${origin}/api/models/${anemllRepo}/revision/main`,
+      `${origin}/api/models/${anemllRepo}/tree/${anemllRevision}?recursive=true&expand=false`,
+    ]);
+    expect(choice.plan).toMatchObject({ runtime: "coreml", repoId: anemllRepo, revision: anemllRevision });
+    expect(choice.label).toBe("ANEMLL Llama 3.2 1B · Core ML (512 tokens)");
+    expect(Object.keys(choice.plan).sort()).toEqual(["displayName", "files", "repoId", "revision", "runtime"]);
+    expect(choice.plan.files).toHaveLength(18);
+    expect(choice.plan.files.map((f) => f.path).sort()).toEqual(anemll().filter((r) => r.type === "file").map((r) => r.path).sort());
+    expect(choice.plan.files.find((f) => f.path.endsWith("weights/weight.bin"))).toMatchObject({ sizeBytes: 100, sha256 });
+    expect(choice.plan.files.find((f) => f.path.endsWith("model.mil"))).toMatchObject({ sizeBytes: 10, gitBlobSha1: blob });
+    expect(choice.sizeBytes).toBe(990);
+  });
+
+  it.each(["tree/main/export", "tree/main/export/llama_FFN_PF_lut4_chunk_01of01.mlmodelc",
+    "blob/main/export/llama_FFN_PF_lut4_chunk_01of01.mlmodelc/model.mil"])(
+    "retains one optional ANEMLL parent and all siblings for %s", async (path) => {
+      repository([directory("export"), ...anemll("export/"), ...tokenizers()], { ...info, sha: anemllRevision });
+      const choices = await resolveHuggingFaceModels(`${origin}/${anemllRepo}/${path}`, "coreml");
+      expect(choices).toHaveLength(1);
+      expect(choices[0].id).toBe(`${anemllRevision}:export`);
+      expect(choices[0].plan.files).toHaveLength(18);
+      expect(choices[0].plan.files.every((f) => f.path.startsWith("export/"))).toBe(true);
+    },
+  );
+
+  it.each([
+    ["owner/model", anemllRevision], [anemllRepo, revision],
+    ["anemll/anemll-Llama-3.2-1B-FAST-iOS_0.3.5", anemllRevision],
+  ])("does not authorize compiled layouts for another repository or revision: %s %s", async (repo, sha) => {
+    repository(anemll(), { ...info, sha });
+    await expect(resolveHuggingFaceModels(repo, "coreml")).rejects.toThrow();
+  });
+
+  it.each(anemll().filter((r) => r.type === "file").map((r) => r.path))(
+    "rejects the ANEMLL plan if required file %s is missing", async (path) => {
+      repository(anemll().filter((r) => r.path !== path), { ...info, sha: anemllRevision });
+      await expect(resolveHuggingFaceModels(anemllRepo, "coreml")).rejects.toThrow();
+    },
+  );
+
+  it.each([
+    [...anemll(), ...coreml()],
+    [...anemll(), file("other.mlmodelc/model.mil")],
+    [...anemll(), file(`${anemllComponents[2]}/extra.py`)],
+    [...anemll(), file(`${anemllComponents[0]}/Metadata.json`)],
+    [...anemll(), file("Tokenizer.json")],
+    [...anemll(), directory("export"), ...anemll("export/")],
+    anemll().map((r) => r.path.startsWith(anemllComponents[2]) ? { ...r, path: `other/${r.path}` } : r),
+  ].map((rows) => ({ rows })))("rejects mixed, ambiguous, or extra ANEMLL model contents %#", async ({ rows }) => {
+    repository(rows, { ...info, sha: anemllRevision });
+    await expect(resolveHuggingFaceModels(anemllRepo, "coreml")).rejects.toThrow();
+  });
+
+  it("does not borrow ANEMLL configuration or tokenizers from a parent directory", async () => {
+    repository([directory("export"), ...anemll("export/").filter((r) => r.path !== "export/tokenizer.json"),
+      ...tokenizers()], { ...info, sha: anemllRevision });
+    await expect(resolveHuggingFaceModels(`${origin}/${anemllRepo}/tree/main/export`, "coreml")).rejects.toThrow();
+  });
+
+  it.each(["llama_embeddings_lut8.mlmodelc/weights/weight.bin", "config.json"])(
+    "rejects an unverifiable ANEMLL file: %s", async (path) => {
+      repository(anemll().map((r) => r.path === path ? { ...r, oid: undefined, lfs: undefined } : r),
+        { ...info, sha: anemllRevision });
+      await expect(resolveHuggingFaceModels(anemllRepo, "coreml")).rejects.toThrow();
+    },
+  );
+
+  it("assembles all ANEMLL components across immutable pagination without selecting a script", async () => {
+    const tree = `${origin}/api/models/${anemllRepo}/tree/${anemllRevision}?recursive=true&expand=false`;
+    mockedFetch.mockResolvedValueOnce(response({ ...info, sha: anemllRevision }))
+      .mockResolvedValueOnce(response(anemll().slice(0, 9), { link: `<${tree}&cursor=next>; rel="next"` }))
+      .mockResolvedValueOnce(response([...anemll().slice(9), file("chat.py")]));
+    const choices = await resolveHuggingFaceModels(anemllRepo, "coreml");
+    expect(choices).toHaveLength(1);
+    expect(choices[0].plan.files).toHaveLength(18);
+    expect(mockedFetch).toHaveBeenCalledTimes(3);
   });
 
   it("preserves a long choice label while bounding the native display name", async () => {

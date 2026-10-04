@@ -684,9 +684,11 @@ actor LocalModelStore {
       let models = children.filter {
         ["mlmodel", "mlpackage", "mlmodelc"].contains($0.pathExtension.lowercased())
       }
-      guard models.count == 1 else {
+      let pipelineRoot = ANEMLLModelProfile.root(for: models)
+      guard models.count == 1 || pipelineRoot != nil else {
         throw LocalInferenceError.ambiguousModel("the selected folder must contain exactly one Core ML model")
       }
+      if let pipelineRoot { try ANEMLLModelProfile.validateDirectory(pipelineRoot, fileManager: fileManager) }
       for required in ["tokenizer.json", "tokenizer_config.json"] {
         let url = source.appendingPathComponent(required, isDirectory: false)
         let requiredValues = try? url.resourceValues(
@@ -1021,6 +1023,10 @@ actor LocalModelStore {
       let models = try files(in: payloadURL, extensions: ["mlmodel", "mlpackage", "mlmodelc"])
       guard !models.isEmpty else {
         throw LocalInferenceError.unsupportedModel("a .mlmodel, .mlpackage, or .mlmodelc model is required")
+      }
+      if let pipelineRoot = ANEMLLModelProfile.root(for: models) {
+        try ANEMLLModelProfile.validateDirectory(pipelineRoot, fileManager: fileManager)
+        return (pipelineRoot, pipelineRoot)
       }
       guard models.count == 1 else {
         throw LocalInferenceError.ambiguousModel("exactly one Core ML model is required")

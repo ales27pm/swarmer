@@ -25,9 +25,16 @@ const SIDECARS = new Set([
   "special_tokens_map.json", "added_tokens.json", "tokenizer.model", "merges.txt", "vocab.json",
 ]);
 const MLX_SIDECARS = new Set([...SIDECARS, "vocab.txt", "tokenizer.tiktoken", "chat_template.jinja"]);
+// Only this reviewed compiled pipeline is supported; filenames alone do not identify a contract.
+const ANEMLL_REPO = "anemll/anemll-Llama-3.2-1B-FAST-iOS_0.3.0";
+const ANEMLL_REVISION = "c6461a77a6f803424ec347f9537aadac37094879";
+const ANEMLL_COMPONENTS = ["llama_embeddings_lut8.mlmodelc", "llama_lm_head_lut8.mlmodelc",
+  "llama_FFN_PF_lut4_chunk_01of01.mlmodelc"];
+const ANEMLL_COMPONENT_FILES = ["analytics/coremldata.bin", "coremldata.bin", "metadata.json", "model.mil", "weights/weight.bin"];
 type Runtime = HuggingFaceDownloadPlan["runtime"];
 type Row = Record<string, unknown>;
 type Source = { repoId: string; ref: string; path: string; fileLink: boolean };
+type Candidate = { path: string; files: Row[]; label?: string };
 
 function fail(message: string): never { throw new Error(message); }
 function object(value: unknown): value is Row {
@@ -167,6 +174,41 @@ function parent(path: string): string { return path.slice(0, Math.max(0, path.la
 function leaf(path: string): string { return path.slice(path.lastIndexOf("/") + 1); }
 function under(path: string, directory: string): boolean { return !directory || path === directory || path.startsWith(directory + "/"); }
 
+function anemllCandidate(source: Source, revision: string, rows: Map<string, Row>, files: Row[]): Candidate {
+  if (revision !== ANEMLL_REVISION) fail("Cette révision ANEMLL ne correspond pas au profil Core ML pris en charge.");
+  const models = new Set([...rows.keys()].flatMap((path) => {
+    const segments = path.split("/");
+    const index = segments.findIndex((part) => /\.(mlmodelc|mlpackage|mlmodel)$/i.test(part));
+    return index < 0 ? [] : [segments.slice(0, index + 1).join("/")];
+  }));
+  const roots = new Set([...models].map(parent));
+  if (models.size !== ANEMLL_COMPONENTS.length || roots.size !== 1) {
+    fail("Le profil ANEMLL exige exactement trois composants Core ML dans un même dossier.");
+  }
+  const root = [...roots][0];
+  const rooted = (path: string) => root ? `${root}/${path}` : path;
+  const components = ANEMLL_COMPONENTS.map(rooted);
+  if (components.some((path) => !models.has(path))) fail("Les composants ANEMLL sont incomplets ou incompatibles.");
+  const expected = new Set(components.flatMap((component) => ANEMLL_COMPONENT_FILES.map((path) => `${component}/${path}`)));
+  const compiled = files.filter((row) => components.some((component) => under(row.path as string, component)));
+  if (compiled.length !== expected.size || compiled.some((row) => !expected.has(row.path as string))) {
+    fail("Les fichiers compilés ANEMLL sont incomplets ou contiennent des éléments non pris en charge.");
+  }
+  const sidecars = files.filter((row) => parent(row.path as string) === root
+    && SIDECARS.has(leaf(row.path as string).toLowerCase()));
+  const names = new Set(sidecars.map((row) => leaf(row.path as string)));
+  if (["config.json", "tokenizer.json", "tokenizer_config.json"].some((name) => !names.has(name))) {
+    fail("Le profil ANEMLL exige config.json et les deux fichiers tokenizer dans le même dossier.");
+  }
+  const selected = [...compiled, ...sidecars];
+  if (source.path && !(source.fileLink
+    ? selected.some((row) => row.path === source.path)
+    : under(root, source.path) || components.some((component) => under(source.path, component)))) {
+    fail("Le chemin demandé ne correspond pas au profil ANEMLL complet.");
+  }
+  return { path: root, files: selected, label: "ANEMLL Llama 3.2 1B · Core ML (512 tokens)" };
+}
+
 /** Resolve public metadata to explicit choices; never downloads or executes model weights. */
 export async function resolveHuggingFaceModels(
   input: string, runtime: Runtime, signal?: AbortSignal,
@@ -207,7 +249,7 @@ export async function resolveHuggingFaceModels(
     fail("Le fichier ou dossier demandé n’existe pas dans cette révision.");
   }
   const files = [...rows.values()].filter((r) => r.type === "file");
-  const candidates: { path: string; files: Row[] }[] = [];
+  const candidates: Candidate[] = [];
   if (runtime === "llama.cpp") {
     const ggufs = files.filter((r) => typeof r.path === "string" && r.path.toLowerCase().endsWith(".gguf")
       && (source.fileLink ? r.path === source.path : under(r.path, source.path)));
@@ -230,6 +272,8 @@ export async function resolveHuggingFaceModels(
         return MLX_SIDECARS.has(name) || (name.endsWith(".safetensors") && name !== "adapter_model.safetensors") || name.endsWith(".safetensors.index.json");
       }) });
     }
+  } else if (source.repoId === ANEMLL_REPO) {
+    candidates.push(anemllCandidate(source, revision, rows, files));
   } else {
     const packages = new Set(files.flatMap((r) => {
       const segments = (r.path as string).split("/");
@@ -264,7 +308,7 @@ export async function resolveHuggingFaceModels(
     const sizeBytes = selected.reduce((n, f) => n + f.sizeBytes, 0);
     if (!Number.isSafeInteger(sizeBytes) || sizeBytes > MAX_BYTES) continue;
     if (new Set(selected.map((f) => f.path.toLowerCase())).size !== selected.length) fail("Des fichiers du modèle ont des noms ambigus sur cet appareil.");
-    const label = candidate.path ? leaf(candidate.path) : leaf(source.repoId);
+    const label = candidate.label ?? (candidate.path ? leaf(candidate.path) : leaf(source.repoId));
     const displayName = label.slice(0, 120).replace(/[\uD800-\uDBFF]$/, "");
     choices.push({ id: `${revision}:${candidate.path || "."}`, label, sizeBytes,
       plan: { runtime, repoId: source.repoId, revision, displayName, files: selected } });
