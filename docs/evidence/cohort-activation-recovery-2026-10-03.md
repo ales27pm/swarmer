@@ -220,3 +220,68 @@ Independent readback verified nine old runtimes, API and Studio health,
 schema 27, unchanged protected/model-call rows and no metadata application:
 `coordinator-independent-review-20261003/bindingfix-01/rollback-and-unit-layers-readback.json`,
 SHA256 `0a96ea496bb63a90976af9f9d0b386223a86bf82ecadf25c4e1aa90d65737628`.
+
+## Complete-layer qualification and fourth attempt: GPU admission refused
+
+The separate orderfix kit makes the candidate drop-in sort after every current
+layer and checks that order before stopping services. Its Linux adapter SHA256
+is `e1ea8a2c35007e5217b2e6af735e8d191bf83edccd791baf3d9714059145d8b6`;
+the binding draft is `e5b591760bd1587daa3453d728ee3bae8877565e8460c011cde31bcefd7879d0`.
+The eight template contents remain identical to the bindingfix templates.
+
+The actual Ubuntu user manager loaded 24 disposable, never-started unit
+definitions containing the complete original fragment and all effective
+drop-ins. Eight preimages and eight corrected bindings matched exactly. The
+old filename reproduced the project/text overrides in its two negative cases.
+Environment and configuration comparisons were kept exact.
+
+The first full-manager probe completed those comparisons but refused its final
+production-state comparison. Its UUID files were removed; manager cleanup was
+not confirmed. Independent readback then found the nine process identities,
+effective bindings and configuration hashes unchanged. The first probe had
+not retained the exact before-state difference, so its cause remains unknown.
+It is preserved as a failed proof, not relabelled as a success.
+
+A diagnostic copy added field-difference reporting without changing any guard
+or manager command. Its complete rerun passed in 1.37 seconds: all 24 cases,
+unchanged production state, and removal of both UUID files and definitions.
+No unit was started. Proof is under `root-merged-manager-probe-331af154c944/`;
+command receipt SHA256 is
+`0d94539653ff05275998eb2e6f4b5cb1a59b4697b435f609d7145bd11306b287`.
+The kit has 38 current targeted tests and ten independent checks. The earlier
+98-test suite is inherited evidence, not a new execution on this kit.
+
+The sealed orderfix manifest is
+`0ceced3c817e4fcda5f7bb3a0b12c4bd042b2fd9e32dbfece7a9edf0b630d3f2`.
+Its 76 listed files plus manifest were transferred and hash-checked. Independent
+input review confirmed that only the kit paths, operation/actor IDs, binding
+draft and code pins changed; the runtime settings and seven retained Studio
+jobs were preserved. The reviewed host configuration SHA256 is
+`8e45a61cea290b09308fb72195bf0f87ee6c443113964857912d50438d56d568`.
+
+Preparation for `cohort_orderfix_4a09f26da4` succeeded in 2.1 seconds, producing
+baseline `f2298b11cece0bbd9d67d4b257c4f94a8a43f274814665c9b0ac4f0e5914774c`.
+The fresh held-Mac receipt was accepted, but the deployment's fresh OS-idle
+check rejected `Ollama_VRAM_occupied_or_unknown` before stopping any Ubuntu
+service. The journal contains only `pre-stop-abort-mac-held`, SHA256
+`48929f6d05d8ba17f5f2414b103670f256995ec0a6108574bca67dbab18bd301`.
+There was no binding, migration or capability change and no backup restoration.
+
+Readback showed `swarmer-project-qwen3-coder-heretic:30b-32k-d2d985e` occupying
+6,558,675,107 bytes of VRAM with context length 64,000. A subsequent independent
+read-only audit distinguished actual work from cached weights: one agent job
+and one plan node were active, and a project-worker child had an established
+TCP connection to Ollama. SQL admission also refused
+`active_execution_or_maintenance`. The model was not stopped or unloaded.
+The audit verified the nine running process identities, old bindings, source
+hashes and configuration against the baseline. The API remained healthy on the
+compatible schema-27 predecessor. Its receipt is
+`coordinator-independent-review-20261003/orderfix-01/prestop-audit-readback-04.json`,
+SHA256 `4f52073e2c41fd3811cefd09afd10e2e5ae9344c9e7e37eb7d24b17bbd6c44e0`.
+Root restored the original Mac plist; launchd reported the old Swift worker
+running as PID 10691. That local process observation is not a fresh server
+heartbeat proof.
+
+Evidence is retained under `root-cohort-orderfix-transfer-01/`. The full memory
+cohort is still not activated. Another attempt requires fresh idle evidence,
+a new baseline/journal and a new held-Mac receipt, not reuse of this failed run.
