@@ -140,7 +140,7 @@ def _validate_project_plan_shape(nodes: Sequence[SwarmPlanNodeProposal]) -> None
     ):
         raise PlanValidationError(
             "legacy code generation cannot consume worker dependencies",
-            diagnostic_code="project_plan_shape",
+            diagnostic_code="legacy_code_dependencies",
         )
 
 

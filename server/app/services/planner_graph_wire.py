@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from app.services.agent_card import CODE_GENERATION_SKILLS, PROJECT_BUILD_SKILLS
 from app.services.plan_validation import PlanValidationError
 from app.services.swarm_contracts import MAX_PLAN_NODES
 
@@ -28,38 +29,49 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
     complete plan. Slot order is serialization, never an execution dependency.
     Body groups retain the existing capability-specific dependency bounds, so
     synthesis still needs evidence and legacy code generation stays standalone.
-    The already materialized worker branches and the input schema are not changed.
+    Counted slot alternatives permit a project mutator at only one position;
+    other slots retain all non-project capabilities, including synthesis. This
+    uses supported object/anyOf/$ref grammar, not contains/maxContains or a
+    prompt-only rule. The public wire and input schema are not changed.
     """
     result = deepcopy(schema)
     items = result["properties"]["nodes"]["items"]
     branches = items.get("anyOf", [items])
-    groups: dict[str, tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]] = {}
+    groups: dict[str, tuple[dict[str, Any], dict[str, Any], bool, list[dict[str, Any]]]] = {}
+    mutating_skills = PROJECT_BUILD_SKILLS | CODE_GENERATION_SKILLS
     for branch in branches:
         body = deepcopy(branch)
         properties = body["properties"]
         dependencies = properties["dependencies"]
         optional = properties["optional_dependencies"]
-        key = json.dumps([dependencies, optional], sort_keys=True, separators=(",", ":"))
+        skill_schema = properties["00_required_skill"]
+        skills = skill_schema.get("enum", [skill_schema.get("const")])
+        mutates = any(skill in mutating_skills for skill in skills)
+        if mutates and not all(skill in mutating_skills for skill in skills):
+            raise ValueError("planner worker branches must separate project-mutating skills")
+        key = json.dumps([dependencies, optional, mutates], sort_keys=True, separators=(",", ":"))
         for field in _GRAPH_FIELDS:
             del properties[field]
         body["required"] = [field for field in body["required"] if field not in _GRAPH_FIELDS]
         if key not in groups:
-            groups[key] = (dependencies, optional, [])
-        groups[key][2].append(body)
+            groups[key] = (dependencies, optional, mutates, [])
+        groups[key][3].append(body)
 
     definitions = result.setdefault("$defs", {})
     reserved_names = {
         *(f"Step{index}" for index in range(1, MAX_PLAN_NODES + 1)),
+        *(f"Step{index}NonProject" for index in range(1, MAX_PLAN_NODES + 1)),
         *(f"PlannerGraphBody{index}" for index in range(1, len(groups) + 1)),
     }
     if reserved_names & definitions.keys():
         raise ValueError("planner graph definitions collide with the source schema")
 
-    for group_index, (_, _, bodies) in enumerate(groups.values(), start=1):
+    for group_index, (_, _, _, bodies) in enumerate(groups.values(), start=1):
         definitions[f"PlannerGraphBody{group_index}"] = (
             bodies[0] if len(bodies) == 1 else {"anyOf": bodies}
         )
 
+    has_mutator = any(group[2] for group in groups.values())
     dependency_names: dict[str, str] = {}
 
     def dependency_reference(bounds: dict[str, Any], prior_ids: list[str]) -> dict[str, Any]:
@@ -82,7 +94,8 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
     for index in range(1, MAX_PLAN_NODES + 1):
         prior_ids = [f"step_{previous}" for previous in range(1, index)]
         alternatives = []
-        for group_index, (dependencies, optional, _) in enumerate(groups.values(), start=1):
+        non_project = []
+        for group_index, (dependencies, optional, mutates, _) in enumerate(groups.values(), start=1):
             if any(field.get("minItems", 0) > len(prior_ids) for field in (dependencies, optional)):
                 continue
             alternatives.append(
@@ -98,28 +111,58 @@ def constrain_planner_graph(schema: dict[str, Any]) -> dict[str, Any]:
                     "required": list(_WRAPPER_FIELDS),
                 }
             )
+            if not mutates:
+                non_project.append(alternatives[-1])
         if not alternatives:
             raise ValueError("planner graph schema has no eligible root node")
         definitions[f"Step{index}"] = (
             alternatives[0] if len(alternatives) == 1 else {"anyOf": alternatives}
         )
+        if has_mutator and non_project:
+            definitions[f"Step{index}NonProject"] = (
+                non_project[0] if len(non_project) == 1 else {"anyOf": non_project}
+            )
     counted_alternatives = []
     for count in range(1, MAX_PLAN_NODES + 1):
-        slots = {
-            f"step_{index:02d}": {"$ref": f"#/$defs/Step{index}"} for index in range(1, count + 1)
-        }
+        slot_alternatives = []
+        # Selecting a permitted position does not require a mutator: zero is
+        # valid too. No other slot can use either project-mutating capability.
+        # A single position can contain the entire cumulative implementation;
+        # its required sources and downstream consumers are not discarded.
+        permitted_positions = range(1, count + 1) if has_mutator else (0,)
+        for permitted in permitted_positions:
+            names = {
+                f"step_{index:02d}": (
+                    f"Step{index}"
+                    if not has_mutator or index == permitted
+                    else f"Step{index}NonProject"
+                )
+                for index in range(1, count + 1)
+            }
+            if any(name not in definitions for name in names.values()):
+                continue
+            slots = {slot: {"$ref": f"#/$defs/{name}"} for slot, name in names.items()}
+            slot_alternatives.append(
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": slots,
+                    "required": list(slots),
+                }
+            )
+        if not slot_alternatives:
+            continue
         counted_alternatives.append(
             {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
                     "00_node_count": {"type": "integer", "const": count},
-                    "01_steps": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": slots,
-                        "required": list(slots),
-                    },
+                    "01_steps": (
+                        slot_alternatives[0]
+                        if len(slot_alternatives) == 1
+                        else {"anyOf": slot_alternatives}
+                    ),
                 },
                 "required": ["00_node_count", "01_steps"],
             }

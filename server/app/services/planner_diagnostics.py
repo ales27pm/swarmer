@@ -25,8 +25,12 @@ DIAGNOSTICS: dict[str, tuple[str, str]] = {
         "Check required fields, types, enum values and bounds against the supplied schema.",
     ),
     "project_plan_shape": (
-        "Un plan peut confier les modifications du projet à un seul agent, avec les dépendances nécessaires. L’ancien générateur Python ne consomme pas de dépendances.",
-        "Use at most one project-mutating worker across code.build_project and code.generate_python combined; other capabilities and required dependencies are allowed. Legacy code.generate_python must have dependencies=[] and optional_dependencies=[] because its payload cannot consume worker results.",
+        "Un plan peut confier les modifications du projet à un seul agent d’exécution, avec les dépendances nécessaires.",
+        "Use at most one project-mutating worker across code.build_project and code.generate_python combined; other capabilities and required dependencies are allowed.",
+    ),
+    "legacy_code_dependencies": (
+        "L’ancien générateur Python ne peut pas recevoir les résultats d’autres étapes. Utilisez le constructeur de projet si ces résultats sont nécessaires et que cette compétence est disponible.",
+        "Legacy code.generate_python must have dependencies=[] and optional_dependencies=[] because its payload cannot consume worker results. If inputs are required, use one advertised code.build_project worker and preserve those dependencies; otherwise preserve the unmet requirement. Never drop required inputs to make the plan valid.",
     ),
     "unavailable_skill": (
         "Le plan demande une compétence absente des agents disponibles.",

@@ -369,7 +369,9 @@ def test_shared_definitions_keep_all_capability_schema_growth_bounded() -> None:
     definitions = schema["$defs"]
     assert {f"Step{index}" for index in range(1, MAX_PLAN_NODES + 1)} <= definitions.keys()
     assert len(schema["properties"]["nodes"]["anyOf"]) == MAX_PLAN_NODES
-    assert len(json.dumps(schema).encode()) < 100_000
+    # At most twenty permitted mutator positions per counted alternative.
+    # Only slot references grow; capability payloads remain shared below.
+    assert len(json.dumps(schema).encode()) < 350_000
     # Specialist schemas must be shared rather than copied into every position.
     assert json.dumps(schema).count('"const": "database.sqlite.query"') == 1
 

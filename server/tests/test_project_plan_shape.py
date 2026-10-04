@@ -96,6 +96,7 @@ def test_project_plan_rejects_multiple_mutators_without_repairing_input(
 def test_duplicate_project_diagnostic_preserves_mixed_plan_options() -> None:
     explanation, correction = DIAGNOSTICS["project_plan_shape"]
     assert "avec les dépendances nécessaires" in explanation
+    assert "Python" not in explanation
     assert "at most one project-mutating worker" in correction
     assert "code.build_project and code.generate_python combined" in correction
     assert "other capabilities and required dependencies are allowed" in correction
@@ -252,11 +253,11 @@ def test_planner_generation_schema_supports_mixed_project_dags_with_server_singl
             assert not validator.is_valid(wire(_plan([node, _node("summary", None)])))
     for case in ("synthesis", "dependencies", "optional_dependencies", "independent"):
         assert validator.is_valid(wire(_plan(_mixed_nodes(case)))), case
-    # Cross-node mutator limits are enforced
-    # by the independent server parser, not unsupported contains/maxContains.
+    # The counted generation grammar now enforces the same single-mutator
+    # rule as the independent parser, without unsupported contains/maxContains.
     for case in ("mixed_legacy", "two_projects", "two_legacy"):
         duplicate = _plan(_invalid_nodes(case))
-        assert validator.is_valid(wire(duplicate))
+        assert not validator.is_valid(wire(duplicate))
         with pytest.raises(PlanValidationError, match="project plan"):
             parse_swarm_plan_json(json.dumps(duplicate))
     assert SwarmPlanProposal.model_json_schema() == before
@@ -296,10 +297,12 @@ def test_legacy_generator_cannot_claim_it_consumes_other_worker_results(
     policy: PermissionPolicy, field: str
 ) -> None:
     proposal = _plan(_mixed_nodes(field, "code.generate_python"))
-    with pytest.raises(PlanValidationError, match="legacy.*dependencies"):
+    with pytest.raises(PlanValidationError, match="legacy.*dependencies") as validated:
         validate_swarm_plan(proposal, policy=policy)
-    with pytest.raises(PlanValidationError, match="legacy.*dependencies"):
+    assert validated.value.diagnostic_code == "legacy_code_dependencies"
+    with pytest.raises(PlanValidationError, match="legacy.*dependencies") as parsed:
         parse_swarm_plan_json(json.dumps(proposal))
+    assert parsed.value.diagnostic_code == "legacy_code_dependencies"
     decision = {
         "schema_version": "1.0",
         "status": "continue",
