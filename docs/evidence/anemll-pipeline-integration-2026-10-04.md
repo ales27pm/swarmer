@@ -39,4 +39,22 @@ La révision `6bea3ce` a été recompilée en **112,36 s** et installée avec su
 
 Le contrôle des contrats a ensuite été confronté aux descriptions **Core ML réelles** sur Mac : chargement CPU des embeddings, de la tête et de `infer`, description publique `MLModelAsset` pour `prefill`. Les tenseurs fixes sont exposés comme des ensembles de **forme unique** (`enumerated`), tandis que seule la sortie dynamique des embeddings est `unspecified`. Le validateur exigeait ce dernier type partout : cette interprétation des métadonnées était incorrecte. Le correctif exige maintenant le singleton exact pour les formes fixes, conserve le cas vide dynamique, et refuse plages, formes alternatives et dimensions différentes. Les dumps se trouvent dans `anemll-integration-20261004/contract-probe` ; ils ne constituent pas une mesure de prédiction ni d'activité ANE.
 
-Les reçus privés se trouvent dans `Library/Logs/SwarmerQualification/CoreML/anemll-native-runtime-20261004/checks` et `anemll-integration-20261004`. La génération dans monGARS reste à qualifier après cette correction. Même un succès en configuration CPU + Neural Engine ne mesure pas à lui seul l'activité matérielle du Neural Engine.
+Les reçus privés se trouvent dans `Library/Logs/SwarmerQualification/CoreML/anemll-native-runtime-20261004/checks` et `anemll-integration-20261004`. Le chemin de génération est confirmé dans les essais ci-dessous ; sa qualité et son équivalence à la référence restent à qualifier. Même un succès en configuration CPU + Neural Engine ne mesure pas à lui seul l'activité matérielle du Neural Engine.
+
+
+## Qualification iPhone après les deux corrections
+
+La révision `c4eebc5` est compilée en **117,84 s**, signée et installée par IPA complète. La session privée iPhone confirme un chargement complet en **44,10 s**, `cpuAndNeuralEngine`, sans erreur. Le tokenizer et les contrats réels sont acceptés. Les poids déjà importés sont conservés.
+
+| Demande réelle, température 0 | Résultat | Durée acceptation→fin API |
+| --- | --- | ---: |
+| « Réponds uniquement : Modèle prêt. » | Réponse différente de la phrase requise, 16 tokens, arrêt normal | 1,281 s |
+| Deux plus trois, nombre seul, en français | `27`, réponse incorrecte, 1 token | 0,319 s |
+| Répétition exacte du premier prompt après le calcul | Explication de 337 tokens, arrêt normal ; résultat différent | 19,073 s |
+| Même calcul en anglais | `5`, correct, 1 token | 0,305 s |
+
+Ces durées incluent le traitement API, pas uniquement l'inférence. Chaque appel demande un plafond de 1 024 tokens ; le runtime applique l'espace réellement disponible dans le contexte compilé de 512 tokens sans modifier les réglages enregistrés.
+
+**Statut expérimental.** Téléchargement épinglé, import, chargement et génération sont démontrés dans monGARS sur l'iPhone. Cela ne qualifie ni l'exactitude en français, ni l'isolation du cache entre requêtes, ni la parité avec l'application ANEMLL de référence. La variation du prompt répété est observée ; elle ne prouve pas à elle seule une fuite de cache ou un défaut des poids. Les appels `MLTensor` diffèrent du chemin `MLFeatureProvider` de référence : une comparaison contrôlée des mêmes tokens, états et logits est la prochaine vérification, avant une modification spéculative. Apple documente les [opérations de tenseur asynchrones](https://developer.apple.com/videos/play/wwdc2024/10161/) et la [sérialisation de l'état](https://developer.apple.com/documentation/coreml/mlstate) ; ces règles seules ne démontrent pas la cause de cet écart.
+
+Reçu privé : `Library/Logs/SwarmerQualification/CoreML/anemll-integration-20261004/contract-fix/qualification-receipt.json`. Aucun benchmark de qualité global ni mesure d'activité matérielle ANE n'a été réalisé. Le backend n'a pas été déployé dans ce lot.
