@@ -126,3 +126,97 @@ counted as runtime success.
 
 The full memory cohort has not been activated by these checks. A new supervised
 attempt and independent live verification remain required.
+
+## Second attempt: effective binding rejected, automatic recovery verified
+
+The new `cohort_stopfix_e462968c1a` operation ran on 4 October UTC. Its fresh
+read-only preparation succeeded in 2.2 seconds, with baseline SHA256
+`3300c7fb0c2a56a55a6bb93d75024ce0e282fdee7131c3abc3706ca249f45ca0`.
+The held Mac receipt was bound to this new operation. The nine services stopped,
+and the new owned-stop normalization passed for API and Studio. Candidate
+binding files were written, but `verify_bindings` rejected their effective
+systemd configuration with `effective_cohort_binding_differs`.
+
+This failure occurred **before offline migration and capability metadata
+commit**. The journal contains neither intent. Automatic recovery restored the
+previous bindings, released the website write reservation before startup and
+completed `ubuntu-rolled-back-mac-held`. The deployment command returned exit 1
+after 29.9 seconds; this is a failed activation with successful recovery, not a
+successful release. Its normal `ExecStopPost` recovery recognized the completed
+rollback and did not repeat it.
+
+A separate supervised `verify` command passed in 5.8 seconds. The production
+database remains schema 27, foreign-key verification reports no violations and
+API health returns HTTP 200. No backup was restored. Root restored the original
+Mac plist and bootstrapped the old Swift worker; launchd reported PID 6386, and
+the server recorded it online at `2026-10-04T01:00:40.569781+00:00`.
+
+The immutable journal SHA256 is
+`a8fba804ea91af92b45518aa1a30b3a97168b09a67fc9c8488179529098b68bb`.
+The command results, Mac restoration receipt and copied journal are retained
+under `root-cohort-stopfix-transfer-01/`; the copied readback SHA256 is
+`5c118c697ece81f68d364ed5c4112c4cf4733b0749bd3f6d808f231cf5b3a567`.
+Diagnosis and correction of the rejected effective binding must precede a new
+activation attempt; the failed operation and its pins remain unchanged.
+
+The manager journal identifies the binding defect: all eight new drop-ins used
+`WorkingDirectory="/home/..."`. The installed systemd parser rejected those
+assignments as `WorkingDirectory= path is not absolute`, leaving the previous
+working directories effective. The expected paths and template paths agree
+after removing those literal quotes; the problem is the unit directive's
+serialization, not a decision to change the research worker's directory.
+`ExecStart` quoting is a separate grammar and must remain intact.
+
+The diagnostic was read with the host's local time window, 3 October
+20:57–20:59, and retained as
+`coordinated-activation-243e913-bindingfix/checks/root-cause/systemd-parser-diagnostics.json`,
+SHA256 `92fafd161a418e2e157d6d7c923af381ee89cf501942baacdc4522a461052c79`.
+The replacement must validate all eight rendered bindings before stopping any
+service and exercise the installed systemd parser on disposable unit files.
+
+An independent read-only review additionally verified the nine old runtime
+bindings and sources, unchanged protected rows and model-call rows, and zero
+capability-audit rows for this failed operation. Its receipt is
+`coordinator-independent-review-20261003/stopfix-01/rollback-review-receipt.json`,
+SHA256 `1dbbce1ed3f83927ac734a3d047a7689eafa638003573a0aecfad519045bd136`.
+
+## Third attempt: later drop-ins override the candidate
+
+The binding correction passed 98 integrated tests, 15 independent tests and
+16 real Ubuntu parser cases. The eight old quoted directives were rejected;
+the eight corrected files were accepted without stderr. These checks proved
+individual syntax and the adapter's expected runtime directories, but did not
+exercise every layer of the installed systemd unit configurations.
+
+The fresh `cohort_bindingfix_0a3619b77e` operation used manifest
+`7c268dda55f28910280177704b264930019466610a3541bb1803f3fb3ee5face`,
+configuration `2f6da7640332d51437d18bbd7a297db6e5b1af35369b5f71ab4dd5bb1154a83e`
+and baseline `ed6bf8ad14450adfaec41895ab643c3f364d3b7320d5a736acff5ad5c47d34b0`.
+Its effective-binding check stopped on
+`effective_cohort_binding_differs:swarmer-project-worker:argv` before migration
+or metadata application. Automatic recovery completed in 29.3 seconds; the
+independent supervised verification passed in 5.8 seconds. The original Mac
+plist was restored and its worker bootstrapped afterward. No database backup
+was restored.
+
+Readback identified a separate ordering defect: the proposed drop-in name
+begins with twelve `z` characters, but project and text workers have existing
+drop-ins beginning with seventeen. Their later `ExecStart` and
+`WorkingDirectory` assignments override the candidate. The last project file
+is `zzzzzzzzzzzzzzzzz-2100-completion-focus.conf`; the text worker's last file
+is `zzzzzzzzzzzzzzzzz-800-writing-handoff.conf`. The parser fixture lacked these
+existing layers and therefore could not detect this defect.
+
+The corrected deployment must prove the effective configuration of all eight
+complete unit stacks, including a negative control with the shadowed filename,
+and reject a candidate filename that is not ordered after all current drop-ins
+before stopping services. Existing drop-ins must remain byte-identical and
+must be restored by removing only the deployment's own file.
+
+Evidence is retained under `root-cohort-bindingfix-transfer-01/`. The immutable
+rollback journal SHA256 is
+`dfd94b04ec938e7518390ff92e60b2e56a9644fcb33e113ed05ec65b6c2ab964`.
+Independent readback verified nine old runtimes, API and Studio health,
+schema 27, unchanged protected/model-call rows and no metadata application:
+`coordinator-independent-review-20261003/bindingfix-01/rollback-and-unit-layers-readback.json`,
+SHA256 `0a96ea496bb63a90976af9f9d0b386223a86bf82ecadf25c4e1aa90d65737628`.
