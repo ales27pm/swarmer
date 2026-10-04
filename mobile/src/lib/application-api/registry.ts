@@ -275,6 +275,14 @@ if (inference.isCoreMLDiagnosticsAvailable()) {
     return withNativeOperation("probe", () => inference.probeCoreMLFixture(input));
   }, { ...device, ...mutation, requiresForeground: true });
 }
+if (inference.isCoreMLDirectLoadAvailable()) {
+  register<{ fixtureID: CoreMLProbeFixture; computeUnits: inference.CoreMLComputeUnits }>("models.coreml-direct-load", object({
+    fixtureID: choice(...COREML_PROBE_FIXTURES), computeUnits: choice("all", "cpuOnly", "cpuAndGPU", "cpuAndNeuralEngine"),
+  }), (input) => {
+    if (!inference.isCoreMLDirectLoadAvailable()) throw new ApplicationApiError("unavailable", "Chargement direct réservé à la version de développement.");
+    return withNativeOperation("probe", () => inference.directLoadCoreMLFixture(input));
+  }, { ...device, ...mutation, requiresForeground: true });
+}
 if (inference.isCoreMLDiagnosticImportAvailable()) {
   register("models.coreml-import", noInput, (_, context) => withNativeOperation("import", async (assertActive) => {
     if (!inference.isCoreMLDiagnosticImportAvailable()) throw new ApplicationApiError("unavailable", "Import diagnostique indisponible.");

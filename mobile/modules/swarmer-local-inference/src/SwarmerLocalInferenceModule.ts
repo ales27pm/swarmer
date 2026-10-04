@@ -14,6 +14,8 @@ import type {
 declare class SwarmerLocalInferenceModule extends NativeModule {
   readonly coreMLDiagnosticsAvailable?: boolean;
   readonly coreMLDiagnosticImportAvailable?: boolean;
+  readonly coreMLDirectLoadAvailable?: boolean;
+  directLoadCoreMLFixture?(fixtureID: string, computeUnits: CoreMLComputeUnits): Promise<string>;
   importCoreMLDiagnosticCandidate?(): Promise<LocalModel>;
   probeCoreMLFixture?(fixtureID: string, computeUnits: CoreMLComputeUnits): Promise<string>;
   capabilities(): Promise<LocalInferenceCapabilities>;

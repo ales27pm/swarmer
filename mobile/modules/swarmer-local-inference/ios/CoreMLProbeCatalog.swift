@@ -2,7 +2,7 @@
 // Kept independent of Core ML so its Release exclusion and manifest bounds can
 // be tested without loading or compiling a model.
 enum CoreMLProbeCatalog {
-  static let maximumFixtureCount = 11
+  static let maximumFixtureCount = 12
   #if DEBUG
   static let fixtureIDs: Set<String> = [
     "attention-stateful-fused", "attention-stateful-decomposed",
@@ -13,6 +13,7 @@ enum CoreMLProbeCatalog {
     "dolphin-attention-int4-perchannel-cache28-slot1",
     "dolphin-attention-int4-perchannel-cache28-two-blocks-independent",
     "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states",
+    "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states",
   ]
   #else
   static let fixtureIDs: Set<String> = []

@@ -41,6 +41,11 @@ actor LocalInferenceCoordinator {
     let task: Task<CoreMLFixtureProbe.Report, Never>
   }
   private var fixtureProbeOperation: FixtureProbeOperation?
+  private struct DirectLoadOperation: Sendable {
+    let id: UUID
+    let task: Task<CoreMLDirectLoadProbe.Report, Never>
+  }
+  private var directLoadOperation: DirectLoadOperation?
   private var diagnosticImportID: UUID?
   #endif
   private var embeddingEpoch = 0
@@ -170,6 +175,70 @@ actor LocalInferenceCoordinator {
       message = nil
     }
     return try report.json()
+  }
+
+  func directLoadCoreMLFixture(fixtureID: String, computeUnits: String) async throws -> String {
+    guard CoreMLFixtureProbe.fixtureIDs.contains(fixtureID),
+          let units = try CoreMLDiagnosticComputeUnits.requested(computeUnits, runtime: "coreml") else {
+      throw CoreMLDiagnosticOptionError()
+    }
+    let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
+    guard !snapshot.inactive, !activity.isSuspended, !diagnosticReserved, !embeddingReserved,
+          handle == nil, state == "idle" || state == "failed", importOperation == nil,
+          loadOperation == nil, generationOperation == nil else { throw LocalInferenceError.generationInProgress }
+    let id = UUID()
+    diagnosticReserved = true
+    state = "loading"
+    message = nil
+    currentRuntime = nil
+    currentModelId = nil
+    currentRevision = nil
+    coreMLLoadDiagnostic = nil
+    let task = Task.detached(priority: .userInitiated) {
+      do {
+        try Task.checkCancellation()
+        let package = try CoreMLFixtureProbe.verifiedPackage(fixtureID: fixtureID)
+        return CoreMLDirectLoadProbe.run(packageURL: package, computeUnits: units.rawValue)
+      } catch {
+        return CoreMLDirectLoadProbe.failure(fixtureID: fixtureID, computeUnits: units.rawValue, error: error)
+      }
+    }
+    directLoadOperation = DirectLoadOperation(id: id, task: task)
+    let watchdog = Task {
+      do {
+        try await Task.sleep(nanoseconds: CoreMLFixtureProbe.timeoutSeconds * 1_000_000_000)
+        await self.cancelDirectLoad(id: id)
+      } catch { /* Completion cancels the watchdog. */ }
+    }
+    defer { watchdog.cancel() }
+    var report = await withTaskCancellationHandler {
+      await task.value
+    } onCancel: {
+      task.cancel()
+    }
+    // A blocking Core ML call cannot be forcibly interrupted. Keep admission
+    // reserved until it actually returns, and suppress a raced success.
+    if task.isCancelled || Task.isCancelled { report.cancel() }
+    if directLoadOperation?.id == id {
+      directLoadOperation = nil
+      diagnosticReserved = false
+      state = "idle"
+      message = nil
+    }
+    return try report.json()
+  }
+
+  private func cancelDirectLoad(id: UUID) async {
+    guard let operation = directLoadOperation, operation.id == id else { return }
+    state = "cancelling"
+    operation.task.cancel()
+    _ = await operation.task.value
+    if directLoadOperation?.id == id {
+      directLoadOperation = nil
+      diagnosticReserved = false
+      state = "idle"
+      message = nil
+    }
   }
 
   private func cancelFixtureProbe(id: UUID) async {
@@ -488,6 +557,10 @@ actor LocalInferenceCoordinator {
 
   func cancel() async {
     #if DEBUG
+    if let operation = directLoadOperation {
+      await cancelDirectLoad(id: operation.id)
+      return
+    }
     if let operation = fixtureProbeOperation {
       await cancelFixtureProbe(id: operation.id)
       return
@@ -515,6 +588,7 @@ actor LocalInferenceCoordinator {
     lifecycleEpoch += 1
     let invalidatedEpoch = lifecycleEpoch
     #if DEBUG
+    if let operation = directLoadOperation { await cancelDirectLoad(id: operation.id) }
     if let operation = fixtureProbeOperation { await cancelFixtureProbe(id: operation.id) }
     #endif
     if importOperation != nil || loadOperation != nil || generationOperation != nil {
@@ -569,6 +643,7 @@ actor LocalInferenceCoordinator {
 
   func prepareForInactivity() async {
     #if DEBUG
+    if let operation = directLoadOperation { await cancelDirectLoad(id: operation.id) }
     if diagnosticImportID != nil { await cancelImport() }
     if let operation = fixtureProbeOperation { await cancelFixtureProbe(id: operation.id) }
     #endif
@@ -585,6 +660,10 @@ actor LocalInferenceCoordinator {
     let snapshot = await BackgroundGenerationController.shared.activitySnapshot()
     guard activity.reconcile(inactive: snapshot.inactive, epoch: epoch), snapshot.inactive else { return }
     #if DEBUG
+    if let operation = directLoadOperation {
+      await cancelDirectLoad(id: operation.id)
+      guard activity.isCurrent(epoch), activity.isSuspended else { return }
+    }
     if diagnosticImportID != nil {
       await cancelImport()
       guard activity.isCurrent(epoch), activity.isSuspended else { return }

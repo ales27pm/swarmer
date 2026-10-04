@@ -13,7 +13,7 @@ const result = {
 const parse = (v: unknown) => parseCoreMLProbeReport(JSON.stringify(v), fixtureID, computeUnits);
 
 describe("bounded Core ML fixture receipts", () => {
-  it("preserves the ten existing fixtures and adds only the separated-state two-block attention ablation", () => {
+  it("preserves the eleven existing fixtures and adds only the cache2 separated-state ablation", () => {
     expect(COREML_PROBE_FIXTURES).toEqual([
       "attention-stateful-fused", "attention-stateful-decomposed",
       "attention-stateless-fused", "attention-stateless-decomposed",
@@ -23,6 +23,7 @@ describe("bounded Core ML fixture receipts", () => {
       "dolphin-attention-int4-perchannel-cache28-slot1",
       "dolphin-attention-int4-perchannel-cache28-two-blocks-independent",
       "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states",
+      "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states",
     ]);
   });
   it.each([
@@ -38,6 +39,9 @@ describe("bounded Core ML fixture receipts", () => {
     { cacheFixture: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", units: "cpuOnly" },
     { cacheFixture: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", units: "cpuAndGPU" },
     { cacheFixture: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", units: "cpuAndNeuralEngine" },
+    { cacheFixture: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", units: "cpuOnly" },
+    { cacheFixture: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", units: "cpuAndGPU" },
+    { cacheFixture: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", units: "cpuAndNeuralEngine" },
   ] as const)("accepts $cacheFixture receipts for $units without asserting hardware execution", ({ cacheFixture, units }) => {
     const receipt = { ...result, fixtureID: cacheFixture, computeUnits: units };
     expect(parseCoreMLProbeReport(JSON.stringify(receipt), cacheFixture, units)).toEqual(receipt);

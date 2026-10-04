@@ -1,3 +1,4 @@
+import { parseCoreMLDirectLoadReport, type CoreMLDirectLoadReport } from "./coreml-direct-load";
 import { requireOptionalNativeModule } from "expo";
 import { appendLocalSymbolicContext, type SymbolicContext } from "./api/local-memory-context";
 
@@ -86,6 +87,8 @@ export type LocalToolProposal = ToolProposalInput | NoToolProposal;
 type NativeLocalInferenceModule = {
   coreMLDiagnosticsAvailable?: boolean;
   coreMLDiagnosticImportAvailable?: boolean;
+  coreMLDirectLoadAvailable?: boolean;
+  directLoadCoreMLFixture?(fixtureID: string, computeUnits: CoreMLComputeUnits): Promise<string>;
   importCoreMLDiagnosticCandidate?(): Promise<unknown>;
   probeCoreMLFixture?(fixtureID: string, computeUnits: CoreMLComputeUnits): Promise<string>;
   capabilities(): Promise<unknown>;
@@ -126,6 +129,11 @@ const nativeModule = requireOptionalNativeModule<NativeLocalInferenceModule>(
 // capability, not the Metro development flag, controls this diagnostic.
 export function isCoreMLDiagnosticsAvailable(): boolean {
   return nativeModule?.coreMLDiagnosticsAvailable === true;
+}
+
+export function isCoreMLDirectLoadAvailable(): boolean {
+  return isCoreMLDiagnosticsAvailable() && nativeModule?.coreMLDirectLoadAvailable === true
+    && typeof nativeModule.directLoadCoreMLFixture === "function";
 }
 
 export function isCoreMLDiagnosticImportAvailable(): boolean {
@@ -711,6 +719,15 @@ export async function probeCoreMLFixture(input: { fixtureID: CoreMLProbeFixture;
     throw new Error("Le diagnostic nécessite les fixtures et la version iOS de développement correspondantes.");
   }
   return parseCoreMLProbeReport(await module.probeCoreMLFixture(input.fixtureID, input.computeUnits), input.fixtureID, input.computeUnits);
+}
+
+export async function directLoadCoreMLFixture(input: { fixtureID: CoreMLProbeFixture; computeUnits: CoreMLComputeUnits }): Promise<CoreMLDirectLoadReport> {
+  assertCoreMLDiagnosticRequest({ runtime: "coreml", coreMLComputeUnits: input.computeUnits }, isCoreMLDirectLoadAvailable());
+  const module = requireModule();
+  if (!COREML_PROBE_FIXTURES.includes(input.fixtureID) || typeof module.directLoadCoreMLFixture !== "function") {
+    throw new Error("Le chargement direct nécessite les fixtures et la version iOS de développement correspondantes.");
+  }
+  return parseCoreMLDirectLoadReport(await module.directLoadCoreMLFixture(input.fixtureID, input.computeUnits), input.fixtureID, input.computeUnits);
 }
 
 export async function getLocalInferenceStatus(): Promise<LocalInferenceStatus> {

@@ -14,14 +14,15 @@ struct CoreMLProbeCatalogTests {
       "dolphin-attention-int4-perchannel-cache28-two-blocks",
       "dolphin-attention-int4-perchannel-cache28-slot1",
       "dolphin-attention-int4-perchannel-cache28-two-blocks-independent",
+      "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states",
     ]
-    let separated = "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states"
+    let separated = "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states"
     let all = previous + [separated]
-    try expect(CoreMLProbeCatalog.maximumFixtureCount == 11, "Fixture budget changed unexpectedly")
+    try expect(CoreMLProbeCatalog.maximumFixtureCount == 12, "Fixture budget changed unexpectedly")
     #if DEBUG
-    try expect(CoreMLProbeCatalog.fixtureIDs == Set(all), "Catalog changed more than the eleventh fixture")
-    try expect(CoreMLProbeCatalog.accepts(previous), "Previous ten-fixture bundle must remain accepted")
-    try expect(CoreMLProbeCatalog.accepts(all), "Eleven-fixture bundle must be accepted")
+    try expect(CoreMLProbeCatalog.fixtureIDs == Set(all), "Catalog changed more than the twelfth fixture")
+    try expect(CoreMLProbeCatalog.accepts(previous), "Previous eleven-fixture bundle must remain accepted")
+    try expect(CoreMLProbeCatalog.accepts(all), "Twelve-fixture bundle must be accepted")
     for id in all {
       try expect(CoreMLProbeCatalog.accepts([id]), "Known fixture was rejected")
     }

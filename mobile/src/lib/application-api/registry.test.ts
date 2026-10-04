@@ -35,15 +35,16 @@ jest.mock("@/lib/api/client", () => ({
 jest.mock("@/lib/local-inference", () => ({
   ...jest.requireActual<typeof import("@/lib/local-inference")>("@/lib/local-inference"),
   generateLocalProposal: jest.fn(), loadLocalModel: jest.fn(), cancelLocalGeneration: jest.fn(), unloadLocalModel: jest.fn(), downloadLocalGgufModel: jest.fn(),
-  importLocalModel: jest.fn(), probeCoreMLFixture: jest.fn(), importCoreMLDiagnosticCandidate: jest.fn(),
+  importLocalModel: jest.fn(), probeCoreMLFixture: jest.fn(), directLoadCoreMLFixture: jest.fn(), importCoreMLDiagnosticCandidate: jest.fn(),
   getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(),
   isCoreMLDiagnosticsAvailable: jest.fn(() => true),
+  isCoreMLDirectLoadAvailable: jest.fn(() => true),
   isCoreMLDiagnosticImportAvailable: jest.fn(() => true),
 }));
 
 const developmentGlobal = globalThis as typeof globalThis & { __DEV__: boolean };
 describe("application API contract", () => {
-  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true); });
+  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDirectLoadAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true); });
 
   it("publishes versioned real commands with no placeholder implementations", () => {
     const catalog = applicationApi.catalog();
@@ -79,6 +80,9 @@ describe("application API contract", () => {
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", computeUnits: "cpuOnly" },
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", computeUnits: "cpuAndGPU" },
     { fixtureID: "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states", computeUnits: "cpuAndNeuralEngine" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", computeUnits: "cpuOnly" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", computeUnits: "cpuAndGPU" },
+    { fixtureID: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", computeUnits: "cpuAndNeuralEngine" },
   ])("restricts Core ML probe $fixtureID/$computeUnits to its native diagnostic capability", async (input) => {
     jest.mocked(native.probeCoreMLFixture).mockResolvedValue({ schemaVersion: 1, ...input, outcome: "passed", stage: "complete",
       loadMilliseconds: 1, predictionMilliseconds: 1, preferredDeviceCounts: { cpu: 0, gpu: 0, neuralEngine: 1, unknown: 0 },
@@ -94,13 +98,33 @@ describe("application API contract", () => {
     expect(native.probeCoreMLFixture).toHaveBeenCalledTimes(1);
   });
 
-  it("publishes the bounded eleven-fixture diagnostic catalog", () => {
+  it("publishes the bounded twelve-fixture diagnostic catalog", () => {
     const command = applicationApi.catalog().commands.find(item => item.name === "models.coreml-probe");
     expect(command?.inputSchema).toMatchObject({ properties: { fixtureID: { enum: expect.arrayContaining([
       "dolphin-attention-int4-perchannel-cache28-two-blocks-separated-states",
+      "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states",
     ]) } } });
     const properties = command?.inputSchema.properties as Record<string, { enum: string[] }>;
-    expect(properties.fixtureID.enum).toHaveLength(11);
+    expect(properties.fixtureID.enum).toHaveLength(12);
+  });
+
+  it("exposes direct fixture load separately and rejects external paths or non-native capability", async () => {
+    const input = { fixtureID: "dolphin-attention-int4-perchannel-cache2-two-blocks-separated-states", computeUnits: "cpuAndNeuralEngine" } as const;
+    const receipt = { schemaVersion: 1, ...input, loadingAPI: "MLModel.init", configuration: "defaults_except_computeUnits",
+      outcome: "loaded", stage: "complete", compileMilliseconds: 1, loadMilliseconds: 2, modelFileSHA256: "a".repeat(64),
+      errors: [], stateCreated: false, predictionsPerformed: 0, computePlanRequested: false, hardwareExecutionMeasured: false } as const;
+    jest.mocked(native.directLoadCoreMLFixture).mockResolvedValue({ ...receipt, errors: [] });
+    expect((await applicationApi.execute("models.coreml-direct-load", input)).data).toEqual(receipt);
+    expect(applicationApi.catalog().commands.find(c => c.name === "models.coreml-direct-load")).toMatchObject({
+      requiresForeground: true, output: { dataType: "CoreMLDirectLoadReport", validation: "existing_parser" },
+    });
+    for (const bad of [{ ...input, fixtureID: "../../private" }, { ...input, path: "/private/model" }, { ...input, url: "https://untrusted.invalid" }, { ...input, computeUnits: "aneOnly" }]) {
+      await expect(applicationApi.execute("models.coreml-direct-load", bad)).rejects.toMatchObject({ code: "invalid_arguments" });
+    }
+    jest.mocked(native.isCoreMLDirectLoadAvailable).mockReturnValue(false);
+    await expect(applicationApi.execute("models.coreml-direct-load", input)).rejects.toMatchObject({ code: "unavailable" });
+    expect(native.directLoadCoreMLFixture).toHaveBeenCalledTimes(1);
+    expect(native.probeCoreMLFixture).not.toHaveBeenCalled();
   });
 
   it("exposes background status through the existing model status command without adding execution authority", async () => {

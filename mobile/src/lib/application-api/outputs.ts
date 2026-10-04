@@ -35,7 +35,7 @@ const types = {
   "audit.summary": "AuditSummary[]", "cache.summary": "CacheSummary",
   "outbox.status": "OutboxSummary", "outbox.drain": "MutationDrainResult", "models.capabilities": "LocalInferenceCapabilities",
   "models.list": "LocalModel[]", "models.status": "LocalInferenceStatus", "models.presets": "Record<LocalInferenceRuntime,LocalModelPreset>",
-  "models.coreml-probe": "CoreMLProbeReport", "models.load": "LocalInferenceStatus", "models.unload": "null", "models.download": "LocalModel", "models.download.cancel": "null",
+  "models.coreml-direct-load": "CoreMLDirectLoadReport", "models.coreml-probe": "CoreMLProbeReport", "models.load": "LocalInferenceStatus", "models.unload": "null", "models.download": "LocalModel", "models.download.cancel": "null",
   "models.import": "LocalModel", "models.coreml-import": "LocalModel", "iphone.requests.list": "CapabilityRequestPreview[]", "iphone.requests.get": "CapabilityRequestDetail",
   "iphone.requests.decide": "CapabilityDecisionSummary", "iphone.requests.execute": "CapabilityResult",
   "inference.generate": "LocalGenerationResult", "inference.cancel": "null", "settings.local.read": "LocalModelSettings|null", "settings.local.update": "null",
@@ -43,7 +43,7 @@ const types = {
   "code.review": "CodeReviewHandle", "code.prepareApproval": "CodeProposalApplication", "project.review": "ProjectReviewHandle", "project.prepareApproval": "CodeProposalApplication",
 } as const;
 
-const parsed = new Set(["models.coreml-import", "models.coreml-probe", "goals.memory-usage", "goals.evidence", "goals.evidence.record", "websites.capabilities", "websites.list", "websites.get", "websites.create", "websites.command", "websites.preview", "websites.prepare-publication", "websites.publish", "websites.screenshot", "goals.graph", "tasks.activity", "goals.activity", "project.swift.submit", "project.swift.status", "project.swift.cancel","activities.catalog", "goals.writing-draft", "goals.messages", "goals.conversation.open", "models.capabilities", "models.list", "models.status", "models.load", "models.download", "models.import", "inference.generate", "code.review", "project.review", "code.prepareApproval", "project.prepareApproval", "settings.local.read", "goals.plan.generate", "iphone.requests.list", "iphone.requests.get", "iphone.requests.decide", "iphone.requests.execute"]);
+const parsed = new Set(["models.coreml-direct-load", "models.coreml-import", "models.coreml-probe", "goals.memory-usage", "goals.evidence", "goals.evidence.record", "websites.capabilities", "websites.list", "websites.get", "websites.create", "websites.command", "websites.preview", "websites.prepare-publication", "websites.publish", "websites.screenshot", "goals.graph", "tasks.activity", "goals.activity", "project.swift.submit", "project.swift.status", "project.swift.cancel","activities.catalog", "goals.writing-draft", "goals.messages", "goals.conversation.open", "models.capabilities", "models.list", "models.status", "models.load", "models.download", "models.import", "inference.generate", "code.review", "project.review", "code.prepareApproval", "project.prepareApproval", "settings.local.read", "goals.plan.generate", "iphone.requests.list", "iphone.requests.get", "iphone.requests.decide", "iphone.requests.execute"]);
 export function outputDescriptor(command: string, available = true): CommandOutputDescriptor {
   return {
     contractVersion: "1.0", envelope: "ApplicationResult", dataType: Object.hasOwn(types, command) ? types[command as keyof typeof types] : "unavailable",
@@ -77,6 +77,7 @@ export type FeedbackReceipt = { id: string };
 export type OutboxSummary = { pending: number };
 
 type OutputTypes = {
+  CoreMLDirectLoadReport: import("@/lib/coreml-direct-load").CoreMLDirectLoadReport;
   CoreMLProbeReport: import("@/lib/coreml-probe").CoreMLProbeReport;
   MemoryUsagePage: import("@/lib/api/memory-usage").MemoryUsagePage;
   WebsiteCapabilities: import("@/lib/api/website-projects").WebsiteCapabilities;

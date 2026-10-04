@@ -499,6 +499,45 @@ enum CoreMLFixtureProbe {
   private static let maximumElements = 1_000_000
   private static let maximumPackageBytes = 32 * 1024 * 1024
 
+  // Share resource admission only. The direct loader does not use the fixture
+  // execution session, async loader, compute plan, state or prediction path.
+  static func verifiedPackage(fixtureID: String) throws -> URL {
+    guard fixtureIDs.contains(fixtureID),
+          let root = Bundle.main.url(forResource: "CoreMLProbeFixtures", withExtension: nil) else {
+      throw invalidResource()
+    }
+    let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+    guard rootValues.isDirectory == true, rootValues.isSymbolicLink == false else { throw invalidResource() }
+    let manifestURL = try resourceURL("manifest.json", root: root, directory: false)
+    let manifest = try JSONDecoder().decode(Manifest.self, from: boundedData(manifestURL, maximumBytes: 128 * 1024))
+    guard manifest.schemaVersion == 1, CoreMLProbeCatalog.accepts(manifest.fixtures.map(\.id)),
+          let fixture = manifest.fixtures.first(where: { $0.id == fixtureID }),
+          (1...3).contains(fixture.steps.count),
+          fixture.absoluteTolerance.isFinite, (0...0.1).contains(fixture.absoluteTolerance),
+          fixture.relativeTolerance.isFinite, (0...0.1).contains(fixture.relativeTolerance) else {
+      throw invalidResource()
+    }
+    let package = try resourceURL(fixture.modelPath, root: root, directory: true)
+    guard package.pathExtension == "mlpackage",
+          package.deletingPathExtension().lastPathComponent == fixtureID else { throw invalidResource() }
+    try verifyPackage(package, files: fixture.modelFiles)
+    // Retain the existing bounded tensor/hash admission before compilation.
+    var totalElements = 0
+    for step in fixture.steps {
+      guard (1...16).contains(step.inputs.count), (1...4).contains(step.outputs.count),
+            Set(step.inputs.map(\.name)).count == step.inputs.count,
+            Set(step.outputs.map(\.name)).count == step.outputs.count else { throw invalidResource() }
+      for input in step.inputs {
+        guard input.dtype == "float16" || input.dtype == "int32" else { throw invalidResource() }
+      }
+      for tensor in step.inputs + step.outputs {
+        totalElements += try tensorValues(tensor, root: root).count
+        guard totalElements <= maximumElements else { throw invalidResource() }
+      }
+    }
+    return package
+  }
+
   private struct Manifest: Decodable {
     let schemaVersion: Int
     let fixtures: [Fixture]
