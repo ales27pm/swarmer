@@ -303,8 +303,15 @@ def test_migration_reconciles_duplicate_nonterminal_request_fingerprints(
     )
     with sqlite3.connect(test_app.state.settings.db_path) as db:
         # Restore the actual pre-31 memory layout before exercising an older upgrade.
-        assert db.execute("PRAGMA user_version").fetchone() == (33,)
-        for name in ("project_execution_revision_links", "project_execution_acceptances"):
+        assert db.execute("PRAGMA user_version").fetchone() == (34,)
+        for name in (
+            "memory_procedure_evidence",
+            "memory_procedure_lessons",
+            "memory_lesson_requests",
+            "memory_execution_profiles",
+            "project_execution_revision_links",
+            "project_execution_acceptances",
+        ):
             assert db.execute(f"SELECT COUNT(*) FROM {name}").fetchone() == (0,)
             db.execute(f"DROP TABLE {name}")
         assert db.execute("SELECT COUNT(*) FROM memory_local_context_receipts").fetchone() == (0,)

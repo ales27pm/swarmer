@@ -98,6 +98,7 @@ async def schema29_fixture(tmp_path: Path, monkeypatch) -> StateService:
         patch.setattr(state_service, "migrate_memory_view_vectors", leave_schema29)
         patch.setattr(state_service, "migrate_local_context_receipts", leave_schema29)
         patch.setattr(state_service, "migrate_project_execution_receipts", leave_schema29)
+        patch.setattr(state_service, "migrate_memory_lessons", leave_schema29)
         await state.initialize()
         # Construct a historical schema29 write, which had only the index-view
         # intention and no schema31 table to purge.

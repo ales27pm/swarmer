@@ -194,6 +194,7 @@ async def test_actual_startup_from_committed_schema30_is_model_free_and_preserve
         patch.setattr(state_service, "migrate_memory_view_vectors", stop_at_committed_schema30)
         patch.setattr(state_service, "migrate_local_context_receipts", stop_at_committed_schema30)
         patch.setattr(state_service, "migrate_project_execution_receipts", stop_at_committed_schema30)
+        patch.setattr(state_service, "migrate_memory_lessons", stop_at_committed_schema30)
         await state.initialize()
     async with aiosqlite.connect(state.db_path) as db:
         await db.execute(
@@ -218,7 +219,7 @@ async def test_actual_startup_from_committed_schema30_is_model_free_and_preserve
     before = await database_snapshot(state.db_path)
     await state.initialize()
     after = await database_snapshot(state.db_path)
-    assert after["version"] == (33,)
+    assert after["version"] == (34,)
     assert {name: after["tables"][name] for name in before["tables"]} == before["tables"]
     assert after["tables"]["memory_view_embeddings"]["rows"] == []
     assert set(after["tables"]) - set(before["tables"]) == {
@@ -227,6 +228,10 @@ async def test_actual_startup_from_committed_schema30_is_model_free_and_preserve
         "memory_local_context_sources",
         "project_execution_acceptances",
         "project_execution_revision_links",
+        "memory_execution_profiles",
+        "memory_procedure_lessons",
+        "memory_procedure_evidence",
+        "memory_lesson_requests",
     }
     assert forbidden.calls == 0
     await state.initialize()

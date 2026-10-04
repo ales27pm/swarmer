@@ -125,6 +125,7 @@ from app.services.memory_inspection import (
     read_memory_usage,
 )
 from app.services.memory_inspection_contracts import MemoryUsagePage
+from app.services.memory_lesson_routes import install_lesson_routes
 from app.services.memory_local_context import (
     LocalContextConflict,
     LocalContextReplay,
@@ -960,6 +961,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
         supplied = x_mongars_operator_token or ""
         if not secrets.compare_digest(configured.get_secret_value(), supplied):
             raise HTTPException(status_code=403, detail="operator authentication required")
+
+    install_lesson_routes(app, settings.db_path, require_device, require_pairing_operator)
 
     async def close_websocket_bounded(websocket: WebSocket, *, code: int) -> None:
         try:

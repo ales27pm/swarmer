@@ -3411,6 +3411,446 @@ paths:
       description: Read proposed multilingual labels in the exact requested scope. Concept
         identity and labels do not grant authority or establish that a claim is true.
 
+  /memory/execution-profiles/{profile_id}:
+    put:
+      summary: Approve
+      operationId: approve_memory_execution_profiles__profile_id__put
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Profile Id
+      - name: x-mongars-operator-token
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Mongars-Operator-Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileApproval'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Bounded request byte limit exceeded
+      tags:
+      - Memory
+      security:
+      - operatorToken: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+    get:
+      summary: Profile
+      operationId: profile_memory_execution_profiles__profile_id__get
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Profile Id
+      - name: x-mongars-operator-token
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Mongars-Operator-Token
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      tags:
+      - Memory
+      security:
+      - operatorToken: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+  /memory/execution-profiles/{profile_id}/withdraw:
+    post:
+      summary: Revoke
+      operationId: revoke_memory_execution_profiles__profile_id__withdraw_post
+      parameters:
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Profile Id
+      - name: x-mongars-operator-token
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Mongars-Operator-Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileWithdrawal'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Bounded request byte limit exceeded
+      tags:
+      - Memory
+      security:
+      - operatorToken: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+  /projects/{project_id}/lessons:
+    post:
+      summary: Propose
+      operationId: propose_projects__project_id__lessons_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Project Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LessonProposal'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LessonView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '413':
+          description: Bounded request byte limit exceeded
+      tags:
+      - Memory
+      security:
+      - bearerAuth: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+    get:
+      summary: Listing
+      operationId: listing_projects__project_id__lessons_get
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Project Id
+      - name: after_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          - type: 'null'
+          title: After Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LessonPage'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      tags:
+      - Memory
+      security:
+      - bearerAuth: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+  /projects/{project_id}/lessons/{lesson_id}:
+    get:
+      summary: Get
+      operationId: get_projects__project_id__lessons__lesson_id__get
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Project Id
+      - name: lesson_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Lesson Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LessonView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+      tags:
+      - Memory
+      security:
+      - bearerAuth: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+  /projects/{project_id}/lessons/{lesson_id}/assess:
+    post:
+      summary: Assess
+      operationId: assess_projects__project_id__lessons__lesson_id__assess_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Project Id
+      - name: lesson_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Lesson Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LessonAssessment'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LessonView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '413':
+          description: Bounded request byte limit exceeded
+      tags:
+      - Memory
+      security:
+      - bearerAuth: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+  /projects/{project_id}/lessons/{lesson_id}/withdraw:
+    post:
+      summary: Withdraw
+      operationId: withdraw_projects__project_id__lessons__lesson_id__withdraw_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Project Id
+      - name: lesson_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Lesson Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LessonWithdrawal'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LessonView'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: CAS, idempotency or evidence binding conflict
+        '404':
+          description: Project, lesson or profile does not exist
+        '503':
+          description: Storage or operator authentication unavailable
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/SecureTransportRequired'
+        '413':
+          description: Bounded request byte limit exceeded
+      tags:
+      - Memory
+      security:
+      - bearerAuth: []
+      description: Conditional worker-reported observations only. No execution, attestation
+        or policy promotion. Responses are not cached. Read applicability is a snapshot,
+        not dispatch authorization.
+
 x-websocket-endpoints:
   /ws:
     authentication: One-use ticket from POST /ws/ticket in query parameter `ticket`
@@ -9587,3 +10027,540 @@ components:
       - symbolic_context
       - receipt
       title: LocalContextResponse
+
+    LessonAssessment:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Request Id
+        expected_version:
+          type: integer
+          maximum: 2147483647.0
+          minimum: 0.0
+          title: Expected Version
+        acceptance_ids:
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          type: array
+          maxItems: 8
+          minItems: 1
+          title: Acceptance Ids
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      - acceptance_ids
+      title: LessonAssessment
+    LessonPage:
+      properties:
+        consistency:
+          type: string
+          const: page_snapshot
+          title: Consistency
+          default: page_snapshot
+        items:
+          items:
+            $ref: '#/components/schemas/LessonView'
+          type: array
+          title: Items
+        has_more:
+          type: boolean
+          title: Has More
+        next_after_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next After Id
+      additionalProperties: false
+      type: object
+      required:
+      - items
+      - has_more
+      - next_after_id
+      title: LessonPage
+    LessonProposal:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Request Id
+        expected_version:
+          type: integer
+          maximum: 2147483647.0
+          minimum: 0.0
+          title: Expected Version
+        goal_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Goal Id
+        conversation_revision:
+          type: integer
+          minimum: 0.0
+          title: Conversation Revision
+        criterion_index:
+          type: integer
+          maximum: 19.0
+          minimum: 0.0
+          title: Criterion Index
+        criterion_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Criterion Sha256
+        revision_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Revision Id
+        source_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Source Sha256
+        profile_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Profile Id
+        profile_version:
+          type: integer
+          minimum: 1.0
+          title: Profile Version
+        runtime:
+          type: string
+          enum:
+          - python
+          - node
+          - python_node
+          title: Runtime
+        profiles:
+          items:
+            type: string
+            enum:
+            - python_build
+            - python_test
+            - node_build
+            - node_test
+          type: array
+          maxItems: 4
+          minItems: 2
+          title: Profiles
+        note_ref:
+          anyOf:
+          - $ref: '#/components/schemas/LessonNoteRef'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      - goal_id
+      - conversation_revision
+      - criterion_index
+      - criterion_sha256
+      - revision_id
+      - source_sha256
+      - profile_id
+      - profile_version
+      - runtime
+      - profiles
+      title: LessonProposal
+    LessonNoteRef:
+      properties:
+        memory_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Memory Id
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - memory_id
+      - revision
+      title: LessonNoteRef
+    LessonView:
+      properties:
+        schema_version:
+          type: string
+          const: procedure-lesson-v1
+          title: Schema Version
+          default: procedure-lesson-v1
+        lesson_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Lesson Id
+        project_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Project Id
+        version:
+          type: integer
+          title: Version
+        lifecycle:
+          type: string
+          enum:
+          - candidate
+          - assessed
+          - quarantined
+          - withdrawn
+          title: Lifecycle
+        observation:
+          type: string
+          enum:
+          - passed
+          - failed
+          - incomplete
+          - unknown
+          title: Observation
+        applicability:
+          type: string
+          enum:
+          - reported_conditions_match
+          - needs_revalidation
+          - withdrawn
+          title: Applicability
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+        candidate:
+          $ref: '#/components/schemas/LessonProposal'
+        evidence:
+          items:
+            $ref: '#/components/schemas/LessonEvidence'
+          type: array
+          title: Evidence
+        evidence_scope:
+          type: string
+          const: explicit_selection
+          title: Evidence Scope
+          default: explicit_selection
+        note:
+          anyOf:
+          - $ref: '#/components/schemas/LessonNote'
+          - type: 'null'
+        producer_assurance:
+          type: string
+          const: authenticated_lease_only
+          title: Producer Assurance
+          default: authenticated_lease_only
+        origin:
+          type: string
+          const: worker_reported_measurement
+          title: Origin
+          default: worker_reported_measurement
+        grants_authority:
+          type: boolean
+          const: false
+          title: Grants Authority
+          default: false
+        promotion:
+          type: string
+          const: none
+          title: Promotion
+          default: none
+      additionalProperties: false
+      type: object
+      required:
+      - lesson_id
+      - project_id
+      - version
+      - lifecycle
+      - observation
+      - applicability
+      - reasons
+      - candidate
+      - evidence
+      - note
+      title: LessonView
+    LessonEvidence:
+      properties:
+        acceptance_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Acceptance Id
+        outcome:
+          type: string
+          enum:
+          - passed
+          - failed
+          - incomplete
+          - unknown
+          title: Outcome
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+      additionalProperties: false
+      type: object
+      required:
+      - acceptance_id
+      - outcome
+      - reasons
+      title: LessonEvidence
+    LessonNote:
+      properties:
+        memory_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Memory Id
+        revision:
+          type: integer
+          title: Revision
+        original_content:
+          type: string
+          title: Original Content
+        canonical_content:
+          type: string
+          title: Canonical Content
+        canonical_language:
+          type: string
+          const: en
+          title: Canonical Language
+          default: en
+        content_trust:
+          type: string
+          const: untrusted
+          title: Content Trust
+          default: untrusted
+        purpose:
+          type: string
+          const: unvalidated_note
+          title: Purpose
+          default: unvalidated_note
+      additionalProperties: false
+      type: object
+      required:
+      - memory_id
+      - revision
+      - original_content
+      - canonical_content
+      title: LessonNote
+    LessonWithdrawal:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Request Id
+        expected_version:
+          type: integer
+          maximum: 2147483647.0
+          minimum: 0.0
+          title: Expected Version
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      title: LessonWithdrawal
+    ProfileApproval:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Request Id
+        expected_version:
+          type: integer
+          maximum: 2147483647.0
+          minimum: 0.0
+          title: Expected Version
+        runtime:
+          type: string
+          enum:
+          - python
+          - node
+          - python_node
+          title: Runtime
+        runtime_image_id:
+          type: string
+          pattern: ^sha256:[a-f0-9]{64}$
+          title: Runtime Image Id
+        runner_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Runner Sha256
+        policy_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Policy Sha256
+        profiles:
+          items:
+            $ref: '#/components/schemas/ProfileBinding'
+          type: array
+          maxItems: 4
+          minItems: 2
+          title: Profiles
+        producer_agent_ids:
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          type: array
+          maxItems: 20
+          minItems: 1
+          title: Producer Agent Ids
+        qualification_kind:
+          type: string
+          enum:
+          - synthetic_only
+          - isolated_runtime
+          title: Qualification Kind
+        qualification_receipt_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Qualification Receipt Sha256
+        criteria:
+          items:
+            $ref: '#/components/schemas/CriterionOracle'
+          type: array
+          maxItems: 20
+          minItems: 1
+          title: Criteria
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      - runtime
+      - runtime_image_id
+      - runner_sha256
+      - policy_sha256
+      - profiles
+      - producer_agent_ids
+      - qualification_kind
+      - qualification_receipt_sha256
+      - criteria
+      title: ProfileApproval
+    CriterionOracle:
+      properties:
+        criterion_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Criterion Sha256
+        oracle_files:
+          items:
+            $ref: '#/components/schemas/OracleFile'
+          type: array
+          maxItems: 20
+          minItems: 1
+          title: Oracle Files
+        test_profiles:
+          items:
+            type: string
+            enum:
+            - python_test
+            - node_test
+          type: array
+          maxItems: 2
+          minItems: 1
+          title: Test Profiles
+        minimum_tests:
+          type: integer
+          maximum: 100000.0
+          minimum: 1.0
+          title: Minimum Tests
+      additionalProperties: false
+      type: object
+      required:
+      - criterion_sha256
+      - oracle_files
+      - test_profiles
+      - minimum_tests
+      title: CriterionOracle
+    OracleFile:
+      properties:
+        path:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Path
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - sha256
+      title: OracleFile
+    ProfileBinding:
+      properties:
+        profile:
+          type: string
+          enum:
+          - python_build
+          - python_test
+          - node_build
+          - node_test
+          title: Profile
+        harness_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Harness Sha256
+        dependency_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Dependency Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - profile
+      - harness_sha256
+      - dependency_sha256
+      title: ProfileBinding
+    ProfileView:
+      properties:
+        profile_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Profile Id
+        version:
+          type: integer
+          title: Version
+        status:
+          type: string
+          enum:
+          - approved
+          - revoked
+          title: Status
+        approval:
+          $ref: '#/components/schemas/ProfileApproval'
+        approval_basis:
+          type: string
+          const: operator_declared_qualification
+          title: Approval Basis
+          default: operator_declared_qualification
+        execution_attested:
+          type: boolean
+          const: false
+          title: Execution Attested
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - profile_id
+      - version
+      - status
+      - approval
+      title: ProfileView
+    ProfileWithdrawal:
+      properties:
+        request_id:
+          type: string
+          pattern: ^[A-Za-z0-9_.:-]{1,200}$
+          title: Request Id
+        expected_version:
+          type: integer
+          maximum: 2147483647.0
+          minimum: 0.0
+          title: Expected Version
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - expected_version
+      title: ProfileWithdrawal

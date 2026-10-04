@@ -195,7 +195,9 @@ def validate_operation_contracts(spec: dict[str, Any], generated: dict[str, Any]
 
         if (path, method) in {("/health", "get"), ("/pairing/complete", "post")}:
             expected_security: list[dict[str, list[Any]]] = []
-        elif (path, method) == ("/pairing/code", "post"):
+        elif (path, method) == ("/pairing/code", "post") or path.startswith(
+            "/memory/execution-profiles/"
+        ):
             expected_security = [{"operatorToken": []}]
         elif (path, method) in {
             ("/pairing/finalize", "post"),

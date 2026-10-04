@@ -57,6 +57,7 @@ from app.services.memory_index_coverage import (
     MemoryIndexCoverageRequest,
     inspect_index_coverage,
 )
+from app.services.memory_lessons_schema import migrate_memory_lessons, validate_lesson_prefix
 from app.services.memory_local_context_schema import (
     forget_local_contexts_locked,
     migrate_local_context_receipts,
@@ -115,7 +116,7 @@ from app.services.project_execution_schema import (
 )
 from app.services.worker_skill_policy import WorkerSkillPolicyStore
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 _LEGACY_MODEL_ROLE_CHECK = "CHECK(role IN ('planner','evaluator','summarizer','synthesizer'))"
 _MEMORY_MODEL_ROLE_CHECK = (
     "CHECK(role IN ("
@@ -1000,9 +1001,12 @@ class StateService:
             version = int(version_row[0])
             if version > SCHEMA_VERSION:
                 raise RuntimeError("state database schema is newer than this control plane")
-            if version in {32, 33}:
+            if version in {32, 33, 34}:
                 await db.execute("BEGIN")
-                await validate_project_execution_prefix(db, version)
+                if version >= 33:
+                    await validate_lesson_prefix(db, version)
+                else:
+                    await validate_project_execution_prefix(db, version)
                 await db.commit()
             await db.executescript(SCHEMA)
             await db.execute("BEGIN IMMEDIATE")
@@ -1222,7 +1226,9 @@ class StateService:
                 await migrate_memory_view_vectors(db)
             if version <= 32:
                 await migrate_local_context_receipts(db)
-            await migrate_project_execution_receipts(db)
+            if version <= 33:
+                await migrate_project_execution_receipts(db)
+            await migrate_memory_lessons(db)
         for suffix in ("", "-wal", "-shm"):
             database_file = Path(f"{self.db_path}{suffix}")
             if database_file.exists():

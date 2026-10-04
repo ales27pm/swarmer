@@ -443,7 +443,7 @@ async def test_populated_schema33_restart_preserves_acceptance_link_and_original
 
     before = await retained_rows()
     assert len(before["acceptances"]) == len(before["links"]) == 1
-    assert before["version"] == (33,)
+    assert before["version"] == (34,)
     assert before["foreign_keys"] == [] and before["integrity"] == [("ok",)]
     forbidden = NoModelCalls()
     state = StateService(manager.db_path, forbidden)

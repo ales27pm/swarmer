@@ -109,14 +109,14 @@ async def test_invalid_prefix_refused_before_any_startup_recovery_dml(
 
 
 @pytest.mark.asyncio
-async def test_new_database_initializes_and_restarts_at_33(tmp_path):
+async def test_new_database_initializes_and_restarts_at_current_schema(tmp_path):
     path = tmp_path / "new.db"
     state = StateService(path)
     await state.initialize()
     before = await database_snapshot(path)
     await state.initialize()
     assert await database_snapshot(path) == before
-    assert before["version"] == (33,)
+    assert before["version"] == (34,)
 
 
 @pytest.mark.asyncio
