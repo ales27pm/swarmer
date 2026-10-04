@@ -3,28 +3,241 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.machinery
 import importlib.metadata
 import json
 import os
+import posixpath
 import py_compile
 import re
 import shutil
+import stat
 
 # Fixed commands execute only inside the isolated runtime.
 import subprocess  # nosec B404
 import sys
 import sysconfig
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 PREFIX = "SWARMER_RUNNER_RECEIPT="
 PROJECT_ROOT = Path("/workspace/project")
+SOURCE_ROOT = Path("/source")
+DEPENDENCY_ROOT = Path("/dependencies")
+MEASUREMENT_MAX_FILES = 20_000
+MEASUREMENT_MAX_BYTES = 128 * 1024 * 1024
+MEASUREMENT_SECONDS = 5
 RUFF_BINARY = "/usr/local/bin/ruff"
 RUFF_RULES = "E9,F821,F822,F823"
 DEPENDENCY_PREFIX = "SWARMER_DEPENDENCY_PREFLIGHT="
 DEPENDENCY_CATALOGUE = Path(__file__).with_name("dependency-catalog.json")
+
+
+def _measurement_hash(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def _measurement_tree(
+    root: Path, *, dependencies: bool = False
+) -> list[dict[str, Any]]:
+    """Bounded content inventory. Never follow links or read special files."""
+    deadline, total_bytes = time.monotonic() + MEASUREMENT_SECONDS, 0
+    entries: list[dict[str, Any]] = []
+
+    def budget() -> None:
+        if (
+            time.monotonic() > deadline
+            or len(entries) >= MEASUREMENT_MAX_FILES
+            or total_bytes > MEASUREMENT_MAX_BYTES
+        ):
+            raise ValueError("measurement bound exceeded")
+
+    def walk(fd: int, prefix: str, depth: int) -> None:
+        nonlocal total_bytes
+        if depth > 64:
+            raise ValueError("measurement depth exceeded")
+        names = []
+        with os.scandir(fd) as directory:
+            for entry in directory:
+                budget()
+                names.append(entry.name)
+                if len(names) > MEASUREMENT_MAX_FILES:
+                    raise ValueError("measurement directory bound exceeded")
+        for name in sorted(names):
+            budget()
+            path = prefix + name
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                target = os.readlink(name, dir_fd=fd)
+                resolved = posixpath.normpath(posixpath.join(prefix, target))
+                if dependencies and (
+                    target.startswith("/")
+                    or resolved == ".."
+                    or resolved.startswith("../")
+                ):
+                    raise ValueError("dependency link is not contained")
+                entries.append({"path": path, "kind": "link", "target": target})
+            elif stat.S_ISDIR(info.st_mode):
+                entries.append({"path": path, "kind": "directory"})
+                child = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+                )
+                try:
+                    walk(child, path + "/", depth + 1)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                file_fd = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd
+                )
+                try:
+                    before = os.fstat(file_fd)
+                    if not stat.S_ISREG(before.st_mode):
+                        raise ValueError("file type changed during measurement")
+                    digest = hashlib.sha256()
+                    while block := os.read(file_fd, 65536):
+                        total_bytes += len(block)
+                        budget()
+                        digest.update(block)
+                    after = os.fstat(file_fd)
+                    if (before.st_ino, before.st_size, before.st_mtime_ns) != (
+                        after.st_ino,
+                        after.st_size,
+                        after.st_mtime_ns,
+                    ):
+                        raise ValueError("file changed during measurement")
+                    entries.append(
+                        {
+                            "path": path,
+                            "kind": "file",
+                            "bytes": after.st_size,
+                            "sha256": digest.hexdigest(),
+                            "mode": stat.S_IMODE(after.st_mode),
+                        }
+                    )
+                finally:
+                    os.close(file_fd)
+            else:
+                raise ValueError("special file cannot be measured")
+
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        walk(fd, "", 0)
+    finally:
+        os.close(fd)
+    return entries
+
+
+def _measurement_source(root: Path, paths: tuple[str, ...]) -> str:
+    """Hash actual copied input contents using the public project_digest encoding."""
+    files, total = [], 0
+    if len(paths) > 80:
+        raise ValueError("source count exceeded")
+    for path in paths:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            parts = path.split("/")
+            if any(p in {"", ".", ".."} for p in parts):
+                raise ValueError("invalid measured input path")
+            for part in parts[:-1]:
+                child = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+                )
+                os.close(fd)
+                fd = child
+            file_fd = os.open(
+                parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd
+            )
+            try:
+                info = os.fstat(file_fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 64_000:
+                    raise ValueError("input is not a bounded file")
+                data = bytearray()
+                while block := os.read(file_fd, 64_001 - len(data)):
+                    data.extend(block)
+                    if len(data) > 64_000:
+                        raise ValueError("source file exceeded its bound")
+                after = os.fstat(file_fd)
+                if (info.st_ino, info.st_size, info.st_mtime_ns) != (
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                ):
+                    raise ValueError("input changed during measurement")
+            finally:
+                os.close(file_fd)
+        finally:
+            os.close(fd)
+        total += len(data)
+        if total > 1_000_000:
+            raise ValueError("source byte bound exceeded")
+        files.append({"path": path, "content": data.decode("utf-8")})
+    return _measurement_hash(sorted(files, key=lambda file: file["path"]))
+
+
+def _measurement_capture(paths: tuple[str, ...] | None) -> dict[str, str | None]:
+    values: dict[str, str | None] = {}
+    for key, measure in (
+        (
+            "source",
+            lambda: (
+                _measurement_source(PROJECT_ROOT, paths) if paths is not None else None
+            ),
+        ),
+        ("workspace", lambda: _measurement_hash(_measurement_tree(PROJECT_ROOT))),
+        (
+            "dependency",
+            lambda: _measurement_hash(
+                _measurement_tree(DEPENDENCY_ROOT, dependencies=True)
+            ),
+        ),
+    ):
+        try:
+            values[key] = measure()
+        except (OSError, ValueError, UnicodeError, RuntimeError, RecursionError):
+            values[key] = None
+    return values
+
+
+def _measurement_finish(
+    before: dict[str, str | None],
+    after: dict[str, str | None],
+    harness_sha256: str | None,
+) -> dict[str, Any]:
+    errors = []
+    result: dict[str, Any] = {
+        "schema_version": "project-check-observation-v1",
+        "harness_sha256": harness_sha256,
+    }
+    for key, reason in (
+        ("source", "source_unavailable"),
+        ("workspace", "workspace_unavailable"),
+        ("dependency", "environment_unbound"),
+    ):
+        result[f"{key}_before_sha256"] = before[key]
+        result[f"{key}_after_sha256"] = after[key]
+        if before[key] is None or after[key] is None:
+            errors.append(reason)
+    for key, flag in (
+        ("source", "source_unchanged"),
+        ("dependency", "environment_unchanged"),
+    ):
+        result[flag] = (
+            None
+            if before[key] is None or after[key] is None
+            else before[key] == after[key]
+        )
+    if harness_sha256 is None:
+        errors.append("harness_unavailable")
+    result["errors"] = sorted(errors)
+    return result
 
 
 def dependency_catalogue() -> dict[str, Any]:
@@ -421,6 +634,20 @@ def main() -> None:
         __import__("pytest")
     prepare()
     try:
+        source_entries = _measurement_tree(SOURCE_ROOT)
+        if any(item["kind"] == "link" for item in source_entries):
+            raise ValueError("input links cannot establish source identity")
+        paths = tuple(item["path"] for item in source_entries if item["kind"] == "file")
+    except (OSError, ValueError, RuntimeError, RecursionError):
+        paths = None
+    try:
+        with Path(__file__).open("rb") as stream:
+            harness = stream.read(256_001)
+        harness_sha = hashlib.sha256(harness).hexdigest() if len(harness) <= 256_000 else None
+    except OSError:
+        harness_sha = None
+    before = _measurement_capture(paths)
+    try:
         if mode == "python_build":
             result = python_build()
         elif mode == "python_test":
@@ -450,7 +677,9 @@ def main() -> None:
     ) as exc:
         print(f"Check failed: {type(exc).__name__}: {str(exc)[:1_000]}")
         result = {"exit_code": 1, "tests_executed": 0, "test_failures": 1}
-    print("\n" + PREFIX + json.dumps(result, separators=(",", ":")), flush=True)
+    observed = {**result, "observation": _measurement_finish(
+        before, _measurement_capture(paths), harness_sha)}
+    print("\n" + PREFIX + json.dumps(observed, separators=(",", ":")), flush=True)
     raise SystemExit(result["exit_code"])
 
 

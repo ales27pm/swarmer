@@ -17,6 +17,8 @@ from pydantic import (
 )
 
 from app.services.agent_capsule import symbolic_transport
+from app.services.project_execution_contracts import ProjectExecutionReceipt
+from app.services.project_execution_receipts import bind_execution_receipt
 from app.services.writing_contracts import (
     MAX_DEPENDENCY_BYTES,
     MAX_RESEARCH_SOURCES,
@@ -154,6 +156,8 @@ class NativeValidationState(StrictModel):
             # Older workers forbid extra fields. Keep their non-native payload
             # shape unchanged even after remote-job normalization serializes it.
             data.pop("native_validation", None)
+        if data.get("execution_receipt") is None:
+            data.pop("execution_receipt", None)
         for key in ("symbolic_context", "symbolic_context_binding"):
             if key not in self.model_fields_set:
                 data.pop(key, None)
@@ -161,6 +165,7 @@ class NativeValidationState(StrictModel):
 
 
 class ProjectResult(NativeValidationState):
+    execution_receipt: ProjectExecutionReceipt | None = None
     guidance_reads: list[ProjectGuidanceRead] = Field(default_factory=list, max_length=80)
     schema_version: Literal["1.0"]
     action: Literal["clarify", "continue", "complete"]
@@ -181,6 +186,15 @@ class ProjectResult(NativeValidationState):
     @model_validator(mode="after")
     def validate_project(self) -> ProjectResult:
         validate_files(self.files)
+        if self.execution_receipt is not None:
+            bind_execution_receipt(
+                self.execution_receipt.model_dump(),
+                source_sha256=project_digest(self.files),
+                runtime=self.runtime,
+                checks=[check.model_dump() for check in self.checks],
+            )
+            if self.action == "clarify" or self.focus_paths:
+                raise ValueError("historical project checks cannot carry a fresh execution receipt")
         if any(path not in {file.path for file in self.files} for path in self.focus_paths):
             raise ValueError("project inspection requires an existing file")
         if (self.base_revision_id is None) != (self.base_sha256 is None):

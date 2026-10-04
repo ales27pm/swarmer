@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -20,8 +23,45 @@ def launcher() -> ModuleType:
     return module
 
 
+def test_exact_launcher_source_set_imports_execution_measurement_without_checkout(
+    tmp_path: Path, launcher: ModuleType
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    isolated = tmp_path / "source-only"
+    for relative in launcher.SOURCES:
+        destination = isolated / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, destination)
+    code = (
+        "import sys; sys.path.insert(0,sys.argv[1]); "
+        "import project_worker, project_execution, runtime; "
+        "assert project_execution.__file__.startswith(sys.argv[1]); "
+        "print('source-only-import-ok')"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-I",
+            "-c",
+            code,
+            str(isolated / "workers/project-worker"),
+        ],
+        cwd=isolated,
+        env={"HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "source-only-import-ok"
+
+
 @pytest.fixture
-def release(tmp_path: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Path:
+def release(
+    tmp_path: Path, launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     hashes = {}
     release = tmp_path / "release"
     for relative in launcher.SOURCES:

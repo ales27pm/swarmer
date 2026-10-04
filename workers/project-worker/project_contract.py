@@ -20,6 +20,15 @@ if _CAPSULE_SPEC is None or _CAPSULE_SPEC.loader is None:
 capsule_contract = importlib.util.module_from_spec(_CAPSULE_SPEC)
 _CAPSULE_SPEC.loader.exec_module(capsule_contract)
 
+_EXECUTION_PATH = Path(__file__).resolve().parent / "project_execution.py"
+_EXECUTION_SPEC = importlib.util.spec_from_file_location(
+    "mongars_project_execution", _EXECUTION_PATH
+)
+if _EXECUTION_SPEC is None or _EXECUTION_SPEC.loader is None:
+    raise RuntimeError("the sibling project execution validator is required")
+execution_contract = importlib.util.module_from_spec(_EXECUTION_SPEC)
+_EXECUTION_SPEC.loader.exec_module(execution_contract)
+
 SKILL = "code.build_project"
 MAX_FILES = 80
 MAX_FILE_BYTES = 64_000
@@ -623,3 +632,17 @@ def snapshot_sha(files: list[dict[str, str]]) -> str:
         files_value(files), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def checked_execution_receipt(
+    value: object,
+    files: list[dict[str, str]],
+    runtime: str,
+    checks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return execution_contract.bind_execution_receipt(
+            value, source_sha256=snapshot_sha(files), runtime=runtime, checks=checks
+        )
+    except (TypeError, ValueError, KeyError, RecursionError) as exc:
+        raise ProjectError("project execution receipt is invalid") from exc

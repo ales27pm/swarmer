@@ -19,7 +19,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from project_contract import ProjectError, files_value
+from project_contract import ProjectError, files_value, snapshot_sha
+from project_execution import (
+    canonical_sha,
+    execution_receipt_value,
+    incomplete_reasons,
+    observation_value,
+)
 
 MAX_OUTPUT_BYTES = 64_000
 CHECK_COMMANDS = {
@@ -360,6 +366,8 @@ def parse_receipt(raw: str, mode: str, returncode: int) -> tuple[int, int, int]:
     ]
     if not markers:
         raise RuntimeError("isolated check did not return a runner receipt")
+    if len(markers[-1].encode()) > 16_384:
+        raise RuntimeError("isolated check receipt exceeds its bound")
     try:
         receipt = json.loads(markers[-1])
         code, count, failures = (
@@ -367,7 +375,7 @@ def parse_receipt(raw: str, mode: str, returncode: int) -> tuple[int, int, int]:
             receipt["tests_executed"],
             receipt["test_failures"],
         )
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, RecursionError) as exc:
         raise RuntimeError("isolated check receipt is invalid") from exc
     if any(type(value) is not int for value in (code, count, failures)) or code != returncode:
         raise RuntimeError("isolated check receipt disagrees with the container exit status")
@@ -597,6 +605,48 @@ class DockerRunner:
         profiles = profiles_for(runtime, requested_checks)
         requirements, package = dependency_manifests(files)
         checks: list[dict[str, Any]] = []
+        try:
+            with Path(__file__).open("rb") as runner_file:
+                runner_bytes = runner_file.read(256_001)
+            runner_sha = (
+                hashlib.sha256(runner_bytes).hexdigest()
+                if len(runner_bytes) <= 256_000
+                else None
+            )
+        except OSError:
+            runner_sha = None
+        execution: dict[str, Any] = {
+            "schema_version": "project-execution-receipt-v1",
+            "origin": "worker_reported_measurement",
+            "run_id": uuid.uuid4().hex,
+            "runtime": runtime,
+            "source_sha256": snapshot_sha(files),
+            "runtime_image_id": self.image,
+            "runner_sha256": runner_sha,
+            "policy_sha256": canonical_sha(
+                {
+                    "base": self._base("execution-receipt-profile", "none"),
+                    "timeout_seconds": self.timeout_seconds,
+                    "browser_seccomp_sha256": (
+                        hashlib.sha256(self._browser_seccomp).hexdigest()
+                        if self._browser_seccomp is not None
+                        else None
+                    ),
+                    "profiles": profiles,
+                    "commands": CHECK_COMMANDS,
+                }
+            ),
+            "profiles_expected": profiles,
+            "profiles": [],
+        }
+
+        def receipt() -> dict[str, Any]:
+            execution["incomplete_reasons"] = incomplete_reasons(execution)
+            execution["observation_status"] = (
+                "incomplete" if execution["incomplete_reasons"] else "complete"
+            )
+            return execution_receipt_value(execution)
+
         tests_executed = 0
         failures = 0
         build_passed = True
@@ -714,6 +764,7 @@ class DockerRunner:
                             "tests_executed": 0,
                             "test_failures": 0,
                             "build_passed": False,
+                            "execution_receipt": receipt(),
                         }
                 # Dependency containers and their egress proxy end before code runs.
                 self._cleanup(["rm", "--force", proxy], directory)
@@ -744,12 +795,35 @@ class DockerRunner:
                         mode,
                     ]
                     raw = ""
+                    observation = None
+                    measurement_error = "profile_interrupted"
+                    failed = 0
                     check_started = time.monotonic()
                     try:
                         code, raw, duration = self._process(
                             command, directory, self.timeout_seconds, ensure_active
                         )
                         code, count, failed = parse_receipt(raw, mode, code)
+                        # Older pinned images keep working, but cannot invent the
+                        # new copied-workspace measurements from their old counts.
+                        markers = [
+                            line[len(RECEIPT_PREFIX) :]
+                            for line in raw.splitlines()
+                            if line.startswith(RECEIPT_PREFIX)
+                        ]
+                        measurement_error = "invalid_measurement"
+                        try:
+                            if len(markers[-1].encode()) <= 16_384:
+                                measured = json.loads(markers[-1])
+                                if "observation" not in measured:
+                                    measurement_error = "legacy_harness"
+                                else:
+                                    observation = observation_value(
+                                        measured["observation"]
+                                    )
+                                    measurement_error = None
+                        except (TypeError, ValueError, RecursionError):
+                            pass
                         tests_executed += count
                         failures += failed
                         raw += f"\nRunner: {count} tests executed; {failed} failures. Runtime {self.image}."
@@ -759,6 +833,25 @@ class DockerRunner:
                         raw += "\n" + str(exc)
                         duration = int((time.monotonic() - check_started) * 1_000)
                         count = 0
+                        failed = 0
+                    execution["profiles"].append(
+                        {
+                            "profile": mode,
+                            "check_index": len(checks),
+                            "exit_code": None
+                            if measurement_error == "profile_interrupted"
+                            else code,
+                            "tests_executed": None
+                            if measurement_error == "profile_interrupted"
+                            else count,
+                            "test_failures": None
+                            if measurement_error == "profile_interrupted"
+                            else failed,
+                            "duration_ms": duration,
+                            "observation": observation,
+                            "measurement_error": measurement_error,
+                        }
+                    )
                     checks.append(self._check(CHECK_COMMANDS[mode], code, raw, duration))
                     if mode.endswith("_build") and code:
                         build_passed = False
@@ -767,6 +860,7 @@ class DockerRunner:
                     "tests_executed": tests_executed,
                     "test_failures": failures,
                     "build_passed": build_passed,
+                    "execution_receipt": receipt(),
                 }
             finally:
                 for container in containers:

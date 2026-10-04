@@ -32,6 +32,7 @@ from project_contract import (
     MAX_PATCH_BYTES,
     ProjectError,
     capsule_contract,
+    checked_execution_receipt,
     checks_value,
     merge_files,
     parse_payload,
@@ -3022,12 +3023,17 @@ def run_iteration(
     if unchanged and step["action"] == "complete" and not step["requested_checks"]:
         step["action"] = "continue"
     checks: list[dict[str, Any]] = []
+    execution_receipt = None
     if step["focus_paths"]:
         checks = payload["checks"] if unchanged else []
     elif step["action"] != "clarify":
         try:
             evidence = runner.run(files, step["runtime"], step["requested_checks"], ensure_active)
             checks = checks_value(evidence["checks"])
+            if "execution_receipt" in evidence:
+                execution_receipt = checked_execution_receipt(
+                    evidence["execution_receipt"], files, step["runtime"], checks
+                )
             missing = []
             if not files:
                 missing.append("application source files")
@@ -3079,6 +3085,7 @@ def run_iteration(
         "base_sha256": payload["base_sha256"],
         "focus_paths": step["focus_paths"],
         **({"guidance_reads": reads} if reads else {}),
+        **({"execution_receipt": execution_receipt} if execution_receipt is not None else {}),
     }
 
 
