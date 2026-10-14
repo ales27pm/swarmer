@@ -183,6 +183,11 @@ Il ne dépend pas du nom affiché. Pour le monolithe, ce classement conservateur
 sert uniquement à restreindre le budget UI : il ne remplace jamais le contrôle
 cryptographique complet au chargement. L'absence de métadonnées pour un modèle
 Core ML chargé bloque la génération depuis cet écran jusqu'à actualisation.
+Cette politique nécessite le nouveau binaire natif qui fournit ce champ : une
+mise à jour JavaScript seule sur un ancien binaire ne peut pas classifier les
+imports Dolphin. Le fallback scindé reste limité au contrat v2 historique;
+les nouveaux exports schema 3 du toolkit nécessitent encore une qualification
+et une intégration d'import dédiées, sans assouplir ce garde.
 
 Le package unique ci-dessus reste le chemin recommandé. Un chemin de
 compatibilité **expérimental** accepte aussi l’ancien export Dolphin3-ANE v2

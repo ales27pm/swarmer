@@ -360,7 +360,9 @@ actor LocalInferenceCoordinator {
       if importOperation?.id == operationId {
         importOperation = nil
       }
-      return LocalModelRecord(stored: imported, generationProfile: try await store.generationProfile(for: imported))
+      // Promotion has committed. Construct the response from its returned value
+      // without fallible post-commit filesystem work or another suspension.
+      return LocalModelRecord(stored: imported)
     } catch {
       if importOperation?.id == operationId {
         importOperation = nil

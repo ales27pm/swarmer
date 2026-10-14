@@ -30,6 +30,7 @@ struct StoredLocalModel: Codable, Equatable, Sendable {
   var remoteOrigin: StoredRemoteModelOrigin? = nil
   var downloadOrigin: StoredModelDownloadOrigin? = nil
   var purpose: LocalModelPurpose? = nil
+  var generationProfile: String? = nil
 }
 
 struct ResolvedLocalModel: Sendable {

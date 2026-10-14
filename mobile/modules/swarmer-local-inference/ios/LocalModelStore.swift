@@ -141,16 +141,22 @@ actor LocalModelStore {
     return ResolvedLocalModel(stored: stored, runtimeURL: runtimeURL, tokenizerURL: tokenizerURL)
   }
 
-  /// Derive qualification metadata from the stored artifact, including legacy
-  /// imports, without rewriting the private index or trusting a display name.
+  /// Return pre-commit classification or derive it for legacy imports without
+  /// rewriting the private index or trusting a display name.
   func generationProfile(for record: StoredLocalModel) throws -> String? {
     guard record.runtime == .coreML else { return nil }
+    if let profile = record.generationProfile { return profile }
     let resolved = try resolve(modelId: record.modelId)
-    if DolphinCoreMLBundle.isMarked(at: resolved.runtimeURL, fileManager: fileManager) {
-      _ = try DolphinCoreMLBundle.inspect(directory: resolved.runtimeURL, fileManager: fileManager)
+    return try generationProfile(runtime: record.runtime, runtimeURL: resolved.runtimeURL)
+  }
+
+  private func generationProfile(runtime: LocalRuntime, runtimeURL: URL) throws -> String? {
+    guard runtime == .coreML else { return nil }
+    if DolphinCoreMLBundle.isMarked(at: runtimeURL, fileManager: fileManager) {
+      _ = try DolphinCoreMLBundle.inspect(directory: runtimeURL, fileManager: fileManager)
       return "dolphin-split9-experimental"
     }
-    if CoreMLDolphinSupport.isOfficialArtifactCandidate(modelURL: resolved.runtimeURL) {
+    if CoreMLDolphinSupport.isOfficialArtifactCandidate(modelURL: runtimeURL) {
       // A candidate receives a restrictive UI budget, not a trust verdict.
       // CoreMLRuntime still verifies every pinned SHA-256 before compilation.
       return "dolphin-monolith-experimental"
@@ -303,7 +309,8 @@ actor LocalModelStore {
         downloadOrigin: downloadOrigin,
         purpose: runtime == .mlx
           ? LocalModelPurpose.mlx(configuration: try readJSONObject(resolved.runtimeURL.appendingPathComponent("config.json")))
-          : .generation
+          : .generation,
+        generationProfile: try generationProfile(runtime: runtime, runtimeURL: resolved.runtimeURL)
       )
 
       try Task.checkCancellation()
@@ -622,6 +629,12 @@ actor LocalModelStore {
             record.tokenizerRelativePath.map(isSafeRelativePath) ?? true,
             record.sizeBytes >= 0 else {
         throw LocalInferenceError.metadataCorrupt
+      }
+      if let profile = record.generationProfile {
+        guard record.runtime == .coreML, record.effectivePurpose == .generation,
+              ["dolphin-split9-experimental", "dolphin-monolith-experimental"].contains(profile) else {
+          throw LocalInferenceError.metadataCorrupt
+        }
       }
       if let origin = record.downloadOrigin {
         do {

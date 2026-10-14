@@ -39,6 +39,9 @@ struct StoredLocalModel: Codable, Equatable, Sendable {
   var remoteOrigin: StoredRemoteModelOrigin? = nil
   var downloadOrigin: StoredModelDownloadOrigin? = nil
   var purpose: LocalModelPurpose? = nil
+  // A restrictive UI policy, computed before promotion; not artifact trust.
+  // Legacy indexes omit it and are classified without rewriting their bytes.
+  var generationProfile: String? = nil
 }
 
 struct ResolvedLocalModel: Sendable {
@@ -153,7 +156,7 @@ struct LocalModelRecord: Record, Sendable {
     sizeBytes = stored.sizeBytes
     importedAt = ISO8601DateFormatter().string(from: stored.importedAt)
     self.purpose = (purpose ?? stored.effectivePurpose).rawValue
-    self.generationProfile = generationProfile
+    self.generationProfile = generationProfile ?? stored.generationProfile
   }
 }
 

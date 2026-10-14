@@ -416,8 +416,21 @@ private struct LocalModelStoreTests {
     )
     _ = try DolphinCoreMLBundle.inspect(directory: runtimeRoot)
     let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+    try expect(record.generationProfile == "dolphin-split9-experimental", "new split import did not return its pre-commit profile")
+    let persisted = try await store.list()
+    try expect(persisted.first?.generationProfile == record.generationProfile, "split profile was not persisted")
+    // Exercise a real legacy index with no new field, not a newly imported record.
+    var legacy = try required(
+      JSONSerialization.jsonObject(with: Data(contentsOf: index)) as? [[String: Any]],
+      "invalid split model index"
+    )
+    legacy[0].removeValue(forKey: "generationProfile")
+    try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys]).write(to: index)
+    let legacyRecords = try await store.list()
+    let legacyRecord = try required(legacyRecords.first, "legacy split record disappeared")
+    try expect(legacyRecord.generationProfile == nil, "legacy index unexpectedly contains a stored profile")
     let priorIndex = try Data(contentsOf: index)
-    let generationProfile = try await store.generationProfile(for: record)
+    let generationProfile = try await store.generationProfile(for: legacyRecord)
     try expect(generationProfile == "dolphin-split9-experimental", "legacy split import lost its qualification limit")
     try expect(try Data(contentsOf: index) == priorIndex, "profile lookup rewrote the legacy model index")
 
@@ -445,6 +458,7 @@ private struct LocalModelStoreTests {
       recordsAfterRejection.count == 1 && recordsAfterRejection[0].modelId == record.modelId,
       "rejected Dolphin import changed the index"
     )
+    try expect(try Data(contentsOf: index) == priorIndex, "rejected Dolphin import rewrote the legacy index")
   }
 
   private static func testDolphinQualificationProfiles() async throws {
@@ -458,6 +472,9 @@ private struct LocalModelStoreTests {
     try write("{}", to: source.appendingPathComponent("tokenizer_config.json"))
     let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
     let candidate = try await store.importModel(runtime: .coreML, uri: source.absoluteString, displayName: "Renamed model")
+    try expect(candidate.generationProfile == "dolphin-monolith-experimental", "new monolith import did not return its pre-commit profile")
+    let persistedCandidates = try await store.list()
+    try expect(persistedCandidates.first?.generationProfile == candidate.generationProfile, "monolith profile was not persisted")
     let profile = try await store.generationProfile(for: candidate)
     try expect(profile == "dolphin-monolith-experimental", "renamed monolith candidate bypassed qualification")
     let resolved = try await store.resolve(modelId: candidate.modelId)
@@ -479,6 +496,33 @@ private struct LocalModelStoreTests {
     )
     let genericProfile = try await store.generationProfile(for: generic)
     try expect(genericProfile == nil, "a display name incorrectly imposed the Dolphin limit")
+
+    let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+    let validIndex = try Data(contentsOf: index)
+    for invalidFields in [
+      ["generationProfile": "unknown"],
+      ["generationProfile": "dolphin-split9-experimental", "runtime": "llama.cpp"],
+      ["generationProfile": "dolphin-monolith-experimental", "purpose": "embeddings"],
+    ] {
+      var invalidRecords = try required(
+        JSONSerialization.jsonObject(with: validIndex) as? [[String: Any]], "invalid stored profile fixture"
+      )
+      for (key, value) in invalidFields { invalidRecords[0][key] = value }
+      try JSONSerialization.data(withJSONObject: invalidRecords).write(to: index)
+      do {
+        _ = try await store.list()
+        throw TestFailure("invalid stored qualification profile was accepted")
+      } catch LocalInferenceError.metadataCorrupt {
+        // Classification never permits an unknown or incompatible persisted profile.
+      }
+    }
+    try validIndex.write(to: index)
+
+    // Losing filesystem access after promotion must not invalidate the returned
+    // qualification metadata or trigger another read to construct import success.
+    try FileManager.default.removeItem(at: resolved.runtimeURL)
+    let committedProfile = try await store.generationProfile(for: candidate)
+    try expect(committedProfile == candidate.generationProfile, "committed profile required post-promotion filesystem access")
   }
 
   private static func testDolphinSampler() async throws {
