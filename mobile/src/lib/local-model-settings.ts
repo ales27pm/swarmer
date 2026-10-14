@@ -1,7 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 
 import type { LocalInferenceRuntime, LocalModel } from "@/lib/local-inference";
-import { localModelGenerationTokenLimit, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
+import { DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE, localModelGenerationTokenLimit, localModelSupportsGeneration, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 
 const SETTINGS_KEY = "swarmer.local-model-settings.v1";
 
@@ -36,6 +36,7 @@ export function generationSettingsForModel(
   model?: Pick<LocalModel, "runtime" | "generationProfile">,
 ) {
   const settings = parseGenerationSettings(maxTokens, temperature);
+  if (!localModelSupportsGeneration(model)) throw new Error(DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE);
   return { ...settings, maxTokens: Math.min(settings.maxTokens, localModelGenerationTokenLimit(model)) };
 }
 

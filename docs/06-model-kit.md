@@ -139,13 +139,15 @@ est disponible. Le chargement et le téléchargement restent explicites.
 Les réglages enregistrent le runtime, le modèle, sa révision, la température
 et la limite de sortie sur l’iPhone. Le défaut des **propositions** est
 **32 jetons, température 0,1**; le mode **plan** démarre à **1 024 jetons,
-température 0,1**. Pour les profils natifs Dolphin Core ML, l'écran, les
+température 0,1**. Pour le profil natif Dolphin Core ML monolithique, l'écran, les
 commandes partagées (API/protocole inclus) et le runtime appliquent une limite effective
 de **32 jetons**, en proposition comme en mode plan. Ainsi, un ancien réglage
 enregistré à 512 reste conservé mais ne déclenche pas une génération de 512
 jetons; un avertissement indique la limite appliquée. Les autres modèles
 gardent leur budget habituel. La limite native générale reste 1 024, mais ne
 permet pas de contourner le plafond Dolphin de 32; ce n'est pas une promesse de performance.
+Le profil Dolphin scindé est réservé aux diagnostics : il ne peut plus lancer
+de proposition ou de plan, même via l'API ou le protocole.
 Les choix personnalisés sont conservés lors d’un changement de runtime.
 Une génération ou un téléchargement annulé
 ne déclenche aucun chargement ni soumission.
@@ -181,27 +183,36 @@ minimum.
 Le champ natif optionnel `generationProfile` est dérivé du paquet local,
 également pour les anciens imports, sans réécrire l'index des modèles.
 Il ne dépend pas du nom affiché. Pour le monolithe, ce classement conservateur
-sert uniquement à restreindre le budget UI : il ne remplace jamais le contrôle
+sert à restreindre le budget partagé : il ne remplace jamais le contrôle
 cryptographique complet au chargement. L'absence de métadonnées pour un modèle
 Core ML chargé bloque la génération depuis cet écran jusqu'à actualisation.
 Cette politique nécessite le nouveau binaire natif qui fournit ce champ : une
 mise à jour JavaScript seule sur un ancien binaire ne peut pas classifier les
-imports Dolphin. Le fallback scindé accepte les contrats v2 historique et v3. Pour v3,
+imports Dolphin. L'import scindé de diagnostic accepte les contrats v2 historique et v3. Pour v3,
 le modèle, la révision et l'inventaire complet de provenance déclaré doivent
 correspondre aux constantes épinglées du toolkit. Ce contrôle de déclaration
 ne prouve pas que les poids convertis correspondent aux sources : les preuves
 du toolkit doivent être revérifiées séparément. Le manifeste est copié sans
 réécriture et le profil reste `dolphin-split9-experimental`.
 
-Le package unique ci-dessus reste le chemin recommandé. Un chemin de
-compatibilité **expérimental** accepte aussi les exports Dolphin3-ANE v2/v3
+Le package unique ci-dessus est le seul chemin de **génération Dolphin Core ML**.
+Les autres modèles Core ML génériques, MLX et GGUF restent inchangés.
+L'import **diagnostique expérimental** accepte toujours les exports Dolphin3-ANE v2/v3
 fractionnés: `embedding`, `block_00` à `block_06` et `head`, chacun en
 `.mlpackage` ou `.mlmodelc`, avec `manifest.json`, les deux tables RoPE et le
 tokenizer à la racine. L’import vérifie ce contrat exact et conserve notamment
-`generation_config.json`; les neuf modèles sont ensuite chargés
-séquentiellement avec CPU et Neural Engine autorisés. Cette configuration ne
-prouve pas le placement ANE, n’offre pas de repli CPU+GPU et doit être validée
-sur l’iPhone cible avant usage prolongé.
+`generation_config.json`. Les imports existants restent visibles et leurs fichiers,
+identifiants et réglages sont conservés; aucun modèle n'est supprimé, téléchargé
+ou remplacé automatiquement. L'écran les marque « Diagnostics uniquement »
+et invite à importer puis sélectionner le monolithe.
+
+Le chargement normal du split est refusé avant compilation et chargement des
+neuf modèles. En build **Debug** uniquement, le chargement diagnostique explicite
+avec `coreMLComputeUnits: "cpuAndNeuralEngine"` et les probes existants restent
+disponibles. Ce chargement n'autorise pas la commande normale de génération.
+Le moteur split conserve sa borne mémoire d'un seul modèle résident : cette
+restriction produit n'optimise pas ses rechargements et ne prouve aucun placement
+ANE. Une mise à jour du binaire natif est nécessaire pour la protection native.
 
 Pour un transfert privé via Tailscale IPv6, créer une archive ZIP sans
 compression, l’exposer temporairement sur l’adresse IPv6 Tailscale de l’hôte,

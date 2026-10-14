@@ -399,6 +399,25 @@ actor LocalInferenceCoordinator {
       throw LocalInferenceError.modelNotFound(options.modelId)
     }
 
+    if requestedRuntime == .coreML {
+      let admissionEpoch = lifecycleEpoch
+      let resolved = try? await store.resolve(modelId: requestedId)
+      try Task.checkCancellation()
+      guard lifecycleEpoch == admissionEpoch else { throw CancellationError() }
+      // Storage access suspends this actor: recheck admission before changing
+      // its handle, and keep the current model when split loading is refused.
+      guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended,
+            importOperation == nil,
+            state != "loading", state != "generating", state != "cancelling" else {
+        throw LocalInferenceError.generationInProgress
+      }
+      if let resolved, resolved.stored.runtime == .coreML {
+        try CoreMLDolphinSplitPolicy.validateLoad(
+          isSplit: DolphinCoreMLBundle.isMarked(at: resolved.runtimeURL), diagnosticUnits: diagnosticUnits
+        )
+      }
+    }
+
     lifecycleEpoch += 1
     let loadEpoch = lifecycleEpoch
     state = "loading"

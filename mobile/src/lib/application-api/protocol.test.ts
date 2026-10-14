@@ -83,6 +83,7 @@ test.each([
   ["generation_failed", "génération locale"],
   ["generation_truncated", "génération n’est pas complète"],
   ["model_not_ready", "modèle chargé"],
+  ["diagnostic_only_model", "monolithique"],
   ["stale_context", "ont changé depuis la génération"],
 ])("%s returns actionable static wording without forwarding exception contents", async (code, expected) => {
   const execute = jest.fn(async () => { throw Object.assign(new Error("Bearer secret private model text"), { code }); });

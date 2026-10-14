@@ -49,7 +49,7 @@ describe("local model settings", () => {
     expect(parseGenerationSettings("128", "0,25")).toEqual({ maxTokens: 128, temperature: 0.25 });
   });
 
-  it.each(["dolphin-split9-experimental", "dolphin-monolith-experimental"] as const)(
+  it.each(["dolphin-monolith-experimental"] as const)(
     "caps only the effective budget for %s", (generationProfile) => {
       const model = { runtime: "coreml" as const, generationProfile };
       expect(generationSettingsForModel("512", "0", model)).toEqual({ maxTokens: 32, temperature: 0 });
@@ -61,6 +61,16 @@ describe("local model settings", () => {
       expect(parseGenerationSettings("512", "0")).toEqual({ maxTokens: 512, temperature: 0 });
     },
   );
+
+  it("rejects split generation without rewriting its saved preference", async () => {
+    const model = { runtime: "coreml" as const, generationProfile: "dolphin-split9-experimental" as const };
+    for (const tokens of [1, 8, 32, 1024]) {
+      expect(() => generationSettingsForModel(String(tokens), "0", model)).toThrow("monolithique");
+    }
+    const settings = { runtime: "coreml" as const, modelId: "split-import", revision: "", maxTokens: 512, temperature: 0 };
+    await saveLocalModelSettings(settings);
+    expect(JSON.parse(jest.mocked(SecureStore.setItemAsync).mock.calls[0][1])).toEqual({ version: 1, ...settings });
+  });
 
   it.each(["coreml", "mlx", "llama.cpp"] as const)("preserves other %s model budgets", (runtime) => {
     expect(generationSettingsForModel("512", "0.1", { runtime })).toEqual({ maxTokens: 512, temperature: 0.1 });

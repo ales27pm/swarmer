@@ -1,3 +1,5 @@
+import { DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE } from "../local-generation-limits";
+
 /** HTTP is only an adapter. The application registry owns commands and validation. */
 export interface CommandDispatcher {
   catalog(): unknown;
@@ -33,6 +35,7 @@ const LOCAL_PLAN_ERRORS: Readonly<Record<string, string>> = {
   generation_failed: "La génération locale n’a pas produit de plan utilisable. Aucun démarrage du but n’a été envoyé.",
   generation_truncated: "La génération n’est pas complète ; aucun plan ne peut être soumis.",
   model_not_ready: "Le modèle chargé ne correspond pas au modèle demandé.",
+  diagnostic_only_model: DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE,
   unsupported_runtime: "Ce runtime n’est pas disponible sur cet appareil.",
   stale_context: "Le but, la mémoire ou les capacités ont changé depuis la génération. Préparez un nouveau plan avant de démarrer.",
 };

@@ -375,7 +375,7 @@ describe("LocalModelScreen", () => {
     expect(saveLocalModelSettings).toHaveBeenCalledWith(expect.objectContaining({ modelId: "mlx-community/test-model", maxTokens: 128, temperature: 0 }));
   });
 
-  it.each(["dolphin-split9-experimental", "dolphin-monolith-experimental"] as const)(
+  it.each(["dolphin-monolith-experimental"] as const)(
     "caps a saved 512-token preference for %s without overwriting it", async (generationProfile) => {
       const model = { modelId: "dolphin-import", runtime: "coreml" as const, displayName: "Renamed local model",
         source: "Imported model", sizeBytes: 100, importedAt: "2026-10-14T00:00:00Z", generationProfile };
@@ -402,6 +402,39 @@ describe("LocalModelScreen", () => {
       expect(saveLocalModelSettings).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 512 }));
     },
   );
+
+  it.each([false, true])("keeps a split import visible but diagnostic-only (already loaded: %s)", async (alreadyLoaded) => {
+    const model = { modelId: "split-import", runtime: "coreml" as const, displayName: "Existing split bundle",
+      source: "Imported model", sizeBytes: 100, importedAt: "2026-10-14T00:00:00Z",
+      generationProfile: "dolphin-split9-experimental" as const };
+    mockListModels.mockResolvedValue([model]);
+    jest.mocked(readLocalModelSettings).mockResolvedValue({
+      runtime: "coreml", modelId: model.modelId, revision: "", maxTokens: 512, temperature: 0,
+    });
+    if (alreadyLoaded) {
+      jest.mocked(getLocalInferenceStatus).mockResolvedValue({
+        state: "ready", runtime: "coreml", modelId: model.modelId, revision: null,
+      });
+    }
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(alreadyLoaded ? /Le modèle de l’app est déjà chargé/ : /Choisis un modèle local/);
+    expect(screen.getByRole("button", { name: "Choisir Existing split bundle" })).toBeOnTheScreen();
+    expect(screen.getByRole("button", { name: "Charger le modèle" })).toBeDisabled();
+    expect(screen.getByText(/Dolphin3-ANE scindé est réservé aux diagnostics/)).toBeOnTheScreen();
+    expect(screen.queryByTestId("dolphin-qualification-budget")).not.toBeOnTheScreen();
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Bonjour");
+    const generate = screen.getByRole("button", { name: "Générer une proposition locale" });
+    expect(generate).toBeDisabled();
+    await user.press(generate);
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(mockSubmit).not.toHaveBeenCalled();
+    expect(mockUnload).not.toHaveBeenCalled();
+    expect(saveLocalModelSettings).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Limite de jetons de sortie")).toHaveDisplayValue("512");
+    if (alreadyLoaded) expect(screen.getByRole("button", { name: "Décharger le modèle" })).toBeEnabled();
+  });
 
   it("does not cap an unrelated Core ML model merely named Dolphin", async () => {
     const model = { modelId: "generic-import", runtime: "coreml" as const, displayName: "Dolphin3-ANE",

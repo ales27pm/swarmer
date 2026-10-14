@@ -251,14 +251,19 @@ Dolphin sans cette identité est refusé. Le mode normal utilise CPU+GPU, confor
 à l'exemple de référence; `cpuAndNeuralEngine` reste une ablation Debug et ne
 constitue jamais, à lui seul, une preuve de placement ANE.
 
-Un fallback distinct, explicitement expérimental, reconnaît les anciens bundles
-Dolphin3-ANE v2 fractionnés uniquement lorsque `manifest.json`, les tables RoPE,
+Un import distinct, réservé aux diagnostics expérimentaux, reconnaît les bundles
+Dolphin3-ANE v2/v3 fractionnés uniquement lorsque `manifest.json`, les tables RoPE,
 le tokenizer et exactement neuf répertoires `embedding`/`block_00…06`/`head`
 respectent le contrat attendu. Le store copie seulement ces modèles et leurs
 sidecars autorisés, y compris `generation_config.json`, puis résout la racine
-commune vers le runtime séquentiel plutôt que vers ANEMLL. Ce chemin autorise
-CPU+Neural Engine sans prétendre tracer le placement ANE; le package unique
-épinglé demeure recommandé. Une compilation et un essai sur appareil du build
+commune vers le runtime séquentiel plutôt que vers ANEMLL. Les imports restent
+listés, sans suppression ni réécriture. Leur chargement normal et toute génération
+de proposition ou de plan sont refusés, y compris via API/protocole. Seul un
+chargement diagnostique explicite en Debug avec
+`coreMLComputeUnits: "cpuAndNeuralEngine"` reste autorisé; il n'active pas la
+génération normale et ne prouve aucun placement ANE. Les probes Debug sont
+conservés. Le package unique épinglé est le chemin de génération Dolphin Core ML,
+avec un plafond de qualification de 32 jetons. Une compilation et un essai sur appareil du build
 courant restent nécessaires avant toute revendication de fonctionnement.
 
 ## Cycle réel d'une tâche

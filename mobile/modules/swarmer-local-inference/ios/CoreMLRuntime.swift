@@ -109,15 +109,14 @@ actor CoreMLRuntime {
     var stage = CoreMLLoadDiagnostic.Stage.validateArtifact
     do {
       cancelRequested = false
-      if DolphinCoreMLBundle.isMarked(at: modelURL) {
+      let isSplit = DolphinCoreMLBundle.isMarked(at: modelURL)
+      // Check the actual artifact, not persisted metadata, before inspecting,
+      // tokenizing or compiling/loading any of the nine split models.
+      try CoreMLDolphinSplitPolicy.validateLoad(isSplit: isSplit, diagnosticUnits: units)
+      if isSplit {
         guard modelURL.standardizedFileURL == tokenizerURL.standardizedFileURL else {
           throw LocalInferenceError.unsupportedModel(
             "the experimental Dolphin split tokenizer must share the pipeline root"
-          )
-        }
-        guard units == nil || units == .cpuAndNeuralEngine else {
-          throw LocalInferenceError.unsupportedModel(
-            "the experimental Dolphin split runtime only supports CPU and Neural Engine"
           )
         }
         _ = try DolphinCoreMLBundle.inspect(directory: modelURL)
@@ -219,57 +218,17 @@ actor CoreMLRuntime {
 
   func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> RuntimeGenerationResult {
     guard !generating else { throw LocalInferenceError.generationInProgress }
+    // A DEBUG diagnostic load does not grant access to normal generation.
+    try CoreMLDolphinSplitPolicy.validateGeneration(isSplit: dolphin != nil)
     guard let tokenizer else { throw LocalInferenceError.modelNotLoaded }
     let maxTokens = CoreMLDolphinSupport.qualifiedMaxTokens(
-      maxTokens, isDolphin: dolphin != nil || contract?.dolphinCausalMask == true
+      maxTokens, isDolphin: contract?.dolphinCausalMask == true
     )
     generating = true
     cancelRequested = false
     defer {
       generating = false
       cancelRequested = false
-    }
-
-    if let dolphin {
-      guard tokenizer.hasChatTemplate else {
-        throw LocalInferenceError.inferenceFailed(
-          "the experimental Dolphin split tokenizer does not provide its required chat template"
-        )
-      }
-      let messages: [Message] = [["role": "user", "content": prompt]]
-      let encoded: [Int]
-      do {
-        encoded = try tokenizer.applyChatTemplate(
-          messages: messages,
-          chatTemplate: nil,
-          addGenerationPrompt: true,
-          truncation: false,
-          maxLength: nil,
-          tools: nil
-        )
-      } catch {
-        throw LocalInferenceError.inferenceFailed(
-          "the experimental Dolphin split tokenizer could not apply its chat template: \(error.localizedDescription)"
-        )
-      }
-      let tokens = encoded.compactMap { Int32(exactly: $0) }
-      guard !tokens.isEmpty, tokens.count == encoded.count else {
-        throw LocalInferenceError.inferenceFailed("the tokenizer returned invalid token IDs")
-      }
-      guard maxTokens > 0, tokens.count <= 2_048,
-            maxTokens - 1 <= 2_048 - tokens.count else {
-        throw LocalInferenceError.contextExceeded
-      }
-      let result = try await dolphin.generate(
-        tokens: tokens,
-        maxNewTokens: maxTokens,
-        temperature: temperature
-      )
-      return RuntimeGenerationResult(
-        text: tokenizer.decode(tokens: result.generatedIds.map(Int.init), skipSpecialTokens: true),
-        finishReason: cancelRequested || Task.isCancelled ? "cancelled" : result.finishReason,
-        tokenCount: result.generatedIds.count
-      )
     }
 
     guard let model, let contract else { throw LocalInferenceError.modelNotLoaded }

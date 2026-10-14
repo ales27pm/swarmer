@@ -6,7 +6,7 @@ import type { GoalCreateInput, GoalFeedbackInput, TaskMode, TaskStatus } from "@
 import * as inference from "@/lib/local-inference";
 import { COREML_PROBE_FIXTURES, type CoreMLProbeFixture } from "@/lib/coreml-probe";
 import * as embeddings from "@/lib/local-embeddings";
-import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS, localModelGenerationTokenLimit } from "@/lib/local-generation-limits";
+import { DEFAULT_GOAL_PLAN_MAX_TOKENS, DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE, MAX_LOCAL_GENERATION_TOKENS, localModelGenerationTokenLimit, localModelSupportsGeneration } from "@/lib/local-generation-limits";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { resolveHuggingFaceModels, type HuggingFaceDownloadPlan } from "@/lib/hugging-face-models";
 import * as settings from "@/lib/local-model-settings";
@@ -87,6 +87,7 @@ async function generateQualifiedLocalProposal(input: Parameters<typeof inference
     assertActive();
     const model = models.find(item => item.runtime === "coreml" && item.modelId === status.modelId);
     if (!model) throw new ApplicationApiError("model_not_ready", "Les métadonnées du modèle Core ML chargé sont indisponibles.");
+    if (!localModelSupportsGeneration(model)) throw new ApplicationApiError("diagnostic_only_model", DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE);
     const limit = localModelGenerationTokenLimit(model);
     if (limit < MAX_LOCAL_GENERATION_TOKENS) maxTokens = Math.min(maxTokens ?? limit, limit);
   }
@@ -315,7 +316,20 @@ register<Parameters<typeof inference.loadLocalModel>[0]>("models.load", object({
   if (input.coreMLComputeUnits !== undefined && (!inference.isCoreMLDiagnosticsAvailable() || input.runtime !== "coreml")) {
     throw new ApplicationApiError("invalid_arguments", "Le diagnostic est réservé à Core ML en développement.");
   }
-  return withNativeOperation("load", () => inference.loadLocalModel(input));
+  return withNativeOperation("load", async (assertActive) => {
+    // The explicit native Debug ANE load remains available for split diagnostics.
+    // No ordinary generation command inherits that exception.
+    if (input.runtime === "coreml" && input.coreMLComputeUnits !== "cpuAndNeuralEngine") {
+      const models = await inference.listLocalModels();
+      assertActive();
+      const model = models.find(item => item.runtime === "coreml" && item.modelId === input.modelId.trim());
+      if (!model && input.coreMLComputeUnits === undefined) {
+        throw new ApplicationApiError("model_not_ready", "Les métadonnées du modèle Core ML sont indisponibles.");
+      }
+      if (!localModelSupportsGeneration(model)) throw new ApplicationApiError("diagnostic_only_model", DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE);
+    }
+    return inference.loadLocalModel(input);
+  });
 }, { ...device, ...mutation, requiresForeground: true });
 if (inference.isCoreMLDiagnosticsAvailable()) {
   register<{ fixtureID: CoreMLProbeFixture; computeUnits: inference.CoreMLComputeUnits }>("models.coreml-probe", object({

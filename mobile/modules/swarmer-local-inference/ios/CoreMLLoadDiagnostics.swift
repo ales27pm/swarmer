@@ -20,6 +20,26 @@ struct CoreMLDiagnosticOptionError: Error, LocalizedError {
   var errorDescription: String? { "Core ML diagnostic options require a development build and a valid Core ML compute unit." }
 }
 
+enum CoreMLDolphinSplitPolicy {
+  static func validateLoad(isSplit: Bool, diagnosticUnits: CoreMLDiagnosticComputeUnits?) throws {
+    guard isSplit else { return }
+    #if DEBUG
+    if diagnosticUnits == .cpuAndNeuralEngine { return }
+    #endif
+    throw CoreMLDolphinSplitDiagnosticOnlyError()
+  }
+
+  static func validateGeneration(isSplit: Bool) throws {
+    if isSplit { throw CoreMLDolphinSplitDiagnosticOnlyError() }
+  }
+}
+
+struct CoreMLDolphinSplitDiagnosticOnlyError: Error, LocalizedError {
+  var errorDescription: String? {
+    "Dolphin3-ANE scindé est réservé aux diagnostics. Pour générer, importe et charge le package Core ML monolithique recommandé."
+  }
+}
+
 struct CoreMLLoadDiagnostic: Codable, Equatable, Sendable {
   enum Stage: String, CaseIterable, Codable, Sendable {
     case resolve, validateArtifact, compile, load, validateContract, tokenizer, complete
