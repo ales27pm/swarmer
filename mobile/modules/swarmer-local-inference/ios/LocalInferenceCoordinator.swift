@@ -360,7 +360,7 @@ actor LocalInferenceCoordinator {
       if importOperation?.id == operationId {
         importOperation = nil
       }
-      return LocalModelRecord(stored: imported)
+      return LocalModelRecord(stored: imported, generationProfile: try await store.generationProfile(for: imported))
     } catch {
       if importOperation?.id == operationId {
         importOperation = nil
@@ -372,7 +372,11 @@ actor LocalInferenceCoordinator {
   func listModels() async throws -> [LocalModelRecord] {
     var models: [LocalModelRecord] = []
     for stored in try await store.list() {
-      models.append(LocalModelRecord(stored: stored, purpose: try await store.purpose(for: stored)))
+      models.append(LocalModelRecord(
+        stored: stored,
+        purpose: try await store.purpose(for: stored),
+        generationProfile: try await store.generationProfile(for: stored)
+      ))
     }
     return models
   }
@@ -745,9 +749,11 @@ actor LocalInferenceCoordinator {
           guard let tokenizerURL = resolved.tokenizerURL else {
             throw LocalInferenceError.unsupportedModel("the Core ML tokenizer sidecar is missing")
           }
-          if resolved.runtimeURL.standardizedFileURL == tokenizerURL.standardizedFileURL {
-            // Only the validated ANEMLL import resolves a pipeline directory.
-            // The runtime validates all three model contracts before becoming ready.
+          if resolved.runtimeURL.standardizedFileURL == tokenizerURL.standardizedFileURL,
+             !DolphinCoreMLBundle.isMarked(at: resolved.runtimeURL) {
+            // Validated ANEMLL imports and experimental Dolphin split imports both
+            // resolve a pipeline directory. The exact Dolphin marker routes the
+            // latter through CoreMLRuntime; every other shared root remains ANEMLL.
             let runtime = ANEMLLRuntime()
             loaded = .anemll(runtime)
             loading = loaded

@@ -375,6 +375,68 @@ describe("LocalModelScreen", () => {
     expect(saveLocalModelSettings).toHaveBeenCalledWith(expect.objectContaining({ modelId: "mlx-community/test-model", maxTokens: 128, temperature: 0 }));
   });
 
+  it.each(["dolphin-split9-experimental", "dolphin-monolith-experimental"] as const)(
+    "caps a saved 512-token preference for %s without overwriting it", async (generationProfile) => {
+      const model = { modelId: "dolphin-import", runtime: "coreml" as const, displayName: "Renamed local model",
+        source: "Imported model", sizeBytes: 100, importedAt: "2026-10-14T00:00:00Z", generationProfile };
+      mockListModels.mockResolvedValue([model]);
+      jest.mocked(readLocalModelSettings).mockResolvedValue({
+        runtime: "coreml", modelId: model.modelId, revision: "", maxTokens: 512, temperature: 0,
+      });
+      mockLoad.mockResolvedValue({ state: "ready", runtime: "coreml", modelId: model.modelId, revision: null });
+      mockGenerate.mockResolvedValue({ text: "Incomplete proposal", finishReason: "length", tokenCount: 32 });
+      const user = userEvent.setup();
+      await render(<LocalModelScreen />);
+      await screen.findByText(/Choisis un modèle local/);
+      expect(screen.getByLabelText("Limite de jetons de sortie")).toHaveDisplayValue("512");
+      expect(screen.getByTestId("dolphin-qualification-budget")).toHaveTextContent(/32 jetons/);
+      await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
+      await screen.findByText(/Modèle chargé localement/);
+      await user.type(screen.getByLabelText("Intention pour le modèle local"), "Bonjour");
+      await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+      await screen.findByText(/La limite de génération a été atteinte/);
+      expect(mockGenerate).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 32, temperature: 0 }));
+      expect(mockSubmit).not.toHaveBeenCalled();
+      await user.press(screen.getByRole("button", { name: "Enregistrer les réglages" }));
+      await screen.findByText(/Réglages enregistrés/);
+      expect(saveLocalModelSettings).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 512 }));
+    },
+  );
+
+  it("does not cap an unrelated Core ML model merely named Dolphin", async () => {
+    const model = { modelId: "generic-import", runtime: "coreml" as const, displayName: "Dolphin3-ANE",
+      source: "Imported model", sizeBytes: 100, importedAt: "2026-10-14T00:00:00Z" };
+    mockListModels.mockResolvedValue([model]);
+    jest.mocked(readLocalModelSettings).mockResolvedValue({
+      runtime: "coreml", modelId: model.modelId, revision: "", maxTokens: 512, temperature: 0,
+    });
+    mockLoad.mockResolvedValue({ state: "ready", runtime: "coreml", modelId: model.modelId, revision: null });
+    mockGenerate.mockResolvedValue({ text: "Incomplete proposal", finishReason: "length", tokenCount: 512 });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Choisis un modèle local/);
+    expect(screen.queryByTestId("dolphin-qualification-budget")).not.toBeOnTheScreen();
+    await user.press(screen.getByRole("button", { name: "Charger le modèle" }));
+    await screen.findByText(/Modèle chargé localement/);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Bonjour");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    await screen.findByText(/La limite de génération a été atteinte/);
+    expect(mockGenerate).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 512 }));
+  });
+
+  it("does not dispatch when an already-loaded Core ML model is missing from native metadata", async () => {
+    jest.mocked(getLocalInferenceStatus).mockResolvedValue({
+      state: "ready", runtime: "coreml", modelId: "unlisted-import", revision: null,
+    });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(/Le modèle de l’app est déjà chargé/);
+    await user.type(screen.getByLabelText("Intention pour le modèle local"), "Bonjour");
+    await user.press(screen.getByRole("button", { name: "Générer une proposition locale" }));
+    await screen.findByText(/Les métadonnées du modèle Core ML chargé sont indisponibles/);
+    expect(mockGenerate).not.toHaveBeenCalled();
+  });
+
   it("downloads and selects GGUF with its exact pin and checksum before loading", async () => {
     jest.mocked(downloadLocalGgufModel).mockResolvedValue({
       modelId: "local_dolphin", runtime: "llama.cpp", displayName: "Dolphin GGUF", source: "Dolphin.gguf", sizeBytes: 2_019_382_400, importedAt: "2026-09-12T12:00:00Z",

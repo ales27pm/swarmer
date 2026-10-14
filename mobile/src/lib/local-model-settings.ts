@@ -1,7 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 
-import type { LocalInferenceRuntime } from "@/lib/local-inference";
-import { MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
+import type { LocalInferenceRuntime, LocalModel } from "@/lib/local-inference";
+import { localModelGenerationTokenLimit, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 
 const SETTINGS_KEY = "swarmer.local-model-settings.v1";
 
@@ -13,7 +13,9 @@ export type LocalModelSettings = {
   temperature: number;
 };
 
-export const DEFAULT_GENERATION_SETTINGS = { maxTokens: 256, temperature: 0.1 } as const;
+// Preserve the requested preference separately from the per-model effective
+// qualification budget. The native diagnostic runtime keeps its larger limit.
+export const DEFAULT_GENERATION_SETTINGS = { maxTokens: 32, temperature: 0.1 } as const;
 
 export function parseGenerationSettings(maxTokens: string, temperature: string) {
   const tokens = Number(maxTokens.trim());
@@ -25,6 +27,16 @@ export function parseGenerationSettings(maxTokens: string, temperature: string) 
     throw new Error("La température doit être comprise entre 0 et 2.");
   }
   return { maxTokens: tokens, temperature: heat };
+}
+
+/** Applied at UI dispatch, including goal plans, without rewriting saved settings. */
+export function generationSettingsForModel(
+  maxTokens: string,
+  temperature: string,
+  model?: Pick<LocalModel, "runtime" | "generationProfile">,
+) {
+  const settings = parseGenerationSettings(maxTokens, temperature);
+  return { ...settings, maxTokens: Math.min(settings.maxTokens, localModelGenerationTokenLimit(model)) };
 }
 
 function parseSettings(value: unknown): LocalModelSettings | null {

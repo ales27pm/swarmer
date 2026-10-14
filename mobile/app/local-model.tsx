@@ -41,9 +41,10 @@ import {
   type LocalToolProposal,
 } from "@/lib/application-api/local-inference";
 import { LOCAL_MODEL_PRESETS, preferredLocalRuntime } from "@/lib/local-model-presets";
-import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
+import { DEFAULT_GOAL_PLAN_MAX_TOKENS, localModelGenerationTokenLimit, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import {
   DEFAULT_GENERATION_SETTINGS,
+  generationSettingsForModel,
   parseGenerationSettings,
   readLocalModelSettings,
   saveLocalModelSettings,
@@ -363,6 +364,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     [models, runtime],
   );
   const selectedImportedModel = runtimeModels.find((model) => model.modelId === modelId.trim());
+  const generationTokenLimit = localModelGenerationTokenLimit(selectedImportedModel);
   const remoteMlx = runtime === "mlx" && !selectedImportedModel;
   const validMlxModelId = isHuggingFaceModelId(modelId);
   const immutableRevision = isImmutableHuggingFaceRevision(revision);
@@ -733,9 +735,15 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       const session = generationSession.current;
       const expectedModel = loadedModel.current;
       if (!session || !expectedModel) throw new Error("Le modèle chargé n’a pas été confirmé. Actualisez son état.");
+      const loadedModelMetadata = models.find(
+        (model) => model.runtime === expectedModel.runtime && model.modelId === expectedModel.modelId,
+      );
+      if (expectedModel.runtime === "coreml" && !loadedModelMetadata) {
+        throw new Error("Les métadonnées du modèle Core ML chargé sont indisponibles. Actualise la liste avant de générer.");
+      }
       const result = await session.generate({
         prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent, preparation?.context.symbolic_context),
-        ...parseGenerationSettings(maxTokens, temperature),
+        ...generationSettingsForModel(maxTokens, temperature, loadedModelMetadata),
       }, expectedModel, async () => {
         if (!mounted.current || generationVersion.current !== version) throw new Error("Cette préparation locale n’est plus actuelle.");
         if (planningSession) await planningSession.assertCurrent();
@@ -1077,8 +1085,16 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
           {goalMode
             ? `Le plan utilise ${DEFAULT_GOAL_PLAN_MAX_TOKENS} jetons de sortie par défaut. Tu peux ajuster cette limite selon le contexte du modèle. Une sortie tronquée est rejetée.`
-            : "256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime."}
+            : "32 jetons et une température de 0,1 par défaut pendant la qualification physique. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime."}
         </Text>
+        {generationTokenLimit < MAX_LOCAL_GENERATION_TOKENS ? (
+          <Text selectable testID="dolphin-qualification-budget" style={{ color: COLORS.warning, lineHeight: 20 }}>
+            {selectedImportedModel?.generationProfile === "dolphin-split9-experimental"
+              ? "Dolphin scindé : repli expérimental. Privilégie le paquet monolithique. "
+              : "Dolphin monolithique : qualification physique encore requise. "}
+            Chaque génération, y compris un plan, est limitée à {generationTokenLimit} jetons de sortie au maximum. Ta valeur saisie est conservée; seule la limite effective est réduite si elle la dépasse. Une sortie tronquée reste rejetée.
+          </Text>
+        ) : null}
         <KeyboardInputGroup dismissKeyboard testID="local-model-generation-settings">
           <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–{MAX_LOCAL_GENERATION_TOKENS})</Text>
           <KeyboardTextInput

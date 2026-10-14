@@ -105,7 +105,8 @@ Usage:
 
 - runtime local facultatif via Core ML, MLX ou llama.cpp/GGUF;
 - un seul modèle chargé et une seule génération active;
-- génération bornée à 512 nouveaux jetons par l'interface native;
+- génération bornée à 1 024 nouveaux jetons par l'interface native, sous réserve du contexte disponible;
+- qualification Dolphin Core ML limitée à 32 jetons effectifs dans l'écran local, y compris les plans;
 - les sorties restent des propositions locales non vérifiées;
 - aucune authentification et aucune exécution d’outil dans le module natif.
 
@@ -136,9 +137,16 @@ compatibilité des formats; aucune supériorité de benchmark n’est revendiqu�
 Dans **Réglages → Ouvrir les modèles locaux**, MLX est sélectionné quand il
 est disponible. Le chargement et le téléchargement restent explicites.
 Les réglages enregistrent le runtime, le modèle, sa révision, la température
-et la limite de sortie sur l’iPhone. Par défaut: **256 jetons, température
-0,1**; la limite native reste 512. Les choix personnalisés sont conservés
-lors d’un changement de runtime. Une génération ou un téléchargement annulé
+et la limite de sortie sur l’iPhone. Pendant la qualification physique, le
+défaut est volontairement fixé à **32 jetons, température 0,1**. Pour les
+profils natifs Dolphin Core ML, l'écran applique aussi une limite effective
+de **32 jetons**, en proposition comme en mode plan. Ainsi, un ancien réglage
+enregistré à 512 reste conservé mais ne déclenche pas une génération de 512
+jetons; un avertissement indique la limite appliquée. Les autres modèles
+gardent leur budget habituel. La limite native générale reste 1 024 pour les
+essais diagnostiques explicites; ce n'est pas une promesse de performance.
+Les choix personnalisés sont conservés lors d’un changement de runtime.
+Une génération ou un téléchargement annulé
 ne déclenche aucun chargement ni soumission.
 
 Les SHAs complets et identités des fichiers figurent dans
@@ -152,7 +160,7 @@ Pour préparer le dossier Core ML sur le Mac avec la CLI Hugging Face:
 
 ```sh
 hf download ales27pm/Dolphin3.0-CoreML \
-  --revision c786a7060b183baa9ce8f8b11dded70f6d88e021 \
+  --revision 4972a699bb5e9e72ecb054a9d0435e9f36f959e1 \
   --include 'Dolphin3.0-Llama3.2-3B-stateful-int4.mlpackage/**' \
     config.json generation_config.json tokenizer.json tokenizer_config.json \
     special_tokens_map.json \
@@ -162,9 +170,41 @@ hf download ales27pm/Dolphin3.0-CoreML \
 Transférer ce dossier dans Fichiers, puis utiliser **Importer un dossier Core
 ML**. Ne sélectionner que le package recommandé, avec les sidecars à côté;
 un dossier contenant plusieurs exports du modèle est ambigu. L’adaptateur
-valide `inputIds`, le masque causal FP16, les deux états KV et la forme des
-logits; il traite les prompts par segments de 512 jetons et crée un nouvel
-état à chaque génération. iOS 18 minimum.
+valide les SHA-256 du package et de ses cinq sidecars avant compilation, puis
+`inputIds`, le masque causal FP16, les deux états KV et la forme des logits.
+Il traite les prompts par segments de 512 jetons et crée un nouvel état à
+chaque génération. Le monolithe épinglé utilise CPU+GPU par défaut; l’ANE reste
+un mode de diagnostic explicite tant que son placement n’est pas tracé. iOS 18
+minimum.
+
+Le champ natif optionnel `generationProfile` est dérivé du paquet local,
+également pour les anciens imports, sans réécrire l'index des modèles.
+Il ne dépend pas du nom affiché. Pour le monolithe, ce classement conservateur
+sert uniquement à restreindre le budget UI : il ne remplace jamais le contrôle
+cryptographique complet au chargement. L'absence de métadonnées pour un modèle
+Core ML chargé bloque la génération depuis cet écran jusqu'à actualisation.
+
+Le package unique ci-dessus reste le chemin recommandé. Un chemin de
+compatibilité **expérimental** accepte aussi l’ancien export Dolphin3-ANE v2
+fractionné: `embedding`, `block_00` à `block_06` et `head`, chacun en
+`.mlpackage` ou `.mlmodelc`, avec `manifest.json`, les deux tables RoPE et le
+tokenizer à la racine. L’import vérifie ce contrat exact et conserve notamment
+`generation_config.json`; les neuf modèles sont ensuite chargés
+séquentiellement avec CPU et Neural Engine autorisés. Cette configuration ne
+prouve pas le placement ANE, n’offre pas de repli CPU+GPU et doit être validée
+sur l’iPhone cible avant usage prolongé.
+
+Pour un transfert privé via Tailscale IPv6, créer une archive ZIP sans
+compression, l’exposer temporairement sur l’adresse IPv6 Tailscale de l’hôte,
+puis ouvrir l’URL entre crochets sur l’iPhone. Ne pas lier le serveur à `::`:
+
+```sh
+zip -0 -r Dolphin3B-CoreML.zip Dolphin3B-CoreML
+python3 -m http.server 8765 --bind "$TAILSCALE_IPV6"
+# iPhone: http://[$TAILSCALE_IPV6]:8765/Dolphin3B-CoreML.zip
+```
+
+Arrêter le serveur dès que Fichiers a reçu et décompressé l’archive.
 
 La RAM nécessaire dépasse la taille des poids: le package Core ML ajoute
 environ 235 Mo de cache KV, plus les activations et le tokenizer. Le

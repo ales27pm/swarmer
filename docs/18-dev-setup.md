@@ -243,6 +243,24 @@ fichiers MLX JSON/tokenizer/poids). Un import est refusé au-delà de 16 Gio,
 La copie est annulable, vérifie l'identité et la taille de chaque fichier avant
 et après lecture, puis nettoie les imports interrompus.
 
+Le monolithe Dolphin officiel est un cas plus strict: avant le premier appel à
+Core ML, le runtime re-hache les trois fichiers du `.mlpackage` et les cinq
+sidecars contre la révision immuable
+`4972a699bb5e9e72ecb054a9d0435e9f36f959e1`. Un modèle qui expose l'interface
+Dolphin sans cette identité est refusé. Le mode normal utilise CPU+GPU, conforme
+à l'exemple de référence; `cpuAndNeuralEngine` reste une ablation Debug et ne
+constitue jamais, à lui seul, une preuve de placement ANE.
+
+Un fallback distinct, explicitement expérimental, reconnaît les anciens bundles
+Dolphin3-ANE v2 fractionnés uniquement lorsque `manifest.json`, les tables RoPE,
+le tokenizer et exactement neuf répertoires `embedding`/`block_00…06`/`head`
+respectent le contrat attendu. Le store copie seulement ces modèles et leurs
+sidecars autorisés, y compris `generation_config.json`, puis résout la racine
+commune vers le runtime séquentiel plutôt que vers ANEMLL. Ce chemin autorise
+CPU+Neural Engine sans prétendre tracer le placement ANE; le package unique
+épinglé demeure recommandé. Une compilation et un essai sur appareil du build
+courant restent nécessaires avant toute revendication de fonctionnement.
+
 ## Cycle réel d'une tâche
 
 - `POST /chat` persiste un message utilisateur et une tâche `created`;

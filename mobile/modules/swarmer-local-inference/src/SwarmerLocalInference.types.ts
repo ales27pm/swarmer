@@ -17,6 +17,7 @@ export type LocalModel = {
   source: string;
   sizeBytes: number;
   importedAt: string;
+  generationProfile?: "dolphin-split9-experimental" | "dolphin-monolith-experimental" | null;
 };
 
 export type LocalModelDownloadInput = {

@@ -55,11 +55,11 @@ export const LOCAL_MODEL_PRESETS: Record<LocalInferenceRuntime, LocalModelPreset
     runtime: "coreml",
     name: "Dolphin 3.0 · Llama 3.2 3B",
     repoId: "ales27pm/Dolphin3.0-CoreML",
-    revision: "c786a7060b183baa9ce8f8b11dded70f6d88e021",
+    revision: "4972a699bb5e9e72ecb054a9d0435e9f36f959e1",
     quantization: "Core ML INT4 avec cache KV",
     downloadSize: "environ 1,82 Go",
     filename: "Dolphin3.0-Llama3.2-3B-stateful-int4.mlpackage",
-    detail: "Importe un dossier contenant ce package et ses fichiers tokenizer.json, tokenizer_config.json, config.json et generation_config.json. Contexte de 2 048 jetons; iOS 18 minimum.",
+    detail: "Importe le package officiel épinglé avec ses cinq sidecars. Le runtime vérifie leurs SHA-256, utilise CPU+GPU par défaut, un contexte de 2 048 jetons et des chunks de 512; iOS 18 minimum.",
   },
 };
 

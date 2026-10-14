@@ -31,6 +31,8 @@ export type LocalModel = {
   importedAt: string;
   /** Older native records omit this; those are normalized to generation by the adapter. */
   purpose?: "generation" | "embeddings";
+  /** Native package classification for UI qualification policy; not a proof of execution. */
+  generationProfile?: "dolphin-split9-experimental" | "dolphin-monolith-experimental";
 };
 
 const MODEL_DOWNLOAD_STATES = ["idle", "downloading", "verifying", "importing", "completed", "cancelled", "failed"] as const;
@@ -497,8 +499,15 @@ function parseLocalModel(value: unknown): LocalModel {
       "sizeBytes",
       "source",
       ...(Object.hasOwn(value, "purpose") ? ["purpose"] : []),
+      ...(Object.hasOwn(value, "generationProfile") ? ["generationProfile"] : []),
     ]) ||
     (Object.hasOwn(value, "purpose") && value.purpose !== "generation" && value.purpose !== "embeddings") ||
+    (Object.hasOwn(value, "generationProfile") && value.generationProfile !== null && (
+      value.runtime !== "coreml" || value.purpose === "embeddings" || (
+        value.generationProfile !== "dolphin-split9-experimental"
+        && value.generationProfile !== "dolphin-monolith-experimental"
+      )
+    )) ||
     !isNonBlankString(value.modelId) ||
     !isRuntime(value.runtime) ||
     !isNonBlankString(value.displayName) ||
@@ -517,6 +526,8 @@ function parseLocalModel(value: unknown): LocalModel {
     sizeBytes: Number(value.sizeBytes),
     importedAt: value.importedAt,
     purpose: value.purpose === "embeddings" ? "embeddings" : "generation",
+    ...(value.generationProfile === "dolphin-split9-experimental" || value.generationProfile === "dolphin-monolith-experimental"
+      ? { generationProfile: value.generationProfile } : {}),
   };
 }
 

@@ -140,10 +140,11 @@ struct LocalModelRecord: Record, Sendable {
   @Field var sizeBytes: Int64 = 0
   @Field var importedAt: String = ""
   @Field var purpose: String = "generation"
+  @Field var generationProfile: String? = nil
 
   init() {}
 
-  init(stored: StoredLocalModel, purpose: LocalModelPurpose? = nil) {
+  init(stored: StoredLocalModel, purpose: LocalModelPurpose? = nil, generationProfile: String? = nil) {
     self.init()
     modelId = stored.modelId
     runtime = stored.runtime.rawValue
@@ -152,6 +153,7 @@ struct LocalModelRecord: Record, Sendable {
     sizeBytes = stored.sizeBytes
     importedAt = ISO8601DateFormatter().string(from: stored.importedAt)
     self.purpose = (purpose ?? stored.effectivePurpose).rawValue
+    self.generationProfile = generationProfile
   }
 }
 
