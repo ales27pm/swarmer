@@ -365,10 +365,15 @@ private struct LocalModelStoreTests {
   }
 
   private static func testCompiledDolphinCoreMLImport() async throws {
+    try await checkCompiledDolphinCoreMLImport(formatVersion: 2)
+    try await checkCompiledDolphinCoreMLImport(formatVersion: 3)
+  }
+
+  private static func checkCompiledDolphinCoreMLImport(formatVersion: Int) async throws {
     let workspace = try TestWorkspace(name: "dolphin-compiled-split")
     defer { workspace.remove() }
     let source = workspace.source.appendingPathComponent("Dolphin3-ANE", isDirectory: true)
-    try makeDolphinBundle(at: source, modelExtension: "mlmodelc")
+    try makeDolphinBundle(at: source, modelExtension: "mlmodelc", formatVersion: formatVersion)
     try write("must not be imported", to: source.appendingPathComponent("operator-notes.md"))
     let evidence = source.appendingPathComponent("evidence", isDirectory: true)
     try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: false)
@@ -415,6 +420,11 @@ private struct LocalModelStoreTests {
       "the Dolphin evidence directory was imported"
     )
     _ = try DolphinCoreMLBundle.inspect(directory: runtimeRoot)
+    try expect(
+      try Data(contentsOf: runtimeRoot.appendingPathComponent("manifest.json"))
+        == Data(contentsOf: source.appendingPathComponent("manifest.json")),
+      "import rewrote the source provenance declaration"
+    )
     let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
     try expect(record.generationProfile == "dolphin-split9-experimental", "new split import did not return its pre-commit profile")
     let persisted = try await store.list()
@@ -1140,7 +1150,8 @@ private struct LocalModelStoreTests {
 
   private static func makeDolphinBundle(
     at root: URL,
-    modelExtension: String
+    modelExtension: String,
+    formatVersion: Int = 2
   ) throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let manifest = """
@@ -1157,7 +1168,21 @@ private struct LocalModelStoreTests {
       "state_bytes": 234881024
     }
     """
-    try write(manifest, to: root.appendingPathComponent("manifest.json"))
+    var fields = try required(
+      JSONSerialization.jsonObject(with: Data(manifest.utf8)) as? [String: Any],
+      "invalid synthetic manifest"
+    )
+    fields["format_version"] = formatVersion
+    if formatVersion == 3 {
+      let identity = DolphinCoreMLBundle.expectedSourceIdentity
+      fields["source_model"] = identity.repo
+      fields["source_revision"] = identity.revision
+      fields["source_weight_identity"] = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(identity)
+      )
+    }
+    try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+      .write(to: root.appendingPathComponent("manifest.json"))
     try write("{}", to: root.appendingPathComponent("tokenizer.json"))
     try write("{}", to: root.appendingPathComponent("tokenizer_config.json"))
     try write(

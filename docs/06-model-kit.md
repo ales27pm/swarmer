@@ -185,13 +185,16 @@ cryptographique complet au chargement. L'absence de métadonnées pour un modèl
 Core ML chargé bloque la génération depuis cet écran jusqu'à actualisation.
 Cette politique nécessite le nouveau binaire natif qui fournit ce champ : une
 mise à jour JavaScript seule sur un ancien binaire ne peut pas classifier les
-imports Dolphin. Le fallback scindé reste limité au contrat v2 historique;
-les nouveaux exports schema 3 du toolkit nécessitent encore une qualification
-et une intégration d'import dédiées, sans assouplir ce garde.
+imports Dolphin. Le fallback scindé accepte les contrats v2 historique et v3. Pour v3,
+le modèle, la révision et l'inventaire complet de provenance déclaré doivent
+correspondre aux constantes épinglées du toolkit. Ce contrôle de déclaration
+ne prouve pas que les poids convertis correspondent aux sources : les preuves
+du toolkit doivent être revérifiées séparément. Le manifeste est copié sans
+réécriture et le profil reste `dolphin-split9-experimental`.
 
 Le package unique ci-dessus reste le chemin recommandé. Un chemin de
-compatibilité **expérimental** accepte aussi l’ancien export Dolphin3-ANE v2
-fractionné: `embedding`, `block_00` à `block_06` et `head`, chacun en
+compatibilité **expérimental** accepte aussi les exports Dolphin3-ANE v2/v3
+fractionnés: `embedding`, `block_00` à `block_06` et `head`, chacun en
 `.mlpackage` ou `.mlmodelc`, avec `manifest.json`, les deux tables RoPE et le
 tokenizer à la racine. L’import vérifie ce contrat exact et conserve notamment
 `generation_config.json`; les neuf modèles sont ensuite chargés
