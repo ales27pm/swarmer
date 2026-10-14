@@ -40,7 +40,7 @@ jest.mock("@/lib/local-inference", () => ({
   generateLocalProposal: jest.fn(), loadLocalModel: jest.fn(), cancelLocalGeneration: jest.fn(), unloadLocalModel: jest.fn(), downloadLocalGgufModel: jest.fn(),
   downloadHuggingFaceModel: jest.fn(), cancelHuggingFaceModelDownload: jest.fn(), cancelLocalModelDownload: jest.fn(),
   importLocalModel: jest.fn(), probeCoreMLFixture: jest.fn(), directLoadCoreMLFixture: jest.fn(), importCoreMLDiagnosticCandidate: jest.fn(),
-  getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(),
+  getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(), listLocalModels: jest.fn(),
   isCoreMLDiagnosticsAvailable: jest.fn(() => true),
   isCoreMLDirectLoadAvailable: jest.fn(() => true),
   isCoreMLDiagnosticImportAvailable: jest.fn(() => true),
@@ -48,7 +48,9 @@ jest.mock("@/lib/local-inference", () => ({
 
 const developmentGlobal = globalThis as typeof globalThis & { __DEV__: boolean };
 describe("application API contract", () => {
-  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDirectLoadAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true); });
+  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDirectLoadAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true);
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: "test/model", revision: null });
+  });
 
   it("publishes versioned real commands with no placeholder implementations", () => {
     const catalog = applicationApi.catalog();
@@ -420,6 +422,38 @@ describe("application API contract", () => {
     expect(result).toMatchObject({ job: { state: "failed", error: { code: "generation_failed" } } });
     expect(JSON.stringify(result)).not.toContain("private native runtime details");
     expect(session.startGoal).not.toHaveBeenCalled();
+  });
+
+  it.each<[native.LocalModel["generationProfile"], number | undefined, number]>([
+    ["dolphin-split9-experimental", undefined, 32],
+    ["dolphin-monolith-experimental", 1024, 32],
+    ["dolphin-monolith-experimental", 8, 8],
+    [undefined, undefined, 1024],
+  ])("qualifies registry plans for profile %s and budget %s", async (generationProfile, maxTokens, expected) => {
+    setupPlan();
+    jest.mocked(native.getLocalInferenceCapabilities).mockResolvedValue({ coreml: true, mlx: true, llamaCpp: true, platform: "ios" });
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: "test/model", revision: null });
+    jest.mocked(native.listLocalModels).mockResolvedValue([{
+      modelId: "test/model", runtime: "coreml", displayName: "Dolphin", source: "import",
+      sizeBytes: 1, importedAt: "2026-10-14", generationProfile,
+    }]);
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: "goal_1" })).data as { handle: string };
+    await planProtocolResult("goals.plan.generate", { handle, runtime: "coreml", modelId: "test/model", ...(maxTokens === undefined ? {} : { maxTokens }) });
+    expect(native.generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: expected }));
+  });
+
+  it("caps direct API generation and fails closed when Core ML metadata is missing", async () => {
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: "test/model", revision: null });
+    jest.mocked(native.listLocalModels).mockResolvedValue([{
+      modelId: "test/model", runtime: "coreml", displayName: "local", source: "import", sizeBytes: 1,
+      importedAt: "2026-10-14", generationProfile: "dolphin-split9-experimental",
+    }]);
+    jest.mocked(native.generateLocalProposal).mockResolvedValue({ text: "prefix", tokenCount: 32, finishReason: "length" });
+    await applicationApi.execute("inference.generate", { prompt: "test", maxTokens: 1024 });
+    expect(native.generateLocalProposal).toHaveBeenCalledWith({ prompt: "test", maxTokens: 32 });
+    jest.mocked(native.listLocalModels).mockResolvedValue([]);
+    await expect(applicationApi.execute("inference.generate", { prompt: "test" })).rejects.toMatchObject({ code: "model_not_ready" });
+    expect(native.generateLocalProposal).toHaveBeenCalledTimes(1);
   });
 
   it("preserves uncertain and one attempt after the authoritative start was sent", async () => {

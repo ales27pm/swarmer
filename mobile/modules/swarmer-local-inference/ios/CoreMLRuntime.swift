@@ -220,6 +220,9 @@ actor CoreMLRuntime {
   func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> RuntimeGenerationResult {
     guard !generating else { throw LocalInferenceError.generationInProgress }
     guard let tokenizer else { throw LocalInferenceError.modelNotLoaded }
+    let maxTokens = CoreMLDolphinSupport.qualifiedMaxTokens(
+      maxTokens, isDolphin: dolphin != nil || contract?.dolphinCausalMask == true
+    )
     generating = true
     cancelRequested = false
     defer {
@@ -262,10 +265,9 @@ actor CoreMLRuntime {
         maxNewTokens: maxTokens,
         temperature: temperature
       )
-      try checkCancellation()
       return RuntimeGenerationResult(
         text: tokenizer.decode(tokens: result.generatedIds.map(Int.init), skipSpecialTokens: true),
-        finishReason: result.finishReason,
+        finishReason: cancelRequested || Task.isCancelled ? "cancelled" : result.finishReason,
         tokenCount: result.generatedIds.count
       )
     }

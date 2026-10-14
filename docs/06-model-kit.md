@@ -137,14 +137,15 @@ compatibilité des formats; aucune supériorité de benchmark n’est revendiqu�
 Dans **Réglages → Ouvrir les modèles locaux**, MLX est sélectionné quand il
 est disponible. Le chargement et le téléchargement restent explicites.
 Les réglages enregistrent le runtime, le modèle, sa révision, la température
-et la limite de sortie sur l’iPhone. Pendant la qualification physique, le
-défaut est volontairement fixé à **32 jetons, température 0,1**. Pour les
-profils natifs Dolphin Core ML, l'écran applique aussi une limite effective
+et la limite de sortie sur l’iPhone. Le défaut des **propositions** est
+**32 jetons, température 0,1**; le mode **plan** démarre à **1 024 jetons,
+température 0,1**. Pour les profils natifs Dolphin Core ML, l'écran, les
+commandes partagées (API/protocole inclus) et le runtime appliquent une limite effective
 de **32 jetons**, en proposition comme en mode plan. Ainsi, un ancien réglage
 enregistré à 512 reste conservé mais ne déclenche pas une génération de 512
 jetons; un avertissement indique la limite appliquée. Les autres modèles
-gardent leur budget habituel. La limite native générale reste 1 024 pour les
-essais diagnostiques explicites; ce n'est pas une promesse de performance.
+gardent leur budget habituel. La limite native générale reste 1 024, mais ne
+permet pas de contourner le plafond Dolphin de 32; ce n'est pas une promesse de performance.
 Les choix personnalisés sont conservés lors d’un changement de runtime.
 Une génération ou un téléchargement annulé
 ne déclenche aucun chargement ni soumission.
@@ -207,12 +208,17 @@ compression, l’exposer temporairement sur l’adresse IPv6 Tailscale de l’h�
 puis ouvrir l’URL entre crochets sur l’iPhone. Ne pas lier le serveur à `::`:
 
 ```sh
-zip -0 -r Dolphin3B-CoreML.zip Dolphin3B-CoreML
-python3 -m http.server 8765 --bind "$TAILSCALE_IPV6"
-# iPhone: http://[$TAILSCALE_IPV6]:8765/Dolphin3B-CoreML.zip
+TRANSFER_DIR="$(mktemp -d ./dolphin-transfer.XXXXXX)"
+TAILSCALE_IPV6="$(tailscale ip -6)"
+zip -0 -r "$TRANSFER_DIR/Dolphin3B-CoreML.zip" Dolphin3B-CoreML
+printf 'URL à ouvrir sur iPhone : http://[%s]:8765/Dolphin3B-CoreML.zip\n' "$TAILSCALE_IPV6"
+python3 -m http.server 8765 --bind "$TAILSCALE_IPV6" --directory "$TRANSFER_DIR"
 ```
 
-Arrêter le serveur dès que Fichiers a reçu et décompressé l’archive.
+Copier l’URL affichée, qui contient l’adresse IPv6 réelle, et non le nom de
+variable `$TAILSCALE_IPV6`. Le dossier dédié ne doit contenir que cette archive;
+les autres fichiers du répertoire de travail ne sont pas servis. Arrêter le
+serveur dès que Fichiers a reçu et décompressé l’archive.
 
 La RAM nécessaire dépasse la taille des poids: le package Core ML ajoute
 environ 235 Mo de cache KV, plus les activations et le tokenizer. Le

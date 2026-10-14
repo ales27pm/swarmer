@@ -21,7 +21,8 @@ export type LocalModelPreset = {
   download?: GgufDownload;
 };
 
-// Verified against the Hub API and model cards on 2026-09-12. A conversion's
+// MLX/GGUF verified against the Hub API and model cards on 2026-09-12;
+// Core ML pin and artifact identity reverified on 2026-10-14. A conversion's
 // update date is not a new Dolphin release or an on-device quality benchmark.
 export const LOCAL_MODEL_PRESETS: Record<LocalInferenceRuntime, LocalModelPreset> = {
   mlx: {

@@ -197,62 +197,68 @@ actor DolphinCoreMLRuntime {
       cancelRequested = false
     }
 
-    var hiddenStates = try await embed(tokens)
-    var states: [BlockStateSnapshot] = []
-    states.reserveCapacity(manifest.blockNames.count)
-    for blockIndex in manifest.blockNames.indices {
-      let pass = try await runBlock(
-        blockIndex,
-        hiddenStates: hiddenStates,
-        startPosition: 0,
-        restoring: nil
-      )
-      hiddenStates = pass.hiddenStates
-      states.append(pass.state)
-    }
-    guard let finalPromptHidden = hiddenStates.last else {
-      throw DolphinCoreMLRuntimeError.invalid("prefill produced no hidden state")
-    }
-    var nextToken = try DolphinCoreMLBundle.sample(
-      logits: try await logits(for: finalPromptHidden),
-      temperature: temperature
-    )
-    var consumed = tokens.count
-
     var generated: [Int32] = []
     generated.reserveCapacity(maxNewTokens)
     var finishReason = "length"
-    for index in 0..<maxNewTokens {
-      try checkCancellation()
-      if manifest.eosTokenIds.contains(nextToken) {
-        finishReason = "stop"
-        break
-      }
-      generated.append(nextToken)
-      if index + 1 == maxNewTokens { break }
-      guard var hidden = try await embed([nextToken]).first else {
-        throw DolphinCoreMLRuntimeError.invalid("decode produced no hidden state")
-      }
+    do {
+      var hiddenStates = try await embed(tokens)
+      var states: [BlockStateSnapshot] = []
+      states.reserveCapacity(manifest.blockNames.count)
       for blockIndex in manifest.blockNames.indices {
         let pass = try await runBlock(
           blockIndex,
-          hiddenStates: [hidden],
-          startPosition: consumed,
-          restoring: states[blockIndex]
+          hiddenStates: hiddenStates,
+          startPosition: 0,
+          restoring: nil
         )
-        guard let blockHidden = pass.hiddenStates.first else {
-          throw DolphinCoreMLRuntimeError.invalid("a block produced no hidden state")
-        }
-        hidden = blockHidden
-        states[blockIndex] = pass.state
+        hiddenStates = pass.hiddenStates
+        states.append(pass.state)
       }
-      nextToken = try DolphinCoreMLBundle.sample(
-        logits: try await logits(for: hidden),
+      guard let finalPromptHidden = hiddenStates.last else {
+        throw DolphinCoreMLRuntimeError.invalid("prefill produced no hidden state")
+      }
+      var nextToken = try DolphinCoreMLBundle.sample(
+        logits: try await logits(for: finalPromptHidden),
         temperature: temperature
       )
-      consumed += 1
+      var consumed = tokens.count
+
+      for index in 0..<maxNewTokens {
+        try checkCancellation()
+        if manifest.eosTokenIds.contains(nextToken) {
+          finishReason = "stop"
+          break
+        }
+        generated.append(nextToken)
+        if index + 1 == maxNewTokens { break }
+        guard var hidden = try await embed([nextToken]).first else {
+          throw DolphinCoreMLRuntimeError.invalid("decode produced no hidden state")
+        }
+        for blockIndex in manifest.blockNames.indices {
+          let pass = try await runBlock(
+            blockIndex,
+            hiddenStates: [hidden],
+            startPosition: consumed,
+            restoring: states[blockIndex]
+          )
+          guard let blockHidden = pass.hiddenStates.first else {
+            throw DolphinCoreMLRuntimeError.invalid("a block produced no hidden state")
+          }
+          hidden = blockHidden
+          states[blockIndex] = pass.state
+        }
+        nextToken = try DolphinCoreMLBundle.sample(
+          logits: try await logits(for: hidden),
+          temperature: temperature
+        )
+        consumed += 1
+      }
+      try checkCancellation()
+    } catch is CancellationError {
+      // Keep completed tokens when cancellation interrupts a model load or
+      // prediction. The lease remains held until that operation has returned.
+      finishReason = "cancelled"
     }
-    try checkCancellation()
     return DolphinCoreMLGeneration(generatedIds: generated, finishReason: finishReason)
   }
 

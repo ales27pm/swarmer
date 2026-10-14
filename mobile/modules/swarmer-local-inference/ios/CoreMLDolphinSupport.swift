@@ -15,6 +15,7 @@ enum CoreMLDolphinSupport {
   static let officialPackageName = "Dolphin3.0-Llama3.2-3B-stateful-int4.mlpackage"
   static let contextLength = 2048
   static let queryLength = 512
+  static let qualificationMaxTokens = 32
   static let vocabularySize = 128258
   static let cacheShape = [28, 1, 8, contextLength, 128]
   static let stopTokenIDs: Set<Int> = [128256, 128001, 128008, 128009]
@@ -158,11 +159,25 @@ enum CoreMLDolphinSupport {
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var digest = SHA256()
-    while let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty {
-      try Task.checkCancellation()
-      digest.update(data: data)
+    while true {
+      let hasData = try autoreleasepool {
+        try Task.checkCancellation()
+        guard let data = try handle.read(upToCount: 8 * 1024 * 1024), !data.isEmpty else {
+          return false
+        }
+        try Task.checkCancellation()
+        digest.update(data: data)
+        return true
+      }
+      if !hasData { break }
     }
     return digest.finalize().map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// Enforce qualification at the native generation boundary, not just in UI.
+  /// Preserve invalid nonpositive values for the normal request validation.
+  static func qualifiedMaxTokens(_ requested: Int, isDolphin: Bool) -> Int {
+    isDolphin ? min(requested, qualificationMaxTokens) : requested
   }
 
   static func prefillRanges(tokenCount: Int, maxNewTokens: Int) throws -> [Range<Int>] {

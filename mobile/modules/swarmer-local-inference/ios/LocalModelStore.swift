@@ -146,8 +146,11 @@ actor LocalModelStore {
   func generationProfile(for record: StoredLocalModel) throws -> String? {
     guard record.runtime == .coreML else { return nil }
     if let profile = record.generationProfile { return profile }
-    let resolved = try resolve(modelId: record.modelId)
-    return try generationProfile(runtime: record.runtime, runtimeURL: resolved.runtimeURL)
+    // Legacy classification is best-effort metadata enrichment. An unavailable
+    // artifact must not hide every other indexed model; loading still resolves
+    // and validates the selected artifact independently.
+    guard let resolved = try? resolve(modelId: record.modelId) else { return nil }
+    return try? generationProfile(runtime: record.runtime, runtimeURL: resolved.runtimeURL)
   }
 
   private func generationProfile(runtime: LocalRuntime, runtimeURL: URL) throws -> String? {

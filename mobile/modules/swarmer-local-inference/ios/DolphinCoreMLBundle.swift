@@ -244,8 +244,8 @@ struct DolphinCoreMLBundle: Sendable {
     }
     var threshold = unit * total
     for (index, weight) in weights.enumerated() {
+      if threshold < weight { return Int32(index) }
       threshold -= weight
-      if threshold <= 0 { return Int32(index) }
     }
     return Int32(weights.count - 1)
   }

@@ -20,6 +20,16 @@ struct CoreMLDolphinSupportTests {
   }
 
   static func main() throws {
+    try expect(CoreMLDolphinSupport.qualifiedMaxTokens(1024, isDolphin: true) == 32,
+               "Dolphin native dispatch bypassed the qualification budget")
+    try expect(CoreMLDolphinSupport.qualifiedMaxTokens(32, isDolphin: true) == 32,
+               "The exact qualification budget changed")
+    try expect(CoreMLDolphinSupport.qualifiedMaxTokens(8, isDolphin: true) == 8,
+               "Qualification raised a smaller requested budget")
+    try expect(CoreMLDolphinSupport.qualifiedMaxTokens(0, isDolphin: true) == 0,
+               "Qualification hid an invalid request")
+    try expect(CoreMLDolphinSupport.qualifiedMaxTokens(1024, isDolphin: false) == 1024,
+               "Dolphin qualification changed the generic Core ML budget")
     let ranges = try CoreMLDolphinSupport.prefillRanges(tokenCount: 1300, maxNewTokens: 748)
     try expect(ranges == [0..<512, 512..<1024, 1024..<1300], "Long prompts must retain every token")
     try expect(ranges.flatMap(Array.init) == Array(0..<1300), "Prefill chunks duplicated or dropped tokens")
@@ -51,6 +61,8 @@ struct CoreMLDolphinSupportTests {
       == CoreMLDolphinSupport.stopTokenIDs, "Pinned EOS set changed")
     try Data(#"{"eos_token_id":42}"#.utf8)
       .write(to: folder.appendingPathComponent("generation_config.json"))
+    try expect(try CoreMLDolphinSupport.configuredStopTokenIDs(in: folder)
+      == CoreMLDolphinSupport.stopTokenIDs.union([42]), "Generic EOS configuration lost its union")
     try expectRejected { _ = try CoreMLDolphinSupport.validatedStopTokenIDs(in: folder) }
     try Data(#"{"eos_token_id":true}"#.utf8)
       .write(to: folder.appendingPathComponent("generation_config.json"))

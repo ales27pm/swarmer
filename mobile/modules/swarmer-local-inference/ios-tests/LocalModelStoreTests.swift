@@ -94,7 +94,9 @@ private struct LocalModelStoreTests {
       ("Core ML filtering and required sidecars", testCoreMLFilteringAndSidecars),
       ("Dolphin compiled split Core ML import", testCompiledDolphinCoreMLImport),
       ("Dolphin qualification profiles preserve legacy indexes", testDolphinQualificationProfiles),
+      ("unavailable legacy Core ML artifacts do not break listing", testUnavailableLegacyCoreMLProfiles),
       ("Dolphin split sampler contract", testDolphinSampler),
+      ("Dolphin artifact hashing retains less than 64 MiB", testDolphinArtifactHashMemoryBudget),
       ("MLX direct artifact filtering", testMLXFiltering),
       ("pinned E5 uses a validated BERT encoder and cannot generate language", testE5Profile),
       ("legacy durable E5 keeps its identity and files while gaining embedding purpose", testLegacyE5Purpose),
@@ -542,17 +544,94 @@ private struct LocalModelStoreTests {
     )
     try expect(
       try DolphinCoreMLBundle.sample(
-        logits: [0, 0],
+        logits: [0, 2, 1],
         temperature: 1,
-        randomUnit: 0.75
+        randomUnit: 0.5
       ) == 1,
       "temperature sampling ignored the supplied distribution threshold"
+    )
+    try expect(
+      try DolphinCoreMLBundle.sample(logits: [0, 2, 1], temperature: 1, randomUnit: 0.05) == 0,
+      "temperature sampling always chose the most likely or final token"
+    )
+    try expect(
+      try DolphinCoreMLBundle.sample(logits: [-1000, 0], temperature: 1, randomUnit: 0) == 1,
+      "a zero threshold selected an underflowed zero-probability token"
     )
     do {
       _ = try DolphinCoreMLBundle.sample(logits: [.nan], temperature: 0)
       throw TestFailure("Dolphin sampling accepted non-finite logits")
     } catch DolphinCoreMLBundleError.invalid {
       // Expected.
+    }
+  }
+
+  private static func testUnavailableLegacyCoreMLProfiles() async throws {
+    for missingPart in ["runtime", "tokenizer.json", "manifest.json"] {
+      let workspace = try TestWorkspace(name: "legacy-coreml-\(missingPart)")
+      defer { workspace.remove() }
+      let source = workspace.source.appendingPathComponent("Dolphin", isDirectory: true)
+      try makeDolphinBundle(at: source, modelExtension: "mlmodelc")
+      let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+      let stale = try await store.importModel(runtime: .coreML, uri: source.absoluteString, displayName: nil)
+      let valid = try await store.importModel(runtime: .coreML, uri: source.absoluteString, displayName: "Valid")
+      let staleURL = try await store.resolve(modelId: stale.modelId).runtimeURL
+      let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+      var rows = try required(
+        JSONSerialization.jsonObject(with: Data(contentsOf: index)) as? [[String: Any]],
+        "invalid legacy fixture index"
+      )
+      for row in rows.indices { rows[row].removeValue(forKey: "generationProfile") }
+      try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]).write(to: index)
+      let priorIndex = try Data(contentsOf: index)
+      if missingPart == "runtime" {
+        try FileManager.default.removeItem(at: staleURL)
+      } else if missingPart == "manifest.json" {
+        try write("invalid manifest", to: staleURL.appendingPathComponent(missingPart))
+      } else {
+        try FileManager.default.removeItem(at: staleURL.appendingPathComponent(missingPart))
+      }
+
+      let records = try await store.list()
+      try expect(records.count == 2, "a stale artifact removed indexed records")
+      for record in records {
+        let profile = try await store.generationProfile(for: record)
+        try expect(
+          profile == (record.modelId == valid.modelId ? "dolphin-split9-experimental" : nil),
+          "legacy classification did not isolate the unavailable \(missingPart)"
+        )
+      }
+      try expect(try Data(contentsOf: index) == priorIndex, "best-effort classification rewrote the index")
+    }
+  }
+
+  private static func testDolphinArtifactHashMemoryBudget() async throws {
+    let workspace = try TestWorkspace(name: "dolphin-hash-memory")
+    defer { workspace.remove() }
+    let artifact = workspace.source.appendingPathComponent("weights.bin")
+    try Data().write(to: artifact)
+    let writer = try FileHandle(forWritingTo: artifact)
+    defer { try? writer.close() }
+    let chunk = Data(repeating: 0x5b, count: 4 * 1_024 * 1_024)
+    var digest = SHA256()
+    for _ in 0..<32 {
+      try writer.write(contentsOf: chunk)
+      digest.update(data: chunk)
+    }
+    try writer.close()
+    let expected = [CoreMLDolphinSupport.ArtifactFile(
+      path: "weights.bin", bytes: 128 * 1_024 * 1_024,
+      sha256: digest.finalize().map { String(format: "%02x", $0) }.joined()
+    )]
+    // Observe retention before this surrounding pool drains: without a pool per
+    // read, Foundation's chunk storage can accumulate for the full artifact.
+    try autoreleasepool {
+      let before = try physicalFootprint()
+      try CoreMLDolphinSupport.verifyFileInventory(root: workspace.source, expected: expected)
+      let after = try physicalFootprint()
+      let growth = after > before ? after - before : 0
+      print("Dolphin hash physical-footprint growth: \(growth) bytes")
+      try expect(growth <= 64 * 1_024 * 1_024, "Dolphin artifact hashing retained more than 64 MiB")
     }
   }
 
