@@ -29,4 +29,32 @@ describe("native model purpose", () => {
     native.listModels.mockResolvedValue([{ ...model, purpose: "embeddings", loaded: true }]);
     await expect(listLocalModels()).rejects.toThrow("modèle natif");
   });
+
+  it.each(["dolphin-split9-experimental", "dolphin-monolith-experimental"] as const)(
+    "preserves the native Core ML classification %s", async (generationProfile) => {
+      const candidate = { ...model, runtime: "coreml", generationProfile };
+      native.listModels.mockResolvedValue([candidate]);
+      expect(await listLocalModels()).toEqual([{ ...candidate, purpose: "generation" }]);
+    },
+  );
+
+  it("accepts a nullable native profile without classifying a generic model as Dolphin", async () => {
+    native.listModels.mockResolvedValue([{ ...model, generationProfile: null }]);
+    expect(await listLocalModels()).toEqual([{ ...model, purpose: "generation" }]);
+  });
+
+  it.each(["unknown", 42, undefined])("rejects an invalid explicit generation profile %s", async (generationProfile) => {
+    native.listModels.mockResolvedValue([{ ...model, runtime: "coreml", generationProfile }]);
+    await expect(listLocalModels()).rejects.toThrow("modèle natif");
+  });
+
+  it.each(["mlx", "llama.cpp"])("rejects a Dolphin Core ML profile on %s", async (runtime) => {
+    native.listModels.mockResolvedValue([{ ...model, runtime, generationProfile: "dolphin-split9-experimental" }]);
+    await expect(listLocalModels()).rejects.toThrow("modèle natif");
+  });
+
+  it("rejects a Dolphin generation profile on an embedding model", async () => {
+    native.listModels.mockResolvedValue([{ ...model, runtime: "coreml", purpose: "embeddings", generationProfile: "dolphin-split9-experimental" }]);
+    await expect(listLocalModels()).rejects.toThrow("modèle natif");
+  });
 });

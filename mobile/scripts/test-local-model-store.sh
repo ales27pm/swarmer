@@ -23,6 +23,8 @@ xcrun swiftc \
   "$MODULE_DIR/ios/EmbeddingValidation.swift" \
   "$MODULE_DIR/ios/LocalModelPurpose.swift" \
   "$MODULE_DIR/ios/ANEMLLModelProfile.swift" \
+  "$MODULE_DIR/ios/DolphinCoreMLBundle.swift" \
+  "$MODULE_DIR/ios/CoreMLDolphinSupport.swift" \
   "$MODULE_DIR/ios/LocalModelStore.swift" \
   "$MODULE_DIR/ios/LocalModelDownload.swift" \
   "$MODULE_DIR/ios-tests/LocalModelStoreTests.swift" \

@@ -360,6 +360,8 @@ actor LocalInferenceCoordinator {
       if importOperation?.id == operationId {
         importOperation = nil
       }
+      // Promotion has committed. Construct the response from its returned value
+      // without fallible post-commit filesystem work or another suspension.
       return LocalModelRecord(stored: imported)
     } catch {
       if importOperation?.id == operationId {
@@ -372,7 +374,11 @@ actor LocalInferenceCoordinator {
   func listModels() async throws -> [LocalModelRecord] {
     var models: [LocalModelRecord] = []
     for stored in try await store.list() {
-      models.append(LocalModelRecord(stored: stored, purpose: try await store.purpose(for: stored)))
+      models.append(LocalModelRecord(
+        stored: stored,
+        purpose: try await store.purpose(for: stored),
+        generationProfile: try await store.generationProfile(for: stored)
+      ))
     }
     return models
   }
@@ -391,6 +397,25 @@ actor LocalInferenceCoordinator {
     let requestedId = options.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !requestedId.isEmpty, requestedId.count <= 200 else {
       throw LocalInferenceError.modelNotFound(options.modelId)
+    }
+
+    if requestedRuntime == .coreML {
+      let admissionEpoch = lifecycleEpoch
+      let resolved = try? await store.resolve(modelId: requestedId)
+      try Task.checkCancellation()
+      guard lifecycleEpoch == admissionEpoch else { throw CancellationError() }
+      // Storage access suspends this actor: recheck admission before changing
+      // its handle, and keep the current model when split loading is refused.
+      guard !diagnosticReserved, !embeddingReserved, !activity.isSuspended,
+            importOperation == nil,
+            state != "loading", state != "generating", state != "cancelling" else {
+        throw LocalInferenceError.generationInProgress
+      }
+      if let resolved, resolved.stored.runtime == .coreML {
+        try CoreMLDolphinSplitPolicy.validateLoad(
+          isSplit: DolphinCoreMLBundle.isMarked(at: resolved.runtimeURL), diagnosticUnits: diagnosticUnits
+        )
+      }
     }
 
     lifecycleEpoch += 1
@@ -745,9 +770,11 @@ actor LocalInferenceCoordinator {
           guard let tokenizerURL = resolved.tokenizerURL else {
             throw LocalInferenceError.unsupportedModel("the Core ML tokenizer sidecar is missing")
           }
-          if resolved.runtimeURL.standardizedFileURL == tokenizerURL.standardizedFileURL {
-            // Only the validated ANEMLL import resolves a pipeline directory.
-            // The runtime validates all three model contracts before becoming ready.
+          if resolved.runtimeURL.standardizedFileURL == tokenizerURL.standardizedFileURL,
+             !DolphinCoreMLBundle.isMarked(at: resolved.runtimeURL) {
+            // Validated ANEMLL imports and experimental Dolphin split imports both
+            // resolve a pipeline directory. The exact Dolphin marker routes the
+            // latter through CoreMLRuntime; every other shared root remains ANEMLL.
             let runtime = ANEMLLRuntime()
             loaded = .anemll(runtime)
             loading = loaded

@@ -16,6 +16,11 @@ struct CoreMLLoadDiagnosticsTests {
     catch is CoreMLDiagnosticOptionError { return }
     throw Failure(message: "Diagnostic option was accepted")
   }
+  private static func rejectSplit(_ operation: () throws -> Void) throws {
+    do { try operation() }
+    catch is CoreMLDolphinSplitDiagnosticOnlyError { return }
+    throw Failure(message: "Split Dolphin escaped the diagnostics-only policy")
+  }
   static func main() throws {
     try expect(try CoreMLDiagnosticComputeUnits.requested(nil, runtime: "mlx") == nil,
                "Absent option must preserve the default runtime")
@@ -30,6 +35,26 @@ struct CoreMLLoadDiagnosticsTests {
     #endif
     try reject("aneOnly")
     try reject("all ")
+
+    try CoreMLDolphinSplitPolicy.validateLoad(isSplit: false, diagnosticUnits: nil)
+    try CoreMLDolphinSplitPolicy.validateGeneration(isSplit: false)
+    try rejectSplit { try CoreMLDolphinSplitPolicy.validateLoad(isSplit: true, diagnosticUnits: nil) }
+    for units in CoreMLDiagnosticComputeUnits.allCases {
+      // Monolithic and generic models retain their existing compute-unit policy.
+      try CoreMLDolphinSplitPolicy.validateLoad(isSplit: false, diagnosticUnits: units)
+      #if DEBUG
+      if units == .cpuAndNeuralEngine {
+        try CoreMLDolphinSplitPolicy.validateLoad(isSplit: true, diagnosticUnits: units)
+      } else {
+        try rejectSplit { try CoreMLDolphinSplitPolicy.validateLoad(isSplit: true, diagnosticUnits: units) }
+      }
+      #else
+      // Typed native callers cannot bypass the Release gate with an explicit unit.
+      try rejectSplit { try CoreMLDolphinSplitPolicy.validateLoad(isSplit: true, diagnosticUnits: units) }
+      #endif
+    }
+    // Even a successful DEBUG diagnostic load never authorizes normal generation.
+    try rejectSplit { try CoreMLDolphinSplitPolicy.validateGeneration(isSplit: true) }
 
     let privateError = NSError(domain: "/private/token-secret", code: -14, userInfo: [
       NSLocalizedDescriptionKey: "Failed to build the model execution plan using /private/model.mil with error code: -14.",
@@ -98,6 +123,6 @@ struct CoreMLLoadDiagnosticsTests {
     let success = CoreMLLoadDiagnostic.capture(units: .all, stage: .complete, startedAt: 0, now: .infinity)
     try expect(success.outcome == .succeeded && success.errors.isEmpty && success.elapsedMilliseconds == 0,
                "Successful receipt invented errors or unbounded timing")
-    print("PASS: Core ML diagnostic policy, stage, cancellation, privacy, cycle and depth bounds")
+    print("PASS: Core ML diagnostic-only split policy, stage, cancellation, privacy, cycle and depth bounds")
   }
 }

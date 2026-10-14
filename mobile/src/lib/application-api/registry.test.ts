@@ -40,15 +40,22 @@ jest.mock("@/lib/local-inference", () => ({
   generateLocalProposal: jest.fn(), loadLocalModel: jest.fn(), cancelLocalGeneration: jest.fn(), unloadLocalModel: jest.fn(), downloadLocalGgufModel: jest.fn(),
   downloadHuggingFaceModel: jest.fn(), cancelHuggingFaceModelDownload: jest.fn(), cancelLocalModelDownload: jest.fn(),
   importLocalModel: jest.fn(), probeCoreMLFixture: jest.fn(), directLoadCoreMLFixture: jest.fn(), importCoreMLDiagnosticCandidate: jest.fn(),
-  getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(),
+  getLocalInferenceCapabilities: jest.fn(), getLocalInferenceStatus: jest.fn(), listLocalModels: jest.fn(),
   isCoreMLDiagnosticsAvailable: jest.fn(() => true),
   isCoreMLDirectLoadAvailable: jest.fn(() => true),
   isCoreMLDiagnosticImportAvailable: jest.fn(() => true),
 }));
 
 const developmentGlobal = globalThis as typeof globalThis & { __DEV__: boolean };
+const splitModel: native.LocalModel = {
+  modelId: "test/model", runtime: "coreml", displayName: "Local imported model", source: "import",
+  sizeBytes: 1, importedAt: "2026-10-14", generationProfile: "dolphin-split9-experimental",
+};
 describe("application API contract", () => {
-  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDirectLoadAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true); });
+  beforeEach(() => { jest.clearAllMocks(); applicationSessions.clear(); jest.mocked(native.isCoreMLDirectLoadAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticsAvailable).mockReturnValue(true); jest.mocked(native.isCoreMLDiagnosticImportAvailable).mockReturnValue(true);
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "mlx", modelId: "test/model", revision: null });
+    jest.mocked(native.listLocalModels).mockResolvedValue([]);
+  });
 
   it("publishes versioned real commands with no placeholder implementations", () => {
     const catalog = applicationApi.catalog();
@@ -420,6 +427,159 @@ describe("application API contract", () => {
     expect(result).toMatchObject({ job: { state: "failed", error: { code: "generation_failed" } } });
     expect(JSON.stringify(result)).not.toContain("private native runtime details");
     expect(session.startGoal).not.toHaveBeenCalled();
+  });
+
+  it.each<[native.LocalModel["generationProfile"], number | undefined, number]>([
+    ["dolphin-monolith-experimental", undefined, 32],
+    ["dolphin-monolith-experimental", 1024, 32],
+    ["dolphin-monolith-experimental", 8, 8],
+    [undefined, undefined, 1024],
+  ])("qualifies registry plans for profile %s and budget %s", async (generationProfile, maxTokens, expected) => {
+    setupPlan();
+    jest.mocked(native.getLocalInferenceCapabilities).mockResolvedValue({ coreml: true, mlx: true, llamaCpp: true, platform: "ios" });
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: "test/model", revision: null });
+    jest.mocked(native.listLocalModels).mockResolvedValue([{
+      modelId: "test/model", runtime: "coreml", displayName: "Dolphin", source: "import",
+      sizeBytes: 1, importedAt: "2026-10-14", generationProfile,
+    }]);
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: "goal_1" })).data as { handle: string };
+    await planProtocolResult("goals.plan.generate", { handle, runtime: "coreml", modelId: "test/model", ...(maxTokens === undefined ? {} : { maxTokens }) });
+    expect(native.generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: expected }));
+  });
+
+  it("caps direct API generation and fails closed when Core ML metadata is missing", async () => {
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: "test/model", revision: null });
+    jest.mocked(native.listLocalModels).mockResolvedValue([{
+      modelId: "test/model", runtime: "coreml", displayName: "local", source: "import", sizeBytes: 1,
+      importedAt: "2026-10-14", generationProfile: "dolphin-monolith-experimental",
+    }]);
+    jest.mocked(native.generateLocalProposal).mockResolvedValue({ text: "prefix", tokenCount: 32, finishReason: "length" });
+    await applicationApi.execute("inference.generate", { prompt: "test", maxTokens: 1024 });
+    expect(native.generateLocalProposal).toHaveBeenCalledWith({ prompt: "test", maxTokens: 32 });
+    jest.mocked(native.listLocalModels).mockResolvedValue([]);
+    await expect(applicationApi.execute("inference.generate", { prompt: "test" })).rejects.toMatchObject({ code: "model_not_ready" });
+    expect(native.generateLocalProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, 8, 1024])("rejects split plans through the protocol before native generation (budget %s)", async (maxTokens) => {
+    const { session } = setupPlan();
+    jest.mocked(native.getLocalInferenceCapabilities).mockResolvedValue({ coreml: true, mlx: true, llamaCpp: true, platform: "ios" });
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: splitModel.modelId, revision: null });
+    jest.mocked(native.listLocalModels).mockResolvedValue([splitModel]);
+    const { handle } = (await applicationApi.execute("goals.plan.prepare", { id: "goal_1" })).data as { handle: string };
+    expect(await planProtocolResult("goals.plan.generate", {
+      handle, runtime: "coreml", modelId: splitModel.modelId, ...(maxTokens === undefined ? {} : { maxTokens }),
+    })).toMatchObject({ job: { state: "failed", error: {
+      code: "diagnostic_only_model", message: expect.stringContaining("monolithique"),
+    } } });
+    expect(native.generateLocalProposal).not.toHaveBeenCalled();
+    expect(session.startGoal).not.toHaveBeenCalled();
+    await expect(applicationApi.execute("goals.plan.start", { handle, confirm: true })).rejects.toMatchObject({ code: "invalid_state" });
+  });
+
+  it.each(["api", "protocol"] as const)("rejects ordinary split load and raw generation from %s without removing the import", async (transport) => {
+    jest.mocked(native.listLocalModels).mockResolvedValue([splitModel]);
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: splitModel.modelId, revision: null });
+    for (const [command, input] of [
+      ["models.load", { runtime: "coreml", modelId: splitModel.modelId }],
+      ["inference.generate", { prompt: "Test", maxTokens: 8 }],
+    ] as const) {
+      if (transport === "api") {
+        await expect(applicationApi.execute(command, input)).rejects.toMatchObject({
+          code: "diagnostic_only_model", message: expect.stringContaining("monolithique"),
+        });
+      } else {
+        expect(await planProtocolResult(command, input)).toMatchObject({ job: { state: "failed", error: {
+          code: "diagnostic_only_model", message: expect.stringContaining("monolithique"),
+        } } });
+      }
+    }
+    expect(native.loadLocalModel).not.toHaveBeenCalled();
+    expect(native.generateLocalProposal).not.toHaveBeenCalled();
+    expect(native.unloadLocalModel).not.toHaveBeenCalled();
+    expect((await applicationApi.execute("models.list", {})).data).toEqual([splitModel]);
+  });
+
+  it("rejects split tool proposals before native generation or submission", async () => {
+    const session = {
+      assertCurrent: jest.fn<() => Promise<void>>().mockResolvedValue(),
+      localContext: jest.fn<() => Promise<server.LocalMemoryContext>>().mockResolvedValue({
+        schema_version: "local-context-v1", enabled: false, purpose: "tool_proposal", goal_id: null,
+        goal_updated_at: null, project_id: null, input_sha256: "a".repeat(64), symbolic_context: null, receipt: null,
+      }),
+      createTask: jest.fn(), submit: jest.fn(),
+    };
+    jest.mocked(server.createLocalToolSubmissionSession).mockResolvedValue(session as Awaited<ReturnType<typeof server.createLocalToolSubmissionSession>>);
+    jest.mocked(native.listLocalModels).mockResolvedValue([splitModel]);
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: splitModel.modelId, revision: null });
+    expect(await planProtocolResult("inference.proposal.generate", { intent: "Analyse le projet" }))
+      .toMatchObject({ job: { state: "failed", error: { code: "diagnostic_only_model" } } });
+    expect(native.generateLocalProposal).not.toHaveBeenCalled();
+    expect(session.createTask).not.toHaveBeenCalled();
+    expect(session.submit).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "dolphin-monolith-experimental"] as const)("preserves ordinary Core ML load for profile %s", async (generationProfile) => {
+    jest.mocked(native.listLocalModels).mockResolvedValue([{ ...splitModel, generationProfile }]);
+    const input = { runtime: "coreml", modelId: splitModel.modelId } as const;
+    await applicationApi.execute("models.load", input);
+    expect(native.loadLocalModel).toHaveBeenCalledWith(input);
+  });
+
+  it("fails closed before ordinary Core ML load when model metadata is unavailable", async () => {
+    await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: "missing-import" }))
+      .rejects.toMatchObject({ code: "model_not_ready" });
+    expect(native.loadLocalModel).not.toHaveBeenCalled();
+  });
+
+  it("matches the native whitespace normalization when classifying an imported model before load", async () => {
+    const input = { runtime: "coreml", modelId: ` \n${splitModel.modelId}\t ` } as const;
+    for (const generationProfile of [undefined, "dolphin-monolith-experimental"] as const) {
+      jest.mocked(native.listLocalModels).mockResolvedValue([{ ...splitModel, generationProfile }]);
+      await applicationApi.execute("models.load", input);
+      expect(native.loadLocalModel).toHaveBeenCalledWith(input);
+    }
+    jest.mocked(native.loadLocalModel).mockClear();
+    jest.mocked(native.listLocalModels).mockResolvedValue([splitModel]);
+    for (const options of [input, { ...input, coreMLComputeUnits: "cpuOnly" }]) {
+      await expect(applicationApi.execute("models.load", options)).rejects.toMatchObject({ code: "diagnostic_only_model" });
+    }
+    expect(native.loadLocalModel).not.toHaveBeenCalled();
+  });
+
+  it("does not begin native loading after unload interrupts Core ML metadata inspection", async () => {
+    let finishListing!: (models: native.LocalModel[]) => void;
+    jest.mocked(native.listLocalModels).mockReturnValue(new Promise((resolve) => { finishListing = resolve; }));
+    jest.mocked(native.unloadLocalModel).mockResolvedValue();
+    const pending = applicationApi.execute("models.load", { runtime: "coreml", modelId: splitModel.modelId });
+    await applicationApi.execute("models.unload", {});
+    finishListing([{ ...splitModel, generationProfile: "dolphin-monolith-experimental" }]);
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    expect(native.loadLocalModel).not.toHaveBeenCalled();
+  });
+
+  it.each(["cpuOnly", "cpuAndGPU", "cpuAndNeuralEngine", "all"] as const)("preserves monolithic Core ML diagnostics with %s", async (coreMLComputeUnits) => {
+    jest.mocked(native.listLocalModels).mockResolvedValue([{ ...splitModel, generationProfile: "dolphin-monolith-experimental" }]);
+    const input = { runtime: "coreml", modelId: splitModel.modelId, coreMLComputeUnits } as const;
+    await applicationApi.execute("models.load", input);
+    expect(native.loadLocalModel).toHaveBeenCalledWith(input);
+  });
+
+  it("preserves explicit native Debug ANE split load but not ordinary generation", async () => {
+    jest.mocked(native.listLocalModels).mockResolvedValue([splitModel]);
+    jest.mocked(native.getLocalInferenceStatus).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: splitModel.modelId, revision: null });
+    const input = { runtime: "coreml", modelId: splitModel.modelId, coreMLComputeUnits: "cpuAndNeuralEngine" } as const;
+    await applicationApi.execute("models.load", input);
+    expect(native.loadLocalModel).toHaveBeenCalledWith(input);
+    await expect(applicationApi.execute("inference.generate", { prompt: "Test" })).rejects.toMatchObject({ code: "diagnostic_only_model" });
+    expect(native.generateLocalProposal).not.toHaveBeenCalled();
+  });
+
+  it.each(["cpuOnly", "cpuAndGPU", "all"] as const)("rejects unsupported split diagnostic compute units %s before native load", async (coreMLComputeUnits) => {
+    jest.mocked(native.listLocalModels).mockResolvedValue([splitModel]);
+    await expect(applicationApi.execute("models.load", { runtime: "coreml", modelId: splitModel.modelId, coreMLComputeUnits }))
+      .rejects.toMatchObject({ code: "diagnostic_only_model" });
+    expect(native.loadLocalModel).not.toHaveBeenCalled();
   });
 
   it("preserves uncertain and one attempt after the authoritative start was sent", async () => {

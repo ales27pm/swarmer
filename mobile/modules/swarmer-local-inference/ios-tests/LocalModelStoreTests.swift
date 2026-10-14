@@ -47,26 +47,33 @@ private struct TestWorkspace {
 private actor ImportCheckpointGate {
   private var reached = false
   private var released = false
-  private var reachedWaiters: [CheckedContinuation<Void, Never>] = []
+  private var operationFailure: (any Error)?
   private var releaseWaiter: CheckedContinuation<Void, Never>?
 
   func pauseAfterStagingCreation() async {
     reached = true
-    for waiter in reachedWaiters {
-      waiter.resume()
-    }
-    reachedWaiters.removeAll()
-
     guard !released else { return }
     await withCheckedContinuation { continuation in
       releaseWaiter = continuation
     }
   }
 
-  func waitUntilReached() async {
-    guard !reached else { return }
-    await withCheckedContinuation { continuation in
-      reachedWaiters.append(continuation)
+  func operationFailed(_ error: any Error) {
+    operationFailure = error
+  }
+
+  func waitUntilReached(timeout: Duration = .seconds(10)) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while !reached {
+      if let operationFailure { throw operationFailure }
+      try Task.checkCancellation()
+      guard clock.now < deadline else {
+        // A late checkpoint must not suspend an operation after its test failed.
+        release()
+        throw TestFailure("import did not reach its staging checkpoint before the timeout")
+      }
+      try await clock.sleep(until: min(deadline, clock.now.advanced(by: .milliseconds(10))))
     }
   }
 
@@ -85,6 +92,11 @@ private struct LocalModelStoreTests {
     let tests: [(String, Test)] = [
       ("GGUF import and metadata resolution", testGGUFImportAndResolution),
       ("Core ML filtering and required sidecars", testCoreMLFilteringAndSidecars),
+      ("Dolphin compiled split Core ML import", testCompiledDolphinCoreMLImport),
+      ("Dolphin qualification profiles preserve legacy indexes", testDolphinQualificationProfiles),
+      ("unavailable legacy Core ML artifacts do not break listing", testUnavailableLegacyCoreMLProfiles),
+      ("Dolphin split sampler contract", testDolphinSampler),
+      ("Dolphin artifact hashing retains less than 64 MiB", testDolphinArtifactHashMemoryBudget),
       ("MLX direct artifact filtering", testMLXFiltering),
       ("pinned E5 uses a validated BERT encoder and cannot generate language", testE5Profile),
       ("legacy durable E5 keeps its identity and files while gaining embedding purpose", testLegacyE5Purpose),
@@ -99,6 +111,7 @@ private struct LocalModelStoreTests {
       ("an unregistered Documents manifest cannot claim a pinned Hub revision", testDurableMLXRejectsUntrustedManifest),
       ("nested symbolic-link rejection", testSymbolicLinkRejection),
       ("staging and orphan cleanup", testRecoveryCleanup),
+      ("import checkpoint preserves failures and times out", testImportCheckpointFailure),
       ("cancelled import cleanup", testCancellationCleanup),
       ("pinned GGUF download metadata validation", testDownloadMetadataValidation),
       ("download size and SHA-256 verification", testDownloadVerification),
@@ -164,6 +177,8 @@ private struct LocalModelStoreTests {
     try expect(resolved.tokenizerURL == nil, "resolved GGUF unexpectedly has a tokenizer")
     try expect(try Data(contentsOf: resolved.runtimeURL) == bytes, "resolved GGUF bytes differ from source")
     try expect(isWithin(resolved.runtimeURL, root: workspace.models), "resolved GGUF escaped private storage")
+    let generationProfile = try await store.generationProfile(for: record)
+    try expect(generationProfile == nil, "GGUF unexpectedly received a Dolphin Core ML limit")
   }
 
   private static func download(
@@ -266,7 +281,13 @@ private struct LocalModelStoreTests {
       await gate.pauseAfterStagingCreation()
       return try await descriptor.downloadAndImport(into: store)
     }
-    await gate.waitUntilReached()
+    do {
+      try await gate.waitUntilReached()
+    } catch {
+      task.cancel()
+      await gate.release()
+      throw error
+    }
     task.cancel()
     await gate.release()
     do {
@@ -307,6 +328,8 @@ private struct LocalModelStoreTests {
 
     try expect(record.displayName == "CoreModel", "Core ML fallback display name changed")
     try expect(resolved.runtimeURL.lastPathComponent == "Language.mlpackage", "wrong Core ML model resolved")
+    let generationProfile = try await store.generationProfile(for: record)
+    try expect(generationProfile == nil, "generic Core ML unexpectedly received a Dolphin limit")
     try expect(fileExists(importedRoot.appendingPathComponent("tokenizer.json")), "tokenizer.json was not copied")
     try expect(fileExists(importedRoot.appendingPathComponent("tokenizer_config.json")), "tokenizer_config.json was not copied")
     try expect(fileExists(importedRoot.appendingPathComponent("generation_config.json")), "generation_config.json stop-token metadata was not copied")
@@ -341,6 +364,275 @@ private struct LocalModelStoreTests {
       recordsAfterRejection.count == 1 && recordsAfterRejection[0].modelId == record.modelId,
       "rejected Core ML import changed the index"
     )
+  }
+
+  private static func testCompiledDolphinCoreMLImport() async throws {
+    try await checkCompiledDolphinCoreMLImport(formatVersion: 2)
+    try await checkCompiledDolphinCoreMLImport(formatVersion: 3)
+  }
+
+  private static func checkCompiledDolphinCoreMLImport(formatVersion: Int) async throws {
+    let workspace = try TestWorkspace(name: "dolphin-compiled-split")
+    defer { workspace.remove() }
+    let source = workspace.source.appendingPathComponent("Dolphin3-ANE", isDirectory: true)
+    try makeDolphinBundle(at: source, modelExtension: "mlmodelc", formatVersion: formatVersion)
+    try write("must not be imported", to: source.appendingPathComponent("operator-notes.md"))
+    let evidence = source.appendingPathComponent("evidence", isDirectory: true)
+    try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: false)
+    try write("must not be imported", to: evidence.appendingPathComponent("large-fixture.bin"))
+
+    let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let record = try await store.importModel(
+      runtime: .coreML,
+      uri: source.absoluteString,
+      displayName: "Dolphin 3 split experimental"
+    )
+    let resolved = try await store.resolve(modelId: record.modelId)
+    let runtimeRoot = resolved.runtimeURL
+
+    try expect(runtimeRoot == resolved.tokenizerURL, "Dolphin runtime and tokenizer roots differ")
+    try expect(runtimeRoot.lastPathComponent == "Dolphin3-ANE", "Dolphin root name changed")
+    try expect(
+      record.displayName == "Dolphin 3 split experimental",
+      "Dolphin display name changed"
+    )
+    for stem in DolphinCoreMLBundle.expectedModelStems {
+      let model = runtimeRoot.appendingPathComponent("\(stem).mlmodelc", isDirectory: true)
+      try expect(fileExists(model), "Dolphin compiled model \(stem) was not imported")
+      try expect(
+        fileExists(model.appendingPathComponent("Data/model.mlmodel")),
+        "Dolphin compiled model \(stem) contents were not imported"
+      )
+    }
+    for name in [
+      "manifest.json", "rope_cos.fp16", "rope_sin.fp16", "generation_config.json",
+      "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+    ] {
+      try expect(
+        fileExists(runtimeRoot.appendingPathComponent(name)),
+        "Dolphin sidecar \(name) was not imported"
+      )
+    }
+    try expect(
+      !fileExists(runtimeRoot.appendingPathComponent("operator-notes.md")),
+      "an unselected Dolphin sidecar was imported"
+    )
+    try expect(
+      !fileExists(runtimeRoot.appendingPathComponent("evidence")),
+      "the Dolphin evidence directory was imported"
+    )
+    _ = try DolphinCoreMLBundle.inspect(directory: runtimeRoot)
+    try expect(
+      try Data(contentsOf: runtimeRoot.appendingPathComponent("manifest.json"))
+        == Data(contentsOf: source.appendingPathComponent("manifest.json")),
+      "import rewrote the source provenance declaration"
+    )
+    let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+    try expect(record.generationProfile == "dolphin-split9-experimental", "new split import did not return its pre-commit profile")
+    let persisted = try await store.list()
+    try expect(persisted.first?.generationProfile == record.generationProfile, "split profile was not persisted")
+    // Exercise a real legacy index with no new field, not a newly imported record.
+    var legacy = try required(
+      JSONSerialization.jsonObject(with: Data(contentsOf: index)) as? [[String: Any]],
+      "invalid split model index"
+    )
+    legacy[0].removeValue(forKey: "generationProfile")
+    try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys]).write(to: index)
+    let legacyRecords = try await store.list()
+    let legacyRecord = try required(legacyRecords.first, "legacy split record disappeared")
+    try expect(legacyRecord.generationProfile == nil, "legacy index unexpectedly contains a stored profile")
+    let priorIndex = try Data(contentsOf: index)
+    let generationProfile = try await store.generationProfile(for: legacyRecord)
+    try expect(generationProfile == "dolphin-split9-experimental", "legacy split import lost its qualification limit")
+    try expect(try Data(contentsOf: index) == priorIndex, "profile lookup rewrote the legacy model index")
+
+    let incomplete = workspace.source.appendingPathComponent("IncompleteDolphin", isDirectory: true)
+    try makeDolphinBundle(at: incomplete, modelExtension: "mlmodelc")
+    try FileManager.default.removeItem(
+      at: incomplete.appendingPathComponent("block_06.mlmodelc", isDirectory: true)
+    )
+    do {
+      _ = try await store.importModel(
+        runtime: .coreML,
+        uri: incomplete.absoluteString,
+        displayName: nil
+      )
+      throw TestFailure("Dolphin import accepted a missing transformer block")
+    } catch LocalInferenceError.unsupportedModel {
+      // Expected.
+    } catch let failure as TestFailure {
+      throw failure
+    } catch {
+      throw TestFailure("incomplete Dolphin import returned the wrong error: \(error)")
+    }
+    let recordsAfterRejection = try await store.list()
+    try expect(
+      recordsAfterRejection.count == 1 && recordsAfterRejection[0].modelId == record.modelId,
+      "rejected Dolphin import changed the index"
+    )
+    try expect(try Data(contentsOf: index) == priorIndex, "rejected Dolphin import rewrote the legacy index")
+  }
+
+  private static func testDolphinQualificationProfiles() async throws {
+    let workspace = try TestWorkspace(name: "dolphin-qualification-profile")
+    defer { workspace.remove() }
+    let source = workspace.source.appendingPathComponent("UnrelatedDisplayName", isDirectory: true)
+    let package = source.appendingPathComponent(CoreMLDolphinSupport.officialPackageName, isDirectory: true)
+    try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+    try write("candidate only, not a trusted official artifact", to: package.appendingPathComponent("model.mlmodel"))
+    try write("{}", to: source.appendingPathComponent("tokenizer.json"))
+    try write("{}", to: source.appendingPathComponent("tokenizer_config.json"))
+    let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+    let candidate = try await store.importModel(runtime: .coreML, uri: source.absoluteString, displayName: "Renamed model")
+    try expect(candidate.generationProfile == "dolphin-monolith-experimental", "new monolith import did not return its pre-commit profile")
+    let persistedCandidates = try await store.list()
+    try expect(persistedCandidates.first?.generationProfile == candidate.generationProfile, "monolith profile was not persisted")
+    let profile = try await store.generationProfile(for: candidate)
+    try expect(profile == "dolphin-monolith-experimental", "renamed monolith candidate bypassed qualification")
+    let resolved = try await store.resolve(modelId: candidate.modelId)
+    do {
+      _ = try CoreMLDolphinSupport.validateOfficialArtifactIfCandidate(
+        modelURL: resolved.runtimeURL, tokenizerURL: resolved.tokenizerURL!
+      )
+      throw TestFailure("qualification classification incorrectly conferred artifact trust")
+    } catch CoreMLDolphinSupport.InvalidInput.artifactIdentity {
+      // A restrictive UI classification must never bypass the cryptographic load gate.
+    }
+    let genericSource = workspace.source.appendingPathComponent("Generic", isDirectory: true)
+    try FileManager.default.createDirectory(at: genericSource, withIntermediateDirectories: true)
+    try write("generic model", to: genericSource.appendingPathComponent("Other.mlmodel"))
+    try write("{}", to: genericSource.appendingPathComponent("tokenizer.json"))
+    try write("{}", to: genericSource.appendingPathComponent("tokenizer_config.json"))
+    let generic = try await store.importModel(
+      runtime: .coreML, uri: genericSource.absoluteString, displayName: "Dolphin3-ANE"
+    )
+    let genericProfile = try await store.generationProfile(for: generic)
+    try expect(genericProfile == nil, "a display name incorrectly imposed the Dolphin limit")
+
+    let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+    let validIndex = try Data(contentsOf: index)
+    for invalidFields in [
+      ["generationProfile": "unknown"],
+      ["generationProfile": "dolphin-split9-experimental", "runtime": "llama.cpp"],
+      ["generationProfile": "dolphin-monolith-experimental", "purpose": "embeddings"],
+    ] {
+      var invalidRecords = try required(
+        JSONSerialization.jsonObject(with: validIndex) as? [[String: Any]], "invalid stored profile fixture"
+      )
+      for (key, value) in invalidFields { invalidRecords[0][key] = value }
+      try JSONSerialization.data(withJSONObject: invalidRecords).write(to: index)
+      do {
+        _ = try await store.list()
+        throw TestFailure("invalid stored qualification profile was accepted")
+      } catch LocalInferenceError.metadataCorrupt {
+        // Classification never permits an unknown or incompatible persisted profile.
+      }
+    }
+    try validIndex.write(to: index)
+
+    // Losing filesystem access after promotion must not invalidate the returned
+    // qualification metadata or trigger another read to construct import success.
+    try FileManager.default.removeItem(at: resolved.runtimeURL)
+    let committedProfile = try await store.generationProfile(for: candidate)
+    try expect(committedProfile == candidate.generationProfile, "committed profile required post-promotion filesystem access")
+  }
+
+  private static func testDolphinSampler() async throws {
+    try expect(
+      try DolphinCoreMLBundle.sample(logits: [1, 5, 5, 2], temperature: 0) == 1,
+      "greedy sampling did not keep the earliest tied token"
+    )
+    try expect(
+      try DolphinCoreMLBundle.sample(
+        logits: [0, 2, 1],
+        temperature: 1,
+        randomUnit: 0.5
+      ) == 1,
+      "temperature sampling ignored the supplied distribution threshold"
+    )
+    try expect(
+      try DolphinCoreMLBundle.sample(logits: [0, 2, 1], temperature: 1, randomUnit: 0.05) == 0,
+      "temperature sampling always chose the most likely or final token"
+    )
+    try expect(
+      try DolphinCoreMLBundle.sample(logits: [-1000, 0], temperature: 1, randomUnit: 0) == 1,
+      "a zero threshold selected an underflowed zero-probability token"
+    )
+    do {
+      _ = try DolphinCoreMLBundle.sample(logits: [.nan], temperature: 0)
+      throw TestFailure("Dolphin sampling accepted non-finite logits")
+    } catch DolphinCoreMLBundleError.invalid {
+      // Expected.
+    }
+  }
+
+  private static func testUnavailableLegacyCoreMLProfiles() async throws {
+    for missingPart in ["runtime", "tokenizer.json", "manifest.json"] {
+      let workspace = try TestWorkspace(name: "legacy-coreml-\(missingPart)")
+      defer { workspace.remove() }
+      let source = workspace.source.appendingPathComponent("Dolphin", isDirectory: true)
+      try makeDolphinBundle(at: source, modelExtension: "mlmodelc")
+      let store = LocalModelStore(applicationSupportURL: workspace.applicationSupport)
+      let stale = try await store.importModel(runtime: .coreML, uri: source.absoluteString, displayName: nil)
+      let valid = try await store.importModel(runtime: .coreML, uri: source.absoluteString, displayName: "Valid")
+      let staleURL = try await store.resolve(modelId: stale.modelId).runtimeURL
+      let index = workspace.applicationSupport.appendingPathComponent("SwarmerLocalInference/models.json")
+      var rows = try required(
+        JSONSerialization.jsonObject(with: Data(contentsOf: index)) as? [[String: Any]],
+        "invalid legacy fixture index"
+      )
+      for row in rows.indices { rows[row].removeValue(forKey: "generationProfile") }
+      try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]).write(to: index)
+      let priorIndex = try Data(contentsOf: index)
+      if missingPart == "runtime" {
+        try FileManager.default.removeItem(at: staleURL)
+      } else if missingPart == "manifest.json" {
+        try write("invalid manifest", to: staleURL.appendingPathComponent(missingPart))
+      } else {
+        try FileManager.default.removeItem(at: staleURL.appendingPathComponent(missingPart))
+      }
+
+      let records = try await store.list()
+      try expect(records.count == 2, "a stale artifact removed indexed records")
+      for record in records {
+        let profile = try await store.generationProfile(for: record)
+        try expect(
+          profile == (record.modelId == valid.modelId ? "dolphin-split9-experimental" : nil),
+          "legacy classification did not isolate the unavailable \(missingPart)"
+        )
+      }
+      try expect(try Data(contentsOf: index) == priorIndex, "best-effort classification rewrote the index")
+    }
+  }
+
+  private static func testDolphinArtifactHashMemoryBudget() async throws {
+    let workspace = try TestWorkspace(name: "dolphin-hash-memory")
+    defer { workspace.remove() }
+    let artifact = workspace.source.appendingPathComponent("weights.bin")
+    try Data().write(to: artifact)
+    let writer = try FileHandle(forWritingTo: artifact)
+    defer { try? writer.close() }
+    let chunk = Data(repeating: 0x5b, count: 4 * 1_024 * 1_024)
+    var digest = SHA256()
+    for _ in 0..<32 {
+      try writer.write(contentsOf: chunk)
+      digest.update(data: chunk)
+    }
+    try writer.close()
+    let expected = [CoreMLDolphinSupport.ArtifactFile(
+      path: "weights.bin", bytes: 128 * 1_024 * 1_024,
+      sha256: digest.finalize().map { String(format: "%02x", $0) }.joined()
+    )]
+    // Observe retention before this surrounding pool drains: without a pool per
+    // read, Foundation's chunk storage can accumulate for the full artifact.
+    try autoreleasepool {
+      let before = try physicalFootprint()
+      try CoreMLDolphinSupport.verifyFileInventory(root: workspace.source, expected: expected)
+      let after = try physicalFootprint()
+      let growth = after > before ? after - before : 0
+      print("Dolphin hash physical-footprint growth: \(growth) bytes")
+      try expect(growth <= 64 * 1_024 * 1_024, "Dolphin artifact hashing retained more than 64 MiB")
+    }
   }
 
   private static func testMLXFiltering() async throws {
@@ -434,6 +726,30 @@ private struct LocalModelStoreTests {
     try expect(fileExists(foreign), "recovery cleanup removed a non-owned directory")
   }
 
+  private static func testImportCheckpointFailure() async throws {
+    let failedGate = ImportCheckpointGate()
+    await failedGate.operationFailed(LocalInferenceError.insufficientStorage)
+    do {
+      try await failedGate.waitUntilReached()
+      throw TestFailure("a failed import unexpectedly reached its checkpoint")
+    } catch LocalInferenceError.insufficientStorage {
+      // Preserve the real pre-checkpoint failure instead of hiding it in a timeout.
+    }
+
+    let timedOutGate = ImportCheckpointGate()
+    do {
+      try await timedOutGate.waitUntilReached(timeout: .zero)
+      throw TestFailure("an unreached checkpoint unexpectedly succeeded")
+    } catch let failure as TestFailure {
+      try expect(
+        failure.description == "import did not reach its staging checkpoint before the timeout",
+        "the checkpoint returned the wrong timeout error"
+      )
+    }
+    // The timeout releases the gate, including checkpoints reached afterwards.
+    await timedOutGate.pauseAfterStagingCreation()
+  }
+
   private static func testCancellationCleanup() async throws {
     let workspace = try TestWorkspace(name: "cancellation")
     defer { workspace.remove() }
@@ -448,14 +764,25 @@ private struct LocalModelStoreTests {
       }
     )
     let importTask = Task {
-      try await store.importModel(
-        runtime: .llamaCpp,
-        uri: source.absoluteString,
-        displayName: "Cancelled"
-      )
+      do {
+        return try await store.importModel(
+          runtime: .llamaCpp,
+          uri: source.absoluteString,
+          displayName: "Cancelled"
+        )
+      } catch {
+        await checkpoint.operationFailed(error)
+        throw error
+      }
     }
 
-    await checkpoint.waitUntilReached()
+    do {
+      try await checkpoint.waitUntilReached()
+    } catch {
+      importTask.cancel()
+      await checkpoint.release()
+      throw error
+    }
     let stagedModels = try ownedModelDirectories(in: workspace.models)
     try expect(
       stagedModels.count == 1 && stagedModels[0].hasPrefix(".import-"),
@@ -809,9 +1136,20 @@ private struct LocalModelStoreTests {
       importDidCreateStaging: { await checkpoint.pauseAfterStagingCreation() }
     )
     let task = Task {
-      try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+      do {
+        return try await store.preserveMLXSnapshot(at: cached.snapshot, repositoryCacheURL: cached.cache, repositoryId: repositoryId, revision: revision)
+      } catch {
+        await checkpoint.operationFailed(error)
+        throw error
+      }
     }
-    await checkpoint.waitUntilReached()
+    do {
+      try await checkpoint.waitUntilReached()
+    } catch {
+      task.cancel()
+      await checkpoint.release()
+      throw error
+    }
     let listedDuringCopy = try await store.list()
     try expect(listedDuringCopy.isEmpty, "incomplete promotion was visible in the registry")
     try expect(try ownedModelDirectories(in: workspace.models).count == 1, "listing removed active staging during an await")
@@ -887,6 +1225,64 @@ private struct LocalModelStoreTests {
 
   private static func write(_ value: String, to url: URL) throws {
     try Data(value.utf8).write(to: url)
+  }
+
+  private static func makeDolphinBundle(
+    at root: URL,
+    modelExtension: String,
+    formatVersion: Int = 2
+  ) throws {
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let manifest = """
+    {
+      "format_version": 2,
+      "context_length": 2048,
+      "vocab_size": 128258,
+      "hidden_size": 3072,
+      "head_dim": 128,
+      "eos_token_ids": [128256, 128001, 128008, 128009],
+      "head_sizes": [16032, 16032, 16032, 16032, 16032, 16032, 16032, 16034],
+      "block_names": ["block_00", "block_01", "block_02", "block_03", "block_04", "block_05", "block_06"],
+      "model_files": ["embedding.mlpackage", "block_00.mlpackage", "block_01.mlpackage", "block_02.mlpackage", "block_03.mlpackage", "block_04.mlpackage", "block_05.mlpackage", "block_06.mlpackage", "head.mlpackage"],
+      "state_bytes": 234881024
+    }
+    """
+    var fields = try required(
+      JSONSerialization.jsonObject(with: Data(manifest.utf8)) as? [String: Any],
+      "invalid synthetic manifest"
+    )
+    fields["format_version"] = formatVersion
+    if formatVersion == 3 {
+      let identity = DolphinCoreMLBundle.expectedSourceIdentity
+      fields["source_model"] = identity.repo
+      fields["source_revision"] = identity.revision
+      fields["source_weight_identity"] = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(identity)
+      )
+    }
+    try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+      .write(to: root.appendingPathComponent("manifest.json"))
+    try write("{}", to: root.appendingPathComponent("tokenizer.json"))
+    try write("{}", to: root.appendingPathComponent("tokenizer_config.json"))
+    try write(
+      "{\"eos_token_id\":[128256,128001,128008,128009]}",
+      to: root.appendingPathComponent("generation_config.json")
+    )
+    try write("{}", to: root.appendingPathComponent("special_tokens_map.json"))
+    let rope = Data(repeating: 0, count: DolphinCoreMLBundle.expectedRoPEBytes)
+    try rope.write(to: root.appendingPathComponent("rope_cos.fp16"))
+    try rope.write(to: root.appendingPathComponent("rope_sin.fp16"))
+    for stem in DolphinCoreMLBundle.expectedModelStems {
+      let data = root
+        .appendingPathComponent("\(stem).\(modelExtension)", isDirectory: true)
+        .appendingPathComponent("Data", isDirectory: true)
+      try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+      try write("model \(stem)", to: data.appendingPathComponent("model.mlmodel"))
+      try write(
+        "{}",
+        to: data.deletingLastPathComponent().appendingPathComponent("Manifest.json")
+      )
+    }
   }
 
   private static func fileExists(_ url: URL) -> Bool {

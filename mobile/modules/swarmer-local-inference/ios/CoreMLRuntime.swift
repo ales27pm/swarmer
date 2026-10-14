@@ -93,6 +93,7 @@ actor CoreMLRuntime {
   }
 
   private var model: LoadedModel?
+  private var dolphin: DolphinCoreMLRuntime?
   private var tokenizer: (any Tokenizer)?
   private var contract: Contract?
   private var stopTokenIDs = Set<Int>()
@@ -108,10 +109,52 @@ actor CoreMLRuntime {
     var stage = CoreMLLoadDiagnostic.Stage.validateArtifact
     do {
       cancelRequested = false
+      let isSplit = DolphinCoreMLBundle.isMarked(at: modelURL)
+      // Check the actual artifact, not persisted metadata, before inspecting,
+      // tokenizing or compiling/loading any of the nine split models.
+      try CoreMLDolphinSplitPolicy.validateLoad(isSplit: isSplit, diagnosticUnits: units)
+      if isSplit {
+        guard modelURL.standardizedFileURL == tokenizerURL.standardizedFileURL else {
+          throw LocalInferenceError.unsupportedModel(
+            "the experimental Dolphin split tokenizer must share the pipeline root"
+          )
+        }
+        _ = try DolphinCoreMLBundle.inspect(directory: modelURL)
+        try checkCancellation()
+
+        stage = .tokenizer
+        let loadedTokenizer = try await AutoTokenizer.from(modelFolder: tokenizerURL, strict: true)
+        guard loadedTokenizer.hasChatTemplate,
+              loadedTokenizer.eosTokenId == 128_256,
+              loadedTokenizer.encode(text: "<|im_start|>", addSpecialTokens: false) == [128_257],
+              loadedTokenizer.encode(text: "<|im_end|>", addSpecialTokens: false) == [128_256] else {
+          throw LocalInferenceError.unsupportedModel(
+            "the experimental Dolphin split tokenizer does not match the required ChatML token contract"
+          )
+        }
+        try checkCancellation()
+
+        stage = .load
+        let loadedDolphin = try await DolphinCoreMLRuntime(directory: modelURL)
+        try checkCancellation()
+        model = nil
+        contract = nil
+        stopTokenIDs.removeAll()
+        dolphin = loadedDolphin
+        tokenizer = loadedTokenizer
+        cancelRequested = false
+        return units.map { .capture(units: $0, stage: .complete, startedAt: startedAt) }
+      }
+
       let ext = modelURL.pathExtension.lowercased()
       guard ["mlmodel", "mlpackage", "mlmodelc"].contains(ext) else {
         throw LocalInferenceError.unsupportedModel("unsupported Core ML extension")
       }
+
+      let officialDolphin = try CoreMLDolphinSupport.validateOfficialArtifactIfCandidate(
+        modelURL: modelURL,
+        tokenizerURL: tokenizerURL
+      )
 
       let compiledURL: URL
       if ext == "mlmodelc" {
@@ -123,7 +166,10 @@ actor CoreMLRuntime {
       try checkCancellation()
 
       let configuration = MLModelConfiguration()
-      switch units ?? .all {
+      // The published monolithic package failed execution-plan construction
+      // with `.all` on the qualification iPhone. Its upstream reference uses
+      // CPU+GPU; keep ANE selection explicit and diagnostic-only until traced.
+      switch units ?? (officialDolphin ? .cpuAndGPU : .all) {
       case .all: configuration.computeUnits = .all
       case .cpuOnly: configuration.computeUnits = .cpuOnly
       case .cpuAndGPU: configuration.computeUnits = .cpuAndGPU
@@ -134,17 +180,30 @@ actor CoreMLRuntime {
       try checkCancellation()
       stage = .validateContract
       let loadedContract = try Self.validate(model: loadedModel)
+      guard loadedContract.dolphinCausalMask == officialDolphin else {
+        throw LocalInferenceError.unsupportedCoreMLContract(
+          "Dolphin Core ML requires the pinned official package and tokenizer identity"
+        )
+      }
       stage = .tokenizer
       let loadedTokenizer = try await AutoTokenizer.from(modelFolder: tokenizerURL, strict: true)
       var loadedStopTokenIDs = try CoreMLDolphinSupport.configuredStopTokenIDs(in: tokenizerURL)
-      if let eosTokenID = loadedTokenizer.eosTokenId { loadedStopTokenIDs.insert(eosTokenID) }
       if loadedContract.dolphinCausalMask {
-        loadedStopTokenIDs.formUnion(CoreMLDolphinSupport.stopTokenIDs)
+        loadedStopTokenIDs = try CoreMLDolphinSupport.validatedStopTokenIDs(in: tokenizerURL)
+        guard let tokenizerEOS = loadedTokenizer.eosTokenId,
+              CoreMLDolphinSupport.stopTokenIDs.contains(tokenizerEOS) else {
+          throw LocalInferenceError.unsupportedCoreMLContract(
+            "Dolphin Core ML requires the four pinned stop-token IDs"
+          )
+        }
+      } else if let eosTokenID = loadedTokenizer.eosTokenId {
+        loadedStopTokenIDs.insert(eosTokenID)
       }
       try checkCancellation()
 
       stopTokenIDs = loadedStopTokenIDs
       model = LoadedModel(loadedModel)
+      dolphin = nil
       contract = loadedContract
       tokenizer = loadedTokenizer
       cancelRequested = false
@@ -159,13 +218,20 @@ actor CoreMLRuntime {
 
   func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> RuntimeGenerationResult {
     guard !generating else { throw LocalInferenceError.generationInProgress }
-    guard let model, let tokenizer, let contract else { throw LocalInferenceError.modelNotLoaded }
+    // A DEBUG diagnostic load does not grant access to normal generation.
+    try CoreMLDolphinSplitPolicy.validateGeneration(isSplit: dolphin != nil)
+    guard let tokenizer else { throw LocalInferenceError.modelNotLoaded }
+    let maxTokens = CoreMLDolphinSupport.qualifiedMaxTokens(
+      maxTokens, isDolphin: contract?.dolphinCausalMask == true
+    )
     generating = true
     cancelRequested = false
     defer {
       generating = false
       cancelRequested = false
     }
+
+    guard let model, let contract else { throw LocalInferenceError.modelNotLoaded }
 
     var allTokens = contract.dolphinCausalMask
       ? try tokenizer.applyChatTemplate(messages: [["role": "user", "content": prompt]])
@@ -269,6 +335,13 @@ actor CoreMLRuntime {
         tokenIndex: finalTokenIndex,
         temperature: temperature
       )
+      if cancelRequested || Task.isCancelled {
+        return RuntimeGenerationResult(
+          text: tokenizer.decode(tokens: generatedTokens, skipSpecialTokens: true),
+          finishReason: "cancelled",
+          tokenCount: generatedTokens.count
+        )
+      }
       if generationStopTokenIDs.contains(nextToken) {
         return RuntimeGenerationResult(
           text: tokenizer.decode(tokens: generatedTokens, skipSpecialTokens: true),
@@ -287,13 +360,16 @@ actor CoreMLRuntime {
     )
   }
 
-  func cancel() {
+  func cancel() async {
     cancelRequested = true
+    if let dolphin { await dolphin.cancel() }
   }
 
-  func unload() {
+  func unload() async {
     cancelRequested = true
+    if let dolphin { await dolphin.cancel() }
     model = nil
+    dolphin = nil
     tokenizer = nil
     contract = nil
     stopTokenIDs.removeAll()

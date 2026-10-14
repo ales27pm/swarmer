@@ -6,7 +6,7 @@ import type { GoalCreateInput, GoalFeedbackInput, TaskMode, TaskStatus } from "@
 import * as inference from "@/lib/local-inference";
 import { COREML_PROBE_FIXTURES, type CoreMLProbeFixture } from "@/lib/coreml-probe";
 import * as embeddings from "@/lib/local-embeddings";
-import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
+import { DEFAULT_GOAL_PLAN_MAX_TOKENS, DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE, MAX_LOCAL_GENERATION_TOKENS, localModelGenerationTokenLimit, localModelSupportsGeneration } from "@/lib/local-generation-limits";
 import { LOCAL_MODEL_PRESETS } from "@/lib/local-model-presets";
 import { resolveHuggingFaceModels, type HuggingFaceDownloadPlan } from "@/lib/hugging-face-models";
 import * as settings from "@/lib/local-model-settings";
@@ -76,6 +76,23 @@ const noInput = object();
 type NativeOperation = { kind: "load" | "unload" | "generate" | "download" | "import" | "probe"; cancelled: boolean; settled: boolean; owner?: symbol; cancel?: () => Promise<void> };
 let nativeOperation: NativeOperation | null = null;
 const huggingFaceUIOwner = Symbol("hugging-face-ui-download");
+
+/** All command paths share this policy; native Core ML also caps its actual loaded contract. */
+async function generateQualifiedLocalProposal(input: Parameters<typeof inference.generateLocalProposal>[0], assertActive: () => void) {
+  const status = await inference.getLocalInferenceStatus();
+  assertActive();
+  let maxTokens = input.maxTokens;
+  if (status.runtime === "coreml") {
+    const models = await inference.listLocalModels();
+    assertActive();
+    const model = models.find(item => item.runtime === "coreml" && item.modelId === status.modelId);
+    if (!model) throw new ApplicationApiError("model_not_ready", "Les métadonnées du modèle Core ML chargé sont indisponibles.");
+    if (!localModelSupportsGeneration(model)) throw new ApplicationApiError("diagnostic_only_model", DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE);
+    const limit = localModelGenerationTokenLimit(model);
+    if (limit < MAX_LOCAL_GENERATION_TOKENS) maxTokens = Math.min(maxTokens ?? limit, limit);
+  }
+  return inference.generateLocalProposal(maxTokens === undefined ? input : { ...input, maxTokens });
+}
 
 async function withNativeOperation<T>(kind: NativeOperation["kind"], operation: (assertActive: () => void) => Promise<T>, owner?: symbol, cancel?: () => Promise<void>): Promise<T> {
   const interrupts = kind === "unload" && nativeOperation && nativeOperation.kind !== "unload";
@@ -299,7 +316,20 @@ register<Parameters<typeof inference.loadLocalModel>[0]>("models.load", object({
   if (input.coreMLComputeUnits !== undefined && (!inference.isCoreMLDiagnosticsAvailable() || input.runtime !== "coreml")) {
     throw new ApplicationApiError("invalid_arguments", "Le diagnostic est réservé à Core ML en développement.");
   }
-  return withNativeOperation("load", () => inference.loadLocalModel(input));
+  return withNativeOperation("load", async (assertActive) => {
+    // The explicit native Debug ANE load remains available for split diagnostics.
+    // No ordinary generation command inherits that exception.
+    if (input.runtime === "coreml" && input.coreMLComputeUnits !== "cpuAndNeuralEngine") {
+      const models = await inference.listLocalModels();
+      assertActive();
+      const model = models.find(item => item.runtime === "coreml" && item.modelId === input.modelId.trim());
+      if (!model && input.coreMLComputeUnits === undefined) {
+        throw new ApplicationApiError("model_not_ready", "Les métadonnées du modèle Core ML sont indisponibles.");
+      }
+      if (!localModelSupportsGeneration(model)) throw new ApplicationApiError("diagnostic_only_model", DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE);
+    }
+    return inference.loadLocalModel(input);
+  });
 }, { ...device, ...mutation, requiresForeground: true });
 if (inference.isCoreMLDiagnosticsAvailable()) {
   register<{ fixtureID: CoreMLProbeFixture; computeUnits: inference.CoreMLComputeUnits }>("models.coreml-probe", object({
@@ -383,7 +413,7 @@ register<Parameters<typeof inference.generateLocalProposal>[0]>("inference.gener
     await context.assertPreparationCurrent?.();
     assertActive();
     if (context.shouldAccept && !context.shouldAccept()) throw new ApplicationApiError("cancelled", "Cette session locale est fermée.");
-    return inference.generateLocalProposal(input);
+    return generateQualifiedLocalProposal(input, assertActive);
   }, context.nativeOwner), { ...device, ...mutation, readiness: "loaded_model", requiresForeground: true });
 register("inference.cancel", noInput, (_, context) => {
   if (nativeOperation?.kind !== "generate" || (context.nativeOwner !== undefined && nativeOperation.owner !== context.nativeOwner)) {
@@ -397,7 +427,7 @@ register<{ intent: string; maxTokens?: number; temperature?: number }>("inferenc
   ({ intent, maxTokens, temperature }) => withNativeOperation("generate", async (assertActive) => {
     const preparation = await prepareLocalToolProposal(intent);
     assertActive();
-    const result = await inference.generateLocalProposal({ prompt: inference.buildLocalProposalPrompt(intent, preparation.context.symbolic_context), maxTokens, temperature });
+    const result = await generateQualifiedLocalProposal({ prompt: inference.buildLocalProposalPrompt(intent, preparation.context.symbolic_context), maxTokens, temperature }, assertActive);
     await preparation.session.assertCurrent();
     assertLocalMemoryContextFresh(preparation.context);
     assertActive();
@@ -537,7 +567,7 @@ register<{ handle: string; runtime: inference.LocalInferenceRuntime; modelId: st
         await review.session.assertCurrent();
         assertActive();
         assertReview();
-        const result = await inference.generateLocalProposal({ prompt: buildLocalGoalPlanPrompt(snapshot), maxTokens: maxTokens ?? DEFAULT_GOAL_PLAN_MAX_TOKENS, temperature: temperature ?? 0.1 });
+        const result = await generateQualifiedLocalProposal({ prompt: buildLocalGoalPlanPrompt(snapshot), maxTokens: maxTokens ?? DEFAULT_GOAL_PLAN_MAX_TOKENS, temperature: temperature ?? 0.1 }, assertActive);
         await review.session.assertCurrent();
         if (snapshot.context.local_context) assertLocalMemoryContextFresh(snapshot.context.local_context);
         assertActive();

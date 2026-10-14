@@ -141,6 +141,32 @@ actor LocalModelStore {
     return ResolvedLocalModel(stored: stored, runtimeURL: runtimeURL, tokenizerURL: tokenizerURL)
   }
 
+  /// Return pre-commit classification or derive it for legacy imports without
+  /// rewriting the private index or trusting a display name.
+  func generationProfile(for record: StoredLocalModel) throws -> String? {
+    guard record.runtime == .coreML else { return nil }
+    if let profile = record.generationProfile { return profile }
+    // Legacy classification is best-effort metadata enrichment. An unavailable
+    // artifact must not hide every other indexed model; loading still resolves
+    // and validates the selected artifact independently.
+    guard let resolved = try? resolve(modelId: record.modelId) else { return nil }
+    return try? generationProfile(runtime: record.runtime, runtimeURL: resolved.runtimeURL)
+  }
+
+  private func generationProfile(runtime: LocalRuntime, runtimeURL: URL) throws -> String? {
+    guard runtime == .coreML else { return nil }
+    if DolphinCoreMLBundle.isMarked(at: runtimeURL, fileManager: fileManager) {
+      _ = try DolphinCoreMLBundle.inspect(directory: runtimeURL, fileManager: fileManager)
+      return "dolphin-split9-experimental"
+    }
+    if CoreMLDolphinSupport.isOfficialArtifactCandidate(modelURL: runtimeURL) {
+      // A candidate receives a restrictive UI budget, not a trust verdict.
+      // CoreMLRuntime still verifies every pinned SHA-256 before compilation.
+      return "dolphin-monolith-experimental"
+    }
+    return nil
+  }
+
   func purpose(for record: StoredLocalModel) throws -> LocalModelPurpose {
     guard record.runtime == .mlx else { return .generation }
     if record.purpose != nil || record.remoteOrigin?.repositoryId == EmbeddingValidation.repository {
@@ -286,7 +312,8 @@ actor LocalModelStore {
         downloadOrigin: downloadOrigin,
         purpose: runtime == .mlx
           ? LocalModelPurpose.mlx(configuration: try readJSONObject(resolved.runtimeURL.appendingPathComponent("config.json")))
-          : .generation
+          : .generation,
+        generationProfile: try generationProfile(runtime: runtime, runtimeURL: resolved.runtimeURL)
       )
 
       try Task.checkCancellation()
@@ -606,6 +633,12 @@ actor LocalModelStore {
             record.sizeBytes >= 0 else {
         throw LocalInferenceError.metadataCorrupt
       }
+      if let profile = record.generationProfile {
+        guard record.runtime == .coreML, record.effectivePurpose == .generation,
+              ["dolphin-split9-experimental", "dolphin-monolith-experimental"].contains(profile) else {
+          throw LocalInferenceError.metadataCorrupt
+        }
+      }
       if let origin = record.downloadOrigin {
         do {
           let plan = try HuggingFaceModelDownload(runtime: record.runtime, repoId: origin.repoId,
@@ -673,7 +706,21 @@ actor LocalModelStore {
     case .coreML:
       guard values.isDirectory == true else {
         throw LocalInferenceError.unsupportedModel(
-          "select a folder containing one Core ML model and its tokenizer sidecars"
+          "select a folder containing one Core ML model or one experimental Dolphin split bundle"
+        )
+      }
+      if DolphinCoreMLBundle.isMarked(at: source, fileManager: fileManager) {
+        let bundle: DolphinCoreMLBundle
+        do {
+          bundle = try DolphinCoreMLBundle.inspect(directory: source, fileManager: fileManager)
+        } catch {
+          throw LocalInferenceError.unsupportedModel(
+            "invalid experimental Dolphin split bundle: \(error.localizedDescription)"
+          )
+        }
+        return ImportSelection(
+          containerName: try validatedPathComponent(source.lastPathComponent),
+          roots: bundle.modelURLs + bundle.sidecarURLs
         )
       }
       let children = try fileManager.contentsOfDirectory(
@@ -1020,6 +1067,24 @@ actor LocalModelStore {
       return (models[0], nil)
 
     case .coreML:
+      let dolphinDirectories = try directories(including: payloadURL).filter {
+        DolphinCoreMLBundle.isMarked(at: $0, fileManager: fileManager)
+      }
+      if !dolphinDirectories.isEmpty {
+        guard dolphinDirectories.count == 1, let root = dolphinDirectories.first else {
+          throw LocalInferenceError.ambiguousModel(
+            "exactly one experimental Dolphin split bundle is required"
+          )
+        }
+        do {
+          _ = try DolphinCoreMLBundle.inspect(directory: root, fileManager: fileManager)
+        } catch {
+          throw LocalInferenceError.unsupportedModel(
+            "invalid experimental Dolphin split bundle: \(error.localizedDescription)"
+          )
+        }
+        return (root, root)
+      }
       let models = try files(in: payloadURL, extensions: ["mlmodel", "mlpackage", "mlmodelc"])
       guard !models.isEmpty else {
         throw LocalInferenceError.unsupportedModel("a .mlmodel, .mlpackage, or .mlmodelc model is required")

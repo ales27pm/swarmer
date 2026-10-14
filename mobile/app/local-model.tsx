@@ -41,9 +41,10 @@ import {
   type LocalToolProposal,
 } from "@/lib/application-api/local-inference";
 import { LOCAL_MODEL_PRESETS, preferredLocalRuntime } from "@/lib/local-model-presets";
-import { DEFAULT_GOAL_PLAN_MAX_TOKENS, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
+import { DEFAULT_GOAL_PLAN_MAX_TOKENS, DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE, localModelGenerationTokenLimit, localModelSupportsGeneration, MAX_LOCAL_GENERATION_TOKENS } from "@/lib/local-generation-limits";
 import {
   DEFAULT_GENERATION_SETTINGS,
+  generationSettingsForModel,
   parseGenerationSettings,
   readLocalModelSettings,
   saveLocalModelSettings,
@@ -225,6 +226,9 @@ function ImportedModels({
           <Text selectable style={{ color: COLORS.subtle, fontSize: 11 }}>
             {formattedSize(model.sizeBytes)} · {model.modelId}
           </Text>
+          {!localModelSupportsGeneration(model) ? (
+            <Text selectable style={{ color: COLORS.warning, fontSize: 12 }}>Diagnostics uniquement · import conservé</Text>
+          ) : null}
           {model.source.startsWith("Documents/Models") ? (
             <Text selectable style={{ color: COLORS.accent, fontSize: 12, lineHeight: 18 }}>
               Conservé dans Fichiers · Sur mon iPhone › monGARS Swarm › Models
@@ -363,6 +367,8 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     [models, runtime],
   );
   const selectedImportedModel = runtimeModels.find((model) => model.modelId === modelId.trim());
+  const generationSupported = localModelSupportsGeneration(selectedImportedModel);
+  const generationTokenLimit = localModelGenerationTokenLimit(selectedImportedModel);
   const remoteMlx = runtime === "mlx" && !selectedImportedModel;
   const validMlxModelId = isHuggingFaceModelId(modelId);
   const immutableRevision = isImmutableHuggingFaceRevision(revision);
@@ -370,6 +376,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
   const locked = busy !== null || nativeBusy || huggingFaceBusy;
   const canLoad =
     !loaded &&
+    generationSupported &&
     selectedRuntimeSupported &&
     modelId.trim().length > 0 &&
     (runtime === "mlx"
@@ -395,7 +402,9 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
     setModelId(model.modelId);
     setRevision("");
     invalidateProposal();
-    setNotice(`${model.displayName} est téléchargé et sélectionné. Tu peux maintenant charger le modèle.`);
+    setNotice(localModelSupportsGeneration(model)
+      ? `${model.displayName} est téléchargé et sélectionné. Tu peux maintenant charger le modèle.`
+      : `${model.displayName} est importé et conservé pour les diagnostics.`);
   }, [invalidateProposal]);
 
   useEffect(() => {
@@ -696,7 +705,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
 
   async function generateProposal() {
     const intent = goalMode ? goalSnapshot?.detail.goal.objective : prompt.trim();
-    if (locked || !loaded || !intent || (goalMode && (goalLoading || startAttempted.current))) return;
+    if (locked || !loaded || !generationSupported || !intent || (goalMode && (goalLoading || startAttempted.current))) return;
     const version = generationVersion.current + 1;
     generationVersion.current = version;
     setBusy("generate");
@@ -733,9 +742,18 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
       const session = generationSession.current;
       const expectedModel = loadedModel.current;
       if (!session || !expectedModel) throw new Error("Le modèle chargé n’a pas été confirmé. Actualisez son état.");
+      const loadedModelMetadata = models.find(
+        (model) => model.runtime === expectedModel.runtime && model.modelId === expectedModel.modelId,
+      );
+      if (expectedModel.runtime === "coreml" && !loadedModelMetadata) {
+        throw new Error("Les métadonnées du modèle Core ML chargé sont indisponibles. Actualise la liste avant de générer.");
+      }
+      if (!localModelSupportsGeneration(loadedModelMetadata)) {
+        throw new Error(DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE);
+      }
       const result = await session.generate({
         prompt: snapshot ? buildLocalSwarmPlanPrompt(snapshot.context) : buildLocalProposalPrompt(intent, preparation?.context.symbolic_context),
-        ...parseGenerationSettings(maxTokens, temperature),
+        ...generationSettingsForModel(maxTokens, temperature, loadedModelMetadata),
       }, expectedModel, async () => {
         if (!mounted.current || generationVersion.current !== version) throw new Error("Cette préparation locale n’est plus actuelle.");
         if (planningSession) await planningSession.assertCurrent();
@@ -991,6 +1009,11 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
           onSelect={selectModel}
           selectedId={modelId}
         />
+        {!generationSupported ? (
+          <Text selectable accessibilityRole="alert" style={{ color: COLORS.warning, lineHeight: 20 }}>
+            {DOLPHIN_SPLIT_DIAGNOSTIC_ONLY_MESSAGE} L’import et les réglages sont conservés. Les diagnostics nécessitent une version Debug dédiée.
+          </Text>
+        ) : null}
         {runtime === "mlx" ? (
           <>
             <ActionButton
@@ -1077,8 +1100,14 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
         <Text selectable style={{ color: COLORS.muted, lineHeight: 20 }}>
           {goalMode
             ? `Le plan utilise ${DEFAULT_GOAL_PLAN_MAX_TOKENS} jetons de sortie par défaut. Tu peux ajuster cette limite selon le contexte du modèle. Une sortie tronquée est rejetée.`
-            : "256 jetons et une température de 0,1 par défaut pour des itérations courtes. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime."}
+            : "32 jetons et une température de 0,1 par défaut pendant la qualification physique. Une température de 0 utilise un choix déterministe. Les limites de contexte dépendent du runtime."}
         </Text>
+        {generationSupported && generationTokenLimit < MAX_LOCAL_GENERATION_TOKENS ? (
+          <Text selectable testID="dolphin-qualification-budget" style={{ color: COLORS.warning, lineHeight: 20 }}>
+            Dolphin monolithique : qualification physique encore requise. {" "}
+            Chaque génération, y compris un plan, est limitée à {generationTokenLimit} jetons de sortie au maximum. Ta valeur saisie est conservée; seule la limite effective est réduite si elle la dépasse. Une sortie tronquée reste rejetée.
+          </Text>
+        ) : null}
         <KeyboardInputGroup dismissKeyboard testID="local-model-generation-settings">
           <Text style={{ color: COLORS.text, fontWeight: "700" }}>Jetons de sortie (1–{MAX_LOCAL_GENERATION_TOKENS})</Text>
           <KeyboardTextInput
@@ -1126,7 +1155,7 @@ function LocalModelContent({ goalId, goalMode }: { goalId: string | null; goalMo
             />
           ) : (
             <ActionButton
-              disabled={locked || !loaded || (goalMode ? goalLoading || !goalSnapshot || startLocked : !prompt.trim())}
+              disabled={locked || !loaded || !generationSupported || (goalMode ? goalLoading || !goalSnapshot || startLocked : !prompt.trim())}
               label={goalMode ? "Générer le plan initial sur l’iPhone" : "Générer une proposition locale"}
               onPress={() => void generateProposal()}
               variant="accent"

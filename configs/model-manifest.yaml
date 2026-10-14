@@ -8,7 +8,7 @@ profiles:
   iphone-edge:
     max_active_llm_models: 1
     default_context_tokens: 4096
-    default_output_tokens: 256
+    default_output_tokens: 32
     default_temperature: 0.1
     max_output_tokens: 1024
     notes: "Dolphin3.0 3B is the compact iteration preset; Core ML has a 2048-token context. Device memory, latency, and quality still require an iPhone test."
@@ -137,15 +137,42 @@ on_device:
     validation: requires_iphone_inference_validation
   coreml:
     hf: ales27pm/Dolphin3.0-CoreML
-    hf_revision: c786a7060b183baa9ce8f8b11dded70f6d88e021
+    hf_revision: 4972a699bb5e9e72ecb054a9d0435e9f36f959e1
+    verified_on: "2026-10-14"
     file: Dolphin3.0-Llama3.2-3B-stateful-int4.mlpackage
     package_size_bytes: 1808547525
+    package_files:
+      - path: Data/com.apple.CoreML/model.mlmodel
+        bytes: 809496
+        sha256: a34a00a253c98153cf3b231105493edddde532086e224443e40b255b0f10a924
+      - path: Data/com.apple.CoreML/weights/weight.bin
+        bytes: 1807737412
+        sha256: 6240edc377b1a0158812454c4bb6e3053d8e8a75a7eedb751b9740fffdfd3e15
+      - path: Manifest.json
+        bytes: 617
+        sha256: 5b8ac347a822f02ba3a6d9ccff60dd723f2649424c8e88570961f12b1c59afb6
+    sidecar_files:
+      - path: config.json
+        bytes: 935
+        sha256: e21ff53ea39726f972362beba869807216775d5e308bc2f531784846c06a0249
+      - path: generation_config.json
+        bytes: 206
+        sha256: e627b5a8b2dc371f90388947ada64fa6e71de0f991c04c835f0c0bc97e305a4f
+      - path: special_tokens_map.json
+        bytes: 444
+        sha256: 2df2c4620bb1a9eb877bc7c90c7fa04608bda9fa7c0cf2cdcc0a17b849649683
+      - path: tokenizer.json
+        bytes: 17210298
+        sha256: e40b93124a3e29f62d5f4ff41be56cb2af34ecacf9239acd9da53a98860380b5
+      - path: tokenizer_config.json
+        bytes: 53573
+        sha256: 51ad9580aba8d00016efda43357185a0d8ff9884584dcc82ab58ca552afd14e1
     quant: int4
     context_tokens: 2048
     prefill_chunk_tokens: 512
     runtime: coreml
     validation: requires_iphone_inference_validation
-    notes: "Native adapter implements the published FP16 causalMask and stateful contract. Import requires the matching tokenizer and generation configuration. A full app build and physical-device generation remain to be qualified."
+    notes: "Native adapter implements the published FP16 causalMask and stateful contract. It verifies the exact package and sidecar hashes before compilation, defaults the pinned monolith to CPU+GPU, and keeps ANE selection diagnostic-only until traced. Physical-device generation remains to be qualified."
 
 embeddings:
   default:

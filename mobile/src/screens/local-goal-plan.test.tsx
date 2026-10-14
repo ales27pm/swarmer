@@ -222,6 +222,47 @@ describe("initial local goal plan", () => {
     expect(generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 768 }));
   });
 
+  it.each(["dolphin-monolith-experimental"] as const)(
+    "caps the 1024-token goal default for %s and rejects a truncated plan", async (generationProfile) => {
+      const model = { modelId: "dolphin-import", runtime: "coreml" as const, displayName: "Renamed local model",
+        source: "Imported model", sizeBytes: 100, importedAt: "2026-10-14T00:00:00Z", generationProfile };
+      jest.mocked(listLocalModels).mockResolvedValue([model]);
+      jest.mocked(readLocalModelSettings).mockResolvedValue({
+        runtime: "coreml", modelId: model.modelId, revision: "", maxTokens: 512, temperature: 0,
+      });
+      jest.mocked(loadLocalModel).mockResolvedValue({ state: "ready", runtime: "coreml", modelId: model.modelId, revision: null });
+      jest.mocked(generateLocalProposal).mockResolvedValue({ text: '{"schema_version":"1.0",', finishReason: "length", tokenCount: 32 });
+      const user = await loadedScreen();
+      expect(screen.getByLabelText("Limite de jetons de sortie")).toHaveDisplayValue("1024");
+      expect(screen.getByTestId("dolphin-qualification-budget")).toHaveTextContent(/32 jetons/);
+      await user.press(screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" }));
+      await screen.findByText(/La limite de génération a été atteinte/);
+      expect(generateLocalProposal).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 32, temperature: 0 }));
+      expect(screen.queryByRole("button", { name: "Démarrer avec ce plan local" })).not.toBeOnTheScreen();
+      expect(startGoal).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not generate a goal plan with an already-loaded diagnostic split bundle", async () => {
+    const model = { modelId: "split-import", runtime: "coreml" as const, displayName: "Existing split bundle",
+      source: "Imported model", sizeBytes: 100, importedAt: "2026-10-14T00:00:00Z",
+      generationProfile: "dolphin-split9-experimental" as const };
+    jest.mocked(listLocalModels).mockResolvedValue([model]);
+    jest.mocked(getLocalInferenceStatus).mockResolvedValue({
+      state: "ready", runtime: "coreml", modelId: model.modelId, revision: null,
+    });
+    const user = userEvent.setup();
+    await render(<LocalModelScreen />);
+    await screen.findByText(detail.goal.objective);
+    await screen.findByText(/Dolphin3-ANE scindé est réservé aux diagnostics/);
+    const generate = screen.getByRole("button", { name: "Générer le plan initial sur l’iPhone" });
+    expect(generate).toBeDisabled();
+    await user.press(generate);
+    expect(generateLocalProposal).not.toHaveBeenCalled();
+    expect(startGoal).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Décharger le modèle" })).toBeEnabled();
+  });
+
   it("rejects a started goal before invoking local inference", async () => {
     const user = await loadedScreen();
     getGoal.mockResolvedValue({ ...detail, goal: { ...detail.goal, started_at: "2026-09-13T22:31:00Z" } });
